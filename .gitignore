@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.sites-runtime/
+.openai/
+.wrangler/
+*.tsbuildinfo
+*.log
+.DS_Store
+.env*
+.dev.vars*

@@ -1,0 +1,50 @@
+.brand {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.brand-logo {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: 7px;
+}
+
+.brand-wordmark {
+  display: block;
+  height: 34px;
+  width: auto;
+  object-fit: contain;
+}
+
+.brand-lockup--large {
+  gap: 18px;
+  margin-bottom: 26px;
+}
+
+.brand-lockup--large .brand-logo { border-radius: 12px; }
+.brand-lockup--large .brand-wordmark { height: 60px; }
+
+.font-credit {
+  font-size: 10px;
+  line-height: 1.8;
+  color: #a4a2aa;
+  margin-top: 20px;
+}
+
+.font-credit a { text-decoration: underline; text-underline-offset: 3px; }
+
+@media (max-width: 780px) {
+  .brand-lockup--compact { gap: 7px; }
+  .brand-lockup--compact .brand-logo { width: 30px; height: 30px; }
+  .brand-lockup--compact .brand-wordmark { height: 30px; }
+}

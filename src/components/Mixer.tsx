@@ -1,0 +1,12 @@
+import type { AudioEngine, Project, Track } from '../core/types'
+import { MiniMeter } from './Timeline'
+import { Icon } from './Icon'
+export default function Mixer({project,engine,onTrackChange,onMasterChange,selectedTrackId,onSelect}:{project:Project;engine:AudioEngine;onTrackChange:(id:string,patch:Partial<Track>)=>void;onMasterChange:(value:number)=>void;selectedTrackId:string;onSelect:(id:string)=>void}){
+  return <div className="mixer"><div className="mixer-channels">{project.tracks.map((track,i)=><div className={`mixer-channel ${selectedTrackId===track.id?'selected':''}`} key={track.id} onClick={()=>onSelect(track.id)} style={{'--track-color':track.color} as React.CSSProperties}>
+    <div className="channel-heading"><span>{String(i+1).padStart(2,'0')}</span><strong title={track.name}>{track.name}</strong></div>
+    <div className="channel-pan"><span>L</span><input type="range" min="-1" max="1" step="0.01" value={track.pan} onChange={e=>onTrackChange(track.id,{pan:+e.target.value})} aria-label={`${track.name} 팬`}/><span>R</span></div>
+    <div className="channel-fader"><div className="fader-scale"><span>+6</span><span>0</span><span>−12</span><span>−∞</span></div><input className="vertical-fader" type="range" min="0" max="1.5" step="0.01" value={track.volume} onChange={e=>onTrackChange(track.id,{volume:+e.target.value})} aria-label={`${track.name} 볼륨`}/><MiniMeter engine={engine} trackId={track.id} vertical color={track.color}/></div>
+    <span className="channel-db">{track.volume>0?(20*Math.log10(track.volume)).toFixed(1):'−∞'} dB</span>
+    <div className="channel-buttons"><button className={track.mute?'active mute':'mute'} onClick={()=>onTrackChange(track.id,{mute:!track.mute})} aria-label={`${track.name} 뮤트`} aria-pressed={track.mute}>M</button><button className={track.solo?'active solo':'solo'} onClick={()=>onTrackChange(track.id,{solo:!track.solo})} aria-label={`${track.name} 솔로`} aria-pressed={track.solo}>S</button></div>
+  </div>)}</div><div className="mixer-master"><strong><Icon name="volume" size={14}/> MASTER</strong><div className="channel-fader"><input className="vertical-fader" type="range" min="0" max="1.5" step="0.01" value={project.masterVolume} onChange={e=>onMasterChange(+e.target.value)} aria-label="마스터 볼륨"/><MiniMeter engine={engine} vertical/></div><span className="channel-db">{project.masterVolume>0?(20*Math.log10(project.masterVolume)).toFixed(1):'−∞'} dB</span><span className="master-out">Stereo out</span></div></div>
+}
