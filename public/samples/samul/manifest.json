@@ -1,0 +1,360 @@
+{
+ "id": "samul",
+ "name": "Samulnori",
+ "nameKo": "사물놀이",
+ "kind": "kit",
+ "category": "gugak",
+ "formats": [
+  "webm",
+  "m4a"
+ ],
+ "gainDb": 0,
+ "release": 0.25,
+ "zones": [
+  {
+   "file": "yonggo_v1",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "yonggo_v2",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "yonggo_v3",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "bak",
+   "root": 37,
+   "lo": 37,
+   "hi": 37,
+   "vlo": 0.0,
+   "vhi": 1.0
+  },
+  {
+   "file": "janggu_deong_v1",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "janggu_deong_v2",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "janggu_deong_v3",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "janggu_gideok_v1",
+   "root": 39,
+   "lo": 39,
+   "hi": 39,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "janggu_gideok_v2",
+   "root": 39,
+   "lo": 39,
+   "hi": 39,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "janggu_gideok_v3",
+   "root": 39,
+   "lo": 39,
+   "hi": 39,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "janggu_deok_v1",
+   "root": 40,
+   "lo": 40,
+   "hi": 40,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "janggu_deok_v2",
+   "root": 40,
+   "lo": 40,
+   "hi": 40,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "janggu_deok_v3",
+   "root": 40,
+   "lo": 40,
+   "hi": 40,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "janggu_kung_v1",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "janggu_kung_v2",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "janggu_kung_v3",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "kkwaenggwari_gaeng_v1",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "kkwaenggwari_gaeng_v2",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "kkwaenggwari_gaeng_v3",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "janggu_deo_v1",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "janggu_deo_v2",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "janggu_deo_v3",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "kkwaenggwari_ji_v1",
+   "root": 44,
+   "lo": 44,
+   "hi": 44,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "kkwaenggwari_ji_v2",
+   "root": 44,
+   "lo": 44,
+   "hi": 44,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "kkwaenggwari_ji_v3",
+   "root": 44,
+   "lo": 44,
+   "hi": 44,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "jwago_v1",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "jwago_v2",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "jwago_v3",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "kkwaenggwari_gaek_v1",
+   "root": 46,
+   "lo": 46,
+   "hi": 46,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "kkwaenggwari_gaek_v2",
+   "root": 46,
+   "lo": 46,
+   "hi": 46,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "kkwaenggwari_gaek_v3",
+   "root": 46,
+   "lo": 46,
+   "hi": 46,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "bara_v1",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "bara_v2",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "bara_v3",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "kkwaenggwari_gaet_v1",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "kkwaenggwari_gaet_v2",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "kkwaenggwari_gaet_v3",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "jing_gang",
+   "root": 49,
+   "lo": 49,
+   "hi": 49,
+   "vlo": 0.0,
+   "vhi": 1.0
+  },
+  {
+   "file": "kkwaenggwari_gaes_v1",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "kkwaenggwari_gaes_v2",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "kkwaenggwari_gaes_v3",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "jing_yak",
+   "root": 51,
+   "lo": 51,
+   "hi": 51,
+   "vlo": 0.0,
+   "vhi": 1.0
+  }
+ ],
+ "releaseZones": [],
+ "attribution": {
+  "title": "국악기 디지털 음원 (단음/확장)",
+  "author": "국립국악원 (National Gugak Center)",
+  "url": "https://www.gugak.go.kr/digitaleum",
+  "license": "공공누리 제1유형 (KOGL Type 1, 출처표시)",
+  "licenseUrl": "https://www.kogl.or.kr/info/licenseType1.do",
+  "changes": "음 단위 분할, 트리밍, 페이드, 음량 정규화, Opus/AAC 변환, 일부 음정 보정. 국립국악원은 본 프로젝트를 후원·보증하지 않습니다."
+ }
+}

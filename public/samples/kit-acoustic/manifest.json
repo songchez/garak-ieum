@@ -1,0 +1,476 @@
+{
+ "id": "kit-acoustic",
+ "name": "Acoustic Drums",
+ "nameKo": "어쿠스틱 드럼",
+ "kind": "kit",
+ "category": "drums",
+ "formats": [
+  "webm",
+  "m4a"
+ ],
+ "gainDb": 0,
+ "release": 0,
+ "zones": [
+  {
+   "file": "kickv1",
+   "root": 35,
+   "lo": 35,
+   "hi": 35,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "kickv2",
+   "root": 35,
+   "lo": 35,
+   "hi": 35,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "kickv3",
+   "root": 35,
+   "lo": 35,
+   "hi": 35,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "kickv1",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "kickv2",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "kickv3",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "sidestickv1",
+   "root": 37,
+   "lo": 37,
+   "hi": 37,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "sidestickv2",
+   "root": 37,
+   "lo": 37,
+   "hi": 37,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "sidestickv3",
+   "root": 37,
+   "lo": 37,
+   "hi": 37,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "snarev1",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.0,
+   "vhi": 0.2
+  },
+  {
+   "file": "snarev2",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.2,
+   "vhi": 0.4
+  },
+  {
+   "file": "snarev3",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.4,
+   "vhi": 0.6
+  },
+  {
+   "file": "snarev4",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.6,
+   "vhi": 0.8
+  },
+  {
+   "file": "snarev5",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.8,
+   "vhi": 1.0
+  },
+  {
+   "file": "clapv1",
+   "root": 39,
+   "lo": 39,
+   "hi": 39,
+   "vlo": 0.0,
+   "vhi": 0.3333,
+   "gainDb": -6
+  },
+  {
+   "file": "clapv2",
+   "root": 39,
+   "lo": 39,
+   "hi": 39,
+   "vlo": 0.3333,
+   "vhi": 0.6667,
+   "gainDb": -6
+  },
+  {
+   "file": "clapv3",
+   "root": 39,
+   "lo": 39,
+   "hi": 39,
+   "vlo": 0.6667,
+   "vhi": 1.0,
+   "gainDb": -6
+  },
+  {
+   "file": "rimshotv1",
+   "root": 40,
+   "lo": 40,
+   "hi": 40,
+   "vlo": 0.0,
+   "vhi": 0.5
+  },
+  {
+   "file": "rimshotv2",
+   "root": 40,
+   "lo": 40,
+   "hi": 40,
+   "vlo": 0.5,
+   "vhi": 1.0
+  },
+  {
+   "file": "tomlowv1",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0.0,
+   "vhi": 0.3333,
+   "tune": 0
+  },
+  {
+   "file": "tomlowv2",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0.3333,
+   "vhi": 0.6667,
+   "tune": 0
+  },
+  {
+   "file": "tomlowv3",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0.6667,
+   "vhi": 1.0,
+   "tune": 0
+  },
+  {
+   "file": "hhclosedv1",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0.0,
+   "vhi": 0.3333,
+   "choke": 1
+  },
+  {
+   "file": "hhclosedv2",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0.3333,
+   "vhi": 0.6667,
+   "choke": 1
+  },
+  {
+   "file": "hhclosedv3",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0.6667,
+   "vhi": 1.0,
+   "choke": 1
+  },
+  {
+   "file": "tomlowv1",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0.0,
+   "vhi": 0.3333,
+   "tune": 200
+  },
+  {
+   "file": "tomlowv2",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0.3333,
+   "vhi": 0.6667,
+   "tune": 200
+  },
+  {
+   "file": "tomlowv3",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0.6667,
+   "vhi": 1.0,
+   "tune": 200
+  },
+  {
+   "file": "hhpedalv1",
+   "root": 44,
+   "lo": 44,
+   "hi": 44,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "choke": 1
+  },
+  {
+   "file": "hhpedalv2",
+   "root": 44,
+   "lo": 44,
+   "hi": 44,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "choke": 1
+  },
+  {
+   "file": "tomlowv1",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0.0,
+   "vhi": 0.3333,
+   "tune": 400
+  },
+  {
+   "file": "tomlowv2",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0.3333,
+   "vhi": 0.6667,
+   "tune": 400
+  },
+  {
+   "file": "tomlowv3",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0.6667,
+   "vhi": 1.0,
+   "tune": 400
+  },
+  {
+   "file": "hhopenv1",
+   "root": 46,
+   "lo": 46,
+   "hi": 46,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "choke": 1
+  },
+  {
+   "file": "hhopenv2",
+   "root": 46,
+   "lo": 46,
+   "hi": 46,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "choke": 1
+  },
+  {
+   "file": "tomhighv1",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0.0,
+   "vhi": 0.3333,
+   "tune": -300
+  },
+  {
+   "file": "tomhighv2",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0.3333,
+   "vhi": 0.6667,
+   "tune": -300
+  },
+  {
+   "file": "tomhighv3",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0.6667,
+   "vhi": 1.0,
+   "tune": -300
+  },
+  {
+   "file": "tomhighv1",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0.0,
+   "vhi": 0.3333,
+   "tune": 0
+  },
+  {
+   "file": "tomhighv2",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0.3333,
+   "vhi": 0.6667,
+   "tune": 0
+  },
+  {
+   "file": "tomhighv3",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0.6667,
+   "vhi": 1.0,
+   "tune": 0
+  },
+  {
+   "file": "crashv1",
+   "root": 49,
+   "lo": 49,
+   "hi": 49,
+   "vlo": 0.0,
+   "vhi": 0.5
+  },
+  {
+   "file": "crashv2",
+   "root": 49,
+   "lo": 49,
+   "hi": 49,
+   "vlo": 0.5,
+   "vhi": 1.0
+  },
+  {
+   "file": "tomhighv1",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0.0,
+   "vhi": 0.3333,
+   "tune": 300
+  },
+  {
+   "file": "tomhighv2",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0.3333,
+   "vhi": 0.6667,
+   "tune": 300
+  },
+  {
+   "file": "tomhighv3",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0.6667,
+   "vhi": 1.0,
+   "tune": 300
+  },
+  {
+   "file": "ridev1",
+   "root": 51,
+   "lo": 51,
+   "hi": 51,
+   "vlo": 0.0,
+   "vhi": 0.5
+  },
+  {
+   "file": "ridev2",
+   "root": 51,
+   "lo": 51,
+   "hi": 51,
+   "vlo": 0.5,
+   "vhi": 1.0
+  },
+  {
+   "file": "ridebell",
+   "root": 53,
+   "lo": 53,
+   "hi": 53,
+   "vlo": 0.0,
+   "vhi": 1.0
+  },
+  {
+   "file": "crashv1",
+   "root": 57,
+   "lo": 57,
+   "hi": 57,
+   "vlo": 0.0,
+   "vhi": 0.5
+  },
+  {
+   "file": "crashv2",
+   "root": 57,
+   "lo": 57,
+   "hi": 57,
+   "vlo": 0.5,
+   "vhi": 1.0
+  },
+  {
+   "file": "ridev1",
+   "root": 59,
+   "lo": 59,
+   "hi": 59,
+   "vlo": 0.0,
+   "vhi": 0.5
+  },
+  {
+   "file": "ridev2",
+   "root": 59,
+   "lo": 59,
+   "hi": 59,
+   "vlo": 0.5,
+   "vhi": 1.0
+  }
+ ],
+ "releaseZones": [],
+ "attribution": {
+  "title": "Virtuosity Drums",
+  "author": "Versilian Studios LLC & Karoryfer Samples (drummer Austin McMahon)",
+  "url": "https://github.com/sfzinstruments/virtuosity_drums",
+  "license": "CC0 1.0",
+  "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "changes": "subset of the 'mid' mic, trimmed, normalized, Opus/AAC; clap from VCSL (Versilian Studios, CC0, https://github.com/sgossner/VCSL)"
+ }
+}

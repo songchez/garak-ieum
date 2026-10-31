@@ -1,0 +1,195 @@
+{
+ "id": "kit-808",
+ "name": "808 Drum Machine",
+ "nameKo": "808 ?쒕읆癒몄떊",
+ "kind": "kit",
+ "category": "drums",
+ "formats": [
+  "webm",
+  "m4a"
+ ],
+ "gainDb": 4,
+ "release": 0,
+ "zones": [
+  {
+   "file": "kickshort",
+   "root": 35,
+   "lo": 35,
+   "hi": 35,
+   "vlo": 0,
+   "vhi": 1
+  },
+  {
+   "file": "kicklong",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0,
+   "vhi": 1
+  },
+  {
+   "file": "snare1",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0,
+   "vhi": 1
+  },
+  {
+   "file": "clap",
+   "root": 39,
+   "lo": 39,
+   "hi": 39,
+   "vlo": 0,
+   "vhi": 1
+  },
+  {
+   "file": "snare2",
+   "root": 40,
+   "lo": 40,
+   "hi": 40,
+   "vlo": 0,
+   "vhi": 1
+  },
+  {
+   "file": "tomlow",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0,
+   "vhi": 1,
+   "tune": 0
+  },
+  {
+   "file": "hhclosed",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0,
+   "vhi": 1,
+   "choke": 1
+  },
+  {
+   "file": "tomlow",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0,
+   "vhi": 1,
+   "tune": 300
+  },
+  {
+   "file": "hhpedal",
+   "root": 44,
+   "lo": 44,
+   "hi": 44,
+   "vlo": 0,
+   "vhi": 1,
+   "choke": 1
+  },
+  {
+   "file": "tommid",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0,
+   "vhi": 1,
+   "tune": 0
+  },
+  {
+   "file": "hhopen",
+   "root": 46,
+   "lo": 46,
+   "hi": 46,
+   "vlo": 0,
+   "vhi": 1,
+   "choke": 1
+  },
+  {
+   "file": "tommid",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0,
+   "vhi": 1,
+   "tune": 300
+  },
+  {
+   "file": "tomhi",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0,
+   "vhi": 1,
+   "tune": 0
+  },
+  {
+   "file": "cymbal",
+   "root": 49,
+   "lo": 49,
+   "hi": 49,
+   "vlo": 0,
+   "vhi": 1,
+   "tune": 0
+  },
+  {
+   "file": "tomhi",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0,
+   "vhi": 1,
+   "tune": 300
+  },
+  {
+   "file": "cymbal",
+   "root": 51,
+   "lo": 51,
+   "hi": 51,
+   "vlo": 0,
+   "vhi": 1,
+   "tune": -200
+  },
+  {
+   "file": "cowbell",
+   "root": 56,
+   "lo": 56,
+   "hi": 56,
+   "vlo": 0,
+   "vhi": 1
+  },
+  {
+   "file": "conga",
+   "root": 63,
+   "lo": 63,
+   "hi": 63,
+   "vlo": 0,
+   "vhi": 1
+  },
+  {
+   "file": "shaker",
+   "root": 70,
+   "lo": 70,
+   "hi": 70,
+   "vlo": 0,
+   "vhi": 1
+  },
+  {
+   "file": "clave",
+   "root": 75,
+   "lo": 75,
+   "hi": 75,
+   "vlo": 0,
+   "vhi": 1
+  }
+ ],
+ "releaseZones": [],
+ "attribution": {
+  "title": "TR808EmulationKit",
+  "author": "ArtemioLabs (Artemiy Pavlov), distributed with Hydrogen",
+  "url": "https://github.com/hydrogen-music/hydrogen/tree/main/data/drumkits/TR808EmulationKit",
+  "license": "GPL-3.0-or-later",
+  "licenseUrl": "https://www.gnu.org/licenses/gpl-3.0.html",
+  "changes": "re-encoded to Opus/AAC, trimmed; these sample files are separate GPL-licensed data, not part of the MIT-licensed source"
+ }
+}

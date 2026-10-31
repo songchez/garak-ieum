@@ -1,0 +1,284 @@
+{
+ "id": "kit-lofi",
+ "name": "Lo-fi Drums",
+ "nameKo": "로파이 드럼",
+ "kind": "kit",
+ "category": "drums",
+ "formats": [
+  "webm",
+  "m4a"
+ ],
+ "gainDb": 0,
+ "release": 0,
+ "zones": [
+  {
+   "file": "kickv1",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "kickv2",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "kickv3",
+   "root": 36,
+   "lo": 36,
+   "hi": 36,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "sidestickv1",
+   "root": 37,
+   "lo": 37,
+   "hi": 37,
+   "vlo": 0.0,
+   "vhi": 0.5
+  },
+  {
+   "file": "sidestickv2",
+   "root": 37,
+   "lo": 37,
+   "hi": 37,
+   "vlo": 0.5,
+   "vhi": 1.0
+  },
+  {
+   "file": "snarev1",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.0,
+   "vhi": 0.3333
+  },
+  {
+   "file": "snarev2",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.3333,
+   "vhi": 0.6667
+  },
+  {
+   "file": "snarev3",
+   "root": 38,
+   "lo": 38,
+   "hi": 38,
+   "vlo": 0.6667,
+   "vhi": 1.0
+  },
+  {
+   "file": "clap",
+   "root": 39,
+   "lo": 39,
+   "hi": 39,
+   "vlo": 0.0,
+   "vhi": 1.0,
+   "gainDb": -6
+  },
+  {
+   "file": "snareedgev1",
+   "root": 40,
+   "lo": 40,
+   "hi": 40,
+   "vlo": 0.0,
+   "vhi": 0.5
+  },
+  {
+   "file": "snareedgev2",
+   "root": 40,
+   "lo": 40,
+   "hi": 40,
+   "vlo": 0.5,
+   "vhi": 1.0
+  },
+  {
+   "file": "tomlowv1",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "tune": 0
+  },
+  {
+   "file": "tomlowv2",
+   "root": 41,
+   "lo": 41,
+   "hi": 41,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "tune": 0
+  },
+  {
+   "file": "hhclosedv1",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "choke": 1
+  },
+  {
+   "file": "hhclosedv2",
+   "root": 42,
+   "lo": 42,
+   "hi": 42,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "choke": 1
+  },
+  {
+   "file": "tomlowv1",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "tune": 300
+  },
+  {
+   "file": "tomlowv2",
+   "root": 43,
+   "lo": 43,
+   "hi": 43,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "tune": 300
+  },
+  {
+   "file": "hhpedal",
+   "root": 44,
+   "lo": 44,
+   "hi": 44,
+   "vlo": 0.0,
+   "vhi": 1.0,
+   "choke": 1
+  },
+  {
+   "file": "tommidv1",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "tune": 0
+  },
+  {
+   "file": "tommidv2",
+   "root": 45,
+   "lo": 45,
+   "hi": 45,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "tune": 0
+  },
+  {
+   "file": "hhopenv1",
+   "root": 46,
+   "lo": 46,
+   "hi": 46,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "choke": 1
+  },
+  {
+   "file": "hhopenv2",
+   "root": 46,
+   "lo": 46,
+   "hi": 46,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "choke": 1
+  },
+  {
+   "file": "tommidv1",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "tune": 300
+  },
+  {
+   "file": "tommidv2",
+   "root": 47,
+   "lo": 47,
+   "hi": 47,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "tune": 300
+  },
+  {
+   "file": "tomhighv1",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "tune": 0
+  },
+  {
+   "file": "tomhighv2",
+   "root": 48,
+   "lo": 48,
+   "hi": 48,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "tune": 0
+  },
+  {
+   "file": "crash",
+   "root": 49,
+   "lo": 49,
+   "hi": 49,
+   "vlo": 0.0,
+   "vhi": 1.0,
+   "gainDb": 7
+  },
+  {
+   "file": "tomhighv1",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0.0,
+   "vhi": 0.5,
+   "tune": 300
+  },
+  {
+   "file": "tomhighv2",
+   "root": 50,
+   "lo": 50,
+   "hi": 50,
+   "vlo": 0.5,
+   "vhi": 1.0,
+   "tune": 300
+  },
+  {
+   "file": "ride",
+   "root": 51,
+   "lo": 51,
+   "hi": 51,
+   "vlo": 0.0,
+   "vhi": 1.0,
+   "gainDb": 14
+  }
+ ],
+ "releaseZones": [],
+ "attribution": {
+  "title": "Gogodze Phu Vol II",
+  "author": "Karoryfer Samples",
+  "url": "https://github.com/sfzinstruments/karoryfer.gogodze-phu-vol-ii",
+  "license": "CC0 1.0",
+  "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "changes": "retro_mic subset, trimmed, normalized, Opus/AAC; cymbals from Virtuosity Drums 'lofi' mic (CC0); clap from VCSL (Versilian Studios, CC0), low-passed at 6 kHz"
+ }
+}

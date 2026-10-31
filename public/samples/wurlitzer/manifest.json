@@ -1,0 +1,454 @@
+{
+ "id": "wurlitzer",
+ "name": "Wurlitzer EP",
+ "nameKo": "월리처 전기 피아노",
+ "kind": "pitched",
+ "category": "keys",
+ "formats": [
+  "webm",
+  "m4a"
+ ],
+ "gainDb": 0,
+ "release": 0.2,
+ "zones": [
+  {
+   "file": "a1pp",
+   "root": 33,
+   "lo": 33,
+   "hi": 35,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": -5
+  },
+  {
+   "file": "a1pp",
+   "root": 33,
+   "lo": 36,
+   "hi": 38,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "gainDb": -0.3,
+   "tune": -5
+  },
+  {
+   "file": "ab2pp",
+   "root": 44,
+   "lo": 39,
+   "hi": 47,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": -8
+  },
+  {
+   "file": "eb3pp",
+   "root": 51,
+   "lo": 48,
+   "hi": 53,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": -10
+  },
+  {
+   "file": "ab3pp",
+   "root": 56,
+   "lo": 54,
+   "hi": 59,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": -12
+  },
+  {
+   "file": "db4pp",
+   "root": 61,
+   "lo": 60,
+   "hi": 62,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": -2
+  },
+  {
+   "file": "g4pp",
+   "root": 67,
+   "lo": 63,
+   "hi": 68,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": -2
+  },
+  {
+   "file": "db5pp",
+   "root": 73,
+   "lo": 69,
+   "hi": 74,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": -5
+  },
+  {
+   "file": "g5mp",
+   "root": 79,
+   "lo": 75,
+   "hi": 80,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": -8
+  },
+  {
+   "file": "db6mp",
+   "root": 85,
+   "lo": 81,
+   "hi": 89,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": 6
+  },
+  {
+   "file": "ab6mp",
+   "root": 92,
+   "lo": 90,
+   "hi": 96,
+   "vlo": 0.0,
+   "vhi": 0.2992,
+   "tune": 2
+  },
+  {
+   "file": "a1mp",
+   "root": 33,
+   "lo": 33,
+   "hi": 35,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": -5
+  },
+  {
+   "file": "e2mp",
+   "root": 40,
+   "lo": 36,
+   "hi": 41,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": -4
+  },
+  {
+   "file": "a2mp",
+   "root": 45,
+   "lo": 42,
+   "hi": 47,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": -2
+  },
+  {
+   "file": "eb3mp",
+   "root": 51,
+   "lo": 48,
+   "hi": 53,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": -9
+  },
+  {
+   "file": "ab3mp",
+   "root": 56,
+   "lo": 54,
+   "hi": 59,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": -8
+  },
+  {
+   "file": "db4mp",
+   "root": 61,
+   "lo": 60,
+   "hi": 62,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": 4
+  },
+  {
+   "file": "gb4mp",
+   "root": 66,
+   "lo": 63,
+   "hi": 68,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": 7
+  },
+  {
+   "file": "b4mp",
+   "root": 71,
+   "lo": 69,
+   "hi": 71,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": -5
+  },
+  {
+   "file": "db5mp",
+   "root": 73,
+   "lo": 72,
+   "hi": 74,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": 3
+  },
+  {
+   "file": "g5mp",
+   "root": 79,
+   "lo": 75,
+   "hi": 80,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": -8
+  },
+  {
+   "file": "db6mp",
+   "root": 85,
+   "lo": 81,
+   "hi": 89,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": 6
+  },
+  {
+   "file": "ab6mp",
+   "root": 92,
+   "lo": 90,
+   "hi": 96,
+   "vlo": 0.2992,
+   "vhi": 0.5197,
+   "tune": 2
+  },
+  {
+   "file": "a1f",
+   "root": 33,
+   "lo": 33,
+   "hi": 35,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": -5
+  },
+  {
+   "file": "c2f",
+   "root": 36,
+   "lo": 36,
+   "hi": 38,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": -7
+  },
+  {
+   "file": "f2f",
+   "root": 41,
+   "lo": 39,
+   "hi": 44,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": -6
+  },
+  {
+   "file": "b2f",
+   "root": 47,
+   "lo": 45,
+   "hi": 50,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": -8
+  },
+  {
+   "file": "e3f",
+   "root": 52,
+   "lo": 51,
+   "hi": 53,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": -4
+  },
+  {
+   "file": "ab3f",
+   "root": 56,
+   "lo": 54,
+   "hi": 59,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": -11
+  },
+  {
+   "file": "db4f",
+   "root": 61,
+   "lo": 60,
+   "hi": 65,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": -2
+  },
+  {
+   "file": "ab4f",
+   "root": 68,
+   "lo": 66,
+   "hi": 71,
+   "vlo": 0.5197,
+   "vhi": 0.7087
+  },
+  {
+   "file": "db5f",
+   "root": 73,
+   "lo": 72,
+   "hi": 77,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": 3
+  },
+  {
+   "file": "g5f",
+   "root": 79,
+   "lo": 78,
+   "hi": 80,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "tune": -7
+  },
+  {
+   "file": "db6f",
+   "root": 85,
+   "lo": 81,
+   "hi": 89,
+   "vlo": 0.5197,
+   "vhi": 0.7087,
+   "gainDb": -0.4
+  },
+  {
+   "file": "ab6f",
+   "root": 92,
+   "lo": 90,
+   "hi": 96,
+   "vlo": 0.5197,
+   "vhi": 0.7087
+  },
+  {
+   "file": "a1ff",
+   "root": 33,
+   "lo": 33,
+   "hi": 35,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -5
+  },
+  {
+   "file": "c2ff",
+   "root": 36,
+   "lo": 36,
+   "hi": 38,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -7
+  },
+  {
+   "file": "f2ff",
+   "root": 41,
+   "lo": 39,
+   "hi": 44,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -6
+  },
+  {
+   "file": "b2ff",
+   "root": 47,
+   "lo": 45,
+   "hi": 50,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -8
+  },
+  {
+   "file": "e3ff",
+   "root": 52,
+   "lo": 51,
+   "hi": 53,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -2
+  },
+  {
+   "file": "ab3ff",
+   "root": 56,
+   "lo": 54,
+   "hi": 59,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -8
+  },
+  {
+   "file": "db4ff",
+   "root": 61,
+   "lo": 60,
+   "hi": 62,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": 2
+  },
+  {
+   "file": "e4ff",
+   "root": 64,
+   "lo": 63,
+   "hi": 65,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -3
+  },
+  {
+   "file": "g4ff",
+   "root": 67,
+   "lo": 66,
+   "hi": 68,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": 3
+  },
+  {
+   "file": "db5ff",
+   "root": 73,
+   "lo": 69,
+   "hi": 77,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -1
+  },
+  {
+   "file": "g5ff",
+   "root": 79,
+   "lo": 78,
+   "hi": 80,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "tune": -7
+  },
+  {
+   "file": "db6f",
+   "root": 85,
+   "lo": 81,
+   "hi": 89,
+   "vlo": 0.7087,
+   "vhi": 1.0
+  },
+  {
+   "file": "ab6f",
+   "root": 92,
+   "lo": 90,
+   "hi": 96,
+   "vlo": 0.7087,
+   "vhi": 1.0,
+   "gainDb": -0.1
+  }
+ ],
+ "releaseZones": [],
+ "attribution": {
+  "title": "Wurlitzer EP200 (E-Pianos)",
+  "author": "Greg Sullivan (SFZ mapping by kinwie)",
+  "url": "https://github.com/sfzinstruments/GregSullivan.E-Pianos",
+  "license": "CC BY 3.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/3.0/",
+  "changes": "converted FLAC → Opus/AAC, trimmed, normalized"
+ }
+}

@@ -1,0 +1,11 @@
+Wurlitzer EP200 (E-Pianos)
+by Greg Sullivan (SFZ mapping by kinwie)
+Source: https://github.com/sfzinstruments/GregSullivan.E-Pianos
+
+Licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
+
+Changes made for this project: converted FLAC → Opus/AAC, trimmed, normalized
+
+Samples: Greg Sullivan, Wurlitzer EP200 Electric Piano v1.1 (http://www.sullivang.net/).
+SFZ mapping: kinwie. Released under Creative Commons Attribution 3.0 Unported
+per https://github.com/sfzinstruments/GregSullivan.E-Pianos/blob/master/LICENSE

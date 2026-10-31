@@ -1,0 +1,10 @@
+Salamander Grand Piano V3
+by Alexander Holm
+Source: https://archive.org/details/SalamanderGrandPianoV3
+
+Licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
+
+Changes made for this project: 30 notes × 3 velocity layers and 88 key-release samples selected, trimmed, normalized, encoded to Opus/AAC (via MP3 encodings from https://github.com/tambien/Piano)
+
+Original samples: Alexander Holm, Salamander Grand Piano V3 (https://archive.org/details/SalamanderGrandPianoV3), CC BY 3.0.
+MP3 intermediates: https://github.com/tambien/Piano (same license).
