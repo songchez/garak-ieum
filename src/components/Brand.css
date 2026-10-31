@@ -21,10 +21,13 @@
 
 .brand-wordmark {
   display: block;
-  height: 34px;
+  height: 26px;
   width: auto;
   object-fit: contain;
 }
+
+.brand-lockup--compact { gap: 8px; }
+.brand-lockup--compact .brand-logo { border-radius: 6px; }
 
 .brand-lockup--large {
   gap: 18px;
@@ -37,14 +40,14 @@
 .font-credit {
   font-size: 10px;
   line-height: 1.8;
-  color: #a4a2aa;
+  color: var(--ink-66);
   margin-top: 20px;
 }
 
 .font-credit a { text-decoration: underline; text-underline-offset: 3px; }
 
 @media (max-width: 780px) {
-  .brand-lockup--compact { gap: 7px; }
-  .brand-lockup--compact .brand-logo { width: 30px; height: 30px; }
-  .brand-lockup--compact .brand-wordmark { height: 30px; }
+  .brand-lockup--compact { gap: 6px; }
+  .brand-lockup--compact .brand-logo { width: 24px; height: 24px; }
+  .brand-lockup--compact .brand-wordmark { height: 22px; }
 }
