@@ -1,20 +1,6 @@
-import type { Clip, InstrumentId, MidiClip, MidiNote, Project, Track } from './types'
-
-const COLORS: Record<InstrumentId, string> = {
-  drums: '#f0ad74',
-  bass: '#a9bd75',
-  keys: '#aaa0f5',
-  pad: '#86b5ca',
-  pluck: '#e398b4',
-}
-
-const INSTRUMENT_NAMES: Record<InstrumentId, string> = {
-  drums: 'Drum machine',
-  bass: 'Sub bass',
-  keys: 'Midnight keys',
-  pad: 'Soft atmosphere',
-  pluck: 'Glass pluck',
-}
+import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
+import { instrumentDef, isInstrumentId } from './instruments'
+import type { Clip, Device, EffectType, InstrumentId, MidiClip, MidiNote, Project, Track } from './types'
 
 let fallbackSequence = 0
 
@@ -25,25 +11,49 @@ export function uid(): string {
   return `noct-${Date.now().toString(36)}-${fallbackSequence.toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+export function defaultInstrumentParams(instrument: InstrumentId): Record<string, number> {
+  return defaultParams(instrumentDef(instrument).params)
+}
+
+export function createDevice(type: EffectType, params: Partial<Record<string, number>> = {}): Device {
+  const values = defaultParams(EFFECT_DEFS[type].params)
+  for (const [key, value] of Object.entries(params)) if (value !== undefined) values[key] = value
+  return { id: uid(), type, enabled: true, params: values }
+}
+
+/** Moves a device by `offset` slots, clamped to the chain; returns the same track when nothing changes. */
+export function moveDevice(track: Track, deviceId: string, offset: number): Track {
+  const from = track.devices.findIndex(device => device.id === deviceId)
+  if (from < 0 || !Number.isFinite(offset)) return track
+  const to = Math.max(0, Math.min(track.devices.length - 1, from + Math.trunc(offset)))
+  if (to === from) return track
+  const devices = [...track.devices]
+  const [device] = devices.splice(from, 1)
+  devices.splice(to, 0, device)
+  return { ...track, devices }
+}
+
 export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'keys'): Track {
+  const def = instrumentDef(instrument)
   return {
     id: uid(),
-    name: kind === 'audio' ? 'Audio track' : INSTRUMENT_NAMES[instrument],
+    name: kind === 'audio' ? 'Audio track' : def.name,
     kind,
     instrument,
-    color: kind === 'audio' ? '#7fc3bb' : COLORS[instrument],
+    color: kind === 'audio' ? '#c9a06a' : def.color,
     volume: 0.7,
     pan: 0,
     mute: false,
     solo: false,
     clips: [],
-    effects: { filter: 20000, reverb: 0, delay: 0 },
+    instrumentParams: defaultInstrumentParams(instrument),
+    devices: [],
   }
 }
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -86,7 +96,7 @@ export function createDemoProject(): Project {
 
   const hats = createTrack('instrument', 'drums')
   hats.name = 'After-hours hats'
-  hats.color = '#dfc17e'
+  hats.color = '#d9b45a'
   hats.volume = 0.35
   hats.pan = 0.16
   for (let section = 0; section < 4; section += 1) {
@@ -115,7 +125,7 @@ export function createDemoProject(): Project {
   keys.name = 'Midnight keys'
   keys.volume = 0.5
   keys.pan = -0.12
-  keys.effects.reverb = 0.2
+  keys.devices = [createDevice('reverb', { amount: 0.2, size: 0, tone: 20000 })]
   const chords = [[52, 55, 59, 62], [48, 52, 55, 59], [47, 50, 54, 59], [50, 54, 57, 60]]
   const chordNames = ['Em7 / warm light', 'Cmaj7 / a little space', 'Gmaj7 / skyline', 'D7 / coming home']
   chords.forEach((chord, section) => {
@@ -130,8 +140,10 @@ export function createDemoProject(): Project {
   pluck.name = 'Glass echoes'
   pluck.volume = 0.3
   pluck.pan = 0.23
-  pluck.effects.delay = 0.22
-  pluck.effects.reverb = 0.17
+  pluck.devices = [
+    createDevice('delay', { amount: 0.22, time: 0.75, feedback: 0.32, tone: 3800 }),
+    createDevice('reverb', { amount: 0.17, size: 0, tone: 20000 }),
+  ]
   const phrases = [[71, 67, 66, 64], [71, 67, 64, 62], [74, 71, 69, 66], [69, 66, 64, 62]]
   phrases.forEach((pitches, section) => {
     const notes = pitches.map((pitch, index) => note(pitch, [0.75, 2.5, 4.75, 6.5][index], 0.6, 0.48))
@@ -142,8 +154,10 @@ export function createDemoProject(): Project {
   pad.name = 'Slow bloom'
   pad.volume = 0.23
   pad.pan = -0.2
-  pad.effects.filter = 4200
-  pad.effects.reverb = 0.3
+  pad.devices = [
+    createDevice('filter', { cutoff: 4200, resonance: 0.65, mode: 0 }),
+    createDevice('reverb', { amount: 0.3, size: 0, tone: 20000 }),
+  ]
   chords.forEach((chord, section) => {
     pad.clips.push(midiClip('Night air', section * 8, 8,
       [chord[0] + 12, chord[2] + 12].map(pitch => note(pitch, 0, 7.85, 0.4))))
@@ -207,6 +221,120 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
   ]
 }
 
+/** Shortest clip a trim can leave: one 1/64 note. */
+export const MIN_CLIP_BEATS = 0.0625
+const EPSILON = 1e-9
+
+/** Drops notes outside the clip window and crops the rest to [0, lengthBeats]. */
+export function cropNotesToClip(clip: MidiClip): MidiClip {
+  const notes: MidiNote[] = []
+  for (const value of clip.notes) {
+    const start = Math.max(0, value.start)
+    const end = Math.min(clip.lengthBeats, value.start + value.duration)
+    if (end - start > EPSILON) notes.push(start === value.start && end === value.start + value.duration ? value : { ...value, start, duration: end - start })
+  }
+  return { ...clip, notes }
+}
+
+/**
+ * Moves the left edge to `newStartBeat` and keeps the content in place. MIDI notes
+ * shift by the trim amount (notes ending before the new start are dropped, crossing
+ * notes are cropped); audio advances its source offset, which can never go below 0.
+ */
+export function trimClipStart(clip: Clip, newStartBeat: number, bpm: number): Clip {
+  if (!Number.isFinite(newStartBeat)) throw new Error('Trim position must be a finite number.')
+  if (!Number.isFinite(bpm) || bpm <= 0) throw new Error('Tempo must be greater than zero.')
+  const end = clip.startBeat + clip.lengthBeats
+  let start = Math.min(Math.max(0, newStartBeat), end - MIN_CLIP_BEATS)
+  if (clip.kind === 'audio') start = Math.max(start, clip.startBeat - clip.offsetSeconds * bpm / 60)
+  const delta = start - clip.startBeat
+  if (Math.abs(delta) < EPSILON) return clip
+  const lengthBeats = end - start
+  if (clip.kind === 'audio') {
+    const seconds = lengthBeats * 60 / bpm
+    return {
+      ...clip, startBeat: start, lengthBeats,
+      offsetSeconds: Math.max(0, clip.offsetSeconds + delta * 60 / bpm),
+      fadeIn: Math.min(clip.fadeIn, seconds), fadeOut: Math.min(clip.fadeOut, seconds),
+    }
+  }
+  const notes: MidiNote[] = []
+  for (const value of clip.notes) {
+    const shifted = value.start - delta
+    const noteEnd = shifted + value.duration
+    if (noteEnd <= EPSILON) continue
+    notes.push(shifted >= 0 ? { ...value, start: shifted } : { ...value, start: 0, duration: noteEnd })
+  }
+  return { ...clip, startBeat: start, lengthBeats, notes }
+}
+
+/** Moves the right edge. `maxLengthBeats` lets callers clamp audio to the source length. */
+export function trimClipEnd(clip: Clip, newEndBeat: number, maxLengthBeats = Infinity): Clip {
+  if (!Number.isFinite(newEndBeat)) throw new Error('Trim position must be a finite number.')
+  const lengthBeats = Math.max(MIN_CLIP_BEATS, Math.min(maxLengthBeats, newEndBeat - clip.startBeat))
+  return Math.abs(lengthBeats - clip.lengthBeats) < EPSILON ? clip : { ...clip, lengthBeats }
+}
+
+export function moveClipToPlayhead(clip: Clip, beat: number): Clip {
+  if (!Number.isFinite(beat)) throw new Error('Clip position must be a finite number.')
+  const startBeat = Math.max(0, beat)
+  return startBeat === clip.startBeat ? clip : { ...clip, startBeat }
+}
+
+/** Shifts every note by `semitones`; notes that would leave 0–127 are clamped. */
+export function transposeClip(clip: MidiClip, semitones: number): MidiClip {
+  if (!semitones) return clip
+  return { ...clip, notes: clip.notes.map(value => ({ ...value, pitch: Math.max(0, Math.min(127, value.pitch + semitones)) })) }
+}
+
+/**
+ * Joins clips from one track into one clip that keeps the earliest clip's ID and name.
+ * MIDI: spans min start..max end, notes re-based (each source cropped to its window).
+ * Audio: only when every clip reads the same asset with continuous source offsets
+ * (within 1 ms) and no gap between them; otherwise null.
+ */
+export function joinClips(clips: Clip[], bpm: number): Clip | null {
+  if (clips.length < 2 || !clips.every(clip => clip.kind === clips[0].kind)) return null
+  const sorted = [...clips].sort((a, b) => a.startBeat - b.startBeat)
+  const first = sorted[0]
+  const startBeat = first.startBeat
+  const endBeat = Math.max(...sorted.map(clip => clip.startBeat + clip.lengthBeats))
+  if (first.kind === 'midi') {
+    const notes = (sorted as MidiClip[]).flatMap(clip => cropNotesToClip(clip).notes.map(value => ({ ...value, start: value.start + clip.startBeat - startBeat })))
+    return { ...first, startBeat, lengthBeats: endBeat - startBeat, notes }
+  }
+  const audio = sorted as Extract<Clip, { kind: 'audio' }>[]
+  let reach = first.startBeat + first.lengthBeats
+  for (const clip of audio.slice(1)) {
+    if (clip.assetId !== first.assetId) return null
+    if (clip.startBeat > reach + 1e-6) return null
+    const expected = first.offsetSeconds + (clip.startBeat - startBeat) * 60 / bpm
+    if (Math.abs(clip.offsetSeconds - expected) > 1e-3) return null
+    reach = Math.max(reach, clip.startBeat + clip.lengthBeats)
+  }
+  const last = audio.reduce((a, b) => (b.startBeat + b.lengthBeats >= a.startBeat + a.lengthBeats ? b : a))
+  return { ...first, lengthBeats: endBeat - startBeat, fadeOut: last.fadeOut }
+}
+
+/** A deep copy with new track, clip, note and device IDs; audio assets stay shared. */
+export function duplicateTrack(track: Track): Track {
+  return {
+    ...track,
+    id: uid(),
+    name: `${track.name} 복사본`.slice(0, 512),
+    instrumentParams: { ...track.instrumentParams },
+    devices: track.devices.map(device => ({ ...device, id: uid(), params: { ...device.params } })),
+    clips: track.clips.map(clip => duplicateClip(clip, clip.startBeat)),
+  }
+}
+
+/** Grows the project to the bar after the last clip end; never shrinks it. */
+export function fitProjectLength(project: Project): Project {
+  const end = Math.max(0, ...project.tracks.flatMap(track => track.clips.map(clip => clip.startBeat + clip.lengthBeats)))
+  const lengthBeats = Math.max(project.lengthBeats, Math.ceil(end / project.beatsPerBar) * project.beatsPerBar)
+  return lengthBeats === project.lengthBeats ? project : { ...project, lengthBeats }
+}
+
 type RecordValue = Record<string, unknown>
 
 function object(value: unknown, path: string): RecordValue {
@@ -242,10 +370,29 @@ function list(value: unknown, path: string, maxLength: number): unknown[] {
   return value
 }
 
+/** Missing keys take their defaults and unknown keys are dropped. */
+function params(value: unknown, defs: readonly ParamDef[], path: string): Record<string, number> {
+  const source = value === undefined ? {} : object(value, `${path} parameters`)
+  const result: Record<string, number> = {}
+  for (const def of defs) {
+    if (!Object.hasOwn(source, def.id)) {
+      result[def.id] = def.default
+      continue
+    }
+    const parsed = number(source[def.id], `${path} ${def.id}`, def.min, def.max)
+    if (def.options && !def.options.some(option => option.value === parsed)) {
+      throw new Error(`${path} ${def.id} must be one of ${def.options.map(option => option.value).join(', ')}.`)
+    }
+    result[def.id] = parsed
+  }
+  return result
+}
+
 /** Parse known fields into fresh objects; never trust JSON casts or imported prototypes. */
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
-  if (source.schemaVersion !== 1) throw new Error('This project version is not supported. Expected schema version 1.')
+  const version = source.schemaVersion
+  if (version !== 1 && version !== 2) throw new Error('This project version is not supported. Expected schema version 1 or 2.')
   if (source.beatsPerBar !== 4) throw new Error('This version supports projects in 4/4 time.')
   const seen = new Set<string>()
   const id = (value: unknown, path: string): string => {
@@ -266,13 +413,43 @@ export function validateProject(input: unknown): Project {
     const path = `Track ${trackIndex + 1}`
     const track = object(trackInput, path)
     if (track.kind !== 'audio' && track.kind !== 'instrument') throw new Error(`${path} has an invalid track type.`)
-    if (typeof track.instrument !== 'string' || !Object.hasOwn(INSTRUMENT_NAMES, track.instrument)) {
-      throw new Error(`${path} has an unknown instrument.`)
-    }
+    if (!isInstrumentId(track.instrument)) throw new Error(`${path} has an unknown instrument.`)
     const color = text(track.color, `${path} color`, 9)
     if (!/^#[\da-f]{6}$/i.test(color)) throw new Error(`${path} color must be a six-digit hex color.`)
-    const effects = object(track.effects, `${path} effects`)
     const trackId = id(track.id, `${path} ID`)
+    const instrument: InstrumentId = track.instrument
+    const instrumentParams = params(track.instrumentParams, instrumentDef(instrument).params, `${path} instrument`)
+    let devices: Device[]
+    if (version === 1) {
+      const effects = object(track.effects, `${path} effects`)
+      const filter = number(effects.filter, `${path} filter frequency`, 100, 20000)
+      const reverb = number(effects.reverb, `${path} reverb`, 0, 1)
+      const delay = number(effects.delay, `${path} delay`, 0, 1)
+      const migrated = (type: EffectType, values: Record<string, number>): Device => ({
+        id: id(`${trackId}/${type}`, `${path} ${type} device ID`), type, enabled: true,
+        params: params(values, EFFECT_DEFS[type].params, `${path} ${type}`),
+      })
+      devices = []
+      if (filter < 20000) devices.push(migrated('filter', { cutoff: filter, resonance: 0.65, mode: 0 }))
+      if (reverb > 0) devices.push(migrated('reverb', { amount: reverb, size: 0, tone: 20000 }))
+      if (delay > 0) devices.push(migrated('delay', { amount: delay, time: 0.75, feedback: 0.32, tone: 3800 }))
+    } else {
+      devices = list(track.devices, `${path} devices`, 64).map((deviceInput, deviceIndex): Device => {
+        const devicePath = `${path}, device ${deviceIndex + 1}`
+        const device = object(deviceInput, devicePath)
+        const deviceId = id(device.id, `${devicePath} ID`)
+        if (typeof device.type !== 'string' || !Object.hasOwn(EFFECT_DEFS, device.type)) {
+          throw new Error(`${devicePath} has an unknown effect type.`)
+        }
+        const type = device.type as EffectType
+        return {
+          id: deviceId,
+          type,
+          enabled: flag(device.enabled, `${devicePath} enabled`),
+          params: params(device.params, EFFECT_DEFS[type].params, `${devicePath} ${type}`),
+        }
+      })
+    }
     const clips = list(track.clips, `${path} clips`, 100_000).map((clipInput, clipIndex): Clip => {
       clipCount += 1
       if (clipCount > 100_000) throw new Error('The project contains too many clips.')
@@ -286,6 +463,7 @@ export function validateProject(input: unknown): Project {
         startBeat,
         lengthBeats: clipLength,
         gain: number(clip.gain, `${clipPath} gain`, 0, 2),
+        ...(clip.mute === undefined ? {} : { mute: flag(clip.mute, `${clipPath} mute`) }),
       }
       if (clip.kind === 'audio') {
         return {
@@ -322,22 +500,19 @@ export function validateProject(input: unknown): Project {
       id: trackId,
       name: text(track.name, `${path} name`),
       kind: track.kind,
-      instrument: track.instrument as InstrumentId,
+      instrument,
       color,
       volume: number(track.volume, `${path} volume`, 0, 2),
       pan: number(track.pan, `${path} pan`, -1, 1),
       mute: flag(track.mute, `${path} mute`),
       solo: flag(track.solo, `${path} solo`),
       clips,
-      effects: {
-        filter: number(effects.filter, `${path} filter frequency`, 100, 20000),
-        reverb: number(effects.reverb, `${path} reverb`, 0, 1),
-        delay: number(effects.delay, `${path} delay`, 0, 1),
-      },
+      instrumentParams,
+      devices,
     }
   })
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

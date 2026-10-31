@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { createDemoProject, createEmptyProject, createTrack, duplicateClip, splitClip, validateProject } from './project'
+import { EFFECT_DEFS, EFFECT_TYPES } from './devices'
+import {
+  createDemoProject, createDevice, createEmptyProject, createTrack, cropNotesToClip, defaultInstrumentParams, duplicateClip,
+  duplicateTrack, fitProjectLength, joinClips, moveClipToPlayhead, moveDevice, splitClip, transposeClip, trimClipEnd,
+  trimClipStart, validateProject, MIN_CLIP_BEATS,
+} from './project'
 import type { AudioClip, MidiClip } from './types'
 
 function midi(): MidiClip {
@@ -94,7 +99,119 @@ describe('non-destructive clip editing', () => {
   })
 })
 
+function audio(patch: Partial<AudioClip> = {}): AudioClip {
+  return {
+    id: 'take', kind: 'audio', name: 'Take', startBeat: 8, lengthBeats: 8, gain: 1,
+    assetId: 'source-wav', offsetSeconds: 1, fadeIn: 0.1, fadeOut: 0.2, ...patch,
+  }
+}
+const timing = (clip: MidiClip) => clip.notes.map(({ pitch, start, duration }) => ({ pitch, start, duration }))
+
+describe('trim, join and arrangement helpers', () => {
+  it('trims a MIDI clip start by shifting, cropping and dropping notes', () => {
+    const trimmed = trimClipStart(midi(), 9.5, 120)
+    if (trimmed.kind !== 'midi') throw new Error('Expected MIDI clip')
+    expect(trimmed).toMatchObject({ id: 'original-clip', startBeat: 9.5, lengthBeats: 2.5 })
+    expect(timing(trimmed)).toEqual([{ pitch: 64, start: 0, duration: 2.5 }, { pitch: 67, start: 0.5, duration: 0.5 }])
+  })
+
+  it('extends a MIDI clip to the left by moving notes later', () => {
+    const extended = trimClipStart(midi(), 6, 120)
+    if (extended.kind !== 'midi') throw new Error('Expected MIDI clip')
+    expect(extended).toMatchObject({ startBeat: 6, lengthBeats: 6 })
+    expect(extended.notes[0].start).toBe(2)
+  })
+
+  it('trims audio starts by advancing the source offset and never reads before the file', () => {
+    const trimmed = trimClipStart(audio(), 10, 120)
+    if (trimmed.kind !== 'audio') throw new Error('Expected audio clip')
+    expect(trimmed).toMatchObject({ startBeat: 10, lengthBeats: 6, offsetSeconds: 2 })
+    const extended = trimClipStart(audio(), 0, 120)
+    if (extended.kind !== 'audio') throw new Error('Expected audio clip')
+    expect(extended.startBeat).toBe(6)
+    expect(extended.offsetSeconds).toBe(0)
+    expect(extended.lengthBeats).toBe(10)
+  })
+
+  it('keeps a minimum length when trimming past the opposite edge', () => {
+    expect(trimClipStart(midi(), 50, 120)).toMatchObject({ startBeat: 12 - MIN_CLIP_BEATS, lengthBeats: MIN_CLIP_BEATS })
+    expect(trimClipEnd(midi(), 2).lengthBeats).toBe(MIN_CLIP_BEATS)
+    expect(trimClipEnd(midi(), 20, 6).lengthBeats).toBe(6)
+    expect(trimClipEnd(midi(), 12)).toEqual(midi())
+  })
+
+  it('moves to the playhead and clamps negative positions', () => {
+    expect(moveClipToPlayhead(midi(), 3).startBeat).toBe(3)
+    expect(moveClipToPlayhead(midi(), -2).startBeat).toBe(0)
+  })
+
+  it('crops notes to the clip window', () => {
+    const clip = { ...midi(), lengthBeats: 2.25 }
+    expect(timing(cropNotesToClip(clip))).toEqual([
+      { pitch: 60, start: 0, duration: 1 }, { pitch: 64, start: 1, duration: 1.25 }, { pitch: 67, start: 2, duration: 0.25 },
+    ])
+  })
+
+  it('joins MIDI clips into one clip with re-based notes and the first clip identity', () => {
+    const [left, right] = splitClip(midi(), 10, 96)
+    const moved = { ...right, startBeat: 14 }
+    const joined = joinClips([moved, left], 96)
+    if (!joined || joined.kind !== 'midi') throw new Error('Expected MIDI clip')
+    expect(joined).toMatchObject({ id: 'original-clip', startBeat: 8, lengthBeats: 8 })
+    expect(timing(joined)).toEqual([
+      { pitch: 60, start: 0, duration: 1 }, { pitch: 64, start: 1, duration: 1 },
+      { pitch: 64, start: 6, duration: 2 }, { pitch: 67, start: 6, duration: 0.5 },
+    ])
+  })
+
+  it('joins split audio back together but refuses gaps, other assets and broken offsets', () => {
+    const [left, right] = splitClip(audio(), 11, 90)
+    if (left.kind !== 'audio' || right.kind !== 'audio') throw new Error('Expected audio clips')
+    const joined = joinClips([right, left], 90)
+    expect(joined).toMatchObject({ id: 'take', startBeat: 8, lengthBeats: 8, offsetSeconds: 1, fadeIn: 0.1, fadeOut: 0.2 })
+    expect(joinClips([left, { ...right, assetId: 'other' }], 90)).toBeNull()
+    expect(joinClips([left, { ...right, startBeat: 13 }], 90)).toBeNull()
+    expect(joinClips([left, { ...right, offsetSeconds: 0 }], 90)).toBeNull()
+    expect(joinClips([left, midi()], 90)).toBeNull()
+    expect(joinClips([left], 90)).toBeNull()
+  })
+
+  it('transposes with clamping and keeps the source untouched', () => {
+    const source = midi()
+    expect(transposeClip(source, 12).notes.map(n => n.pitch)).toEqual([72, 76, 79])
+    expect(transposeClip(source, 100).notes.every(n => n.pitch === 127)).toBe(true)
+    expect(source.notes[0].pitch).toBe(60)
+  })
+
+  it('duplicates a track with fresh IDs everywhere', () => {
+    const track = createTrack('instrument', 'keys')
+    track.devices = [createDevice('reverb')]
+    track.clips = [midi()]
+    const copy = duplicateTrack(track)
+    const ids = (t: typeof track) => [t.id, ...t.devices.map(d => d.id), ...t.clips.map(c => c.id), ...t.clips.flatMap(c => c.kind === 'midi' ? c.notes.map(n => n.id) : [])]
+    expect(ids(copy).some(id => ids(track).includes(id))).toBe(false)
+    expect(validateProject({ ...createEmptyProject(), tracks: [track, copy] }).tracks).toHaveLength(2)
+  })
+
+  it('grows the project length to the next bar after the last clip', () => {
+    const project = createEmptyProject()
+    const track = createTrack('instrument')
+    track.clips = [{ ...midi(), startBeat: 70, lengthBeats: 3 }]
+    expect(fitProjectLength({ ...project, tracks: [track] }).lengthBeats).toBe(76)
+    expect(fitProjectLength(project)).toBe(project)
+  })
+})
+
 describe('project validation', () => {
+  it('accepts an optional clip mute flag and rejects non-boolean values', () => {
+    const track = createTrack('instrument')
+    track.clips = [{ ...midi(), mute: true }]
+    const project = { ...createEmptyProject(), tracks: [track] }
+    expect(validateProject(project).tracks[0].clips[0].mute).toBe(true)
+    expect(validateProject({ ...project, tracks: [{ ...track, clips: [midi()] }] }).tracks[0].clips[0]).not.toHaveProperty('mute')
+    expect(() => validateProject({ ...project, tracks: [{ ...track, clips: [{ ...midi(), mute: 'yes' }] }] })).toThrow(/mute/)
+  })
+
   it('returns an independent project and discards unrecognized imported fields', () => {
     const original = createDemoProject()
     const imported = validateProject({ ...original, unexpected: { executable: true } })
@@ -105,15 +222,72 @@ describe('project validation', () => {
 
   it('rejects unsupported versions, duplicate IDs, and values that could break the engine', () => {
     const project = createEmptyProject()
-    expect(() => validateProject({ ...project, schemaVersion: 2 })).toThrow(/version/)
+    expect(() => validateProject({ ...project, schemaVersion: 3 })).toThrow(/version/)
     expect(() => validateProject({ ...project, bpm: Infinity })).toThrow(/Tempo/)
     expect(() => validateProject({ ...project, loop: { enabled: true, startBeat: 8, endBeat: 4 } })).toThrow(/Loop end/)
     const track = createTrack('instrument')
     expect(() => validateProject({ ...project, tracks: [track, track] })).toThrow(/duplicates/)
-    expect(() => validateProject({ ...project, tracks: [{ ...track, effects: { ...track.effects, filter: 1 } }] })).toThrow(/filter frequency/)
+    expect(() => validateProject({ ...project, tracks: [{ ...track, devices: [createDevice('filter', { cutoff: 1 })] }] })).toThrow(/cutoff/)
     track.clips = [midi()]
     const clip = track.clips[0] as MidiClip
     clip.notes[0].velocity = 100
     expect(() => validateProject({ ...project, tracks: [track] })).toThrow(/velocity/)
+  })
+
+  it('migrates a version 1 project with fixed effects into an equivalent device chain', () => {
+    const track: Record<string, unknown> = { ...createTrack('instrument', 'pad'), id: 'old-pad' }
+    delete track.instrumentParams
+    delete track.devices
+    track.effects = { filter: 4200, reverb: 0.3, delay: 0 }
+    const migrated = validateProject({ ...createEmptyProject(), schemaVersion: 1, tracks: [track] })
+    expect(migrated.schemaVersion).toBe(2)
+    expect(migrated.tracks[0].instrumentParams).toEqual(defaultInstrumentParams('pad'))
+    expect(migrated.tracks[0].devices).toEqual([
+      { id: 'old-pad/filter', type: 'filter', enabled: true, params: { cutoff: 4200, resonance: 0.65, mode: 0 } },
+      { id: 'old-pad/reverb', type: 'reverb', enabled: true, params: { amount: 0.3, size: 0, tone: 20000 } },
+    ])
+    expect(validateProject(migrated)).toEqual(migrated)
+    expect(() => validateProject({ ...createEmptyProject(), schemaVersion: 1, tracks: [{ ...track, effects: { filter: 1, reverb: 0, delay: 0 } }] }))
+      .toThrow(/filter frequency/)
+  })
+
+  it('rejects unknown effect types and invalid option values', () => {
+    const track = createTrack('instrument')
+    const unknown = { ...createDevice('reverb'), type: 'flanger' }
+    expect(() => validateProject({ ...createEmptyProject(), tracks: [{ ...track, devices: [unknown] }] })).toThrow(/unknown effect type/)
+    expect(() => validateProject({ ...createEmptyProject(), tracks: [{ ...track, devices: [createDevice('delay', { time: 0.3 })] }] })).toThrow(/time/)
+    const device = createDevice('eq')
+    expect(() => validateProject({ ...createEmptyProject(), tracks: [{ ...track, devices: [device, { ...device }] }] })).toThrow(/duplicates/)
+  })
+
+  it('round-trips every effect type with its default parameters', () => {
+    const track = createTrack('instrument', 'bass')
+    track.devices = EFFECT_TYPES.map(type => createDevice(type))
+    const project = { ...createEmptyProject(), tracks: [track] }
+    expect(validateProject(project)).toEqual(project)
+    for (const device of track.devices) expect(Object.keys(device.params).sort()).toEqual(EFFECT_DEFS[device.type].params.map(def => def.id).sort())
+  })
+
+  it('validates instrument parameters, fills missing keys and drops unknown ones', () => {
+    const track = createTrack('instrument', 'keys')
+    const base = createEmptyProject()
+    expect(() => validateProject({ ...base, tracks: [{ ...track, instrumentParams: { ...track.instrumentParams, bell: 5 } }] })).toThrow(/instrument bell/)
+    expect(() => validateProject({ ...base, tracks: [{ ...track, instrumentParams: 'loud' }] })).toThrow(/object/)
+    const parsed = validateProject({ ...base, tracks: [{ ...track, instrumentParams: { tone: 0.5, extra: 1 } }] })
+    expect(parsed.tracks[0].instrumentParams).toEqual({ ...defaultInstrumentParams('keys'), tone: 0.5 })
+  })
+})
+
+describe('device chain editing', () => {
+  it('moves devices left and right, clamped to the chain', () => {
+    const track = createTrack('instrument')
+    track.devices = [createDevice('eq'), createDevice('drive'), createDevice('reverb')]
+    const [eq, drive, reverb] = track.devices
+    expect(moveDevice(track, reverb.id, -1).devices).toEqual([eq, reverb, drive])
+    expect(moveDevice(track, eq.id, 10).devices).toEqual([drive, reverb, eq])
+    expect(moveDevice(track, drive.id, -5).devices).toEqual([drive, eq, reverb])
+    expect(moveDevice(track, eq.id, -1)).toBe(track)
+    expect(moveDevice(track, 'missing', 1)).toBe(track)
+    expect(track.devices).toEqual([eq, drive, reverb])
   })
 })

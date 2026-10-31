@@ -23,7 +23,7 @@ const BUNDLE_FORMAT = 'noct-studio'
 let saveQueue: Promise<void> = Promise.resolve()
 
 function openDatabase(): Promise<IDBDatabase> {
-  if (!globalThis.indexedDB) return Promise.reject(new Error('Local project storage is unavailable in this browser. Export a .noct file to keep your work.'))
+  if (!globalThis.indexedDB) return Promise.reject(new Error('Local project storage is unavailable in this browser. Export a .garak file to keep your work.'))
   return new Promise((resolve, reject) => {
     let settled = false
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION)
@@ -178,7 +178,7 @@ function decodeBase64(value: unknown, name: string): ArrayBuffer {
   return output.buffer
 }
 
-/** Portable .noct JSON: versioned metadata plus unmodified original audio bytes. */
+/** Portable .garak JSON (legacy .noct files share the same format): versioned metadata plus unmodified original audio bytes. */
 export async function exportProjectBundle(project: Project, assets: Map<string, AudioAsset>): Promise<Blob> {
   const snapshot = validateProject(project)
   const originals = assetsFromMap(snapshot, assets)
@@ -205,7 +205,7 @@ export async function importProjectBundle(file: Blob): Promise<StoredProject> {
   try {
     parsed = JSON.parse(await file.text())
   } catch {
-    throw new Error('This file is not a readable .noct project bundle.')
+    throw new Error('This file is not a readable .garak project bundle.')
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('가락이음 프로젝트 파일이 아닙니다.')

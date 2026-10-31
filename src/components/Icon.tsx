@@ -26,6 +26,8 @@ const paths: Record<string, string> = {
   bolt: 'm13 2-9 12h7l-1 8 10-13h-7Z', file: 'M14 2H4v20h16V8ZM14 2v6h6M8 13h8M8 17h5',
   moon: 'M20.8 14a9 9 0 0 1-10.8-10.8A9 9 0 1 0 20.8 14Z',
   metronome: 'm9 3-5 18h16L15 3ZM7 15h10M11 12l8-9',
+  plug: 'M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0ZM12 17v5', power: 'M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0', left: 'm15 5-7 7 7 7',
+  fit: 'M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5M9 12h6', arrowsH: 'M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4', arrowsV: 'M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4',
 }
 export function Icon({ name, size = 18, className = '', style }: {name: string; size?: number; className?: string; style?: CSSProperties}) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className} style={style}><path d={paths[name] ?? paths.wave}/></svg>

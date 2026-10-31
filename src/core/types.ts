@@ -1,4 +1,14 @@
-export type InstrumentId = 'drums' | 'bass' | 'keys' | 'pad' | 'pluck'
+/** A key of INSTRUMENTS in core/instruments.ts. Saved files store it as plain text. */
+export type InstrumentId = string
+export type SampleStatus = 'idle' | 'loading' | 'ready' | 'error'
+export interface SampleAttribution {
+  title: string
+  author: string
+  license: string
+  url?: string
+  licenseUrl?: string
+  changes?: string
+}
 export interface MidiNote {
   id: string
   pitch: number
@@ -12,6 +22,8 @@ export interface ClipBase {
   startBeat: number
   lengthBeats: number
   gain: number
+  /** Muted clips stay on the timeline but are not scheduled. Absent means false. */
+  mute?: boolean
 }
 export interface MidiClip extends ClipBase {
   kind: 'midi'
@@ -25,10 +37,13 @@ export interface AudioClip extends ClipBase {
   fadeOut: number
 }
 export type Clip = MidiClip | AudioClip
-export interface TrackEffects {
-  filter: number
-  reverb: number
-  delay: number
+export type EffectType = 'eq' | 'filter' | 'compressor' | 'drive' | 'delay' | 'reverb'
+/** One insert effect. Track.devices is processed left to right. Disabled devices are bypassed. */
+export interface Device {
+  id: string
+  type: EffectType
+  enabled: boolean
+  params: Record<string, number>
 }
 export interface Track {
   id: string
@@ -41,10 +56,12 @@ export interface Track {
   mute: boolean
   solo: boolean
   clips: Clip[]
-  effects: TrackEffects
+  /** Keys and ranges are defined by instrumentDef(instrument).params in core/instruments.ts. */
+  instrumentParams: Record<string, number>
+  devices: Device[]
 }
 export interface Project {
-  schemaVersion: 1
+  schemaVersion: 2
   id: string
   name: string
   bpm: number
@@ -76,11 +93,17 @@ export interface AudioEngine {
   pause(): void
   stop(): void
   seek(beat: number): void
-  previewNote(instrument: InstrumentId, pitch: number, velocity?: number): Promise<void>
+  /** With trackId, the note uses that track's instrumentParams and plays through its device chain. */
+  previewNote(instrument: InstrumentId, pitch: number, velocity?: number, trackId?: string): Promise<void>
   decodeAsset(blob: Blob, name: string, id?: string): Promise<AudioAsset>
   exportWav(project?: Project): Promise<Blob>
   subscribe(callback: () => void): () => void
   getSnapshot(): TransportSnapshot
+  /** Sample sets are keyed by InstrumentDef.set and load lazily; see audio/samples.ts. */
+  sampleStatus(setId: string): SampleStatus
+  preloadSamples(setId: string): Promise<void>
+  subscribeSamples(callback: () => void): () => void
+  sampleAttribution(setId: string): SampleAttribution | undefined
   getTrackLevel(trackId: string): number
   getMasterLevel(): number
   dispose(): void

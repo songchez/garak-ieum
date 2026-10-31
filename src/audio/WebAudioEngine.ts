@@ -1,10 +1,12 @@
-import type { AudioAsset, AudioEngine, InstrumentId, Project, TransportSnapshot } from '../core/types'
+import { instrumentDef } from '../core/instruments'
+import type { AudioAsset, AudioEngine, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
 import {
-  createGraph, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange,
+  createGraph, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
   trackLayoutKey, updateGraph,
 } from './graph'
 import type { EngineGraph } from './graph'
 import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter, secondsPerBeat } from './math'
+import { SampleLibrary } from './samples'
 
 const SCHEDULER_INTERVAL_MS = 25
 const LOOKAHEAD_SECONDS = 0.12
@@ -21,9 +23,12 @@ const SNAPSHOT_INTERVAL_MS = 40
  */
 export class WebAudioEngine implements AudioEngine {
   readonly kind = 'web-audio' as const
+  /** Decoded sample sets outlive contexts and graphs; see audio/samples.ts. */
+  readonly samples = new SampleLibrary()
   private project: Project | null = null
   private assets = new Map<string, AudioAsset>()
   private context: AudioContext | null = null
+  private decodeContext: OfflineAudioContext | null = null
   private graph: EngineGraph | null = null
   private retiredGraphs = new Map<EngineGraph, ReturnType<typeof setTimeout>>()
   private scheduler: ReturnType<typeof setInterval> | null = null
@@ -44,7 +49,39 @@ export class WebAudioEngine implements AudioEngine {
   private snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: 0 }
 
   constructor(project?: Project) {
+    // Notes of a set that arrived mid-playback were skipped; rescheduling from the
+    // current beat picks them up at the cost of one small restart.
+    this.samples.subscribe((_, status) => {
+      if (status === 'ready' && this.playing) this.restartAt(this.currentBeat())
+    })
     if (project) this.setProject(project)
+  }
+
+  readonly sampleStatus = (setId: string): SampleStatus => this.samples.status(setId)
+
+  readonly subscribeSamples = (callback: () => void): (() => void) => this.samples.subscribe(callback)
+
+  readonly sampleAttribution = (setId: string): SampleAttribution | undefined => this.samples.get(setId)?.set.attribution
+
+  /** Decoding never opens an audio device: without a running context a tiny offline one decodes. */
+  async preloadSamples(setId: string): Promise<void> {
+    if (this.samples.status(setId) === 'ready') return
+    const context = this.context && this.context.state !== 'closed' ? this.context : (this.decodeContext ??= new OfflineAudioContext(1, 1, 48000))
+    await this.samples.load(setId, context)
+  }
+
+  private preloadProjectSamples(project: Project): void {
+    for (const track of project.tracks) {
+      const def = instrumentDef(track.instrument)
+      if (track.kind === 'instrument' && def.set && this.samples.status(def.set) === 'idle') void this.preloadSamples(def.set).catch(() => undefined)
+    }
+  }
+
+  private sampleSets(project: Project): string[] {
+    return [...new Set(project.tracks.flatMap(track => {
+      const def = instrumentDef(track.instrument)
+      return track.kind === 'instrument' && def.set ? [def.set] : []
+    }))]
   }
 
   readonly subscribe = (callback: () => void): (() => void) => {
@@ -70,8 +107,9 @@ export class WebAudioEngine implements AudioEngine {
     this.project = project
     this.musicalKey = nextKey
     this.position = clamp(beat, 0, project.lengthBeats)
+    this.preloadProjectSamples(project)
     if (this.context) {
-      if (this.playing && changedArrangement) this.restartAt(this.position)
+      if (this.playing && (changedArrangement || changedLayout)) this.restartAt(this.position)
       else if (!this.graph || changedLayout) this.replaceGraph()
       else updateGraph(this.graph, project)
     }
@@ -131,12 +169,23 @@ export class WebAudioEngine implements AudioEngine {
     this.publishSnapshot()
   }
 
-  async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8): Promise<void> {
+  async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8, trackId?: string): Promise<void> {
     const lifecycle = this.lifecycle
+    const def = instrumentDef(instrument)
     await this.resume()
+    if (def.set) await this.preloadSamples(def.set)
     if (lifecycle !== this.lifecycle || !this.context || !this.graph) return
-    const duration = instrument === 'pad' ? 0.65 : 0.3
-    scheduleInstrument(this.graph, this.graph.previewInput, instrument, pitch, this.context.currentTime + 0.006, duration, velocity, duration + 0.8)
+    const tracks = this.project?.tracks ?? []
+    const track = trackId === undefined ? undefined : tracks.find(item => item.id === trackId)
+    const anySolo = tracks.some(item => item.solo)
+    const audible = track !== undefined && !track.mute && (!anySolo || track.solo)
+    const channel = audible ? this.graph.tracks.get(track.id) : undefined
+    const params = track?.instrument === instrument ? track.instrumentParams : undefined
+    const duration = instrument === 'pad' || def.kind === 'sampled' ? 0.65 : 0.3
+    const destination = channel?.input ?? this.graph.previewInput
+    const loaded = def.set ? this.samples.get(def.set) : undefined
+    if (loaded) scheduleSampled(this.graph, destination, loaded, def.isKit, pitch, this.context.currentTime + 0.006, duration, velocity, duration + 0.8, params, channel?.chokes)
+    else scheduleInstrument(this.graph, destination, instrument, pitch, this.context.currentTime + 0.006, duration, velocity, duration + 0.8, params)
   }
 
   async decodeAsset(blob: Blob, name: string, id?: string): Promise<AudioAsset> {
@@ -170,6 +219,11 @@ export class WebAudioEngine implements AudioEngine {
 
   /** Exports the entire arrangement once; the audition loop is deliberately ignored. */
   async exportWav(project: Project = this.requireProject()): Promise<Blob> {
+    for (const setId of this.sampleSets(project)) {
+      try { await this.preloadSamples(setId) } catch (error) {
+        throw new Error(`샘플 악기 "${setId}"를 불러오지 못했습니다: ${error instanceof Error ? error.message : ''}`)
+      }
+    }
     const sampleRate = this.context?.sampleRate ?? 48000
     const duration = project.lengthBeats * secondsPerBeat(project.bpm) + renderTailSeconds(project)
     const frames = Math.ceil(duration * sampleRate)
@@ -180,7 +234,7 @@ export class WebAudioEngine implements AudioEngine {
     const offline = new OfflineAudioContext(2, frames, sampleRate)
     const graph = createGraph(offline, project)
     try {
-      scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false)
+      scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
       const rendered = await offline.startRendering()
       const bytes = encodePcm16Wav([rendered.getChannelData(0), rendered.getChannelData(1)], rendered.sampleRate)
       return new Blob([bytes], { type: 'audio/wav' })
@@ -304,7 +358,7 @@ export class WebAudioEngine implements AudioEngine {
       const segmentSeconds = Math.min(horizon - this.cursorTime, remainingSeconds)
       if (segmentSeconds <= 0.00000001) break
       const endBeat = this.cursorBeat + segmentSeconds / beatSeconds
-      scheduleRange(this.graph, project, this.assets, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true)
+      scheduleRange(this.graph, project, this.assets, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true, this.samples)
       this.cursorTime += segmentSeconds
       this.cursorBeat = endBeat
       this.chaseCursor = false

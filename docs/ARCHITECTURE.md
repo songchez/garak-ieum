@@ -10,7 +10,7 @@ React는 프로젝트 편집과 화면을 담당합니다. `WebAudioEngine`은 R
 flowchart TD
   UI["React 편집 화면"] --> P["Project 편집 상태"]
   P --> E["WebAudioEngine"]
-  P --> S["IndexedDB / .noct"]
+  P --> S["IndexedDB / .garak"]
   A["원본 오디오 Blob"] --> S
   A --> B["디코딩한 AudioBuffer"]
   B --> E
@@ -28,7 +28,10 @@ flowchart TD
 | [`src/App.tsx`](../src/App.tsx) | 프로젝트 편집 상태·Undo/Redo, 선택 상태, 자동 저장 연결, 가져오기·내보내기, 마이크 녹음 UI, 전역 단축키 |
 | [`src/core/types.ts`](../src/core/types.ts) | Project·Track·Clip·MidiNote·AudioAsset 및 AudioEngine 계약 |
 | [`src/core/project.ts`](../src/core/project.ts) | 새 프로젝트·트랙, 오리지널 데모, 클립 복제·분할, 외부 프로젝트 유효성 검사 |
-| [`src/core/storage.ts`](../src/core/storage.ts) | IndexedDB 트랜잭션, 저장 순서 보장, 원본 Blob 검증, `.noct` 가져오기·내보내기 |
+| [`src/core/instruments.ts`](../src/core/instruments.ts) | 악기 레지스트리: 합성·샘플 악기의 ID, 이름, 분류, 색, 조절기 정의, 샘플 세트 ID, 출처 표기 |
+| [`src/core/devices.ts`](../src/core/devices.ts) | 악기·이펙트 조절기 정의(범위·단위·기본값)와 값 변환 |
+| [`src/audio/samples.ts`](../src/audio/samples.ts) | 샘플 세트 로더: 매니페스트 해석, 포맷 선택, 디코딩 캐시, 존 선택, 로딩 상태 알림 |
+| [`src/core/storage.ts`](../src/core/storage.ts) | IndexedDB 트랜잭션, 저장 순서 보장, 원본 Blob 검증, `.garak` 가져오기·내보내기 |
 | [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 오디오 컨텍스트 수명 주기, 재생 위치·루프·예약, 파일 디코딩, 오프라인 출력, UI에 제공하는 스냅숏과 레벨 |
 | [`src/audio/graph.ts`](../src/audio/graph.ts) | 기본 악기, 트랙·마스터 오디오 연결, 효과, 음성 수명 주기, 범위별 음표·오디오 클립 예약 |
 | [`src/audio/math.ts`](../src/audio/math.ts) | 박자·시간 변환, 루프 위치, 페이드 계산, 16-bit PCM WAV 인코딩 |
@@ -58,7 +61,7 @@ flowchart TD
 
 오디오 클립 분할은 원본 파일을 수정하지 않고 새 클립의 시작 위치·길이·원본 오프셋을 계산합니다. MIDI 클립 분할은 클립 경계를 가로지르는 노트를 나누고 오른쪽 노트의 시작 위치를 새 클립 기준으로 다시 계산합니다.
 
-Undo/Redo는 `App`의 프로젝트 스냅숏 이력으로 처리합니다. 일반 편집 시 과거 스냅숏을 최대 50개 수준으로 유지하고, 같은 조절기의 연속 입력은 짧은 시간 창에서 합칩니다. 피아노롤과 타임라인의 포인터 이동은 임시 화면 상태로 표시한 뒤 드래그 종료 시 프로젝트에 반영합니다. 이력은 현재 앱 세션의 메모리에 있으며 `.noct`나 IndexedDB에 함께 저장하지 않습니다.
+Undo/Redo는 `App`의 프로젝트 스냅숏 이력으로 처리합니다. 일반 편집 시 과거 스냅숏을 최대 50개 수준으로 유지하고, 같은 조절기의 연속 입력은 짧은 시간 창에서 합칩니다. 피아노롤과 타임라인의 포인터 이동은 임시 화면 상태로 표시한 뒤 드래그 종료 시 프로젝트에 반영합니다. 이력은 현재 앱 세션의 메모리에 있으며 `.garak`이나 IndexedDB에 함께 저장하지 않습니다.
 
 ## 4. 오디오 엔진의 실제 범위
 
@@ -89,7 +92,17 @@ flowchart TD
   M --> O["마스터 미터 · 출력"]
 ```
 
-마스터에는 기본 `DynamicsCompressorNode`가 있습니다. 이를 별도로 검증된 마스터링 리미터로 간주하지 않습니다. 내장 악기와 리버브에 쓰는 노이즈·임펄스는 코드에서 생성하며, 외부 상용 음원 라이브러리를 필요로 하지 않습니다.
+마스터에는 기본 `DynamicsCompressorNode`가 있습니다. 이를 별도로 검증된 마스터링 리미터로 간주하지 않습니다. 합성 악기와 리버브에 쓰는 노이즈·임펄스는 코드에서 생성하며, 외부 상용 음원 라이브러리를 필요로 하지 않습니다.
+
+### 샘플 악기
+
+악기는 `src/core/instruments.ts`의 레지스트리 `INSTRUMENTS`에 정의합니다. 각 항목은 고정 ID(저장 파일이 참조), 표시 이름, 분류(신스·피아노·건반·드럼·국악), 합성/샘플 종류, 킷 여부, 조절기 정의를 가집니다. `Track.instrument`는 이 ID 문자열이며, `validateProject`는 레지스트리에 없는 ID를 거부합니다. 합성 악기(`drums`, `bass`, `keys`, `pad`, `pluck`, `rhodes`)는 `graph.ts`의 `scheduleInstrument`가 오실레이터로 만들고, 샘플 악기는 `set` 필드가 가리키는 `public/samples/<set>/` 폴더의 음원을 씁니다. 매니페스트 규격은 [`SAMPLES.md`](SAMPLES.md)를 따릅니다.
+
+`src/audio/samples.ts`의 `SampleLibrary`는 엔진당 하나이며 `WebAudioEngine.samples`로 접근합니다. `load(setId, context)`는 `manifest.json`을 읽고, 브라우저가 지원하는 포맷(Opus/webm 우선, 아니면 AAC/m4a)을 고른 뒤 모든 존 파일을 동시 6개 이하로 받아 `decodeAudioData`로 디코딩합니다. 세트별로 진행 중인 Promise를 캐시하므로 동시 요청은 한 번만 내려받고, 디코딩된 `AudioBuffer`는 컨텍스트에 묶이지 않아 그래프 재생성과 `OfflineAudioContext` 내보내기에서 그대로 재사용합니다. m4a는 AAC 인코더 지연만큼(44 ms) 재생 시작 위치를 건너뜁니다.
+
+재생 중 아직 준비되지 않은 세트의 음표는 건너뛰고 로드를 시작합니다. 세트가 준비되면 엔진이 현재 박에서 다시 예약하므로 짧은 끊김이 한 번 생길 수 있습니다. 트랙 추가나 악기 변경으로 새 샘플 악기가 프로젝트에 들어오면 `setProject`에서 미리 로드를 시작하고, WAV 내보내기는 프로젝트가 쓰는 모든 세트를 기다린 뒤 렌더링합니다. UI는 `AudioEngine.sampleStatus`·`subscribeSamples`로 로딩·오류 상태를 트랙 헤더에 표시하고, `sampleAttribution`으로 로드된 세트의 출처를 디바이스 카드에 보여 줍니다.
+
+존 선택(`pickZone`)은 음높이 범위 `[lo, hi]`와 세기 레이어 `[vlo, vhi)`로 고르며 가장 센 레이어는 `vhi`를 포함합니다. 킷은 `root`가 음표 번호와 같은 존만 씁니다. 음높이 악기는 `playbackRate`로 `root`와의 차이를 보정하고 어택·릴리즈 포락선과 루프 구간을 적용하며, 킷은 샘플을 끝까지 재생하되 `decay` 조절기로 줄일 수 있고 같은 `choke` 그룹의 이전 소리를 끊습니다.
 
 ### UI 갱신
 
@@ -111,7 +124,7 @@ IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저�
 
 프로젝트를 가져올 때 버전·수치 범위·중복 식별자·오디오 참조를 검증합니다. 참조하는 원본 파일이 없으면 완료된 저장이나 완전한 복원으로 처리하지 않습니다.
 
-`.noct`의 최상위 구조는 다음과 같습니다.
+`.garak`의 최상위 구조는 다음과 같습니다. 이전 `.garak` 파일과 형식이 같으며, 호환성을 위해 `format` 값은 `noct-studio`를 유지합니다.
 
 ```json
 {
@@ -147,8 +160,10 @@ IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저�
 | 테스트 | 다루는 범위 |
 | --- | --- |
 | `src/core/project.test.ts` | 오리지널 데모, 비파괴 클립 편집, 가져온 프로젝트 검증 |
-| `src/core/storage.test.ts` | `.noct` 원본 바이트·참조 왕복, 손상·누락·중복 검출, 저장소 사용 불가 처리 |
+| `src/core/storage.test.ts` | `.garak` 원본 바이트·참조 왕복, 손상·누락·중복 검출, 저장소 사용 불가 처리 |
 | `src/audio/math.test.ts` | 루프·재생 위치, 페이드, WAV 헤더·채널·PCM 값 |
+| `src/core/instruments.test.ts` | 악기 레지스트리 일관성, 알 수 없는 ID 처리, 샘플 악기 트랙 생성·검증 |
+| `src/audio/samples.test.ts` | 존·레이어 선택, 매니페스트 해석, 로더의 요청·캐시·상태·오류 처리(네트워크와 디코딩은 모의) |
 
 이 테스트들은 실제 브라우저의 오디오 장치, 마이크 지연, 네이티브 플러그인 호환성, 장시간 재생 성능을 측정하지 않습니다. 실제 브라우저에서의 편집·저장·새로고침·다시 재생·녹음·내보내기는 별도 검증 항목입니다.
 
