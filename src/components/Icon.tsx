@@ -28,7 +28,11 @@ const paths: Record<string, string> = {
   metronome: 'm9 3-5 18h16L15 3ZM7 15h10M11 12l8-9',
   plug: 'M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0ZM12 17v5', power: 'M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0', left: 'm15 5-7 7 7 7',
   fit: 'M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5M9 12h6', arrowsH: 'M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4', arrowsV: 'M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4',
+  lock: 'M5 11h14v10H5ZM8 11V7a4 4 0 0 1 8 0v4', snowflake: 'M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9 4.9 19.1M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3',
+  'eye-off': 'm3 3 18 18M10.6 6.3A9.5 9.5 0 0 1 12 6c5.5 0 9 6 9 6a17 17 0 0 1-3.3 3.6M6.7 6.7A17 17 0 0 0 3 12s3.5 6 9 6a9 9 0 0 0 3.3-.7M9.9 9.9a3 3 0 0 0 4.2 4.2',
+  dot: 'M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
 }
+paths.monitor = paths.headphones
 export function Icon({ name, size = 18, className = '', style }: {name: string; size?: number; className?: string; style?: CSSProperties}) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className} style={style}><path d={paths[name] ?? paths.wave}/></svg>
 }

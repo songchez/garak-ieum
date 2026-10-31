@@ -1,5 +1,7 @@
 import { EFFECT_DEFS, SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, paramValue } from '../core/devices'
 import { instrumentDef } from '../core/instruments'
+import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../core/playback'
+import type { AudioWindow, PlaybackNote } from '../core/playback'
 import type { AudioAsset, AudioClip, EffectType, InstrumentId, Project, Track } from '../core/types'
 import { clamp, clipEnvelope, secondsPerBeat } from './math'
 import { pickZone, type LoadedSet, type SampleLibrary } from './samples'
@@ -40,6 +42,8 @@ export interface EngineGraph {
   meter: AnalyserNode
   meterData: Float32Array<ArrayBuffer>
   nodes: AudioNode[]
+  /** Live input currently wired into track inputs; see connectMonitor. */
+  monitor?: { source: MediaStreamAudioSourceNode; trackIds: string[] }
 }
 
 const noiseBuffers = new WeakMap<BaseAudioContext, AudioBuffer>()
@@ -274,13 +278,12 @@ const DEVICE_FACTORIES: Record<EffectType, (context: BaseAudioContext, remember:
 
 export function updateGraph(graph: EngineGraph, project: Project, smooth = true): void {
   const now = graph.context.currentTime
-  const anySolo = project.tracks.some(track => track.solo)
+  const audible = audibleTrackIds(project.tracks)
   setParameter(graph.masterVolume.gain, clamp(project.masterVolume, 0, 2), now, smooth)
   for (const track of project.tracks) {
     const channel = graph.tracks.get(track.id)
     if (!channel) continue
-    const audible = !track.mute && (!anySolo || track.solo)
-    setParameter(channel.fader.gain, audible ? clamp(track.volume, 0, 2) : 0, now, smooth)
+    setParameter(channel.fader.gain, audible.has(track.id) ? clamp(track.volume, 0, 2) : 0, now, smooth)
     setParameter(channel.panner.pan, clamp(track.pan, -1, 1), now, smooth)
     for (const device of track.devices) {
       if (device.enabled) channel.devices.get(device.id)?.update(device.params, project.bpm, now, smooth)
@@ -291,6 +294,7 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true)
 export function renderTailSeconds(project: Project): number {
   let tail = 0.85
   for (const track of project.tracks) {
+    if (!isTrackEnabled(track)) continue
     const def = instrumentDef(track.instrument)
     if (track.kind === 'instrument' && !def.isKit) {
       tail = Math.max(tail, clamp(paramValue(def.params, track.instrumentParams, 'release'), 0, 30) + 0.2)
@@ -363,7 +367,27 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
   return graph
 }
 
+/** Wires one live input into the given tracks' inputs, replacing any earlier wiring on this graph. */
+export function connectMonitor(graph: EngineGraph, source: MediaStreamAudioSourceNode, trackIds: readonly string[]): void {
+  disconnectMonitor(graph)
+  const targets = trackIds.filter(id => graph.tracks.has(id))
+  for (const id of targets) source.connect(graph.tracks.get(id)!.input)
+  if (targets.length) graph.monitor = { source, trackIds: targets }
+}
+
+export function disconnectMonitor(graph: EngineGraph): void {
+  const monitor = graph.monitor
+  if (!monitor) return
+  graph.monitor = undefined
+  for (const id of monitor.trackIds) {
+    const channel = graph.tracks.get(id)
+    if (!channel) continue
+    try { monitor.source.disconnect(channel.input) } catch { /* Already detached. */ }
+  }
+}
+
 export function disposeGraph(graph: EngineGraph): void {
+  disconnectMonitor(graph)
   for (const voice of [...graph.voices]) {
     voice.stop(graph.context.currentTime)
     voice.disconnect()
@@ -683,12 +707,12 @@ export function scheduleSampled(
   }
 }
 
-function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: AudioClip, asset: AudioAsset, beat: number, when: number, boundary: number, beatSeconds: number): void {
+/** localSeconds is the position inside the clip content; maxSeconds caps playback at the window or range end. */
+function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: AudioClip, asset: AudioAsset, localSeconds: number, when: number, maxSeconds: number, beatSeconds: number): void {
   const context = graph.context
-  const localSeconds = Math.max(0, (beat - clip.startBeat) * beatSeconds)
   const offset = Math.max(0, clip.offsetSeconds) + localSeconds
   const clipDuration = Math.min(clip.lengthBeats * beatSeconds, asset.buffer.duration - Math.max(0, clip.offsetSeconds))
-  const duration = Math.min(clipDuration - localSeconds, (boundary - beat) * beatSeconds)
+  const duration = Math.min(clipDuration - localSeconds, maxSeconds)
   if (duration <= 0.001 || offset >= asset.buffer.duration) return
   const source = context.createBufferSource()
   source.buffer = asset.buffer
@@ -740,7 +764,7 @@ export function scheduleRange(
   const startsInRange = (beat: number): boolean => beat >= startBeat - epsilon && beat < endBeat - epsilon
   for (const track of project.tracks) {
     const channel = graph.tracks.get(track.id)
-    if (!channel) continue
+    if (!channel || !isTrackEnabled(track)) continue
     const def = instrumentDef(track.instrument)
     let loaded: LoadedSet | undefined
     if (track.kind === 'instrument' && def.kind === 'sampled' && def.set) {
@@ -751,34 +775,49 @@ export function scheduleRange(
         continue
       }
     }
-    for (const clip of track.clips) {
-      if (clip.mute) continue
-      const clipEnd = Math.min(clip.startBeat + clip.lengthBeats, boundary, project.lengthBeats)
-      if (clipEnd <= startBeat || clip.startBeat >= endBeat) continue
-      if (clip.kind === 'audio') {
-        if (!startsInRange(clip.startBeat) && !(chase && clip.startBeat < startBeat && clipEnd > startBeat)) continue
-        const asset = assets.get(clip.assetId)
-        if (!asset) continue
-        const [beat, time] = adjustStart(Math.max(clip.startBeat, startBeat))
-        if (beat < clipEnd) scheduleAudioClip(graph, channel.input, clip, asset, beat, time, clipEnd, beatSeconds)
+    const events = trackEvents(track, project.lengthBeats)
+    for (const window of events.windows) {
+      const windowEnd = Math.min(window.end, boundary, project.lengthBeats)
+      if (windowEnd <= startBeat || window.start >= endBeat) continue
+      if (!startsInRange(window.start) && !(chase && window.start < startBeat && windowEnd > startBeat)) continue
+      const asset = assets.get(window.clip.assetId)
+      if (!asset) continue
+      const [beat, time] = adjustStart(Math.max(window.start, startBeat))
+      if (beat >= windowEnd) continue
+      const localSeconds = (beat - window.start + window.sourceOffsetBeats) * beatSeconds
+      scheduleAudioClip(graph, channel.input, window.clip, asset, localSeconds, time, (windowEnd - beat) * beatSeconds, beatSeconds)
+    }
+    for (const note of events.notes) {
+      const noteEnd = Math.min(note.end, boundary, project.lengthBeats)
+      if (noteEnd <= startBeat || note.start >= endBeat) continue
+      if (!startsInRange(note.start) && !(chase && !def.isKit && note.start < startBeat && noteEnd > startBeat)) continue
+      const [beat, time] = adjustStart(Math.max(note.start, startBeat))
+      if (beat >= noteEnd) continue
+      const available = (Math.min(note.limit, boundary, project.lengthBeats) - beat) * beatSeconds
+      if (loaded) {
+        scheduleSampled(graph, channel.input, loaded, def.isKit, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams, channel.chokes)
       } else {
-        for (const note of clip.notes) {
-          const noteStart = clip.startBeat + Math.max(0, note.start)
-          const noteEnd = Math.min(noteStart + Math.max(0, note.duration), clipEnd)
-          if (noteEnd <= startBeat || noteStart >= clipEnd) continue
-          if (!startsInRange(noteStart) && !(chase && !def.isKit && noteStart < startBeat && noteEnd > startBeat)) continue
-          const [beat, time] = adjustStart(Math.max(noteStart, startBeat))
-          if (beat >= noteEnd) continue
-          const velocity = clamp(note.velocity, 0, 1) * clamp(clip.gain, 0, 2)
-          if (loaded) {
-            scheduleSampled(graph, channel.input, loaded, def.isKit, note.pitch, time, (noteEnd - beat) * beatSeconds, velocity, (clipEnd - beat) * beatSeconds, track.instrumentParams, channel.chokes)
-          } else {
-            scheduleInstrument(graph, channel.input, track.instrument, note.pitch, time, (noteEnd - beat) * beatSeconds, velocity, (clipEnd - beat) * beatSeconds, track.instrumentParams)
-          }
-        }
+        scheduleInstrument(graph, channel.input, track.instrument, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams)
       }
     }
   }
+}
+
+interface TrackEvents {
+  projectEnd: number
+  notes: PlaybackNote[]
+  windows: AudioWindow[]
+}
+
+// Track objects are immutable snapshots, so the expanded events can be reused across scheduler ticks.
+const eventCache = new WeakMap<Track, TrackEvents>()
+
+function trackEvents(track: Track, projectEnd: number): TrackEvents {
+  const cached = eventCache.get(track)
+  if (cached && cached.projectEnd === projectEnd) return cached
+  const events: TrackEvents = { projectEnd, notes: midiEvents(track, projectEnd), windows: audioWindows(track, projectEnd) }
+  eventCache.set(track, events)
+  return events
 }
 
 export function rmsLevel(meter: AnalyserNode, values: Float32Array<ArrayBuffer>): number {

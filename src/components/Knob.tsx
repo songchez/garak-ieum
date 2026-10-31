@@ -23,6 +23,7 @@ export function Knob({def,value,onChange,color='var(--seokganju-60)',size=38}:{d
   function startDrag(e:React.PointerEvent<HTMLDivElement>){
     if(e.button!==0)return
     e.preventDefault();cancelDrag.current?.()
+    if(e.altKey){set(latest.current.def.default);return}
     const el=e.currentTarget,pointerId=e.pointerId,startValue=latest.current.value
     el.focus({preventScroll:true})
     let normalized=toNormalized(latest.current.def,startValue),lastY=e.clientY,active=true
@@ -65,7 +66,7 @@ export function Knob({def,value,onChange,color='var(--seokganju-60)',size=38}:{d
   const origin=def.min<0&&def.max>0&&!def.options?angleOf(toNormalized(def,0)):-SWEEP
   const [px,py]=point(c,r-3,angle),[ix,iy]=point(c,6,angle)
   const text=formatParam(def,value)
-  return <div ref={ref} className="knob" role="slider" tabIndex={0} aria-label={def.label} aria-valuemin={def.min} aria-valuemax={def.max} aria-valuenow={value} aria-valuetext={text} title={`${def.label} · ${text} (더블 클릭: 기본값)`} onPointerDown={startDrag} onKeyDown={keyDown} onDoubleClick={()=>set(def.default)} style={{'--knob-size':`${size}px`} as React.CSSProperties}>
+  return <div ref={ref} className="knob" role="slider" tabIndex={0} aria-label={def.label} aria-valuemin={def.min} aria-valuemax={def.max} aria-valuenow={value} aria-valuetext={text} title={`${def.label} · ${text} (더블 클릭·⌥클릭: 기본값)`} onPointerDown={startDrag} onKeyDown={keyDown} onDoubleClick={()=>set(def.default)} style={{'--knob-size':`${size}px`} as React.CSSProperties}>
     <svg width={size} height={size} viewBox="0 0 40 40" aria-hidden="true"><circle cx={c} cy={c} r={11} className="knob-cap"/><path d={arc(c,r,-SWEEP,SWEEP)} className="knob-track"/><path d={arc(c,r,origin,angle)} className="knob-value" style={{stroke:color}}/><line x1={ix} y1={iy} x2={px} y2={py} className="knob-pointer"/></svg>
     <span className="knob-readout">{text}</span>
     <span className="knob-label">{def.label}</span>

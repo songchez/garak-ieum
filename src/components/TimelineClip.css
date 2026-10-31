@@ -1,0 +1,45 @@
+/* Region display (Logic §5 / LOGIC_GAP §1.11). Selectors are prefixed with .track-lane to outrank the legacy .timeline-clip rules in styles.css. */
+.track-lane .timeline-clip{--clip-gray:#6b6b6b;background:color-mix(in srgb,var(--clip-color) 26%,var(--ink-12));border:1px solid color-mix(in srgb,var(--clip-color) 42%,var(--ink-12));color:var(--clip-color)}
+.track-lane .timeline-clip .clip-title{position:relative;gap:4px}
+.track-lane .timeline-clip .clip-title>span:first-of-type{overflow:hidden;text-overflow:ellipsis;padding-right:12px}
+.track-lane .timeline-clip .clip-preview{color:var(--clip-color)}
+
+/* Selected = lighter fill, dark text (V-03) */
+.track-lane .timeline-clip.clip-selected{background:color-mix(in srgb,var(--clip-color) 80%,#fff);border-color:color-mix(in srgb,var(--clip-color) 60%,#fff);box-shadow:0 0 0 1px color-mix(in srgb,var(--clip-color) 40%,transparent),0 1px 3px #0005;color:#1d1b17}
+.track-lane .timeline-clip.clip-selected .clip-title{color:#1d1b17;font-weight:600;border-bottom-color:#0002}
+.track-lane .timeline-clip.clip-selected .clip-preview{color:#1d1b17;opacity:.75}
+
+/* Muted region = gray body and name, dot before the name (V-04) */
+.track-lane .timeline-clip.clip-muted{opacity:1;filter:none;background:color-mix(in srgb,var(--clip-gray) 30%,var(--ink-12));border-color:color-mix(in srgb,var(--clip-gray) 45%,var(--ink-12));color:#8d8d8d}
+.track-lane .timeline-clip.clip-muted .clip-title,.track-lane .timeline-clip.clip-muted .clip-preview{color:#8d8d8d}
+.track-lane .timeline-clip.clip-muted .clip-title>span:first-of-type{text-decoration:none}
+.track-lane .timeline-clip.clip-muted.clip-selected{background:color-mix(in srgb,var(--clip-gray) 75%,#fff);border-color:#bdbdbd;color:#1d1b17}
+.track-lane .timeline-clip.clip-muted.clip-selected .clip-title,.track-lane .timeline-clip.clip-muted.clip-selected .clip-preview{color:#1d1b17}
+.clip-mute-dot{flex-shrink:0;width:4px;height:4px;border-radius:50%;background:currentColor}
+
+/* Track silenced by mute/solo = gray body, name keeps the track color; track off = everything gray (V-05) */
+.track-silent .track-lane .timeline-clip:not(.clip-selected){background:color-mix(in srgb,var(--clip-gray) 28%,var(--ink-12));border-color:color-mix(in srgb,var(--clip-gray) 40%,var(--ink-12))}
+.track-silent .track-lane .timeline-clip:not(.clip-selected) .clip-preview{color:#8d8d8d}
+.track-off .track-lane .timeline-clip:not(.clip-selected){background:color-mix(in srgb,var(--clip-gray) 24%,var(--ink-12));border-color:color-mix(in srgb,var(--clip-gray) 36%,var(--ink-12));color:#7f7f7f}
+.track-off .track-lane .timeline-clip:not(.clip-selected) .clip-title,.track-off .track-lane .timeline-clip:not(.clip-selected) .clip-preview{color:#7f7f7f}
+.track-hidden .track-lane .timeline-clip,.track-hidden .track-lane .clip-loop-ghost{opacity:.55}
+
+/* Loop pointer zone (top-right 10px) and shaded repeats with notches (V-06) */
+.clip-loop-handle{position:absolute;right:0;top:0;width:12px;height:12px;cursor:e-resize;display:grid;place-items:center;color:currentColor;opacity:.75;z-index:2;border-bottom-left-radius:3px}
+.timeline-clip:hover .clip-loop-handle{background:color-mix(in srgb,currentColor 18%,transparent);opacity:1}
+.timeline-clip.clip-looped .clip-loop-handle{opacity:1}
+.timeline-clip.clip-looped::after{content:"";position:absolute;right:-1px;top:0;bottom:0;width:3px;background:repeating-linear-gradient(to bottom,transparent 0 4px,color-mix(in srgb,var(--clip-color) 60%,transparent) 4px 6px)}
+.clip-loop-ghost{position:absolute;top:7px;height:calc(var(--row-h) - 15px);border-radius:4px;box-sizing:border-box;background:color-mix(in srgb,var(--clip-color) 12%,var(--ink-12));border:1px dashed color-mix(in srgb,var(--clip-color) 38%,transparent);color:var(--clip-color);cursor:grab;user-select:none;touch-action:none;opacity:.8;background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--clip-color) 7%,transparent) 6px 7px)}
+.clip-loop-ghost:hover{opacity:1}
+.clip-loop-ghost.clip-selected{background:color-mix(in srgb,var(--clip-color) 40%,var(--ink-12));border-color:color-mix(in srgb,var(--clip-color) 70%,transparent)}
+.clip-loop-ghost.clip-muted{--clip-color:#8d8d8d}
+.clip-loop-notch{position:absolute;left:-1px;width:7px;height:5px;background:var(--ink-11)}
+.clip-loop-notch.top{top:-1px;clip-path:polygon(0 0,100% 0,50% 100%)}
+.clip-loop-notch.bottom{bottom:-1px;clip-path:polygon(50% 0,100% 100%,0 100%)}
+.row-compact .clip-loop-ghost{top:4px;height:calc(var(--row-h) - 9px)}
+.clip-gesture .clip-loop-ghost{pointer-events:none}
+
+/* Fade triangles over the waveform (V-08) */
+.clip-fades{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;fill:#0007;stroke:color-mix(in srgb,var(--clip-color) 70%,#fff);stroke-width:1;vector-effect:non-scaling-stroke}
+.clip-fades polygon{vector-effect:non-scaling-stroke}
+.row-compact .clip-fades{display:none}

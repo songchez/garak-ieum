@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { EFFECT_DEFS, EFFECT_TYPES } from './devices'
 import {
-  createDemoProject, createDevice, createEmptyProject, createTrack, cropNotesToClip, defaultInstrumentParams, duplicateClip,
-  duplicateTrack, fitProjectLength, joinClips, moveClipToPlayhead, moveDevice, splitClip, transposeClip, trimClipEnd,
-  trimClipStart, validateProject, MIN_CLIP_BEATS,
+  addMarker, applyDragMode, createDemoProject, createDevice, createEmptyProject, createMarker, createTrack, cropNotesToClip,
+  cycleClipIds, defaultInstrumentParams, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength,
+  insertTracks, joinClips, moveClipToPlayhead, moveDevice, moveMarker, renameMarker, splitClip, transposeClip, trimClipEnd,
+  trimClipStart, validateProject, visibleTracks, DEFAULT_TRACK_COLORS, MIN_CLIP_BEATS,
 } from './project'
-import type { AudioClip, MidiClip } from './types'
+import { instrumentDef } from './instruments'
+import { QUANTIZE_VALUES, type AudioClip, type Clip, type MidiClip, type Project, type Track } from './types'
 
 function midi(): MidiClip {
   return {
@@ -24,10 +26,32 @@ describe('original demo project', () => {
     expect(validateProject(project)).toEqual(project)
     expect(project.tracks).toHaveLength(6)
     expect(project.loop).toEqual({ enabled: true, startBeat: 0, endBeat: 32 })
+    expect(project.markers).toEqual([])
     for (const track of project.tracks) {
       expect(track.clips.length).toBeGreaterThan(0)
       expect(track.clips.every(clip => clip.kind === 'midi' && clip.notes.some(note => note.velocity > 0))).toBe(true)
     }
+  })
+
+  it('keeps the demo instrument colors instead of the Logic defaults', () => {
+    const project = createDemoProject()
+    expect(project.tracks[0].color).toBe(instrumentDef('drums').color)
+    expect(project.tracks[1].color).toBe('#d9b45a')
+    expect(project.tracks[3].color).toBe(instrumentDef('keys').color)
+  })
+})
+
+describe('track defaults', () => {
+  it('creates tracks with Logic inspector defaults and kind colors', () => {
+    const instrument = createTrack('instrument', 'keys')
+    expect(instrument).toMatchObject({
+      enabled: true, armed: false, monitor: false, hidden: false, soloSafe: false,
+      transpose: 0, velocityOffset: 0, keyLimit: [0, 127], velocityLimit: [1, 127], delayTicks: 0,
+      color: instrumentDef('keys').color,
+    })
+    expect(instrument).not.toHaveProperty('icon')
+    expect(createTrack('audio').color).toBe(DEFAULT_TRACK_COLORS.audio)
+    expect(createEmptyProject().markers).toEqual([])
   })
 })
 
@@ -289,5 +313,267 @@ describe('device chain editing', () => {
     expect(moveDevice(track, eq.id, -1)).toBe(track)
     expect(moveDevice(track, 'missing', 1)).toBe(track)
     expect(track.devices).toEqual([eq, drive, reverb])
+  })
+})
+
+const REGION_FIELDS = { loop: true, delayTicks: -240, quantize: 0.25, swing: 62, transpose: 5, velocity: -10 } as const
+const regionFields = (clip: Clip) => {
+  const { loop, delayTicks } = clip
+  return clip.kind === 'midi'
+    ? { loop, delayTicks, quantize: clip.quantize, swing: clip.swing, transpose: clip.transpose, velocity: clip.velocity }
+    : { loop, delayTicks }
+}
+
+describe('region fields survive clip editing', () => {
+  const source = (): MidiClip => ({ ...midi(), ...REGION_FIELDS })
+
+  it('keeps loop, quantize and transpose through split, join, duplicate, trim and transpose', () => {
+    const [left, right] = splitClip(source(), 10, 96)
+    expect(regionFields(left)).toEqual(REGION_FIELDS)
+    expect(regionFields(right)).toEqual(REGION_FIELDS)
+    expect(regionFields(duplicateClip(source()))).toEqual(REGION_FIELDS)
+    expect(regionFields(trimClipStart(source(), 9, 96))).toEqual(REGION_FIELDS)
+    expect(regionFields(trimClipEnd(source(), 10))).toEqual(REGION_FIELDS)
+    expect(regionFields(transposeClip(source(), 2))).toEqual(REGION_FIELDS)
+    expect(regionFields(moveClipToPlayhead(source(), 1))).toEqual(REGION_FIELDS)
+  })
+
+  it('joins with the first clip values', () => {
+    const [left, right] = splitClip(source(), 10, 96)
+    if (right.kind !== 'midi') throw new Error('Expected MIDI clip')
+    const other: MidiClip = { ...right, quantize: 1, swing: 10, transpose: -3, velocity: 20, loop: false, delayTicks: 0 }
+    const joined = joinClips([other, left], 96)
+    if (!joined) throw new Error('Expected a clip')
+    expect(regionFields(joined)).toEqual(REGION_FIELDS)
+    const audioLeft = { ...audio(), loop: true, delayTicks: 12 }
+    const [a, b] = splitClip(audioLeft, 11, 90)
+    expect(regionFields(a)).toEqual({ loop: true, delayTicks: 12 })
+    const audioJoined = joinClips([{ ...b, loop: false, delayTicks: 0 }, a], 90)
+    if (!audioJoined) throw new Error('Expected a clip')
+    expect(regionFields(audioJoined)).toEqual({ loop: true, delayTicks: 12 })
+  })
+
+  it('duplicates a track including region fields and track settings', () => {
+    const track = { ...createTrack('instrument', 'keys'), transpose: 7, keyLimit: [36, 96] as [number, number], icon: 'piano' }
+    track.clips = [source()]
+    const copy = duplicateTrack(track)
+    expect(regionFields(copy.clips[0])).toEqual(REGION_FIELDS)
+    expect(copy).toMatchObject({ transpose: 7, keyLimit: [36, 96], icon: 'piano' })
+  })
+})
+
+function clipAt(id: string, startBeat: number, lengthBeats: number, kind: 'midi' | 'audio' = 'midi'): Clip {
+  return kind === 'midi'
+    ? { ...midi(), id, startBeat, lengthBeats, notes: [{ id: `${id}-note`, pitch: 60, start: 0, duration: lengthBeats, velocity: 0.7 }] }
+    : audio({ id, startBeat, lengthBeats, fadeIn: 0, fadeOut: 0 })
+}
+
+function projectWith(...tracks: Track[]): Project {
+  return { ...createEmptyProject(), tracks }
+}
+
+describe('drag mode', () => {
+  const layout = (clips: Clip[]) => clips.map(clip => [clip.id === 'moved' ? 'moved' : clip.id, clip.startBeat, clip.startBeat + clip.lengthBeats])
+
+  it('returns the same project in overlap mode or when nothing is covered', () => {
+    const track = { ...createTrack('instrument'), id: 't', clips: [clipAt('a', 0, 4), clipAt('moved', 4, 4)] }
+    const project = projectWith(track)
+    expect(applyDragMode(project, ['t'], ['moved'], 'overlap')).toBe(project)
+    expect(applyDragMode(project, ['t'], ['moved'], 'noOverlap')).toBe(project)
+    expect(applyDragMode(project, ['t'], [], 'noOverlap')).toBe(project)
+    expect(applyDragMode(project, ['other'], ['moved'], 'noOverlap')).toBe(project)
+  })
+
+  it('trims the start of a clip whose beginning is covered', () => {
+    const track = { ...createTrack('instrument'), id: 't', clips: [clipAt('moved', 0, 6), clipAt('a', 4, 8)] }
+    const result = applyDragMode(projectWith(track), ['t'], ['moved'], 'noOverlap')
+    expect(layout(result.tracks[0].clips)).toEqual([['moved', 0, 6], ['a', 6, 12]])
+    const a = result.tracks[0].clips[1] as MidiClip
+    expect(a.notes).toEqual([{ id: 'a-note', pitch: 60, start: 0, duration: 6, velocity: 0.7 }])
+  })
+
+  it('trims the end of a clip whose ending is covered', () => {
+    const track = { ...createTrack('instrument'), id: 't', clips: [clipAt('a', 0, 8), clipAt('moved', 6, 6)] }
+    const result = applyDragMode(projectWith(track), ['t'], ['moved'], 'noOverlap')
+    expect(layout(result.tracks[0].clips)).toEqual([['a', 0, 6], ['moved', 6, 12]])
+  })
+
+  it('splits a clip around a moved clip dropped in its middle, keeping both parts', () => {
+    const track = { ...createTrack('instrument'), id: 't', clips: [clipAt('a', 0, 12), clipAt('moved', 4, 4)] }
+    const result = applyDragMode(projectWith(track), ['t'], ['moved'], 'noOverlap')
+    const clips = result.tracks[0].clips
+    expect(clips.map(clip => [clip.startBeat, clip.startBeat + clip.lengthBeats])).toEqual([[0, 4], [8, 12], [4, 8]])
+    expect(clips[0].id).toBe('a')
+    expect(clips[1].id).not.toBe('a')
+    expect(clips[2].id).toBe('moved')
+    expect((clips[1] as MidiClip).notes[0]).toMatchObject({ start: 0, duration: 4 })
+  })
+
+  it('removes a clip that is entirely covered and leaves other tracks alone', () => {
+    const track = { ...createTrack('instrument'), id: 't', clips: [clipAt('a', 4, 2), clipAt('moved', 2, 8), clipAt('b', 10, 2)] }
+    const untouched = { ...createTrack('instrument'), id: 'u', clips: [clipAt('c', 2, 8)] }
+    const result = applyDragMode(projectWith(track, untouched), ['t'], ['moved'], 'noOverlap')
+    expect(result.tracks[0].clips.map(clip => clip.id)).toEqual(['moved', 'b'])
+    expect(result.tracks[1]).toBe(untouched)
+  })
+
+  it('handles audio clips and several moved clips at once', () => {
+    const track = { ...createTrack('audio'), id: 't', clips: [clipAt('a', 0, 16, 'audio'), clipAt('m1', 2, 2, 'audio'), clipAt('m2', 8, 4, 'audio')] }
+    const result = applyDragMode(projectWith(track), ['t'], ['m1', 'm2'], 'noOverlap')
+    const pieces = result.tracks[0].clips.filter(clip => clip.id !== 'm1' && clip.id !== 'm2')
+    expect(pieces.map(clip => [clip.startBeat, clip.startBeat + clip.lengthBeats])).toEqual([[0, 2], [4, 8], [12, 16]])
+    expect(pieces.map(clip => (clip.kind === 'audio' ? clip.offsetSeconds : NaN))).toEqual([1, 1 + 4 * 60 / 96, 1 + 12 * 60 / 96])
+  })
+})
+
+describe('track list helpers', () => {
+  it('duplicates settings with a fresh track and device IDs but no clips, arm or monitor', () => {
+    const track = { ...createTrack('instrument', 'pad'), armed: true, monitor: true, transpose: -12, velocityLimit: [20, 100] as [number, number], icon: 'pad', hidden: true }
+    track.devices = [createDevice('reverb', { amount: 0.4 }), createDevice('delay')]
+    track.clips = [midi()]
+    track.instrumentParams = { ...track.instrumentParams, tone: 0.25 }
+    const copy = duplicateTrackSettings(track)
+    expect(copy.id).not.toBe(track.id)
+    expect(copy.clips).toEqual([])
+    expect(copy).toMatchObject({ name: track.name, armed: false, monitor: false, transpose: -12, velocityLimit: [20, 100], icon: 'pad', hidden: true, color: track.color })
+    expect(copy.instrumentParams).toEqual(track.instrumentParams)
+    expect(copy.instrumentParams).not.toBe(track.instrumentParams)
+    expect(copy.devices.map(device => device.type)).toEqual(['reverb', 'delay'])
+    expect(copy.devices[0].params).toEqual(track.devices[0].params)
+    expect(copy.devices.some(device => track.devices.some(original => original.id === device.id))).toBe(false)
+    copy.keyLimit[0] = 50
+    expect(track.keyLimit[0]).toBe(0)
+    expect(validateProject(projectWith(track, copy)).tracks).toHaveLength(2)
+  })
+
+  it('inserts tracks after a given track or at the end', () => {
+    const [a, b, c, d] = ['a', 'b', 'c', 'd'].map(id => ({ ...createTrack('instrument'), id }))
+    const project = projectWith(a, b)
+    expect(insertTracks(project, 'a', [c, d]).tracks.map(track => track.id)).toEqual(['a', 'c', 'd', 'b'])
+    expect(insertTracks(project, 'b', [c]).tracks.map(track => track.id)).toEqual(['a', 'b', 'c'])
+    expect(insertTracks(project, null, [c]).tracks.map(track => track.id)).toEqual(['a', 'b', 'c'])
+    expect(insertTracks(project, 'missing', [c]).tracks.map(track => track.id)).toEqual(['a', 'b', 'c'])
+    expect(insertTracks(project, 'a', [])).toBe(project)
+    expect(project.tracks).toHaveLength(2)
+  })
+
+  it('selects cycle clips only while the cycle is on', () => {
+    const track = { ...createTrack('instrument'), clips: [clipAt('before', 0, 4), clipAt('edge', 4, 4), clipAt('inside', 9, 2), clipAt('after', 16, 4)] }
+    expect(cycleClipIds(track, { enabled: true, startBeat: 8, endBeat: 16 })).toEqual(['inside'])
+    expect(cycleClipIds(track, { enabled: true, startBeat: 6, endBeat: 16 })).toEqual(['edge', 'inside'])
+    expect(cycleClipIds(track, { enabled: false, startBeat: 8, endBeat: 16 })).toEqual(['before', 'edge', 'inside', 'after'])
+  })
+
+  it('hides hidden tracks unless hide view is on', () => {
+    const shown = createTrack('instrument')
+    const hidden = { ...createTrack('audio'), hidden: true }
+    const project = projectWith(shown, hidden)
+    expect(visibleTracks(project, false)).toEqual([shown])
+    expect(visibleTracks(project, true)).toBe(project.tracks)
+  })
+})
+
+describe('markers', () => {
+  it('adds, moves, renames and deletes while keeping startBeat order', () => {
+    let project = createEmptyProject()
+    const verse = createMarker(16, 'Verse')
+    const intro = createMarker(0, '  Intro ')
+    project = addMarker(addMarker(project, verse), intro)
+    expect(project.markers.map(marker => marker.name)).toEqual(['Intro', 'Verse'])
+    expect(() => addMarker(project, verse)).toThrow(/duplicates/)
+    project = moveMarker(project, intro.id, 24)
+    expect(project.markers.map(marker => marker.name)).toEqual(['Verse', 'Intro'])
+    expect(moveMarker(project, intro.id, 24)).toBe(project)
+    expect(moveMarker(project, 'missing', 2)).toBe(project)
+    expect(moveMarker(project, intro.id, -5).markers[0]).toMatchObject({ name: 'Intro', startBeat: 0 })
+    project = renameMarker(project, verse.id, 'Chorus')
+    expect(project.markers[0].name).toBe('Chorus')
+    expect(renameMarker(project, verse.id, '   ')).toBe(project)
+    expect(renameMarker(project, 'missing', 'x')).toBe(project)
+    expect(deleteMarker(project, 'missing')).toBe(project)
+    expect(deleteMarker(project, verse.id).markers.map(marker => marker.id)).toEqual([intro.id])
+    expect(createMarker(4, '').name).toBe('Marker')
+    expect(() => createMarker(NaN, 'x')).toThrow(/finite/)
+  })
+})
+
+describe('validation of Logic-style fields', () => {
+  const withTrack = (patch: Record<string, unknown>) => ({ ...createEmptyProject(), tracks: [{ ...createTrack('instrument'), ...patch }] })
+  const withClip = (patch: Record<string, unknown>, kind: 'midi' | 'audio' = 'midi') =>
+    withTrack({ clips: [{ ...(kind === 'midi' ? midi() : audio()), ...patch }] })
+
+  it('fills defaults for version 1 and version 2 files saved without the new fields', () => {
+    const legacy: Record<string, unknown> = { ...createTrack('instrument', 'pad'), id: 'old-pad', effects: { filter: 20000, reverb: 0, delay: 0 } }
+    for (const key of ['instrumentParams', 'devices', 'soloSafe', 'enabled', 'armed', 'monitor', 'hidden', 'transpose', 'velocityOffset', 'keyLimit', 'velocityLimit', 'delayTicks']) delete legacy[key]
+    const v2: Record<string, unknown> = { ...createEmptyProject(), tracks: [{ ...legacy, devices: [] }] }
+    delete v2.markers
+    const defaults = { soloSafe: false, enabled: true, armed: false, monitor: false, hidden: false, transpose: 0, velocityOffset: 0, keyLimit: [0, 127], velocityLimit: [1, 127], delayTicks: 0 }
+    const v1 = validateProject({ ...createEmptyProject(), schemaVersion: 1, tracks: [legacy] })
+    expect(v1.tracks[0]).toMatchObject(defaults)
+    expect(v1.markers).toEqual([])
+    expect(validateProject(v2).tracks[0]).toMatchObject(defaults)
+    expect(validateProject(v2).markers).toEqual([])
+  })
+
+  it('round-trips every track field and rejects values outside the inspector ranges', () => {
+    const project = withTrack({ soloSafe: true, enabled: false, armed: true, monitor: true, hidden: true, transpose: -96, velocityOffset: 99, keyLimit: [36, 36], velocityLimit: [1, 1], delayTicks: 1920, icon: 'piano' })
+    expect(validateProject(project)).toEqual(project)
+    expect(() => validateProject(withTrack({ transpose: 97 }))).toThrow(/transpose/)
+    expect(() => validateProject(withTrack({ transpose: 1.5 }))).toThrow(/integer/)
+    expect(() => validateProject(withTrack({ velocityOffset: -100 }))).toThrow(/velocity offset/)
+    expect(() => validateProject(withTrack({ keyLimit: [60, 59] }))).toThrow(/key limit/)
+    expect(() => validateProject(withTrack({ keyLimit: [0, 128] }))).toThrow(/key limit high/)
+    expect(() => validateProject(withTrack({ keyLimit: [0] }))).toThrow(/pair/)
+    expect(() => validateProject(withTrack({ velocityLimit: [0, 127] }))).toThrow(/velocity limit low/)
+    expect(() => validateProject(withTrack({ delayTicks: -1921 }))).toThrow(/delay/)
+    expect(() => validateProject(withTrack({ enabled: 'yes' }))).toThrow(/enabled/)
+  })
+
+  it('drops icons that are not short strings', () => {
+    expect(validateProject(withTrack({ icon: 7 })).tracks[0]).not.toHaveProperty('icon')
+    expect(validateProject(withTrack({ icon: '' })).tracks[0]).not.toHaveProperty('icon')
+    expect(validateProject(withTrack({ icon: 'x'.repeat(41) })).tracks[0]).not.toHaveProperty('icon')
+    expect(validateProject(withTrack({ icon: 'wave' })).tracks[0].icon).toBe('wave')
+  })
+
+  it('keeps valid optional clip fields, omits absent ones and validates ranges', () => {
+    const full = withClip(REGION_FIELDS)
+    expect(validateProject(full)).toEqual(full)
+    expect(validateProject(withClip({})).tracks[0].clips[0]).toEqual(midi())
+    expect(() => validateProject(withClip({ loop: 1 }))).toThrow(/loop/)
+    expect(() => validateProject(withClip({ delayTicks: 2000 }))).toThrow(/delay/)
+    expect(() => validateProject(withClip({ delayTicks: 0.5 }))).toThrow(/integer/)
+    expect(() => validateProject(withClip({ swing: 101 }))).toThrow(/swing/)
+    expect(() => validateProject(withClip({ transpose: -97 }))).toThrow(/transpose/)
+    expect(() => validateProject(withClip({ velocity: 9.5 }))).toThrow(/integer/)
+  })
+
+  it('accepts only the supported quantize grids, snapping to the canonical value', () => {
+    for (const grid of QUANTIZE_VALUES) expect(validateProject(withClip({ quantize: grid })).tracks[0].clips[0]).toMatchObject({ quantize: grid })
+    expect((validateProject(withClip({ quantize: 0.3333333 })).tracks[0].clips[0] as MidiClip).quantize).toBe(1 / 3)
+    expect(() => validateProject(withClip({ quantize: 0.3 }))).toThrow(/quantize/)
+    expect(() => validateProject(withClip({ quantize: 0.751 }))).toThrow(/quantize/)
+    expect(() => validateProject(withClip({ quantize: 'off' }))).toThrow(/quantize/)
+  })
+
+  it('drops MIDI-only fields from audio clips but keeps loop and delay', () => {
+    const parsed = validateProject(withClip({ quantize: 0.3, swing: 500, transpose: 'up', velocity: 1000, loop: true, delayTicks: 5 }, 'audio')).tracks[0].clips[0]
+    expect(parsed).toEqual({ ...audio(), loop: true, delayTicks: 5 })
+    expect(parsed).not.toHaveProperty('quantize')
+    expect(parsed).not.toHaveProperty('transpose')
+  })
+
+  it('validates markers, sorts them and rejects duplicate or clashing IDs', () => {
+    const base = createEmptyProject()
+    const track = { ...createTrack('instrument'), id: 'shared' }
+    const sorted = validateProject({ ...base, markers: [{ id: 'm2', name: 'B', startBeat: 8 }, { id: 'm1', name: 'A', startBeat: 0 }] })
+    expect(sorted.markers.map(marker => marker.id)).toEqual(['m1', 'm2'])
+    expect(() => validateProject({ ...base, markers: [{ id: 'm', name: 'A', startBeat: 0 }, { id: 'm', name: 'B', startBeat: 1 }] })).toThrow(/duplicates/)
+    expect(() => validateProject({ ...base, tracks: [track], markers: [{ id: 'shared', name: 'A', startBeat: 0 }] })).toThrow(/duplicates/)
+    expect(() => validateProject({ ...base, markers: [{ id: 'm', name: '', startBeat: 0 }] })).toThrow(/name/)
+    expect(() => validateProject({ ...base, markers: [{ id: 'm', name: 'A', startBeat: -1 }] })).toThrow(/position/)
+    expect(() => validateProject({ ...base, markers: [{ id: 'm', name: 'A', startBeat: 10_000_001 }] })).toThrow(/position/)
+    expect(() => validateProject({ ...base, markers: 'none' })).toThrow(/Markers/)
+    expect(() => validateProject({ ...base, markers: ['m'] })).toThrow(/object/)
   })
 })

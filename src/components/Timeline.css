@@ -1,0 +1,81 @@
+/* Tracks area chrome (LOGIC_GAP §1.3/1.7/1.8). Width-dependent legacy rules in styles.css (208px) are overridden through --header-width. */
+.arrangement{--header-width:248px}
+.timeline-body{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+.timeline-body .timeline-scroll{flex:1}
+.timeline-sheet .playhead{left:var(--header-width)}
+.timeline-sheet .playhead i{display:none}
+/* Playhead triangle lives in the sticky ruler so it stays visible and draggable while scrolled. */
+.ruler-playhead{position:absolute;left:0;top:16px;bottom:0;width:0;z-index:3;pointer-events:none}
+.ruler-playhead i{position:absolute;left:-7px;top:0;width:14px;height:12px;background:var(--seokganju-66);clip-path:polygon(0 0,100% 0,50% 100%);pointer-events:auto;cursor:ew-resize;touch-action:none}
+.ruler-playhead i:hover{background:var(--seokganju-75,#e3a58f)}
+.ruler-playhead::after{content:"";position:absolute;left:0;top:0;bottom:0;width:1px;background:var(--seokganju-69)}
+
+/* Menu bar: 편집 · 기능 · 보기 · Catch · Snap · Drag … zoom */
+.tracks-menubar{padding:0 10px 0 8px}
+.menubar-left{display:flex;align-items:center;gap:2px;min-width:0}
+.menubar-button{display:inline-flex;align-items:center;gap:3px;height:24px;padding:0 8px;border-radius:4px;font-size:10px;font-weight:500;color:var(--ink-72);background:transparent;white-space:nowrap}
+.menubar-button:hover,.menubar-button[aria-expanded="true"]{background:var(--ink-17);color:var(--ink-90)}
+.menubar-button svg{opacity:.6}
+.menubar-popup small{font-size:8px;color:var(--ink-48);font-weight:600;letter-spacing:.3px}
+.menubar-popup.off{color:var(--ink-51)}
+.menubar-divider{width:1px;height:16px;background:var(--ink-22);margin:0 5px;flex-shrink:0}
+.tracks-menubar .arrangement-title-actions{gap:12px}
+.tracks-menubar .subtle-count{border-left:0;padding-left:0}
+
+/* Ruler-row header cell: [+][⧉] … [H][S] … [G][≡] */
+.timeline-sheet .timeline-corner{position:sticky;left:0;z-index:22;width:var(--header-width);flex-shrink:0;display:flex;align-items:center;gap:3px;padding:0 6px 0 7px;box-sizing:border-box;background:var(--ink-12);border-right:1px solid var(--ink-23)}
+.corner-spacer{flex:1}
+.corner-button{display:inline-grid;place-items:center;width:20px;height:20px;padding:0;border-radius:4px;border:1px solid transparent;color:var(--ink-60);background:transparent;font-size:10px;font-weight:700;line-height:1;flex-shrink:0}
+.corner-button:hover{background:var(--ink-17);color:var(--ink-87);border-color:var(--ink-23)}
+.corner-button:disabled{opacity:.35;pointer-events:none}
+.corner-button.active{color:var(--seokganju-66);background:#ce7d6416}
+.corner-letter{font-family:Consolas,"SFMono-Regular",monospace;font-size:10px}
+.corner-button.hidden-exist{color:#e8923a;border-color:#e8923a66}
+.corner-button.hide-view-on{color:var(--ink-12);background:#4fae7a;border-color:#4fae7a}
+.corner-button.solo-on{color:var(--ink-12);background:#e0c24c;border-color:#e0c24c}
+.corner-button.solo-recall{color:#b9a65a;border-color:#b9a65a66}
+
+/* Ruler: cycle band (upper 16px) in dancheong gold, seek band below */
+.timeline-sheet .loop-region{height:7px;background:color-mix(in srgb,var(--dancheong-gold,#e0b34c) 55%,transparent);border-top:1px solid var(--dancheong-gold,#e0b34c)}
+.timeline-sheet .loop-region span{background:var(--dancheong-gold,#e0b34c);width:6px;height:9px;border-radius:0 0 2px 2px}
+.timeline-sheet .loop-region.disabled{background:#8a837533;border-top-color:var(--ink-42)}
+.timeline-sheet .loop-region.disabled span{background:var(--ink-42)}
+.timeline-ruler.cycle-grabbing{cursor:grabbing!important}
+.timeline-ruler.cycle-sizing{cursor:ew-resize!important}
+
+/* Global tracks row (markers) under the ruler */
+.timeline-global-row{height:22px;display:flex;position:sticky;top:38px;z-index:19;background:var(--ink-13);box-shadow:0 1px 0 var(--ink-23)}
+.global-header{position:sticky;left:0;z-index:21;width:var(--header-width);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 6px 0 14px;box-sizing:border-box;background:var(--ink-13);border-right:1px solid var(--ink-23)}
+.global-name{font-size:8px;font-weight:600;letter-spacing:1px;color:var(--ink-54)}
+.global-header .corner-button{width:16px;height:16px}
+.global-lane{position:relative;flex-shrink:0;overflow:hidden;background-image:linear-gradient(to right,#433f3760 1px,transparent 1px);background-size:var(--bar-px,80px) 100%}
+.marker{position:absolute;top:2px;height:18px;display:flex;align-items:center;gap:4px;padding:0 6px 0 4px;box-sizing:border-box;border-radius:2px 3px 3px 2px;background:#b89a5a2e;border-left:2px solid #d4b26a;color:var(--ink-81);font-size:9px;white-space:nowrap;overflow:hidden;cursor:grab;touch-action:none;user-select:none;outline:0}
+.marker:hover{background:#b89a5a44}
+.marker.selected{background:#d4b26a;color:var(--ink-12);font-weight:600}
+.marker.dragging{opacity:.8;cursor:grabbing}
+.marker:focus-visible{box-shadow:0 0 0 1px var(--seokganju-66)}
+.marker-flag{width:0;height:0;border-left:5px solid currentColor;border-top:4px solid transparent;border-bottom:4px solid transparent;opacity:.8;flex-shrink:0}
+.marker-name{overflow:hidden;text-overflow:ellipsis}
+.marker .inline-name{height:15px;font-size:9px;width:auto;min-width:60px}
+.marker-hint{position:absolute;left:14px;top:5px;font-size:8px;color:var(--ink-36);pointer-events:none}
+
+/* Track rows: focus/selection, silenced and hidden states (header colours live in TrackHeader.css) */
+.track-row.focused{box-shadow:inset 0 0 0 0 transparent}
+.track-row.selected .track-lane{background-color:var(--ink-13)}
+.track-row.focused .track-lane{background-color:var(--ink-14)}
+.track-row.track-hidden .track-lane{opacity:.6}
+.no-grid.track-lane,.track-lane.no-grid{background-image:none}
+
+/* Empty area below the last track: double-click = new track like the focused one */
+.tracks-empty-area{display:flex;flex:1;min-height:120px}
+.tracks-empty-area .empty-header{position:sticky;left:0;z-index:12;width:var(--header-width);flex-shrink:0;background:var(--ink-11);border-right:1px solid var(--ink-21)}
+.tracks-empty-area .empty-lane{flex-shrink:0;background-image:linear-gradient(to right,#38342e4d 1px,transparent 1px)}
+.no-grid .tracks-empty-area .empty-lane{background-image:none}
+.timeline-sheet{display:flex;flex-direction:column;padding-bottom:0}
+
+/* Header/lane boundary: width handle (6px) */
+.header-resize-handle{position:absolute;top:0;bottom:0;left:calc(var(--header-width) - 3px);width:6px;cursor:col-resize;z-index:30;touch-action:none}
+.header-resize-handle:hover,.header-resize-handle[data-daw-gesture]{background:linear-gradient(to right,transparent 2px,var(--seokganju-60) 2px,var(--seokganju-60) 4px,transparent 4px)}
+
+/* Drop indicator spans the sheet; dragged rows dim */
+.timeline-sheet .track-drop-indicator{z-index:25}

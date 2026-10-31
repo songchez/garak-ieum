@@ -1,7 +1,8 @@
 import { instrumentDef } from '../core/instruments'
+import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
 import type { AudioAsset, AudioEngine, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
 import {
-  createGraph, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
+  connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
   trackLayoutKey, updateGraph,
 } from './graph'
 import type { EngineGraph } from './graph'
@@ -46,6 +47,9 @@ export class WebAudioEngine implements AudioEngine {
   private lifecycle = 0
   private transportRequest = 0
   private musicalKey = ''
+  private monitorStream: MediaStream | null = null
+  private monitorSource: MediaStreamAudioSourceNode | null = null
+  private monitorTrackIds: string[] = []
   private snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: 0 }
 
   constructor(project?: Project) {
@@ -98,9 +102,13 @@ export class WebAudioEngine implements AudioEngine {
 
   setProject(project: Project): void {
     const beat = this.currentBeat()
+    // Clip playback fields (loop, delay, quantize, swing, transpose, velocity) travel inside track.clips.
     const nextKey = JSON.stringify([
       project.bpm, project.lengthBeats, project.loop,
-      project.tracks.map(track => [track.id, track.kind, track.instrument, track.clips]),
+      project.tracks.map(track => [
+        track.id, track.kind, track.instrument, track.enabled, track.transpose, track.velocityOffset,
+        track.keyLimit, track.velocityLimit, track.delayTicks, track.clips,
+      ]),
     ])
     const changedArrangement = nextKey !== this.musicalKey
     const changedLayout = this.project === null || trackLayoutKey(this.project.tracks) !== trackLayoutKey(project.tracks)
@@ -177,15 +185,36 @@ export class WebAudioEngine implements AudioEngine {
     if (lifecycle !== this.lifecycle || !this.context || !this.graph) return
     const tracks = this.project?.tracks ?? []
     const track = trackId === undefined ? undefined : tracks.find(item => item.id === trackId)
-    const anySolo = tracks.some(item => item.solo)
-    const audible = track !== undefined && !track.mute && (!anySolo || track.solo)
+    if (track && !isTrackEnabled(track)) return
+    const live = trackNote(track, pitch, velocity)
+    if (!live) return
+    const audible = track !== undefined && audibleTrackIds(tracks).has(track.id)
     const channel = audible ? this.graph.tracks.get(track.id) : undefined
     const params = track?.instrument === instrument ? track.instrumentParams : undefined
     const duration = instrument === 'pad' || def.kind === 'sampled' ? 0.65 : 0.3
     const destination = channel?.input ?? this.graph.previewInput
     const loaded = def.set ? this.samples.get(def.set) : undefined
-    if (loaded) scheduleSampled(this.graph, destination, loaded, def.isKit, pitch, this.context.currentTime + 0.006, duration, velocity, duration + 0.8, params, channel?.chokes)
-    else scheduleInstrument(this.graph, destination, instrument, pitch, this.context.currentTime + 0.006, duration, velocity, duration + 0.8, params)
+    if (loaded) scheduleSampled(this.graph, destination, loaded, def.isKit, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params, channel?.chokes)
+    else scheduleInstrument(this.graph, destination, instrument, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params)
+  }
+
+  /** One source node per stream, rewired to the current graph's track inputs; no context is opened without a stream. */
+  setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void {
+    if (stream !== this.monitorStream && this.monitorSource) {
+      if (this.graph) disconnectMonitor(this.graph)
+      this.monitorSource.disconnect()
+      this.monitorSource = null
+    }
+    this.monitorStream = stream
+    this.monitorTrackIds = stream ? [...trackIds] : []
+    if (!stream) return
+    if (this.context && this.context.state !== 'closed') this.wireMonitor()
+  }
+
+  private wireMonitor(): void {
+    if (!this.context || !this.graph || !this.monitorStream) return
+    this.monitorSource ??= this.context.createMediaStreamSource(this.monitorStream)
+    connectMonitor(this.graph, this.monitorSource, this.monitorTrackIds)
   }
 
   async decodeAsset(blob: Blob, name: string, id?: string): Promise<AudioAsset> {
@@ -252,6 +281,8 @@ export class WebAudioEngine implements AudioEngine {
     this.scheduler = null
     if (this.graph) disposeGraph(this.graph)
     this.graph = null
+    this.monitorSource?.disconnect()
+    this.monitorSource = null
     for (const [graph, timeout] of this.retiredGraphs) {
       clearTimeout(timeout)
       disposeGraph(graph)
@@ -283,7 +314,10 @@ export class WebAudioEngine implements AudioEngine {
     context.onstatechange = () => {
       if (this.context === context) this.publishSnapshot()
     }
-    if (this.project) this.graph = createGraph(context, this.project)
+    if (this.project) {
+      this.graph = createGraph(context, this.project)
+      this.wireMonitor()
+    }
     this.scheduler = setInterval(() => this.tick(), SCHEDULER_INTERVAL_MS)
     this.publishSnapshot()
     return context
@@ -311,6 +345,7 @@ export class WebAudioEngine implements AudioEngine {
       } else disposeGraph(old)
     }
     this.graph = createGraph(this.context, this.project)
+    this.wireMonitor()
     this.levels.clear()
     this.masterLevel = 0
   }

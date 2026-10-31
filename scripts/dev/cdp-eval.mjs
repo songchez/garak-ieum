@@ -1,17 +1,18 @@
-// Usage: node cdp-eval.mjs <url> <expression-file.js> [timeoutMs]
+// Usage: node cdp-eval.mjs <url> <expression-file.js> [timeoutMs] [screenshot.png]
 // Launches headless Edge with remote debugging, evaluates an async expression, prints its result.
+// With a 4th argument, captures the page (1280×800) to that PNG after evaluation.
 import { spawn } from 'node:child_process'
-import { readFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const [url, exprFile, timeoutArg] = process.argv.slice(2)
+const [url, exprFile, timeoutArg, screenshotFile] = process.argv.slice(2)
 const timeout = Number(timeoutArg ?? 60000)
 const expr = readFileSync(exprFile, 'utf8')
 const port = 9300 + Math.floor(Math.random() * 500)
 const profile = mkdtempSync(join(tmpdir(), 'edge-cdp-'))
 const edge = spawn('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  ['--headless=new', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, '--autoplay-policy=no-user-gesture-required', 'about:blank'],
+  ['--headless=new', '--disable-gpu', '--no-first-run', '--window-size=1280,800', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, '--autoplay-policy=no-user-gesture-required', 'about:blank'],
   { stdio: 'ignore' })
 const die = (code = 0) => { try { edge.kill() } catch {} process.exit(code) }
 process.on('SIGINT', () => die(1))
@@ -46,5 +47,11 @@ const result = await Promise.race([
 const consoleLines = events.filter(e => e.method === 'Runtime.consoleAPICalled').map(e => `[console.${e.params.type}] ${e.params.args.map(a => a.value ?? a.description ?? '').join(' ')}`)
 const exceptions = events.filter(e => e.method === 'Runtime.exceptionThrown').map(e => `[exception] ${e.params.exceptionDetails.exception?.description ?? e.params.exceptionDetails.text}`)
 const logs = events.filter(e => e.method === 'Log.entryAdded').map(e => `[${e.params.entry.level}] ${e.params.entry.text}`)
+if (screenshotFile) {
+  await new Promise(r => setTimeout(r, 300))
+  const shot = await send('Page.captureScreenshot', { format: 'png' })
+  if (shot.result?.data) writeFileSync(screenshotFile, Buffer.from(shot.result.data, 'base64'))
+  else console.error('screenshot failed', shot)
+}
 console.log(JSON.stringify({ result: result.timeout ? 'TIMEOUT' : (result.result?.result?.value ?? result.result?.exceptionDetails?.text ?? result), console: consoleLines, exceptions, logs }, null, 1))
 die(0)

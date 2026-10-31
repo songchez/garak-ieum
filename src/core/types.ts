@@ -24,10 +24,22 @@ export interface ClipBase {
   gain: number
   /** Muted clips stay on the timeline but are not scheduled. Absent means false. */
   mute?: boolean
+  /** Repeats the clip every lengthBeats until the next clip on the track or the project end. Absent = false. */
+  loop?: boolean
+  /** Playback offset in ticks at 960 PPQ (−1920…1920). Absent = 0. */
+  delayTicks?: number
 }
 export interface MidiClip extends ClipBase {
   kind: 'midi'
   notes: MidiNote[]
+  /** Non-destructive playback quantize grid in beats; one of QUANTIZE_VALUES. Absent/0 = off. */
+  quantize?: number
+  /** Swing 0…100 (50 = straight); only used when quantize is on. Absent = 50. */
+  swing?: number
+  /** Semitones −96…96. Absent = 0. */
+  transpose?: number
+  /** Velocity offset −99…99 (MIDI units). Absent = 0. */
+  velocity?: number
 }
 export interface AudioClip extends ClipBase {
   kind: 'audio'
@@ -55,10 +67,34 @@ export interface Track {
   pan: number
   mute: boolean
   solo: boolean
+  /** Heard even when other tracks are soloed (Logic: ⌃-click S). */
+  soloSafe: boolean
+  /** Off = not scheduled, no fader, no preview (Logic: track on/off, ⌥M). */
+  enabled: boolean
+  /** Record-enabled. Live state: never enters undo history. */
+  armed: boolean
+  /** Input monitoring for audio tracks. Live state: never enters undo history. */
+  monitor: boolean
+  /** Hidden in the Tracks area while hide view is off; still plays. */
+  hidden: boolean
+  /** Track parameters applied at playback time (Logic Track inspector). Audio tracks store but ignore them. */
+  transpose: number
+  velocityOffset: number
+  keyLimit: [number, number]
+  velocityLimit: [number, number]
+  /** Ticks at 960 PPQ, −1920…1920. */
+  delayTicks: number
+  /** Icon name from components/Icon.tsx. Absent = category default. */
+  icon?: string
   clips: Clip[]
   /** Keys and ranges are defined by instrumentDef(instrument).params in core/instruments.ts. */
   instrumentParams: Record<string, number>
   devices: Device[]
+}
+export interface Marker {
+  id: string
+  name: string
+  startBeat: number
 }
 export interface Project {
   schemaVersion: 2
@@ -70,7 +106,11 @@ export interface Project {
   masterVolume: number
   loop: { enabled: boolean; startBeat: number; endBeat: number }
   tracks: Track[]
+  /** Sorted by startBeat. */
+  markers: Marker[]
 }
+/** Playback quantize grids in beats (0 = off). Triplets are 2/3, 1/3, 1/6, 1/12. */
+export const QUANTIZE_VALUES: readonly number[] = [0, 4, 2, 1, 0.5, 0.25, 0.125, 0.0625, 2 / 3, 1 / 3, 1 / 6, 1 / 12]
 export interface AudioAsset {
   id: string
   name: string
@@ -106,5 +146,7 @@ export interface AudioEngine {
   sampleAttribution(setId: string): SampleAttribution | undefined
   getTrackLevel(trackId: string): number
   getMasterLevel(): number
+  /** Routes a live input stream into the given audio tracks' chains (input monitoring). null releases it. */
+  setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void
   dispose(): void
 }

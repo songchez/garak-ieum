@@ -1,8 +1,11 @@
 import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
 import { instrumentDef, isInstrumentId } from './instruments'
-import type { Clip, Device, EffectType, InstrumentId, MidiClip, MidiNote, Project, Track } from './types'
+import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
 
 let fallbackSequence = 0
+
+/** Logic defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%). */
+export const DEFAULT_TRACK_COLORS: Readonly<Record<Track['kind'], string>> = { audio: '#669ed6', instrument: '#66d666' }
 
 /** IDs describe editing objects; they are not security tokens. */
 export function uid(): string {
@@ -40,11 +43,21 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
     name: kind === 'audio' ? 'Audio track' : def.name,
     kind,
     instrument,
-    color: kind === 'audio' ? '#c9a06a' : def.color,
+    color: kind === 'audio' ? DEFAULT_TRACK_COLORS.audio : instrumentDef(instrument).color,
     volume: 0.7,
     pan: 0,
     mute: false,
     solo: false,
+    soloSafe: false,
+    enabled: true,
+    armed: false,
+    monitor: false,
+    hidden: false,
+    transpose: 0,
+    velocityOffset: 0,
+    keyLimit: [0, 127],
+    velocityLimit: [1, 127],
+    delayTicks: 0,
     clips: [],
     instrumentParams: defaultInstrumentParams(instrument),
     devices: [],
@@ -62,6 +75,7 @@ export function createEmptyProject(): Project {
     masterVolume: 0.8,
     loop: { enabled: false, startBeat: 0, endBeat: 32 },
     tracks: [],
+    markers: [],
   }
 }
 
@@ -73,6 +87,11 @@ function midiClip(name: string, startBeat: number, lengthBeats: number, notes: M
   return { id: uid(), kind: 'midi', name, startBeat, lengthBeats, gain: 1, notes }
 }
 
+/** Demo tracks keep their instrument colors rather than the Logic default (C-02). */
+function demoTrack(instrument: InstrumentId): Track {
+  return { ...createTrack('instrument', instrument), color: instrumentDef(instrument).color }
+}
+
 /** An original eight-bar sketch. All sound comes from the built-in instruments. */
 export function createDemoProject(): Project {
   const project = createEmptyProject()
@@ -80,7 +99,7 @@ export function createDemoProject(): Project {
   project.lengthBeats = 32
   project.loop = { enabled: true, startBeat: 0, endBeat: 32 }
 
-  const drums = createTrack('instrument', 'drums')
+  const drums = demoTrack('drums')
   drums.name = 'Pocket drums'
   drums.volume = 0.67
   for (let section = 0; section < 4; section += 1) {
@@ -94,7 +113,7 @@ export function createDemoProject(): Project {
     drums.clips.push(midiClip(section === 3 ? 'Pocket / turn' : 'Pocket', section * 8, 8, notes))
   }
 
-  const hats = createTrack('instrument', 'drums')
+  const hats = demoTrack('drums')
   hats.name = 'After-hours hats'
   hats.color = '#d9b45a'
   hats.volume = 0.35
@@ -107,7 +126,7 @@ export function createDemoProject(): Project {
     hats.clips.push(midiClip('Soft shuffle', section * 8, 8, notes))
   }
 
-  const bass = createTrack('instrument', 'bass')
+  const bass = demoTrack('bass')
   bass.name = 'Sub currents'
   bass.volume = 0.55
   const roots = [40, 36, 43, 38]
@@ -121,7 +140,7 @@ export function createDemoProject(): Project {
     ]))
   }
 
-  const keys = createTrack('instrument', 'keys')
+  const keys = demoTrack('keys')
   keys.name = 'Midnight keys'
   keys.volume = 0.5
   keys.pan = -0.12
@@ -136,7 +155,7 @@ export function createDemoProject(): Project {
     keys.clips.push(midiClip(chordNames[section], section * 8, 8, notes))
   })
 
-  const pluck = createTrack('instrument', 'pluck')
+  const pluck = demoTrack('pluck')
   pluck.name = 'Glass echoes'
   pluck.volume = 0.3
   pluck.pan = 0.23
@@ -150,7 +169,7 @@ export function createDemoProject(): Project {
     pluck.clips.push(midiClip('Small reflections', section * 8, 8, notes))
   })
 
-  const pad = createTrack('instrument', 'pad')
+  const pad = demoTrack('pad')
   pad.name = 'Slow bloom'
   pad.volume = 0.23
   pad.pan = -0.2
@@ -328,11 +347,128 @@ export function duplicateTrack(track: Track): Track {
   }
 }
 
+/** Logic "New Track With Duplicate Settings": every setting but no clips; arm and monitor stay off. */
+export function duplicateTrackSettings(track: Track): Track {
+  return {
+    ...track,
+    id: uid(),
+    armed: false,
+    monitor: false,
+    keyLimit: [...track.keyLimit],
+    velocityLimit: [...track.velocityLimit],
+    instrumentParams: { ...track.instrumentParams },
+    devices: track.devices.map(device => ({ ...device, id: uid(), params: { ...device.params } })),
+    clips: [],
+  }
+}
+
 /** Grows the project to the bar after the last clip end; never shrinks it. */
 export function fitProjectLength(project: Project): Project {
   const end = Math.max(0, ...project.tracks.flatMap(track => track.clips.map(clip => clip.startBeat + clip.lengthBeats)))
   const lengthBeats = Math.max(project.lengthBeats, Math.ceil(end / project.beatsPerBar) * project.beatsPerBar)
   return lengthBeats === project.lengthBeats ? project : { ...project, lengthBeats }
+}
+
+export type DragMode = 'overlap' | 'noOverlap'
+
+/** Cuts `piece` so it no longer overlaps [start, end); [] removes it, two clips means it was split around. */
+function cutAround(piece: Clip, start: number, end: number, bpm: number): Clip[] {
+  const pieceEnd = piece.startBeat + piece.lengthBeats
+  if (end <= piece.startBeat + EPSILON || start >= pieceEnd - EPSILON) return [piece]
+  const coversStart = start <= piece.startBeat + EPSILON
+  const coversEnd = end >= pieceEnd - EPSILON
+  if (coversStart && coversEnd) return []
+  if (coversStart) return pieceEnd - end < MIN_CLIP_BEATS ? [] : [trimClipStart(piece, end, bpm)]
+  if (coversEnd) return start - piece.startBeat < MIN_CLIP_BEATS ? [] : [trimClipEnd(piece, start)]
+  const [left, right] = splitClip(piece, start, bpm)
+  return [left, ...cutAround(right, start, end, bpm)]
+}
+
+/**
+ * Logic Drag mode (R-05). `noOverlap` trims, splits or removes the clips on `trackIds` that a moved
+ * clip now covers; moved clips themselves are never changed. `overlap` returns the project as is.
+ */
+export function applyDragMode(project: Project, trackIds: readonly string[], movedClipIds: readonly string[], mode: DragMode): Project {
+  if (mode === 'overlap' || movedClipIds.length === 0) return project
+  const moved = new Set(movedClipIds)
+  let changed = false
+  const tracks = project.tracks.map(track => {
+    if (!trackIds.includes(track.id)) return track
+    const movers = track.clips.filter(clip => moved.has(clip.id))
+    if (movers.length === 0) return track
+    let trackChanged = false
+    const clips = track.clips.flatMap(clip => {
+      if (moved.has(clip.id)) return [clip]
+      let pieces = [clip]
+      for (const mover of movers) {
+        pieces = pieces.flatMap(piece => cutAround(piece, mover.startBeat, mover.startBeat + mover.lengthBeats, project.bpm))
+      }
+      if (pieces.length !== 1 || pieces[0] !== clip) trackChanged = true
+      return pieces
+    })
+    if (!trackChanged) return track
+    changed = true
+    return { ...track, clips }
+  })
+  return changed ? { ...project, tracks } : project
+}
+
+/** Inserts after the track with `afterId`; null or an unknown ID appends at the end (T-04). */
+export function insertTracks(project: Project, afterId: string | null, tracks: readonly Track[]): Project {
+  if (tracks.length === 0) return project
+  const index = afterId === null ? -1 : project.tracks.findIndex(track => track.id === afterId)
+  const at = index < 0 ? project.tracks.length : index + 1
+  return { ...project, tracks: [...project.tracks.slice(0, at), ...tracks, ...project.tracks.slice(at)] }
+}
+
+/** Clip IDs a track-header click selects: those inside the cycle when it is on, otherwise all (A-01). */
+export function cycleClipIds(track: Track, loop: Project['loop']): string[] {
+  const clips = loop.enabled
+    ? track.clips.filter(clip => clip.startBeat < loop.endBeat && clip.startBeat + clip.lengthBeats > loop.startBeat)
+    : track.clips
+  return clips.map(clip => clip.id)
+}
+
+/** Tracks shown in the Tracks area: hidden ones only appear while hide view is on (H-22). */
+export function visibleTracks(project: Project, hideView: boolean): Track[] {
+  return hideView ? project.tracks : project.tracks.filter(track => !track.hidden)
+}
+
+const MAX_MARKER_BEAT = 10_000_000
+
+function sortMarkers(markers: readonly Marker[]): Marker[] {
+  return [...markers].sort((a, b) => a.startBeat - b.startBeat)
+}
+
+export function createMarker(startBeat: number, name: string): Marker {
+  if (!Number.isFinite(startBeat)) throw new Error('Marker position must be a finite number.')
+  const trimmed = name.trim().slice(0, 512)
+  return { id: uid(), name: trimmed || 'Marker', startBeat: Math.max(0, Math.min(MAX_MARKER_BEAT, startBeat)) }
+}
+
+export function addMarker(project: Project, marker: Marker): Project {
+  if (project.markers.some(value => value.id === marker.id)) throw new Error('Marker ID duplicates another marker.')
+  return { ...project, markers: sortMarkers([...project.markers, marker]) }
+}
+
+export function moveMarker(project: Project, markerId: string, startBeat: number): Project {
+  if (!Number.isFinite(startBeat)) throw new Error('Marker position must be a finite number.')
+  const beat = Math.max(0, Math.min(MAX_MARKER_BEAT, startBeat))
+  const marker = project.markers.find(value => value.id === markerId)
+  if (!marker || marker.startBeat === beat) return project
+  return { ...project, markers: sortMarkers(project.markers.map(value => (value.id === markerId ? { ...value, startBeat: beat } : value))) }
+}
+
+export function renameMarker(project: Project, markerId: string, name: string): Project {
+  const trimmed = name.trim().slice(0, 512)
+  const marker = project.markers.find(value => value.id === markerId)
+  if (!marker || !trimmed || marker.name === trimmed) return project
+  return { ...project, markers: project.markers.map(value => (value.id === markerId ? { ...value, name: trimmed } : value)) }
+}
+
+export function deleteMarker(project: Project, markerId: string): Project {
+  if (!project.markers.some(value => value.id === markerId)) return project
+  return { ...project, markers: project.markers.filter(value => value.id !== markerId) }
 }
 
 type RecordValue = Record<string, unknown>
@@ -358,9 +494,35 @@ function number(value: unknown, path: string, min: number, max: number): number 
   return value
 }
 
+function integer(value: unknown, path: string, min: number, max: number): number {
+  const result = number(value, path, min, max)
+  if (!Number.isInteger(result)) throw new Error(`${path} must be an integer.`)
+  return result
+}
+
 function flag(value: unknown, path: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${path} must be true or false.`)
   return value
+}
+
+/** Fields added after the first release: absent means the default (older saved files). */
+function optional<T>(value: unknown, fallback: T, parse: (value: unknown) => T): T {
+  return value === undefined ? fallback : parse(value)
+}
+
+function range(value: unknown, path: string, min: number, max: number): [number, number] {
+  if (!Array.isArray(value) || value.length !== 2) throw new Error(`${path} must be a [low, high] pair.`)
+  const low = integer(value[0], `${path} low`, min, max)
+  const high = integer(value[1], `${path} high`, min, max)
+  if (low > high) throw new Error(`${path} low must not exceed its high value.`)
+  return [low, high]
+}
+
+function quantize(value: unknown, path: string): number {
+  const parsed = number(value, path, 0, 4)
+  const match = QUANTIZE_VALUES.find(grid => Math.abs(grid - parsed) <= 1e-6)
+  if (match === undefined) throw new Error(`${path} must be one of the supported quantize grids.`)
+  return match
 }
 
 function list(value: unknown, path: string, maxLength: number): unknown[] {
@@ -464,6 +626,8 @@ export function validateProject(input: unknown): Project {
         lengthBeats: clipLength,
         gain: number(clip.gain, `${clipPath} gain`, 0, 2),
         ...(clip.mute === undefined ? {} : { mute: flag(clip.mute, `${clipPath} mute`) }),
+        ...(clip.loop === undefined ? {} : { loop: flag(clip.loop, `${clipPath} loop`) }),
+        ...(clip.delayTicks === undefined ? {} : { delayTicks: integer(clip.delayTicks, `${clipPath} delay`, -1920, 1920) }),
       }
       if (clip.kind === 'audio') {
         return {
@@ -479,6 +643,10 @@ export function validateProject(input: unknown): Project {
       return {
         ...base,
         kind: 'midi',
+        ...(clip.quantize === undefined ? {} : { quantize: quantize(clip.quantize, `${clipPath} quantize`) }),
+        ...(clip.swing === undefined ? {} : { swing: number(clip.swing, `${clipPath} swing`, 0, 100) }),
+        ...(clip.transpose === undefined ? {} : { transpose: integer(clip.transpose, `${clipPath} transpose`, -96, 96) }),
+        ...(clip.velocity === undefined ? {} : { velocity: integer(clip.velocity, `${clipPath} velocity`, -99, 99) }),
         notes: list(clip.notes, `${clipPath} notes`, 100_000).map((noteInput, noteIndex): MidiNote => {
           noteCount += 1
           if (noteCount > 1_000_000) throw new Error('The project contains too many notes.')
@@ -506,11 +674,31 @@ export function validateProject(input: unknown): Project {
       pan: number(track.pan, `${path} pan`, -1, 1),
       mute: flag(track.mute, `${path} mute`),
       solo: flag(track.solo, `${path} solo`),
+      soloSafe: optional(track.soloSafe, false, value => flag(value, `${path} solo safe`)),
+      enabled: optional(track.enabled, true, value => flag(value, `${path} enabled`)),
+      armed: optional(track.armed, false, value => flag(value, `${path} armed`)),
+      monitor: optional(track.monitor, false, value => flag(value, `${path} monitor`)),
+      hidden: optional(track.hidden, false, value => flag(value, `${path} hidden`)),
+      transpose: optional(track.transpose, 0, value => integer(value, `${path} transpose`, -96, 96)),
+      velocityOffset: optional(track.velocityOffset, 0, value => integer(value, `${path} velocity offset`, -99, 99)),
+      keyLimit: optional(track.keyLimit, [0, 127], value => range(value, `${path} key limit`, 0, 127)),
+      velocityLimit: optional(track.velocityLimit, [1, 127], value => range(value, `${path} velocity limit`, 1, 127)),
+      delayTicks: optional(track.delayTicks, 0, value => integer(value, `${path} delay`, -1920, 1920)),
+      ...(typeof track.icon === 'string' && track.icon.length > 0 && track.icon.length <= 40 ? { icon: track.icon } : {}),
       clips,
       instrumentParams,
       devices,
     }
   })
+  const markers = sortMarkers(list(source.markers ?? [], 'Markers', 10_000).map((markerInput, markerIndex): Marker => {
+    const path = `Marker ${markerIndex + 1}`
+    const marker = object(markerInput, path)
+    return {
+      id: id(marker.id, `${path} ID`),
+      name: text(marker.name, `${path} name`),
+      startBeat: number(marker.startBeat, `${path} position`, 0, MAX_MARKER_BEAT),
+    }
+  }))
   return {
     schemaVersion: 2,
     id: projectId,
@@ -521,5 +709,6 @@ export function validateProject(input: unknown): Project {
     masterVolume: number(source.masterVolume, 'Master volume', 0, 2),
     loop: { enabled: flag(loop.enabled, 'Loop enabled'), startBeat: loopStart, endBeat: loopEnd },
     tracks,
+    markers,
   }
 }
