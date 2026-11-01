@@ -4,7 +4,7 @@ import {
   addMarker, applyDragMode, createDemoProject, createDevice, createEmptyProject, createMarker, createTrack, cropNotesToClip,
   cycleClipIds, defaultInstrumentParams, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength,
   insertTracks, joinClips, moveClipToPlayhead, moveDevice, moveMarker, renameMarker, splitClip, transposeClip, trimClipEnd,
-  trimClipStart, validateProject, visibleTracks, DEFAULT_TRACK_COLORS, MIN_CLIP_BEATS,
+  trimClipStart, trimClipStarts, validateProject, visibleTracks, DEFAULT_TRACK_COLORS, MIN_CLIP_BEATS,
 } from './project'
 import { instrumentDef } from './instruments'
 import { QUANTIZE_VALUES, type AudioClip, type Clip, type MidiClip, type Project, type Track } from './types'
@@ -423,6 +423,53 @@ describe('drag mode', () => {
     const pieces = result.tracks[0].clips.filter(clip => clip.id !== 'm1' && clip.id !== 'm2')
     expect(pieces.map(clip => [clip.startBeat, clip.startBeat + clip.lengthBeats])).toEqual([[0, 2], [4, 8], [12, 16]])
     expect(pieces.map(clip => (clip.kind === 'audio' ? clip.offsetSeconds : NaN))).toEqual([1, 1 + 4 * 60 / 96, 1 + 12 * 60 / 96])
+  })
+})
+
+describe('batch left trim', () => {
+  it('commits MIDI and audio trims on different tracks together without mutating the source project', () => {
+    const keys = { ...createTrack('instrument'), id: 'keys', clips: [midi()] }
+    const recording = { ...createTrack('audio'), id: 'recording', clips: [audio()] }
+    const untouched = createTrack('instrument', 'pad')
+    const project = { ...projectWith(keys, recording, untouched), bpm: 120 }
+    const before = structuredClone(project)
+    const result = trimClipStarts(project, [
+      { trackId: keys.id, clipId: keys.clips[0].id, newStart: 9.5 },
+      { trackId: recording.id, clipId: recording.clips[0].id, newStart: 9.5 },
+    ])
+    const phrase = result.tracks[0].clips[0] as MidiClip
+    expect(phrase).toMatchObject({ id: 'original-clip', startBeat: 9.5, lengthBeats: 2.5 })
+    expect(timing(phrase)).toEqual([{ pitch: 64, start: 0, duration: 2.5 }, { pitch: 67, start: 0.5, duration: 0.5 }])
+    expect(result.tracks[1].clips[0]).toMatchObject({ id: 'take', startBeat: 9.5, lengthBeats: 6.5, assetId: 'source-wav', offsetSeconds: 1.75 })
+    expect(result.tracks[2]).toBe(untouched)
+    expect(project).toEqual(before)
+  })
+
+  it('resolves no-overlap after the whole batch while protecting every selected region', () => {
+    const track = { ...createTrack('instrument'), id: 't', clips: [clipAt('background', 0, 20), clipAt('first', 8, 4), clipAt('second', 10, 4)] }
+    const project = projectWith(track)
+    const result = trimClipStarts(project, [
+      { trackId: 't', clipId: 'first', newStart: 6 },
+      { trackId: 't', clipId: 'second', newStart: 8 },
+    ], 'noOverlap')
+    const selected = result.tracks[0].clips.filter(clip => clip.id === 'first' || clip.id === 'second')
+    expect(selected.map(clip => [clip.id, clip.startBeat, clip.lengthBeats])).toEqual([['first', 6, 6], ['second', 8, 6]])
+    const surrounding = result.tracks[0].clips.filter(clip => clip.id !== 'first' && clip.id !== 'second')
+    expect(surrounding.map(clip => [clip.startBeat, clip.startBeat + clip.lengthBeats])).toEqual([[0, 6], [14, 20]])
+    expect(project.tracks[0].clips).toHaveLength(3)
+    expect(project.tracks[0].clips[1].startBeat).toBe(8)
+  })
+
+  it('keeps each clip’s minimum length and audio source-offset limit in the batch', () => {
+    const keys = { ...createTrack('instrument'), id: 'keys', clips: [midi()] }
+    const recording = { ...createTrack('audio'), id: 'recording', clips: [audio()] }
+    const project = { ...projectWith(keys, recording), bpm: 120 }
+    const result = trimClipStarts(project, [
+      { trackId: keys.id, clipId: keys.clips[0].id, newStart: 50 },
+      { trackId: recording.id, clipId: recording.clips[0].id, newStart: 0 },
+    ])
+    expect(result.tracks[0].clips[0]).toMatchObject({ startBeat: 12 - MIN_CLIP_BEATS, lengthBeats: MIN_CLIP_BEATS })
+    expect(result.tracks[1].clips[0]).toMatchObject({ startBeat: 6, lengthBeats: 10, offsetSeconds: 0 })
   })
 })
 

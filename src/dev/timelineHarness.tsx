@@ -4,7 +4,7 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AudioAsset, AudioEngine, Project, Track } from '../core/types'
-import { addMarker, applyDragMode, createDemoProject, createMarker, createTrack, cycleClipIds, deleteMarker, duplicateTrack, duplicateTrackSettings, insertTracks, moveMarker, renameMarker, trimClipStart, trimClipEnd } from '../core/project'
+import { addMarker, applyDragMode, createDemoProject, createMarker, createTrack, cycleClipIds, deleteMarker, duplicateTrack, duplicateTrackSettings, insertTracks, moveMarker, renameMarker, trimClipStarts, trimClipEnd } from '../core/project'
 import { clearRecallSolo, pressTrackButton, sweepTrackButton } from '../core/trackActions'
 import { DEFAULT_HEADER_CONFIG, DEFAULT_HEADER_WIDTH } from '../core/trackUi'
 import { Timeline, type TimelineProps, type TimelineUi } from '../components/Timeline'
@@ -87,7 +87,7 @@ function Harness() {
     onLoopChange: loop => { say(`loop ${JSON.stringify(loop)}`); edit(p => ({ ...p, loop })) },
     onSelectClips: (ids, anchor, trackId) => { setSelectedClips(new Set(ids)); setAnchor(anchor); if (trackId) selectTracks(new Set([trackId]), trackId); say(`selectClips ${ids.length} anchor=${anchor?.slice(0, 6) ?? '-'} ${trackId ? track(trackId)?.name : ''}`) },
     onClipMove: (moves, copy) => { say(`clipMove ${moves.length} copy=${copy} ${JSON.stringify(moves[0])}`); edit(p => { let out = { ...p, tracks: p.tracks.map(t => ({ ...t, clips: [...t.clips] })) }; for (const m of moves) { const from = out.tracks.find(t => t.id === m.trackId)!; const i = from.clips.findIndex(c => c.id === m.clipId); if (i < 0) continue; const c = from.clips[i]; let moved = { ...c, startBeat: m.start }; if (m.length !== undefined) moved = trimClipEnd(moved, m.start + m.length); if (copy) moved = { ...moved, id: `${c.id}-copy-${Date.now()}` }; else from.clips.splice(i, 1); const to = out.tracks.find(t => t.id === (m.toTrackId ?? m.trackId))!; to.clips.push(moved) } out = applyDragMode(out, [...new Set(moves.map(m => m.toTrackId ?? m.trackId))], moves.map(m => m.clipId), ui.dragMode); return out }) },
-    onClipTrimStart: (trackId, clipId, newStart) => { say(`trimStart ${newStart.toFixed(2)}`); edit(p => ({ ...p, tracks: p.tracks.map(t => t.id === trackId ? { ...t, clips: t.clips.map(c => c.id === clipId ? trimClipStart(c, newStart, p.bpm) : c) } : t) })) },
+    onClipTrimStart: trims => { say(`trimStart ${trims.length} clips`); edit(p => trimClipStarts(p, trims, ui.dragMode)) },
     onClipLoopToggle: (trackId, clipId) => { say(`loopToggle ${clipId.slice(0, 6)}`); edit(p => ({ ...p, tracks: p.tracks.map(t => t.id === trackId ? { ...t, clips: t.clips.map(c => c.id === clipId ? { ...c, loop: !c.loop } : c) } : t) })) },
     onAddClip: (trackId, b) => say(`addClip ${track(trackId)?.name} @${b}`),
     onAudioDrop: files => say(`audioDrop ${files.length}`),

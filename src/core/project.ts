@@ -413,6 +413,41 @@ export function applyDragMode(project: Project, trackIds: readonly string[], mov
   return changed ? { ...project, tracks } : project
 }
 
+export interface ClipStartTrim {
+  trackId: string
+  clipId: string
+  newStart: number
+}
+
+/** Trims a selection in one project edit, then resolves overlaps with every selected clip protected. */
+export function trimClipStarts(project: Project, trims: readonly ClipStartTrim[], mode: DragMode = 'overlap'): Project {
+  const requests = new Map<string, Map<string, number>>()
+  for (const trim of trims) {
+    let trackRequests = requests.get(trim.trackId)
+    if (!trackRequests) requests.set(trim.trackId, trackRequests = new Map())
+    trackRequests.set(trim.clipId, trim.newStart)
+  }
+  const trackIds = new Set<string>(), clipIds: string[] = []
+  let changed = false
+  const tracks = project.tracks.map(track => {
+    const own = requests.get(track.id)
+    if (!own) return track
+    let trackChanged = false
+    const clips = track.clips.map(clip => {
+      if (!own.has(clip.id)) return clip
+      trackIds.add(track.id)
+      clipIds.push(clip.id)
+      const next = trimClipStart(clip, own.get(clip.id)!, project.bpm)
+      if (next !== clip) trackChanged = true
+      return next
+    })
+    if (!trackChanged) return track
+    changed = true
+    return { ...track, clips }
+  })
+  return applyDragMode(changed ? { ...project, tracks } : project, [...trackIds], clipIds, mode)
+}
+
 /** Inserts after the track with `afterId`; null or an unknown ID appends at the end (T-04). */
 export function insertTracks(project: Project, afterId: string | null, tracks: readonly Track[]): Project {
   if (tracks.length === 0) return project

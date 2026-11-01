@@ -3,6 +3,7 @@ import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, RefObject 
 import type { InstrumentId, MidiClip, MidiNote } from '../core/types'
 import { crossedDragThreshold, dragModifiers, isShortcutSuppressed, isUnmodified, shortcutPlatform, snapDragDelta } from '../core/input'
 import { GM_KIT_NAMES, instrumentDef } from '../core/instruments'
+import { pitchClassName, pitchName } from '../core/pitch'
 import { ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from '../core/zoom'
 import ContextMenu from './ContextMenu'
 import type { ContextMenuItem } from './ContextMenu'
@@ -48,13 +49,11 @@ const LANE_HEIGHT = 52
 const LANE_RANGE = LANE_HEIGHT - 12
 const MIN_LENGTH = 1 / 64
 const MIN_VELOCITY = 1 / 127
-const PITCH_NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B']
 
 // Shared between clips so notes can be copied from one region to another.
 let noteClipboard: MidiNote[] = []
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
-const pitchName = (pitch: number) => `${PITCH_NAMES[((pitch % 12) + 12) % 12]}${Math.floor(pitch / 12) - 1}`
 const isBlackKey = (pitch: number) => [1, 3, 6, 8, 10].includes(pitch % 12)
 const byTime = (a: MidiNote, b: MidiNote) => a.start - b.start || a.pitch - b.pitch
 const sameNote = (a: MidiNote, b: MidiNote) => a.start === b.start && a.pitch === b.pitch && a.duration === b.duration && a.velocity === b.velocity
@@ -828,7 +827,7 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
                 onKeyDown={event => { if (event.key === ' ' || event.key === 'Enter') event.stopPropagation() }}
                 title={`${labelForPitch(pitch)} 미리 듣기 · 이 음높이의 음표 선택`}
                 aria-label={`${labelForPitch(pitch)} 미리 듣기 및 선택`}
-              ><span>{drumMode ? labelForPitch(pitch) : pitch % 12 === 0 || isBlackKey(pitch) ? pitchName(pitch) : PITCH_NAMES[pitch % 12]}</span>{drumMode && <small>{pitch}</small>}</button>)}
+              ><span>{drumMode ? labelForPitch(pitch) : pitch % 12 === 0 || isBlackKey(pitch) ? pitchName(pitch) : pitchClassName(pitch)}</span>{drumMode && <small>{pitch}</small>}</button>)}
             </div>
 
             <div className="piano-grid" ref={canvasRef} style={{ width: gridWidth, height: gridHeight }}
