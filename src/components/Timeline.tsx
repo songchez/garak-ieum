@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AudioAsset, AudioEngine, Clip, Marker, Project, Track } from '../core/types'
-import { MIN_CLIP_BEATS, trimClipStart, visibleTracks } from '../core/project'
+import { MIN_CLIP_BEATS, trimClipStart, visibleTracks, type ClipStartTrim } from '../core/project'
 import { audibleTracks, effectiveArm, type TrackButtonKind } from '../core/trackActions'
+import { isTrackEnabled } from '../core/playback'
+import { previewRegionTracks, type RegionPlacement } from '../core/regionDisplay'
 import { DEFAULT_HEADER_WIDTH, DRAG_MODES, DRAG_MODE_LABELS, HEADER_WIDTH_LIMITS, SNAP_MODE_LABELS, TRACK_ZOOM_LIMITS, resolveSnap, type DragMode, type SnapMode, type TrackHeaderConfig } from '../core/trackUi'
 import { Icon } from './Icon'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
@@ -61,7 +63,7 @@ export interface TimelineProps {
   onLoopChange(loop:{enabled:boolean;startBeat:number;endBeat:number}):void
   onSelectClips(ids:string[],anchor:string|null,trackId?:string):void
   onClipMove(moves:{trackId:string;clipId:string;start:number;length?:number;toTrackId?:string}[],copy:boolean):void
-  onClipTrimStart(trackId:string,clipId:string,newStart:number):void
+  onClipTrimStart(trims:readonly ClipStartTrim[]):void
   onClipLoopToggle(trackId:string,clipId:string):void
   onAddClip(trackId:string,beat:number):void
   onAudioDrop(files:FileList,trackId?:string,beat?:number):void
@@ -281,12 +283,13 @@ export function Timeline(props:TimelineProps){
   const dragMenu=():ContextMenuItem[]=>DRAG_MODES.map(mode=>({label:DRAG_MODE_LABELS[mode],checked:ui.dragMode===mode,onSelect:()=>latest.current.onUiChange({dragMode:mode})}))
 
   /** Move or trim every selected clip together. The grabbed clip decides the row origin. */
-  function beginClipGesture(e:React.PointerEvent<HTMLElement>,track:Track,clip:Clip,mode:GestureMode){
+  function beginClipGesture(e:React.PointerEvent<HTMLElement>,track:Track,clip:Clip,mode:GestureMode,captureTarget?:HTMLElement|null){
     if(e.button!==0)return
     // macOS Ctrl-click is the secondary click; the contextmenu event follows.
     if(MAC&&e.ctrlKey)return
     e.stopPropagation();e.preventDefault();cancelGesture.current?.()
-    const target=e.currentTarget.closest<HTMLElement>('.timeline-clip')??e.currentTarget
+    // A loop repeat may disappear as its region moves. Capture the stable original in that case.
+    const target=captureTarget??e.currentTarget.closest<HTMLElement>('.timeline-clip')??e.currentTarget
     const scroll=scrollRef.current,sheet=sheetRef.current;if(!scroll||!sheet)return
     const wasSelected=selectedClipIds.has(clip.id),toggle=isToggleClick(e)
     let ids:Set<string>
@@ -335,7 +338,7 @@ export function Timeline(props:TimelineProps){
       if(Math.abs(state.dBeat)<1e-9&&state.dRow===0&&!state.copy)return
       if(mode==='move')latest.current.onClipMove(group.map(g=>{const to=rows[g.row+state.dRow];return{trackId:g.track.id,clipId:g.clip.id,start:g.clip.startBeat+state.dBeat,toTrackId:to&&to.id!==g.track.id?to.id:undefined}}),state.copy)
       else if(mode==='trimEnd')latest.current.onClipMove(group.map(g=>({trackId:g.track.id,clipId:g.clip.id,start:g.clip.startBeat,length:trimEndLength(g.clip,state.dBeat)})),false)
-      else for(const g of group)latest.current.onClipTrimStart(g.track.id,g.clip.id,g.clip.startBeat+state.dBeat)
+      else latest.current.onClipTrimStart(group.map(g=>({trackId:g.track.id,clipId:g.clip.id,newStart:g.clip.startBeat+state.dBeat})))
     }})
     cancelGesture.current=stop
   }
@@ -520,10 +523,15 @@ export function Timeline(props:TimelineProps){
 
   function previewFor(track:Track,clip:Clip):Preview|undefined{
     if(!drag||!drag.ids.has(clip.id))return undefined
-    if(drag.mode==='move'){const row=rowIndex.get(track.id)!;return{start:clip.startBeat+drag.dBeat,length:clip.lengthBeats,dy:(drag.rowTops[row+drag.dRow]??0)-(drag.rowTops[row]??0)}}
-    if(drag.mode==='trimEnd')return{start:clip.startBeat,length:trimEndLength(clip,drag.dBeat),dy:0}
-    const trimmed=trimClipStart(clip,clip.startBeat+drag.dBeat,project.bpm);return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0}
+    if(drag.mode==='move'){const row=rowIndex.get(track.id)!,moved={...clip,startBeat:clip.startBeat+drag.dBeat};return{start:moved.startBeat,length:moved.lengthBeats,dy:(drag.rowTops[row+drag.dRow]??0)-(drag.rowTops[row]??0),clip:moved,trackId:rows[row+drag.dRow]?.id??track.id}}
+    if(drag.mode==='trimEnd'){const trimmed={...clip,lengthBeats:trimEndLength(clip,drag.dBeat)};return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0,clip:trimmed,trackId:track.id}}
+    const trimmed=trimClipStart(clip,clip.startBeat+drag.dBeat,project.bpm);return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0,clip:trimmed,trackId:track.id}
   }
+  const clipPreviews=new Map<string,Preview>(),placements=new Map<string,RegionPlacement>()
+  if(drag)for(const track of rows)for(const clip of track.clips){const preview=previewFor(track,clip);if(preview){clipPreviews.set(clip.id,preview);placements.set(clip.id,{clip:preview.clip!,trackId:preview.trackId!})}}
+  const projected=drag?previewRegionTracks(rows,placements,drag.copy):undefined
+  // A copied region needs a temporary distinct ID so its original can stop the new loop.
+  if(projected)for(const [id,placement]of projected.placements){const preview=clipPreviews.get(id);if(preview)clipPreviews.set(id,{...preview,clip:placement.clip})}
   const clipActions:ClipActions={beginClipGesture,clipMenu,loopHandle,select:(trackId,clipId)=>props.onSelectClips([clipId],clipId,trackId),open:(trackId,clipId)=>{if(!selectedClipIds.has(clipId))props.onSelectClips([clipId],clipId,trackId);props.onClipOpen?.(trackId,clipId)},renameDone:(clipId,name)=>props.onClipRename?.(clipId,name)}
   const actions=useRef(clipActions);actions.current=clipActions
   const loopView=loopDraft?{startBeat:loopDraft.start,endBeat:loopDraft.end}:project.loop
@@ -580,15 +588,15 @@ export function Timeline(props:TimelineProps){
             {!markers.length&&<span className="marker-hint">더블 클릭하여 마커 추가</span>}
           </div>
         </div>}
-        {rows.map(track=>{const h=heightOf(track),selected=selectedTrackIds.has(track.id),isFocused=track.id===focusedTrackId,silent=!audible.has(track.id)&&track.enabled,hiddenNow=track.hidden&&ui.hideView
+        {rows.map(track=>{const h=heightOf(track),selected=selectedTrackIds.has(track.id),isFocused=track.id===focusedTrackId,enabled=isTrackEnabled(track),silent=!audible.has(track.id)&&enabled,hiddenNow=track.hidden&&ui.hideView
           const cls=['track-row',h<48?'row-compact':h>=110?'row-large':'']
-          if(selected)cls.push('selected','selected-track');if(isFocused)cls.push('focused');if(silent)cls.push('track-silent');if(!track.enabled)cls.push('track-off');if(hiddenNow)cls.push('track-hidden');if(trackDrop?.ids.has(track.id))cls.push('track-dragging')
+          if(selected)cls.push('selected','selected-track');if(isFocused)cls.push('focused');if(silent)cls.push('track-silent');if(!enabled)cls.push('track-off');if(hiddenNow)cls.push('track-hidden');if(trackDrop?.ids.has(track.id))cls.push('track-dragging')
           return <div className={cls.join(' ')} key={track.id} style={{'--track-color':track.color,'--row-h':`${h}px`,height:h} as React.CSSProperties}>
           <TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine}
             onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}/>
           <div className={`track-lane ${ui.gridLines?'':'no-grid'}`} style={{width,backgroundSize:laneGrid}} onPointerDown={e=>beginMarquee(e,track)} onContextMenu={e=>{if(e.target===e.currentTarget)laneMenu(e,track)}} onDoubleClick={e=>{if(e.target!==e.currentTarget)return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/4)*4)}} onDragOver={e=>{if(e.dataTransfer.files||e.dataTransfer.types.includes('Files'))e.preventDefault()}} onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/4)*4;props.onAudioDrop(e.dataTransfer.files,track.kind==='audio'?track.id:undefined,Math.max(0,beat))}}}>
             {drag?.copy&&track.clips.filter(c=>drag.ids.has(c.id)).map(c=><div key={`ghost-${c.id}`} className="clip-ghost" style={{left:c.startBeat*ppb,width:c.lengthBeats*ppb-2}}/>)}
-            {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={previewFor(track,clip)} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
+            {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
             {!track.clips.length&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'더블 클릭하여 MIDI 클립 만들기'}</span>}
           </div>
         </div>})}

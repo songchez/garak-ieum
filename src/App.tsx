@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react'
 import type { ComponentProps, InputHTMLAttributes } from 'react'
 import { WebAudioEngine } from './audio/WebAudioEngine'
+import { InputCapture } from './audio/InputCapture'
 import type { AudioAsset, AudioClip, Clip, EffectType, InstrumentId, MidiClip, Project, Track } from './core/types'
-import { addMarker, applyDragMode, createDemoProject, createDevice, createEmptyProject, createMarker, createTrack, cycleClipIds, defaultInstrumentParams, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength, insertTracks, joinClips, moveDevice, moveMarker, renameMarker, splitClip, trimClipEnd, trimClipStart, uid, visibleTracks } from './core/project'
+import { addMarker, applyDragMode, createDemoProject, createDevice, createEmptyProject, createMarker, createTrack, cycleClipIds, defaultInstrumentParams, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength, insertTracks, joinClips, moveDevice, moveMarker, renameMarker, splitClip, trimClipEnd, trimClipStart, trimClipStarts, uid, visibleTracks, type ClipStartTrim } from './core/project'
 import { SAMPLE_CREDITS, instrumentDef, previewPitch } from './core/instruments'
 import { exportProjectBundle, importProjectBundle, loadProject, saveProject } from './core/storage'
 import { clearRecallSolo, effectiveArm, implicitlyMuted, monitorTargets, pressTrackButton, recordTarget, sweepTrackButton, type TrackButtonKind, type TrackButtonMods } from './core/trackActions'
@@ -121,11 +122,13 @@ export default function App(){
   const [modal,setModal]=useState<'new'|'export'|'help'|'about'|'newTracks'|null>(null)
   const [recording,setRecording]=useState(false)
   const [recordPreparing,setRecordPreparing]=useState(false)
+  const recordPreparingRef=useRef(false)
+  const recordAttempt=useRef(0)
   const audioInput=useRef<HTMLInputElement>(null)
   const projectInput=useRef<HTMLInputElement>(null)
   const recordRef=useRef<{recorder:MediaRecorder;stream:MediaStream}|null>(null)
   const importTarget=useRef<{trackId?:string;beat?:number}>({})
-  const inputStream=useRef<MediaStream|null>(null),inputPending=useRef<Promise<MediaStream>|null>(null)
+  const [inputCapture]=useState(()=>new InputCapture(()=>navigator.mediaDevices.getUserMedia(INPUT_CONSTRAINTS)))
   const monitorWarned=useRef(false)
   const saveQueue=useRef(Promise.resolve())
   const saveRevision=useRef(0)
@@ -230,23 +233,34 @@ export default function App(){
   },[project,assets,loaded,notify])
   useEffect(()=>{if(!notice)return;const id=window.setTimeout(()=>setNotice(''),7000);return()=>clearTimeout(id)},[notice])
   useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(loaded&&(saveStatus!=='saved'||recording||recordPreparing||busy)){event.preventDefault();event.returnValue=''}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard)},[loaded,saveStatus,recording,recordPreparing,busy])
-  useEffect(()=>{const hide=()=>{engine.pause();if(recordRef.current?.recorder.state==='recording')recordRef.current.recorder.stop()};window.addEventListener('pagehide',hide);return()=>window.removeEventListener('pagehide',hide)},[])
+  useEffect(()=>{const hide=()=>{cancelRecordPreparation();engine.pause();if(recordRef.current?.recorder.state==='recording')recordRef.current.recorder.stop()};window.addEventListener('pagehide',hide);return()=>window.removeEventListener('pagehide',hide)},[])
 
-  // One microphone stream serves recording and input monitoring; it is released once neither needs it.
-  const acquireInput=useCallback(()=>{const s=inputStream.current;if(s?.active)return Promise.resolve(s);inputPending.current??=navigator.mediaDevices.getUserMedia(INPUT_CONSTRAINTS).then(stream=>{inputStream.current=stream;return stream}).finally(()=>{inputPending.current=null});return inputPending.current},[])
-  const releaseInputIfIdle=useCallback(()=>{if(recordRef.current||monitorTargets(projectRef.current,false).length)return;inputStream.current?.getTracks().forEach(t=>t.stop());inputStream.current=null},[])
+  // Recording preparation owns input too, before MediaRecorder has been created.
+  useEffect(()=>()=>{
+    projectSession.current+=1
+    recordAttempt.current+=1
+    recordPreparingRef.current=false
+    const active=recordRef.current
+    recordRef.current=null
+    if(active){active.recorder.onstop=null;active.recorder.ondataavailable=null;active.recorder.onerror=null;if(active.recorder.state!=='inactive')active.recorder.stop()}
+    engine.setInputMonitor(null,[])
+    inputCapture.dispose()
+  },[inputCapture])
   const clearMonitorFlags=useCallback(()=>dispatch({type:'live',edit:p=>p.tracks.some(t=>t.monitor)?{...p,tracks:p.tracks.map(t=>t.monitor?{...t,monitor:false}:t)}:p}),[])
   const monitorKey=monitorIds.join('\n')
   useEffect(()=>{
-    if(!monitorIds.length){engine.setInputMonitor(null,[]);releaseInputIfIdle();return}
-    if(!navigator.mediaDevices?.getUserMedia){notify('이 브라우저에서는 입력 모니터링을 사용할 수 없습니다.');clearMonitorFlags();return}
+    engine.setInputMonitor(null,[])
+    inputCapture.setNeeded('monitor',monitorIds.length>0)
+    if(!monitorIds.length)return
+    if(!navigator.mediaDevices?.getUserMedia){inputCapture.setNeeded('monitor',false);notify('이 브라우저에서는 입력 모니터링을 사용할 수 없습니다.');clearMonitorFlags();return}
     let cancelled=false
-    void(async()=>{try{await engine.resume();const stream=await acquireInput();if(cancelled)return;engine.setInputMonitor(stream,monitorIds);if(!monitorWarned.current&&projectRef.current.tracks.some(t=>t.monitor)){monitorWarned.current=true;notify('피드백을 막으려면 헤드폰을 사용하세요')}}catch(e){if(cancelled)return;notify(`입력 모니터링을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`);clearMonitorFlags()}})()
+    void(async()=>{try{await engine.resume();if(cancelled)return;const stream=await inputCapture.acquire();if(cancelled)return;engine.setInputMonitor(stream,monitorIds);if(!monitorWarned.current&&projectRef.current.tracks.some(t=>t.monitor)){monitorWarned.current=true;notify('피드백을 막으려면 헤드폰을 사용하세요')}}catch(e){if(cancelled)return;inputCapture.setNeeded('monitor',false);notify(`입력 모니터링을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`);clearMonitorFlags()}})()
     return()=>{cancelled=true}
-  },[monitorKey])
+  },[monitorKey,inputCapture])
 
   async function togglePlayback(){try{if(engine.getSnapshot().playing)engine.pause();else await engine.play()}catch(e){notify(`오디오를 시작할 수 없습니다: ${e instanceof Error?e.message:''}`)}}
-  function stop(){if(recordRef.current?.recorder.state==='recording')recordRef.current.recorder.stop();engine.stop()}
+  function cancelRecordPreparation(){if(!recordPreparingRef.current||recordRef.current)return;recordAttempt.current+=1;recordPreparingRef.current=false;setRecordPreparing(false);inputCapture.setNeeded('record',false)}
+  function stop(){cancelRecordPreparation();if(recordRef.current?.recorder.state==='recording')recordRef.current.recorder.stop();engine.stop()}
   function seekPlay(beat:number){engine.seek(Math.max(0,beat));if(!engine.getSnapshot().playing)void togglePlayback()}
   function addMidiClip(trackId:string,beat:number){
     const track=project.tracks.find(t=>t.id===trackId);if(!track)return
@@ -282,7 +296,7 @@ export default function App(){
     if(copy)selectNew(made.map(x=>({trackId:x.target.id,clip:x.clip,from:x.from})))
     else{const a=made.find(x=>x.from===anchorClipId);if(a&&a.target.id!==focusedTrackId){setFocusedTrackId(a.target.id);setSelectedTrackIds(new Set([a.target.id]))}}
   }
-  function trimStart(trackId:string,clipId:string,newStart:number){const next=mapClips(project,new Set([clipId]),c=>trimClipStart(c,newStart,project.bpm));const clip=next.tracks.find(t=>t.id===trackId)?.clips.find(c=>c.id===clipId);apply(clip?withDragMode(next,[{trackId,clip}]):next)}
+  function trimStart(trims:readonly ClipStartTrim[]){apply(trimClipStarts(project,trims,view.dragMode))}
   function deleteClips(entries=selection){if(!entries.length)return;apply(mapClips(project,idsOf(entries),()=>null));breakHistoryMerge();setSelectedClipIds(new Set());setAnchorClipId(null)}
   function copySelection(){if(!requireSelection('복사할 클립을 선택해주세요.'))return false;clipboard.current={items:selection.map(e=>({clip:e.clip,row:e.row,kind:e.track.kind})),base:selectionStart(),topRow:Math.min(...selection.map(e=>e.row))};return true}
   /** Pastes at the playhead, keeping relative timing and track offsets when the kinds match. */
@@ -529,27 +543,49 @@ export default function App(){
   }
   function addStoredAsset(asset:AudioAsset){const clip:AudioClip={id:uid(),kind:'audio',assetId:asset.id,name:asset.name.replace(/\.[^.]+$/,''),startBeat:Math.floor(engine.getSnapshot().beat/4)*4,lengthBeats:asset.buffer.duration*project.bpm/60,offsetSeconds:0,gain:1,fadeIn:.005,fadeOut:.01};let target=focusedTrack?.kind==='audio'?focusedTrack:createTrack('audio');target={...target,clips:[...target.clips,clip]};const targetId=target.id;commit(p=>withDragMode({...p,lengthBeats:Math.max(p.lengthBeats,Math.ceil((clip.startBeat+clip.lengthBeats)/4)*4),tracks:p.tracks.some(t=>t.id===targetId)?p.tracks.map(t=>t.id===targetId?target:t):[...p.tracks,target]},[{trackId:targetId,clip}]));selectClips([clip.id],clip.id,targetId)}
   async function saveBundle(){setBusy('프로젝트를 묶는 중…');try{downloadBlob(await exportProjectBundle(project,assets),`${safeFilename(project.name)}.garak`);notify('프로젝트와 원본 음원을 함께 내려받았습니다.')}catch(e){notify(`프로젝트 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
-  async function openBundle(file:File){if(recordRef.current||recordPreparing||busy){notify('녹음이나 파일 처리가 끝난 뒤 프로젝트를 열어주세요.');return}const session=++projectSession.current;setBusy('프로젝트를 여는 중…');try{const data=await importProjectBundle(file);const decoded=await Promise.all(data.assets.map(a=>engine.decodeAsset(a.blob,a.name,a.id)));if(session!==projectSession.current)return;engine.stop();const next=new Map(decoded.map(a=>[a.id,a]));engine.setAssets(next);setAssets(next);breakHistoryMerge();dispatch({type:'reset',project:data.project});const first=data.project.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'');notify('프로젝트를 불러왔습니다.')}catch(e){notify(`프로젝트를 열지 못했습니다: ${e instanceof Error?e.message:''}`)}finally{setBusy('');if(projectInput.current)projectInput.current.value=''}}
+  async function openBundle(file:File){if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 프로젝트를 열어주세요.');return}const session=++projectSession.current;setBusy('프로젝트를 여는 중…');try{const data=await importProjectBundle(file);const decoded=await Promise.all(data.assets.map(a=>engine.decodeAsset(a.blob,a.name,a.id)));if(session!==projectSession.current)return;engine.stop();const next=new Map(decoded.map(a=>[a.id,a]));engine.setAssets(next);setAssets(next);breakHistoryMerge();dispatch({type:'reset',project:data.project});const first=data.project.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'');notify('프로젝트를 불러왔습니다.')}catch(e){notify(`프로젝트를 열지 못했습니다: ${e instanceof Error?e.message:''}`)}finally{setBusy('');if(projectInput.current)projectInput.current.value=''}}
   async function exportWav(){setModal(null);setBusy('오디오를 렌더링하는 중…');try{const blob=await engine.exportWav(project);downloadBlob(blob,`${safeFilename(project.name)}.wav`);notify('스테레오 WAV 파일을 내보냈습니다.')}catch(e){notify(`오디오 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
   /** Records onto the topmost armed audio track, else the focused audio track, else a new audio track (§2.5). */
   async function toggleRecord(){
     if(recordRef.current?.recorder.state==='recording'){recordRef.current.recorder.stop();engine.pause();return}
+    if(recordRef.current||recordPreparingRef.current)return
     if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){notify('이 브라우저에서는 마이크 녹음을 사용할 수 없습니다.');return}
     if(busy){notify('파일 처리가 끝난 뒤 녹음을 시작해주세요.');return}
     const target=recordTarget(project,focusedTrackId)
     if(target.reason==='focusedInstrument'){notify('MIDI 녹음은 아직 지원하지 않습니다');return}
     if(target.extraArmed.length)notify('한 번에 한 트랙만 녹음합니다')
     const session=projectSession.current
+    const attempt=++recordAttempt.current
+    const current=()=>session===projectSession.current&&attempt===recordAttempt.current
+    recordPreparingRef.current=true
     setRecordPreparing(true)
+    inputCapture.setNeeded('record',true)
+    let pendingRecorder:MediaRecorder|null=null
     try{
-      await engine.resume();const stream=await acquireInput();if(session!==projectSession.current){releaseInputIfIdle();return}
+      await engine.resume();if(!current())return
+      const stream=await inputCapture.acquire();if(!current())return
       const chunks:Blob[]=[];const mime=['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus'].find(t=>MediaRecorder.isTypeSupported(t));const recorder=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);const beat=engine.getSnapshot().beat;const bpm=project.bpm;const trackId=target.trackId??undefined
-      recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onerror=()=>notify('녹음 중 오류가 발생했습니다.')
-      recorder.onstop=()=>{recordRef.current=null;setRecording(false);releaseInputIfIdle();if(session!==projectSession.current)return;setBusy('녹음 파일을 처리하는 중…');void(async()=>{try{const blob=new Blob(chunks,{type:recorder.mimeType});if(!blob.size)return;const name=`Recording ${new Date().toLocaleTimeString('ko-KR',{hour12:false})}`;const asset=await engine.decodeAsset(blob,name);if(session!==projectSession.current)return;setAssets(prev=>{const next=new Map(prev);next.set(asset.id,asset);return next});const clip:AudioClip={id:uid(),kind:'audio',name,startBeat:beat,lengthBeats:asset.buffer.duration*bpm/60,gain:1,assetId:asset.id,offsetSeconds:0,fadeIn:.005,fadeOut:.01};const newTrack=createTrack('audio');newTrack.name='Recording';const destination=trackId??newTrack.id;commit(p=>{const tracks=p.tracks.some(t=>t.id===destination)?p.tracks:[...p.tracks,{...newTrack,id:destination}];return{...p,lengthBeats:Math.max(p.lengthBeats,Math.ceil((beat+clip.lengthBeats)/4)*4),tracks:tracks.map(t=>t.id===destination?{...t,clips:[...t.clips,clip]}:t)}});selectClips([clip.id],clip.id,destination);notify('녹음을 오디오 클립으로 추가했습니다.')}catch(e){notify(`녹음 처리 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}})()}
+      pendingRecorder=recorder
+      recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onerror=()=>{if(current())notify('녹음 중 오류가 발생했습니다.')}
+      recorder.onstop=()=>{
+        if(recordRef.current?.recorder!==recorder)return
+        recordRef.current=null
+        inputCapture.setNeeded('record',false)
+        if(!current())return
+        setRecording(false);setBusy('녹음 파일을 처리하는 중…')
+        void(async()=>{try{const blob=new Blob(chunks,{type:recorder.mimeType});if(!blob.size)return;const name=`Recording ${new Date().toLocaleTimeString('ko-KR',{hour12:false})}`;const asset=await engine.decodeAsset(blob,name);if(session!==projectSession.current)return;setAssets(prev=>{const next=new Map(prev);next.set(asset.id,asset);return next});const clip:AudioClip={id:uid(),kind:'audio',name,startBeat:beat,lengthBeats:asset.buffer.duration*bpm/60,gain:1,assetId:asset.id,offsetSeconds:0,fadeIn:.005,fadeOut:.01};const newTrack=createTrack('audio');newTrack.name='Recording';const destination=trackId??newTrack.id;commit(p=>{const tracks=p.tracks.some(t=>t.id===destination)?p.tracks:[...p.tracks,{...newTrack,id:destination}];return{...p,lengthBeats:Math.max(p.lengthBeats,Math.ceil((beat+clip.lengthBeats)/4)*4),tracks:tracks.map(t=>t.id===destination?{...t,clips:[...t.clips,clip]}:t)}});selectClips([clip.id],clip.id,destination);notify('녹음을 오디오 클립으로 추가했습니다.')}catch(e){if(session===projectSession.current)notify(`녹음 처리 실패: ${e instanceof Error?e.message:''}`)}finally{if(session===projectSession.current)setBusy('')}})()
+      }
       recordRef.current={recorder,stream};recorder.start(100);setRecording(true);if(!engine.getSnapshot().playing)await engine.play()
-    }catch(e){recordRef.current=null;setRecording(false);releaseInputIfIdle();notify(`녹음을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`)}finally{setRecordPreparing(false)}
+    }catch(e){
+      if(pendingRecorder){pendingRecorder.onstop=null;pendingRecorder.ondataavailable=null;pendingRecorder.onerror=null;if(pendingRecorder.state!=='inactive')pendingRecorder.stop()}
+      if(!current())return
+      recordRef.current=null;setRecording(false);inputCapture.setNeeded('record',false)
+      notify(`녹음을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`)
+    }finally{
+      if(current()){recordPreparingRef.current=false;setRecordPreparing(false);inputCapture.setNeeded('record',recordRef.current!==null)}
+    }
   }
-  function newProject(demo=false){if(recordRef.current||recordPreparing||busy){notify('녹음이나 파일 처리가 끝난 뒤 새 프로젝트를 시작해주세요.');return}projectSession.current+=1;stop();setAssets(new Map());engine.setAssets(new Map());const next=demo?createDemoProject():createEmptyProject();breakHistoryMerge();dispatch({type:'reset',project:next});const first=next.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'',first?[first.id]:[]);setModal(null);notify(demo?'Midnight Sketches 데모를 열었습니다.':'새로운 프로젝트를 시작합니다.')}
+  function newProject(demo=false){if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 새 프로젝트를 시작해주세요.');return}projectSession.current+=1;stop();setAssets(new Map());engine.setAssets(new Map());const next=demo?createDemoProject():createEmptyProject();breakHistoryMerge();dispatch({type:'reset',project:next});const first=next.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'',first?[first.id]:[]);setModal(null);notify(demo?'Midnight Sketches 데모를 열었습니다.':'새로운 프로젝트를 시작합니다.')}
 
   useEffect(()=>{
     const handler=(e:KeyboardEvent)=>{

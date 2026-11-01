@@ -2,16 +2,18 @@
 
 기준: [`LOGIC_REFERENCE.md`](LOGIC_REFERENCE.md) (로직 프로 12.3). 대상: 트랙 영역·트랙 헤더·인스펙터·라이브러리·믹서 대응 항목. 조사 시점 코드: `src/App.tsx`, `src/components/Timeline.tsx`, `src/components/Mixer.tsx`, `src/core/*`, `src/audio/graph.ts`, `src/audio/WebAudioEngine.ts`.
 
+**2026-11-01 상태 안내:** 아래 대조표는 A–F 작업을 나눌 때의 격차와 설계 근거를 보관한 문서입니다. A·B·C·D의 주요 구현은 `46bd454`에 포함됐으며, 이번 E/F 후속 패스에서 루프 콘텐츠·부분 반복·뮤트 색상·리전 전용 이조 접미사·반복 블록 포커스, 피치 **MIDI 60=C3** 통일, 단축키 문서 동기화를 반영했습니다. 현재 구현·테스트·남은 장치 검증은 [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md), 실제 키맵은 [SHORTCUTS](SHORTCUTS.md)를 기준으로 합니다. 이 표의 조사 당시 `없음`·`다름`을 현재 미구현 목록으로 읽지 않습니다. 루프 끝 직접 지정 등 P2/P3 항목과 실제 청취 검증은 완료 표시하지 않습니다.
+
 표기
 - 상태: **동일** / **다름** / **없음**.
 - `해야 할 일` 맨 앞 굵은 글자 = 담당 패스(A–F, 4절). `[P1]` 이번 목표 필수, `[P2]` 다음 단계, `[P3]` 후순위. `⚠️` = 레퍼런스 미확인이라 이 문서가 정한 동작.
-- 키 표기는 macOS 기준. Windows/Linux 변환 규칙은 1.12절.
+- 키 표기는 macOS 기준. Windows/Linux 변환 규칙은 1.13절과 현재 [단축키 문서](SHORTCUTS.md)를 봅니다.
 - P2/P3 항목은 구현 전까지 메뉴·UI에 **보이지 않게** 합니다(비활성 표시 금지, §9 규칙과 동일).
 
 ## 0. 제외 (LOGIC_REFERENCE §9 + 이번 조사로 추가 제안)
 
 - §9: Track Stack(▸ 펼침, 생성/평탄화), 대체 트랙, 프리즈, 보호, 외부 MIDI, Session Player, Flex, 오토메이션(A, 오토메이션 줄·모드 색·통합), 글로벌 트랙 Movie·Beat Mapping·Chord, VCA, 제어판 막대, 그루브 트랙.
-- 추가 제안(§9에 반영 필요): 트랙 재할당 ▸(채널 스트립 객체 없음), "동일한 악기가 있는 새로운 트랙"/⇧클릭 복제(같은 채널 공유 구조 없음), Aux·출력 트랙(오토메이션 의존), Pattern 트랙, 센드, 그룹, 오디오 리전 트랜스포즈·퀀타이즈·Smart Tempo·File Tempo(Flex 의존), 추가 이름 열(외부 MIDI 채널용, ⚠️ 미문서).
+- 추가 제외 범위(2026-11-01 LOGIC_REFERENCE §9에 동기화): 트랙 재할당 ▸(채널 스트립 객체 없음), "동일한 악기가 있는 새로운 트랙"/⇧클릭 복제(같은 채널 공유 구조 없음), Aux·출력 트랙(오토메이션 의존), Pattern 트랙, 센드, 그룹, 오디오 리전 트랜스포즈·퀀타이즈·Smart Tempo·File Tempo(Flex 의존), 추가 이름 열(외부 MIDI 채널용, ⚠️ 미문서).
 
 ## 1. 대조표
 

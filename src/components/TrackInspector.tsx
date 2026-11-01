@@ -1,19 +1,11 @@
 import { useState } from 'react'
 import type { InstrumentId, Track } from '../core/types'
 import { instrumentDef } from '../core/instruments'
+import { parsePitchName, pitchName } from '../core/pitch'
 import { Icon } from './Icon'
 import { InstrumentOptions } from './InstrumentOptions'
 import { ValueField, signed, ticksToMs } from './RegionInspector'
 
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-// Logic naming: middle C (60) = C3, so 0 = C-2 and 127 = G8. The piano roll still labels 60 as C4; unifying the two is pending (LOGIC_GAP pass F).
-export const noteName = (midi: number) => `${NOTE_NAMES[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 2}`
-export function parseNoteName(text: string): number | null {
-  const m = /^\s*([A-Ga-g])\s*(#|♯|b|♭)?\s*(-?\d+)\s*$/.exec(text)
-  if (!m) { const n = Number(text); return Number.isFinite(n) ? n : null }
-  const base = NOTE_NAMES.indexOf(m[1].toUpperCase()) + (m[2] === '#' || m[2] === '♯' ? 1 : m[2] ? -1 : 0)
-  return (Number(m[3]) + 2) * 12 + base
-}
 export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : instrumentDef(track.instrument).icon)
 
 function TextField({ value, onCommit, ariaLabel }: { value: string; onCommit: (name: string) => void; ariaLabel: string }) {
@@ -55,7 +47,7 @@ export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, 
       <div className="insp-row"><span className="insp-label">악기</span><select className="insp-select" aria-label="악기 변경" value={track.instrument} onChange={e => onInstrumentChange(id, e.target.value)}><InstrumentOptions /></select></div>
       <div className="insp-row"><span className="insp-label">트랜스포즈</span><ValueField value={track.transpose} min={-96} max={96} format={signed} ariaLabel="트랙 트랜스포즈" onChange={transpose => patch({ transpose }, 'transpose')} /></div>
       <div className="insp-row"><span className="insp-label">벨로시티 오프셋</span><ValueField value={track.velocityOffset} min={-99} max={99} format={signed} ariaLabel="트랙 벨로시티 오프셋" onChange={velocityOffset => patch({ velocityOffset }, 'velocityOffset')} /></div>
-      {limit('키 제한', 'keyLimit', 0, 127, noteName, parseNoteName)}
+      {limit('키 제한', 'keyLimit', 0, 127, pitchName, parsePitchName)}
       {limit('벨로시티 제한', 'velocityLimit', 1, 127)}
     </>}
     <div className="insp-row"><span className="insp-label">딜레이</span><ValueField value={track.delayTicks} min={-1920} max={1920} format={v => `${signed(v)} 틱`} ariaLabel="트랙 딜레이" onChange={delayTicks => patch({ delayTicks }, 'delayTicks')} /><small className="insp-unit">{`${delayMs < 0 ? '−' : ''}${Math.abs(delayMs).toFixed(1)} ms`}</small></div>
