@@ -21,13 +21,13 @@
 
 .brand-wordmark {
   display: block;
-  height: 26px;
+  height: 18px;
   width: auto;
   object-fit: contain;
 }
 
-.brand-lockup--compact { gap: 8px; }
-.brand-lockup--compact .brand-logo { border-radius: 6px; }
+.brand-lockup--compact { gap: 6px; }
+.brand-lockup--compact .brand-logo { border-radius: 4px; }
 
 .brand-lockup--large {
   gap: 18px;
@@ -47,7 +47,5 @@
 .font-credit a { text-decoration: underline; text-underline-offset: 3px; }
 
 @media (max-width: 780px) {
-  .brand-lockup--compact { gap: 6px; }
-  .brand-lockup--compact .brand-logo { width: 24px; height: 24px; }
-  .brand-lockup--compact .brand-wordmark { height: 22px; }
+  .brand-lockup--compact { gap: 5px; }
 }
