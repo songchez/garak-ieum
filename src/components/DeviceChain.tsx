@@ -35,10 +35,10 @@ const Wire=()=><span className="dc-wire" aria-hidden="true"><i/><Icon name="righ
 function SampleCredit({engine,setId}:{engine:AudioEngine;setId:string}){
   const status=useSyncExternalStore(engine.subscribeSamples,()=>engine.sampleStatus(setId),()=>'idle' as const)
   const credit=engine.sampleAttribution(setId)
-  if(status==='error')return <p className="dc-credit error">샘플을 불러오지 못했습니다</p>
+  if(status==='error')return <p className="dc-credit error" data-selectable-text="" tabIndex={0}>샘플을 불러오지 못했습니다</p>
   if(status==='loading')return <p className="dc-credit">샘플을 불러오는 중…</p>
   if(!credit)return null
-  return <p className="dc-credit" title={`${credit.title} — ${credit.author}, ${credit.license}`}>{credit.title} — {credit.author}, {credit.license}</p>
+  return <p className="dc-credit" data-selectable-text="" tabIndex={0} title={`${credit.title} — ${credit.author}, ${credit.license}`}>{credit.title} — {credit.author}, {credit.license}</p>
 }
 
 export function DeviceChain({track,engine,scale=1,onScaleChange,zoomRef,...on}:Props){
@@ -51,7 +51,7 @@ export function DeviceChain({track,engine,scale=1,onScaleChange,zoomRef,...on}:P
   useZoomHandle(zoomRef,{zoom:(_axis,factor)=>zoom(factor),fit:reset})
   useZoomWheel(rackRef,{onZoomX:(factor,x)=>zoom(factor,x),onZoomY:factor=>zoom(factor)})
   useLayoutEffect(()=>{const a=anchor.current;anchor.current=null;const el=chainRef.current;if(a&&el)el.scrollLeft=Math.max(0,a.pos*scale-a.px)})
-  return <div className="dc-rack" ref={rackRef} data-keyboard-scope="devices" tabIndex={-1} aria-label="디바이스 랙" style={{'--device-scale':scale} as React.CSSProperties} onPointerDown={e=>{if(e.target instanceof Element&&!e.target.closest('button,input,textarea,select,a[href],[role="slider"]'))e.currentTarget.focus({preventScroll:true})}}><div className="device-chain" ref={chainRef} role="list" aria-label={`${track.name} 디바이스 체인`} style={{'--track-color':track.color} as React.CSSProperties}>
+  return <div className="dc-rack" ref={rackRef} data-keyboard-scope="devices" tabIndex={-1} aria-label="디바이스 랙" style={{'--device-scale':scale} as React.CSSProperties} onPointerDown={e=>{if(e.target instanceof Element&&!e.target.closest('button,input,textarea,select,a[href],[data-selectable-text],[role="slider"]'))e.currentTarget.focus({preventScroll:true})}}><div className="device-chain" ref={chainRef} role="list" aria-label={`${track.name} 디바이스 체인`} style={{'--track-color':track.color} as React.CSSProperties}>
     {track.kind==='instrument'?<section className="dc-card dc-source" role="listitem" aria-label={`악기 ${def.name}`}>
       <header className="dc-head"><span className="dc-icon"><Icon name={def.icon} size={14}/></span><select aria-label="악기 변경" value={track.instrument} onChange={e=>on.onInstrumentChange(e.target.value)}><InstrumentOptions/></select><button className="dc-preview" onClick={on.onPreview} title="현재 설정으로 미리 듣기"><Icon name="play" size={10}/>미리 듣기</button></header>
       <div className="dc-knobs" style={{'--cols':Math.ceil(defs.length/2)} as React.CSSProperties}>{defs.map(d=><Knob key={d.id} def={d} value={paramValue(defs,track.instrumentParams,d.id)} color={track.color} onChange={v=>on.onInstrumentParam(d.id,v)}/>)}</div>
