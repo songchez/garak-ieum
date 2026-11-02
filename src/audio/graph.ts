@@ -1,22 +1,20 @@
-import { EFFECT_DEFS, SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, paramValue } from '../core/devices'
+import { SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, paramValue } from '../core/devices'
 import { instrumentDef } from '../core/instruments'
 import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../core/playback'
 import type { AudioWindow, PlaybackNote } from '../core/playback'
-import type { AudioAsset, AudioClip, EffectType, InstrumentId, Project, Track } from '../core/types'
+import type { AudioAsset, AudioClip, InstrumentId, Project, Track } from '../core/types'
 import { clamp, clipEnvelope, secondsPerBeat } from './math'
 import { pickZone, type LoadedSet, type SampleLibrary } from './samples'
+import type { DeviceGraph } from '../devices/contracts'
+export type { DeviceGraph } from '../devices/contracts'
+import { EFFECT_MODULES } from '../devices/effects/registry'
+import { dbToGain, randomGenerator, setParameter } from '../devices/effects/shared'
 
 type SourceNode = AudioBufferSourceNode | OscillatorNode
 
 export interface Voice {
   stop(at: number): void
   disconnect(): void
-}
-
-export interface DeviceGraph {
-  input: AudioNode
-  output: AudioNode
-  update(params: Record<string, number>, bpm: number, now: number, smooth: boolean): void
 }
 
 /** The last voice started per sample choke group, so a closed hat can cut an open one. */
@@ -47,22 +45,8 @@ export interface EngineGraph {
 }
 
 const noiseBuffers = new WeakMap<BaseAudioContext, AudioBuffer>()
-const impulseBuffers = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>()
-const IMPULSES = {
-  small: { seconds: 1.7, seed: 9183 },
-  large: { seconds: 4.2, seed: 61427 },
-}
-let driveCurve: Float32Array<ArrayBuffer> | null = null
 let tineCurve: Float32Array<ArrayBuffer> | null = null
 const SAMPLE_TRIM_DB = -6
-
-function randomGenerator(seed: number): () => number {
-  let state = seed >>> 0
-  return () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0
-    return state / 0xffffffff
-  }
-}
 
 function noiseBuffer(context: BaseAudioContext): AudioBuffer {
   const existing = noiseBuffers.get(context)
@@ -73,39 +57,6 @@ function noiseBuffer(context: BaseAudioContext): AudioBuffer {
   for (let frame = 0; frame < values.length; frame += 1) values[frame] = random() * 2 - 1
   noiseBuffers.set(context, buffer)
   return buffer
-}
-
-function impulseBuffer(context: BaseAudioContext, kind: keyof typeof IMPULSES): AudioBuffer {
-  let cache = impulseBuffers.get(context)
-  if (!cache) {
-    cache = new Map()
-    impulseBuffers.set(context, cache)
-  }
-  const existing = cache.get(kind)
-  if (existing) return existing
-  const { seconds, seed } = IMPULSES[kind]
-  const length = Math.ceil(context.sampleRate * seconds)
-  const buffer = context.createBuffer(2, length, context.sampleRate)
-  const random = randomGenerator(seed)
-  for (let channel = 0; channel < 2; channel += 1) {
-    const values = buffer.getChannelData(channel)
-    for (let frame = 0; frame < length; frame += 1) {
-      values[frame] = (random() * 2 - 1) * Math.pow(1 - frame / length, 3.6)
-    }
-  }
-  cache.set(kind, buffer)
-  return buffer
-}
-
-function shaperCurve(): Float32Array<ArrayBuffer> {
-  if (driveCurve) return driveCurve
-  const points = 2048
-  driveCurve = new Float32Array(points)
-  for (let point = 0; point < points; point += 1) {
-    const x = point / (points - 1) * 2 - 1
-    driveCurve[point] = Math.tanh(2.5 * x) / Math.tanh(2.5)
-  }
-  return driveCurve
 }
 
 /** Mild asymmetric soft clip: adds the even harmonics of an electric piano preamp. */
@@ -119,161 +70,6 @@ function tineShaperCurve(): Float32Array<ArrayBuffer> {
     tineCurve[point] = Math.tanh(1.2 * x + 0.25 * x * x) / top
   }
   return tineCurve
-}
-
-function setParameter(parameter: AudioParam, value: number, now: number, smooth: boolean): void {
-  parameter.cancelScheduledValues(now)
-  if (smooth) parameter.setTargetAtTime(value, now, 0.012)
-  else parameter.setValueAtTime(value, now)
-}
-
-const dbToGain = (db: number): number => Math.pow(10, db / 20)
-
-const effectParam = (type: EffectType, params: Record<string, number> | undefined) =>
-  (id: string): number => paramValue(EFFECT_DEFS[type].params, params, id)
-
-type Remember = <T extends AudioNode>(node: T) => T
-
-const FILTER_MODES: BiquadFilterType[] = ['lowpass', 'highpass', 'bandpass']
-
-const DEVICE_FACTORIES: Record<EffectType, (context: BaseAudioContext, remember: Remember) => DeviceGraph> = {
-  eq(context, remember) {
-    const low = remember(context.createBiquadFilter())
-    const mid = remember(context.createBiquadFilter())
-    const high = remember(context.createBiquadFilter())
-    low.type = 'lowshelf'
-    low.frequency.value = 220
-    mid.type = 'peaking'
-    mid.Q.value = 0.9
-    high.type = 'highshelf'
-    high.frequency.value = 4500
-    low.connect(mid).connect(high)
-    return {
-      input: low,
-      output: high,
-      update(params, _bpm, now, smooth) {
-        const p = effectParam('eq', params)
-        setParameter(low.gain, clamp(p('low'), -40, 40), now, smooth)
-        setParameter(mid.frequency, clamp(p('midFreq'), 20, context.sampleRate * 0.45), now, smooth)
-        setParameter(mid.gain, clamp(p('mid'), -40, 40), now, smooth)
-        setParameter(high.gain, clamp(p('high'), -40, 40), now, smooth)
-      },
-    }
-  },
-  filter(context, remember) {
-    const filter = remember(context.createBiquadFilter())
-    return {
-      input: filter,
-      output: filter,
-      update(params, _bpm, now, smooth) {
-        const p = effectParam('filter', params)
-        const type = FILTER_MODES[clamp(Math.round(p('mode')), 0, FILTER_MODES.length - 1)]
-        if (filter.type !== type) filter.type = type
-        setParameter(filter.frequency, clamp(p('cutoff'), 10, context.sampleRate * 0.45), now, smooth)
-        setParameter(filter.Q, clamp(p('resonance'), 0.0001, 40), now, smooth)
-      },
-    }
-  },
-  compressor(context, remember) {
-    const compressor = remember(context.createDynamicsCompressor())
-    const makeup = remember(context.createGain())
-    compressor.knee.value = 6
-    compressor.connect(makeup)
-    return {
-      input: compressor,
-      output: makeup,
-      update(params, _bpm, now, smooth) {
-        const p = effectParam('compressor', params)
-        setParameter(compressor.threshold, clamp(p('threshold'), -100, 0), now, smooth)
-        setParameter(compressor.ratio, clamp(p('ratio'), 1, 20), now, smooth)
-        setParameter(compressor.attack, clamp(p('attack') / 1000, 0, 1), now, smooth)
-        setParameter(compressor.release, clamp(p('release') / 1000, 0, 1), now, smooth)
-        setParameter(makeup.gain, dbToGain(clamp(p('makeup'), -60, 40)), now, smooth)
-      },
-    }
-  },
-  drive(context, remember) {
-    const input = remember(context.createGain())
-    const dry = remember(context.createGain())
-    const pre = remember(context.createGain())
-    const shaper = remember(context.createWaveShaper())
-    const tone = remember(context.createBiquadFilter())
-    const post = remember(context.createGain())
-    const wet = remember(context.createGain())
-    const output = remember(context.createGain())
-    shaper.curve = shaperCurve()
-    shaper.oversample = '2x'
-    tone.type = 'lowpass'
-    input.connect(dry).connect(output)
-    input.connect(pre).connect(shaper).connect(tone).connect(post).connect(wet).connect(output)
-    return {
-      input,
-      output,
-      update(params, _bpm, now, smooth) {
-        const p = effectParam('drive', params)
-        const mix = clamp(p('mix'), 0, 1)
-        const outputGain = dbToGain(clamp(p('output'), -60, 24))
-        const preGain = dbToGain(clamp(p('drive'), -24, 48))
-        setParameter(dry.gain, (1 - mix) * outputGain, now, smooth)
-        setParameter(pre.gain, preGain, now, smooth)
-        setParameter(tone.frequency, clamp(p('tone'), 10, context.sampleRate * 0.45), now, smooth)
-        setParameter(post.gain, outputGain / Math.sqrt(preGain * 2.53), now, smooth)
-        setParameter(wet.gain, mix, now, smooth)
-      },
-    }
-  },
-  delay(context, remember) {
-    const input = remember(context.createGain())
-    const output = remember(context.createGain())
-    const delay = remember(context.createDelay(4))
-    const wet = remember(context.createGain())
-    const tone = remember(context.createBiquadFilter())
-    const feedback = remember(context.createGain())
-    tone.type = 'lowpass'
-    input.connect(output)
-    input.connect(delay).connect(wet).connect(output)
-    delay.connect(tone).connect(feedback).connect(delay)
-    return {
-      input,
-      output,
-      update(params, bpm, now, smooth) {
-        const p = effectParam('delay', params)
-        setParameter(delay.delayTime, clamp(p('time') * secondsPerBeat(bpm), 0, 3.9), now, smooth)
-        setParameter(wet.gain, clamp(p('amount'), 0, 1) * 0.45, now, smooth)
-        setParameter(tone.frequency, clamp(p('tone'), 10, context.sampleRate * 0.45), now, smooth)
-        setParameter(feedback.gain, clamp(p('feedback'), 0, 0.95), now, smooth)
-      },
-    }
-  },
-  reverb(context, remember) {
-    const input = remember(context.createGain())
-    const output = remember(context.createGain())
-    const small = remember(context.createConvolver())
-    const large = remember(context.createConvolver())
-    const smallGain = remember(context.createGain())
-    const largeGain = remember(context.createGain())
-    const tone = remember(context.createBiquadFilter())
-    const wet = remember(context.createGain())
-    small.buffer = impulseBuffer(context, 'small')
-    large.buffer = impulseBuffer(context, 'large')
-    tone.type = 'lowpass'
-    input.connect(output)
-    input.connect(small).connect(smallGain).connect(tone)
-    input.connect(large).connect(largeGain).connect(tone)
-    tone.connect(wet).connect(output)
-    return {
-      input,
-      output,
-      update(params, _bpm, now, smooth) {
-        const p = effectParam('reverb', params)
-        const size = clamp(p('size'), 0, 1)
-        setParameter(smallGain.gain, 1 - size, now, smooth)
-        setParameter(largeGain.gain, size, now, smooth)
-        setParameter(tone.frequency, clamp(p('tone'), 10, context.sampleRate * 0.45), now, smooth)
-        setParameter(wet.gain, clamp(p('amount'), 0, 1) * 0.5, now, smooth)
-      },
-    }
-  },
 }
 
 export function updateGraph(graph: EngineGraph, project: Project, smooth = true): void {
@@ -301,15 +97,7 @@ export function renderTailSeconds(project: Project): number {
     } else if (track.kind === 'instrument' && def.kind === 'sampled') tail = Math.max(tail, 2)
     for (const device of track.devices) {
       if (!device.enabled) continue
-      const p = effectParam(device.type, device.params)
-      if (device.type === 'reverb' && p('amount') > 0) {
-        tail = Math.max(tail, 0.85 + 1.7 + clamp(p('size'), 0, 1) * 2.5)
-      } else if (device.type === 'delay' && p('amount') > 0) {
-        const feedback = clamp(p('feedback'), 0, 0.95)
-        const repeats = feedback > 0.01 ? Math.ceil(Math.log(0.001) / Math.log(feedback)) : 1
-        const delay = clamp(p('time') * secondsPerBeat(project.bpm), 0, 3.9)
-        tail = Math.max(tail, Math.min(30, delay * (repeats + 1) + 0.85))
-      }
+      tail = Math.max(tail, EFFECT_MODULES[device.type].tailSeconds(device.params, project.bpm))
     }
   }
   return tail
@@ -344,9 +132,9 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     const devices = new Map<string, DeviceGraph>()
     let tail: AudioNode = input
     for (const device of track.devices) {
-      const factory = DEVICE_FACTORIES[device.type]
-      if (!device.enabled || !factory || devices.has(device.id)) continue
-      const node = factory(context, remember)
+      const effect = EFFECT_MODULES[device.type]
+      if (!device.enabled || !effect || devices.has(device.id)) continue
+      const node = effect.create(context, remember)
       tail.connect(node.input)
       tail = node.output
       devices.set(device.id, node)

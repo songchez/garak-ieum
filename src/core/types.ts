@@ -1,4 +1,5 @@
 import type { SampleRate } from './audioSettings'
+import type { PitchEditDocument } from '../devices/pitch-editor/model'
 
 /** A key of INSTRUMENTS in core/instruments.ts. Saved files store it as plain text. */
 export type InstrumentId = string
@@ -49,6 +50,8 @@ export interface AudioClip extends ClipBase {
   offsetSeconds: number
   fadeIn: number
   fadeOut: number
+  /** Original/analysis/edit state. assetId is the committed, duration-preserving render. */
+  pitch?: PitchEditDocument
 }
 export type Clip = MidiClip | AudioClip
 export type EffectType = 'eq' | 'filter' | 'compressor' | 'drive' | 'delay' | 'reverb'
@@ -99,7 +102,7 @@ export interface Marker {
   startBeat: number
 }
 export interface Project {
-  schemaVersion: 2
+  schemaVersion: 3
   id: string
   name: string
   bpm: number

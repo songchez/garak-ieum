@@ -1,6 +1,7 @@
 import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
 import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
+import { copyPitchDocument, validatePitchDocument } from '../devices/pitch-editor/state'
 import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
 
 let fallbackSequence = 0
@@ -67,7 +68,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -194,7 +195,7 @@ export function duplicateClip(clip: Clip, startBeat = clip.startBeat + clip.leng
   const base = { ...clip, id: uid(), startBeat }
   return clip.kind === 'midi'
     ? { ...base, kind: 'midi', notes: clip.notes.map(value => ({ ...value, id: uid() })) }
-    : { ...clip, id: base.id, startBeat }
+    : { ...clip, id: base.id, startBeat, ...(clip.pitch ? { pitch: copyPitchDocument(clip.pitch) } : {}) }
 }
 
 /** `beat` is an absolute project beat; MIDI note starts remain clip-relative. */
@@ -219,6 +220,7 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
         offsetSeconds: clip.offsetSeconds + leftSeconds,
         fadeIn: 0,
         fadeOut: Math.min(clip.fadeOut, rightSeconds),
+        ...(clip.pitch ? { pitch: copyPitchDocument(clip.pitch) } : {}),
       },
     ]
   }
@@ -591,7 +593,7 @@ function params(value: unknown, defs: readonly ParamDef[], path: string): Record
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2) throw new Error('This project version is not supported. Expected schema version 1 or 2.')
+  if (version !== 1 && version !== 2 && version !== 3) throw new Error('This project version is not supported. Expected schema version 1, 2 or 3.')
   if (source.beatsPerBar !== 4) throw new Error('This version supports projects in 4/4 time.')
   const seen = new Set<string>()
   const id = (value: unknown, path: string): string => {
@@ -667,6 +669,10 @@ export function validateProject(input: unknown): Project {
         ...(clip.delayTicks === undefined ? {} : { delayTicks: integer(clip.delayTicks, `${clipPath} delay`, -1920, 1920) }),
       }
       if (clip.kind === 'audio') {
+        if (clip.pitch !== undefined && version !== 3) throw new Error('Pitch editing requires project schema version 3.')
+        const pitch = clip.pitch === undefined ? undefined : validatePitchDocument(clip.pitch)
+        if (pitch && Object.keys(pitch.shifts).length && clip.assetId === pitch.sourceAssetId) throw new Error(`${clipPath} is missing its pitch render.`)
+        if (pitch && !Object.keys(pitch.shifts).length && clip.assetId !== pitch.sourceAssetId) throw new Error(`${clipPath} has a pitch render without any pitch changes.`)
         return {
           ...base,
           kind: 'audio',
@@ -674,6 +680,7 @@ export function validateProject(input: unknown): Project {
           offsetSeconds: number(clip.offsetSeconds, `${clipPath} source offset`, 0, 10_000_000),
           fadeIn: number(clip.fadeIn, `${clipPath} fade in`, 0, 10_000_000),
           fadeOut: number(clip.fadeOut, `${clipPath} fade out`, 0, 10_000_000),
+          ...(pitch ? { pitch } : {}),
         }
       }
       if (clip.kind !== 'midi') throw new Error(`${clipPath} has an invalid clip type.`)
@@ -737,7 +744,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

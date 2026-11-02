@@ -25,6 +25,8 @@ interface Props {
   onToggleDevice:(deviceId:string)=>void
   onTrackChange:(patch:Partial<Track>)=>void
   onPreview:()=>void
+  onOpenPitch?:()=>void
+  pitchAvailable?:boolean
   /** Card scale (0.75–1.5); the rack zooms as a whole, so it is one axis. */
   scale?:number
   onScaleChange?:(scale:number)=>void
@@ -59,6 +61,7 @@ export function DeviceChain({track,engine,scale=1,onScaleChange,zoomRef,...on}:P
     </section>:<section className="dc-card dc-source" role="listitem" aria-label="오디오 입력">
       <header className="dc-head"><span className="dc-icon"><Icon name="wave" size={14}/></span><strong>오디오 입력</strong></header>
       <p className="dc-note">이 트랙의 오디오 클립 신호가 오른쪽 디바이스를 차례로 지나 출력으로 갑니다.</p>
+      {on.onOpenPitch&&<div className="dc-pitch-entry"><button onClick={on.onOpenPitch} disabled={!on.pitchAvailable} title={on.pitchAvailable?'선택 리전의 음표 피치 편집기 열기':'이 트랙의 오디오 리전을 선택해 주세요'}><Icon name="note" size={13}/><span>피치 편집 열기</span><Icon name="right" size={11}/></button><small>{on.pitchAvailable?'원본 보존 · 음표 단위 편집':'오디오 리전을 선택하세요'}</small></div>}
     </section>}
     {track.devices.map((device,index)=>{const d=EFFECT_DEFS[device.type];return <Fragment key={device.id}><Wire/>
       <section className={`dc-card dc-effect ${device.enabled?'':'bypassed'}`} role="listitem" aria-label={`${index+1}번 ${d.name}${device.enabled?'':' (바이패스)'}`}>

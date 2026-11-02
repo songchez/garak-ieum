@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ComponentProps, InputHTMLAttributes } from 'react'
 import { WebAudioEngine } from './audio/WebAudioEngine'
 import { InputCapture } from './audio/InputCapture'
@@ -18,6 +18,9 @@ import PianoRoll from './components/PianoRoll'
 import Mixer from './components/Mixer'
 import { Waveform } from './components/Waveform'
 import { DeviceChain } from './components/DeviceChain'
+import { applyPitchDocument, assertPitchSourceTiming, encodePitchWav, restorePitchSource, validatePitchDocument } from './devices/pitch-editor/state'
+import { firstPitchDraftId, pitchDrafts, reconcilePitchDrafts } from './devices/pitch-editor/draftCache'
+import type { PitchRenderedEdit } from './devices/pitch-editor/model'
 import { Inspector } from './components/Inspector'
 import { Library } from './components/Library'
 import { Browser } from './components/Browser'
@@ -36,6 +39,7 @@ import { DawBridgeClient, type DawBridgeHandler } from './automation/bridgeClien
 
 // An application-session service, independent of React's render/effect lifecycle.
 const initialAudioSettings = loadAudioSettings()
+const PitchEditor = lazy(() => import('./devices/pitch-editor/PitchEditor').then(module => ({ default: module.PitchEditor })))
 const engine = new WebAudioEngine(undefined, initialAudioSettings)
 const subscribeTransport = (cb:()=>void)=>engine.subscribe(cb)
 const readTransport = ()=>engine.getSnapshot()
@@ -69,6 +73,7 @@ export default function App(){
   const project=history.present
   const projectRef=useRef(project);projectRef.current=project
   const [assets,setAssets]=useState<Map<string,AudioAsset>>(new Map())
+  const assetsRef=useRef(assets);assetsRef.current=assets
   const [focusedTrackId,setFocusedTrackId]=useState(project.tracks[2]?.id??project.tracks[0]?.id??'')
   const [selectedTrackIds,setSelectedTrackIds]=useState<ReadonlySet<string>>(()=>new Set(project.tracks[2]?[project.tracks[2].id]:project.tracks[0]?[project.tracks[0].id]:[]))
   const [selectedClipIds,setSelectedClipIds]=useState<ReadonlySet<string>>(()=>new Set(project.tracks[2]?.clips[0]?[project.tracks[2].clips[0].id]:[]))
@@ -76,7 +81,11 @@ export default function App(){
   const [renamingTrackId,setRenamingTrackId]=useState<string|null>(null)
   const [renamingClipId,setRenamingClipId]=useState<string|null>(null)
   const clipboard=useRef<Clipboard|null>(null)
-  const [bottomTab,setBottomTab]=useState<'editor'|'mixer'|'devices'>('editor')
+  const [bottomTab,setBottomTab]=useState<'editor'|'mixer'|'devices'|'pitch'>('editor')
+  const [pitchBusy,setPitchBusy]=useState(false),[pitchDirty,setPitchDirty]=useState(false)
+  const pitchBusyRef=useRef(false),pitchDirtyRef=useRef(false)
+  const pitchBusyChange=useCallback((value:boolean)=>{pitchBusyRef.current=value;setPitchBusy(value)},[])
+  const pitchDirtyChange=useCallback((value:boolean)=>{pitchDirtyRef.current=value;setPitchDirty(value)},[])
   const [zoom,setZoom]=useState<ZoomState>(()=>loadZoom())
   const initialZoom=useRef(zoom)
   const pianoZoom=useRef<ZoomHandle|null>(null),mixerZoom=useRef<ZoomHandle|null>(null),deviceZoom=useRef<ZoomHandle|null>(null)
@@ -153,6 +162,7 @@ export default function App(){
   const persistedRevision=useRef(-1)
   const focusedTrack=project.tracks.find(t=>t.id===focusedTrackId)
   const clipIndex=useMemo(()=>{const map=new Map<string,ClipEntry>();project.tracks.forEach((track,row)=>track.clips.forEach(clip=>map.set(clip.id,{clip,track,row})));return map},[project])
+  const projectClipIds=useMemo(()=>new Set(clipIndex.keys()),[clipIndex])
   const anchorEntry=anchorClipId?clipIndex.get(anchorClipId):undefined
   // The anchor (last selected clip) drives the editor; the set drives edits.
   const selectedClip=anchorEntry&&anchorEntry.track.id===focusedTrackId?anchorEntry.clip:undefined
@@ -161,8 +171,53 @@ export default function App(){
   const monitorIds=useMemo(()=>audioSettings.softwareMonitoring?monitorTargets(project,recording):[],[project,recording,audioSettings.softwareMonitoring])
 
   const notify=useCallback((message:string)=>setNotice(message),[])
+  useEffect(()=>{pitchDirtyChange(reconcilePitchDrafts(project.id,project.tracks.flatMap(track=>track.clips),project.bpm,notify))},[project,pitchDirtyChange,notify])
   const commit=commandSession.edit
   const breakHistoryMerge=commandSession.breakMerge
+  function pitchPending(){
+    if(!pitchBusyRef.current&&!pitchDirtyRef.current)return false
+    notify(pitchBusyRef.current?'피치 분석·렌더가 끝나거나 취소된 뒤 진행해 주세요.':'미적용 피치 편집이 있습니다. 피치 편집기에서 적용하거나 변경을 취소해 주세요.')
+    const pendingId=firstPitchDraftId(project.id),pending=pendingId?clipIndex.get(pendingId):undefined
+    if(pending)selectClips([pending.clip.id],pending.clip.id,pending.track.id)
+    setBottomTab('pitch')
+    return true
+  }
+  async function applyPitchEdit(result:PitchRenderedEdit,expectedClip:AudioClip,signal?:AbortSignal){
+    if(signal?.aborted)throw new DOMException('피치 적용을 취소했습니다.','AbortError')
+    if(recordRef.current||recordPreparingRef.current||audioApplyingRef.current||busy||importing.current)throw new Error('녹음·오디오 설정·파일 처리가 끝난 뒤 피치 편집을 적용해 주세요.')
+    const snapshot=commandSession.getSnapshot(),epoch=projectSession.current
+    const current=()=>commandSession.getSnapshot().history.present.tracks.flatMap(t=>t.clips).find(c=>c.id===expectedClip.id)
+    if(current()!==expectedClip)throw new Error('리전이 변경되었습니다. 최신 상태에서 다시 적용해 주세요.')
+    const document=validatePitchDocument(result.document)
+    const source=assetsRef.current.get(document.sourceAssetId)
+    if(!source)throw new Error('피치 편집 원본 음원이 없습니다.')
+    if(document.sourceAssetId!==(expectedClip.pitch?.sourceAssetId??expectedClip.assetId))throw new Error('피치 편집 원본이 변경되었습니다.')
+    assertPitchSourceTiming(document,source.buffer.sampleRate,source.buffer.length)
+    if(result.sampleRate!==source.buffer.sampleRate||result.channels.length!==source.buffer.numberOfChannels||result.channels.some(channel=>channel.length!==source.buffer.length))throw new Error('피치 처리 결과의 길이·채널·샘플레이트가 원본과 다릅니다.')
+    const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await source.blob.arrayBuffer())),byte=>byte.toString(16).padStart(2,'0')).join('')
+    if(hash!==document.sourceHash)throw new Error('피치 분석과 원본 파일이 일치하지 않습니다. 원본을 다시 분석해 주세요.')
+    if(signal?.aborted)throw new DOMException('피치 적용을 취소했습니다.','AbortError')
+    const changed=Object.values(document.shifts).some(value=>value!==0)
+    const rendered=changed?await engine.decodeAsset(encodePitchWav(result.channels,result.sampleRate),`${source.name} · 피치`):source
+    if(signal?.aborted)throw new DOMException('피치 적용을 취소했습니다.','AbortError')
+    if(recordRef.current||recordPreparingRef.current||audioApplyingRef.current||importing.current)throw new Error('처리 중 녹음·오디오 설정·가져오기가 시작되어 피치 적용을 취소했습니다. 작업이 끝난 뒤 다시 적용해 주세요.')
+    if(projectSession.current!==epoch||commandSession.getSnapshot().revision!==snapshot.revision||current()!==expectedClip||assetsRef.current.get(source.id)!==source)throw new Error('처리 중 프로젝트가 변경되어 피치 적용을 취소했습니다. 다시 적용해 주세요.')
+    const nextClip=applyPitchDocument(expectedClip,document,rendered.id)
+    const nextAssets=new Map(assetsRef.current);nextAssets.set(rendered.id,rendered)
+    // Install immutable audio before publishing the project that references it.
+    engine.setAssets(nextAssets);assetsRef.current=nextAssets;setAssets(nextAssets)
+    // This deliberate apply replaces the draft's base; it is not an external conflict.
+    pitchDrafts.delete(expectedClip.id)
+    breakHistoryMerge();commit(p=>mapClips(p,new Set([expectedClip.id]),()=>nextClip));breakHistoryMerge()
+    notify(changed?'피치 편집을 적용했습니다. 재생과 WAV 출력에 같은 결과가 사용됩니다.':'피치 분석과 음표 경계를 저장했습니다. 원본 음높이를 유지합니다.')
+  }
+  function resetPitchEdit(expectedClip:AudioClip){
+    const current=commandSession.getSnapshot().history.present.tracks.flatMap(t=>t.clips).find(c=>c.id===expectedClip.id)
+    if(current!==expectedClip||!expectedClip.pitch||!assetsRef.current.has(expectedClip.pitch.sourceAssetId))return
+    pitchDrafts.delete(expectedClip.id)
+    breakHistoryMerge();commit(p=>mapClips(p,new Set([expectedClip.id]),()=>restorePitchSource(expectedClip)));breakHistoryMerge()
+    notify('원본 음원으로 복원했습니다. 실행 취소로 피치 편집을 다시 가져올 수 있습니다.')
+  }
   bridgeHandler.current=createDawRequestHandler({
     session:commandSession,
     getSelection:()=>({focusedTrackId,trackIds:[...selectedTrackIds],clipIds:[...selectedClipIds]}),
@@ -170,7 +225,7 @@ export default function App(){
     getRuntime:()=>{
       const active=document.activeElement
       const textEditing=active instanceof HTMLElement&&!active.closest('.mcp-connection')&&active.matches('input:not([type="checkbox"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="file"]),textarea,select,[contenteditable="true"]')
-      const blockedReason=recordRef.current||recordPreparingRef.current?'녹음·녹음 준비가 끝난 뒤 편집할 수 있습니다.':audioApplyingRef.current||busy||importing.current?'오디오 설정이나 파일 처리가 끝난 뒤 편집할 수 있습니다.':modal&&modal!=='mcp'?'열린 대화상자를 닫은 뒤 편집할 수 있습니다.':activeControlEdits.current.size||document.querySelector('[data-daw-gesture]')||textEditing?'현재 입력·드래그가 끝난 뒤 편집할 수 있습니다.':null
+      const blockedReason=pitchBusyRef.current||pitchDirtyRef.current?'피치 작업을 적용하거나 취소한 뒤 AI 편집을 사용할 수 있습니다.':recordRef.current||recordPreparingRef.current?'녹음·녹음 준비가 끝난 뒤 편집할 수 있습니다.':audioApplyingRef.current||busy||importing.current?'오디오 설정이나 파일 처리가 끝난 뒤 편집할 수 있습니다.':modal&&modal!=='mcp'?'열린 대화상자를 닫은 뒤 편집할 수 있습니다.':activeControlEdits.current.size||document.querySelector('[data-daw-gesture]')||textEditing?'현재 입력·드래그가 끝난 뒤 편집할 수 있습니다.':null
       const current=commandSession.getSnapshot()
       return{ready:loaded&&!restoreError,editsAllowed:aiEditsAllowedRef.current,blockedReason,persistence:!loaded?'loading':saveStatus==='error'?'error':saveStatus==='saved'&&persistedProject.current===current.history.present&&persistedRevision.current===current.revision?'saved':'pending'}
     },
@@ -278,7 +333,7 @@ export default function App(){
     return()=>window.clearTimeout(timer)
   },[project,assets,loaded,notify])
   useEffect(()=>{if(!notice)return;const id=window.setTimeout(()=>setNotice(''),7000);return()=>clearTimeout(id)},[notice])
-  useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(loaded&&(saveStatus!=='saved'||recording||recordPreparing||busy)){event.preventDefault();event.returnValue=''}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard)},[loaded,saveStatus,recording,recordPreparing,busy])
+  useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(loaded&&(saveStatus!=='saved'||recording||recordPreparing||busy||pitchDirty||pitchBusy)){event.preventDefault();event.returnValue=''}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard)},[loaded,saveStatus,recording,recordPreparing,busy,pitchDirty,pitchBusy])
   useEffect(()=>{const hide=()=>{cancelRecordPreparation();engine.pause();if(recordRef.current?.recorder.state==='recording')recordRef.current.recorder.stop()};window.addEventListener('pagehide',hide);return()=>window.removeEventListener('pagehide',hide)},[])
 
   // Recording preparation owns input too, before MediaRecorder has been created.
@@ -319,6 +374,7 @@ export default function App(){
 
   function openAudioSettings(){setAppMenu(null);setPalette(null);setHeaderConfig(null);setIconMenu(null);setModal('settings')}
   async function applyAudioSettings(value:AudioSettings,sampleRate:SampleRate):Promise<{persisted:boolean}>{
+    if(pitchBusyRef.current)throw new Error('피치 분석·렌더가 끝나거나 취소된 뒤 오디오 설정을 적용해 주세요.')
     if(audioApplyingRef.current||recordRef.current||recordPreparingRef.current||busy||importing.current)throw new Error('녹음이나 파일 처리가 끝난 뒤 오디오 설정을 적용해주세요.')
     const next=normalizeAudioSettings(value),previous=audioSettingsRef.current,previousRate=projectRef.current.sampleRate
     const session=projectSession.current
@@ -646,13 +702,14 @@ export default function App(){
     }catch(error){notify(`파일을 가져오지 못했습니다: ${error instanceof Error?error.message:'지원되는 오디오 파일인지 확인해주세요'}`)}finally{importing.current=false;setBusy('');if(audioInput.current)audioInput.current.value=''}
   }
   function addStoredAsset(asset:AudioAsset){const clip:AudioClip={id:uid(),kind:'audio',assetId:asset.id,name:asset.name.replace(/\.[^.]+$/,''),startBeat:Math.floor(engine.getSnapshot().beat/4)*4,lengthBeats:asset.buffer.duration*project.bpm/60,offsetSeconds:0,gain:1,fadeIn:.005,fadeOut:.01};let target=focusedTrack?.kind==='audio'?focusedTrack:createTrack('audio');target={...target,clips:[...target.clips,clip]};const targetId=target.id;commit(p=>withDragMode({...p,lengthBeats:Math.max(p.lengthBeats,Math.ceil((clip.startBeat+clip.lengthBeats)/4)*4),tracks:p.tracks.some(t=>t.id===targetId)?p.tracks.map(t=>t.id===targetId?target:t):[...p.tracks,target]},[{trackId:targetId,clip}]));selectClips([clip.id],clip.id,targetId)}
-  async function saveBundle(){setBusy('프로젝트를 묶는 중…');try{downloadBlob(await exportProjectBundle(project,assets),`${safeFilename(project.name)}.garak`);notify('프로젝트와 원본 음원을 함께 내려받았습니다.')}catch(e){notify(`프로젝트 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
-  async function openBundle(file:File){if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 프로젝트를 열어주세요.');return}const session=++projectSession.current;setBusy('프로젝트를 여는 중…');try{const data=await importProjectBundle(file);const decoded=await Promise.all(data.assets.map(a=>engine.decodeAsset(a.blob,a.name,a.id)));if(session!==projectSession.current)return;engine.stop();const next=new Map(decoded.map(a=>[a.id,a]));engine.setAssets(next);setAssets(next);breakHistoryMerge();dispatch({type:'reset',project:data.project});const first=data.project.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'');notify('프로젝트를 불러왔습니다.')}catch(e){notify(`프로젝트를 열지 못했습니다: ${e instanceof Error?e.message:''}`)}finally{setBusy('');if(projectInput.current)projectInput.current.value=''}}
-  async function exportWav(){setModal(null);setBusy('오디오를 렌더링하는 중…');try{const blob=await engine.exportWav(project);downloadBlob(blob,`${safeFilename(project.name)}.wav`);notify('스테레오 WAV 파일을 내보냈습니다.')}catch(e){notify(`오디오 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
+  async function saveBundle(){if(pitchPending())return;setBusy('프로젝트를 묶는 중…');try{downloadBlob(await exportProjectBundle(project,assets),`${safeFilename(project.name)}.garak`);notify('프로젝트와 원본 음원을 함께 내려받았습니다.')}catch(e){notify(`프로젝트 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
+  async function openBundle(file:File){if(pitchPending())return;if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 프로젝트를 열어주세요.');return}const session=++projectSession.current;setBusy('프로젝트를 여는 중…');try{const data=await importProjectBundle(file);const decoded=await Promise.all(data.assets.map(a=>engine.decodeAsset(a.blob,a.name,a.id)));if(session!==projectSession.current)return;engine.stop();const next=new Map(decoded.map(a=>[a.id,a]));engine.setAssets(next);setAssets(next);breakHistoryMerge();dispatch({type:'reset',project:data.project});const first=data.project.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'');notify('프로젝트를 불러왔습니다.')}catch(e){notify(`프로젝트를 열지 못했습니다: ${e instanceof Error?e.message:''}`)}finally{setBusy('');if(projectInput.current)projectInput.current.value=''}}
+  async function exportWav(){if(pitchPending())return;setModal(null);setBusy('오디오를 렌더링하는 중…');try{const blob=await engine.exportWav(project);downloadBlob(blob,`${safeFilename(project.name)}.wav`);notify('스테레오 WAV 파일을 내보냈습니다.')}catch(e){notify(`오디오 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
   /** Records onto the topmost armed audio track, else the focused audio track, else a new audio track (§2.5). */
   async function toggleRecord(){
     if(recordRef.current?.recorder.state==='recording'){recordRef.current.recorder.stop();engine.pause();return}
     if(recordRef.current||recordPreparingRef.current)return
+    if(pitchBusyRef.current){notify('피치 분석·렌더가 끝나거나 취소된 뒤 녹음을 시작해 주세요.');return}
     if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){notify('이 브라우저에서는 마이크 녹음을 사용할 수 없습니다.');return}
     if(busy){notify('파일 처리가 끝난 뒤 녹음을 시작해주세요.');return}
     const target=recordTarget(project,focusedTrackId)
@@ -689,7 +746,7 @@ export default function App(){
       if(current()){recordPreparingRef.current=false;setRecordPreparing(false);inputCapture.setNeeded('record',recordRef.current!==null)}
     }
   }
-  function newProject(demo=false){if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 새 프로젝트를 시작해주세요.');return}projectSession.current+=1;stop();setAssets(new Map());engine.setAssets(new Map());const next=demo?createDemoProject():createEmptyProject();breakHistoryMerge();dispatch({type:'reset',project:next});const first=next.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'',first?[first.id]:[]);setModal(null);notify(demo?'Midnight Sketches 데모를 열었습니다.':'새로운 프로젝트를 시작합니다.')}
+  function newProject(demo=false){if(pitchPending())return;if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 새 프로젝트를 시작해주세요.');return}projectSession.current+=1;stop();setAssets(new Map());engine.setAssets(new Map());const next=demo?createDemoProject():createEmptyProject();breakHistoryMerge();dispatch({type:'reset',project:next});const first=next.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'',first?[first.id]:[]);setModal(null);notify(demo?'Midnight Sketches 데모를 열었습니다.':'새로운 프로젝트를 시작합니다.')}
 
   useEffect(()=>{
     const handler=(e:KeyboardEvent)=>{
@@ -745,8 +802,8 @@ export default function App(){
       <div className="header-actions" role="group" aria-label="프로젝트 파일">
         <button className="header-text" onClick={()=>setModal('new')} title="새 프로젝트" aria-label="새 프로젝트"><Icon name="file-plus" size={15}/><span>새 프로젝트</span></button>
         <button className="icon-button" onClick={()=>projectInput.current?.click()} title="프로젝트 열기" aria-label="프로젝트 열기"><Icon name="folder"/></button>
-        <button className="icon-button" onClick={()=>void saveBundle()} title="프로젝트 파일 저장 · Ctrl/⌘ S" aria-label="프로젝트 파일 저장" disabled={!!busy}><Icon name="save"/></button>
-        <button className="export-button" onClick={()=>setModal('export')} title="오디오 내보내기" aria-label="오디오 내보내기" disabled={!!busy}><Icon name="download" size={15}/><span>내보내기</span></button>
+        <button className="icon-button" onClick={()=>void saveBundle()} title="프로젝트 파일 저장 · Ctrl/⌘ S" aria-label="프로젝트 파일 저장" disabled={!!busy||pitchBusy}><Icon name="save"/></button>
+        <button className="export-button" onClick={()=>setModal('export')} title="오디오 내보내기" aria-label="오디오 내보내기" disabled={!!busy||pitchBusy}><Icon name="download" size={15}/><span>내보내기</span></button>
       </div>
     </header>
 
@@ -756,8 +813,8 @@ export default function App(){
 
       <main className="studio-main">
         <Timeline project={project} assets={assets} engine={engine} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} selectedClipIds={selectedClipIds} anchorClipId={anchorClipId} ui={timelineUi} zoom={zoom.timeline} onUiChange={applyUi} onZoomChange={patch=>patchZoom('timeline',z=>({ppb:patch.ppb===undefined?z.ppb:clampZoom(patch.ppb,ZOOM_LIMITS.timelineX),rowHeight:patch.rowHeight===undefined?z.rowHeight:clampZoom(patch.rowHeight,ZOOM_LIMITS.timelineY)}))} onTrackClick={trackClick} onTrackFocus={trackFocus} onTrackButton={trackButton} onTrackSweep={trackSweep} onTracksChange={changeTracks} onTracksReorder={reorderTracks} onNewTrack={newTrack} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onRenameTracks={renameTracks} onOpenLibrary={openLibrary} onOpenColorPalette={openPalette} onIconMenu={(id,at)=>setIconMenu({id,...at})} onConfigureHeader={at=>setHeaderConfig(at)} onClearRecallSolo={clearRecall} onSeek={beat=>engine.seek(Math.max(0,beat))} onSeekPlay={seekPlay} onLoopChange={loop=>changeLoop(loop.startBeat,loop.endBeat,loop.enabled)} onSelectClips={selectFromMarquee} onClipMove={moveClips} onClipTrimStart={trimStart} onClipLoopToggle={(_trackId,clipId)=>apply(mapClips(project,new Set([clipId]),c=>({...c,loop:!c.loop})))} onAddClip={addMidiClip} onAudioDrop={(files,id,beat)=>void addAudioFiles(files,id,beat)} onCommand={(command,ctx)=>run(command,ctx)} onMarker={marker} onClipOpen={(trackId,clipId)=>{selectClips([clipId],clipId,trackId);setBottomTab('editor')}} renamingClipId={renamingClipId} onClipRename={renameClip}/>
-        <section className="bottom-panel"><div className="editor-toolbar"><div className="editor-tabs"><button className={bottomTab==='editor'?'active':''} onClick={()=>setBottomTab('editor')}><Icon name={selectedClip?.kind==='audio'?'wave':'keys'} size={15}/>{selectedClip?.kind==='audio'?'오디오 편집':'피아노롤'}</button><button className={bottomTab==='mixer'?'active':''} onClick={()=>setBottomTab('mixer')} title={`믹서 · ${shortcutText('toggleMixer')}`}><Icon name="mixer" size={15}/>믹서</button><button className={bottomTab==='devices'?'active':''} onClick={()=>setBottomTab('devices')}><Icon name="plug" size={15}/>디바이스</button></div><div className="editor-selection">{selectedClip&&<><span className="color-dot" style={{background:focusedTrack?.color}}/><span>{selectedClip.name}</span><small>{+(selectedClip.lengthBeats/4).toFixed(2)} bars{selection.length>1?` · 클립 ${selection.length}개 선택`:''}</small></>}</div><div className="editor-actions">{bottomTab==='mixer'?<ZoomControls area="믹서" onZoom={command=>zoomArea(command,'mixer')} focusTarget={()=>document.querySelector<HTMLElement>('[data-keyboard-scope="mixer"]')}/>:bottomTab==='devices'&&focusedTrack?<ZoomControls area="디바이스" axes="one" labels={{zoomOut:'축소',zoomIn:'확대',zoomToFit:'기본 크기'}} onZoom={command=>zoomArea(command,'devices')} focusTarget={()=>document.querySelector<HTMLElement>('[data-keyboard-scope="devices"]')}/>:null}<button className="icon-button small" onClick={splitSelection} disabled={!selection.length&&!focusedTrack?.clips.length} title={`재생 커서에서 클립 분할 · ${shortcutText('split')}`} aria-label="클립 분할"><Icon name="scissors" size={15}/></button><button className="icon-button small" onClick={duplicateSelection} disabled={!selection.length} title={`선택 클립 복제 · ${shortcutText('repeat')}`} aria-label="클립 복제"><Icon name="copy" size={15}/></button><button className="icon-button small" onClick={()=>{if(selection.length)deleteClips();else deleteTracks([...selectedTrackIds])}} disabled={!focusedTrack&&!selection.length} title={selection.length?`선택 클립 ${selection.length}개 삭제`:`선택 트랙 삭제 · ${shortcutText('deleteTrack')}`} aria-label={selection.length?'클립 삭제':'트랙 삭제'}><Icon name="trash" size={15}/></button></div></div>
-          {bottomTab==='mixer'?<Mixer {...trackProps} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} onTrackClick={trackClick} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onColorPalette={openPalette} zoom={zoom.mixer} onZoomChange={mixer=>setZoom(z=>({...z,mixer:{channelWidth:clampZoom(mixer.channelWidth,ZOOM_LIMITS.mixerWidth),faderHeight:clampZoom(mixer.faderHeight,ZOOM_LIMITS.mixerFader)}}))} zoomRef={mixerZoom}/>:bottomTab==='devices'?focusedTrack?<DeviceChain track={focusedTrack} engine={engine} scale={zoom.devices.scale} onScaleChange={scale=>patchZoom('devices',()=>({scale:clampZoom(scale,ZOOM_LIMITS.deviceScale)}))} zoomRef={deviceZoom} onInstrumentChange={instrument=>changeInstrument(focusedTrack.id,instrument)} onInstrumentParam={(key,value)=>editTrack(focusedTrack.id,t=>({...t,instrumentParams:{...t.instrumentParams,[key]:value}}),`${focusedTrack.id}:inst:${key}`)} onDeviceParam={(deviceId,key,value)=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.map(d=>d.id===deviceId?{...d,params:{...d.params,[key]:value}}:d)}),`${focusedTrack.id}:dev:${deviceId}:${key}`)} onAddDevice={type=>addDevice(focusedTrack.id,type)} onRemoveDevice={deviceId=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)}))} onMoveDevice={(deviceId,offset)=>editTrack(focusedTrack.id,t=>moveDevice(t,deviceId,offset))} onToggleDevice={deviceId=>toggleDevice(focusedTrack.id,deviceId)} onTrackChange={patch=>changeTrack(focusedTrack.id,patch)} onPreview={()=>previewTrack(focusedTrack)}/>:<div className="editor-empty"><Icon name="plug" size={32}/><strong>소리의 흐름을 한눈에</strong><p>트랙 헤더를 클릭하면 악기와 연결된 이펙트가 여기에 열립니다.</p></div>:selectedClip?.kind==='midi'&&focusedTrack?<PianoRollBridge clip={selectedClip} color={focusedTrack.color} instrument={focusedTrack.instrument} zoom={zoom.piano} onZoomChange={piano=>setZoom(z=>({...z,piano}))} zoomRef={pianoZoom} onChange={clip=>changeClip(clip)} onPreview={pitch=>void engine.previewNote(focusedTrack.instrument,pitch,undefined,focusedTrack.id).catch(e=>notify(String(e)))}/>:selectedClip?.kind==='audio'?<div className="audio-editor"><div className="audio-wave-large">{assets.get(selectedClip.assetId)&&<Waveform peaks={assets.get(selectedClip.assetId)!.peaks} color={focusedTrack?.color}/>}</div><div className="audio-editor-settings"><label>클립 게인<input type="range" min="0" max="2" step=".01" value={selectedClip.gain} onChange={e=>changeClip({...selectedClip,gain:+e.target.value},`${selectedClip.id}:gain`)}/><span>{db(selectedClip.gain)} dB</span></label><label>페이드 인<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeIn} onChange={e=>changeClip({...selectedClip,fadeIn:+e.target.value},`${selectedClip.id}:fadeIn`)}/><span>{selectedClip.fadeIn.toFixed(2)} s</span></label><label>페이드 아웃<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeOut} onChange={e=>changeClip({...selectedClip,fadeOut:+e.target.value},`${selectedClip.id}:fadeOut`)}/><span>{selectedClip.fadeOut.toFixed(2)} s</span></label></div></div>:<div className="editor-empty"><Icon name="keys" size={32}/><strong>아이디어를 음표로</strong><p>클립을 선택하거나 타임라인을 더블 클릭해 패턴을 만드세요.</p>{focusedTrack?.kind==='instrument'&&<button onClick={()=>addMidiClip(focusedTrack.id,0)}><Icon name="plus" size={14}/> MIDI 클립 만들기</button>}</div>}
+        <section className={`bottom-panel ${bottomTab==='pitch'?'pitch-panel':''}`}><div className="editor-toolbar"><div className="editor-tabs"><button className={bottomTab==='editor'?'active':''} onClick={()=>setBottomTab('editor')}><Icon name={selectedClip?.kind==='audio'?'wave':'keys'} size={15}/>{selectedClip?.kind==='audio'?'오디오 편집':'피아노롤'}</button><button className={bottomTab==='mixer'?'active':''} onClick={()=>setBottomTab('mixer')} title={`믹서 · ${shortcutText('toggleMixer')}`}><Icon name="mixer" size={15}/>믹서</button><button className={bottomTab==='devices'?'active':''} onClick={()=>setBottomTab('devices')}><Icon name="plug" size={15}/>디바이스</button>{selectedClip?.kind==='audio'&&<button className={bottomTab==='pitch'?'active':''} onClick={()=>setBottomTab('pitch')}><Icon name="wave" size={15}/>피치 편집{pitchDirty?' •':''}</button>}</div><div className="editor-selection">{selectedClip&&<><span className="color-dot" style={{background:focusedTrack?.color}}/><span>{selectedClip.name}</span><small>{+(selectedClip.lengthBeats/4).toFixed(2)} bars{selection.length>1?` · 클립 ${selection.length}개 선택`:''}</small></>}</div><div className="editor-actions">{bottomTab==='mixer'?<ZoomControls area="믹서" onZoom={command=>zoomArea(command,'mixer')} focusTarget={()=>document.querySelector<HTMLElement>('[data-keyboard-scope="mixer"]')}/>:bottomTab==='devices'&&focusedTrack?<ZoomControls area="디바이스" axes="one" labels={{zoomOut:'축소',zoomIn:'확대',zoomToFit:'기본 크기'}} onZoom={command=>zoomArea(command,'devices')} focusTarget={()=>document.querySelector<HTMLElement>('[data-keyboard-scope="devices"]')}/>:null}<button className="icon-button small" onClick={splitSelection} disabled={!selection.length&&!focusedTrack?.clips.length} title={`재생 커서에서 클립 분할 · ${shortcutText('split')}`} aria-label="클립 분할"><Icon name="scissors" size={15}/></button><button className="icon-button small" onClick={duplicateSelection} disabled={!selection.length} title={`선택 클립 복제 · ${shortcutText('repeat')}`} aria-label="클립 복제"><Icon name="copy" size={15}/></button><button className="icon-button small" onClick={()=>{if(selection.length)deleteClips();else deleteTracks([...selectedTrackIds])}} disabled={!focusedTrack&&!selection.length} title={selection.length?`선택 클립 ${selection.length}개 삭제`:`선택 트랙 삭제 · ${shortcutText('deleteTrack')}`} aria-label={selection.length?'클립 삭제':'트랙 삭제'}><Icon name="trash" size={15}/></button></div></div>
+          {bottomTab==='pitch'?selectedClip?.kind==='audio'?<Suspense fallback={<div className="editor-empty">피치 편집기를 여는 중…</div>}><PitchEditor key={`${project.id}:${selectedClip.id}`} clip={selectedClip} sourceAsset={assets.get(selectedClip.pitch?.sourceAssetId??selectedClip.assetId)} projectId={project.id} bpm={project.bpm} projectClipIds={projectClipIds} disabled={!!busy||recording||recordPreparing||audioApplying} onApply={applyPitchEdit} onReset={resetPitchEdit} onBusyChange={pitchBusyChange} onDirtyChange={pitchDirtyChange}/></Suspense>:<div className="editor-empty"><Icon name="wave" size={32}/><strong>음표 단위 피치 편집</strong><p>오디오 리전을 선택해 단선율 음원을 분석하세요.</p></div>:bottomTab==='mixer'?<Mixer {...trackProps} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} onTrackClick={trackClick} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onColorPalette={openPalette} zoom={zoom.mixer} onZoomChange={mixer=>setZoom(z=>({...z,mixer:{channelWidth:clampZoom(mixer.channelWidth,ZOOM_LIMITS.mixerWidth),faderHeight:clampZoom(mixer.faderHeight,ZOOM_LIMITS.mixerFader)}}))} zoomRef={mixerZoom}/>:bottomTab==='devices'?focusedTrack?<DeviceChain track={focusedTrack} engine={engine} pitchAvailable={selectedClip?.kind==='audio'} onOpenPitch={()=>setBottomTab('pitch')} scale={zoom.devices.scale} onScaleChange={scale=>patchZoom('devices',()=>({scale:clampZoom(scale,ZOOM_LIMITS.deviceScale)}))} zoomRef={deviceZoom} onInstrumentChange={instrument=>changeInstrument(focusedTrack.id,instrument)} onInstrumentParam={(key,value)=>editTrack(focusedTrack.id,t=>({...t,instrumentParams:{...t.instrumentParams,[key]:value}}),`${focusedTrack.id}:inst:${key}`)} onDeviceParam={(deviceId,key,value)=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.map(d=>d.id===deviceId?{...d,params:{...d.params,[key]:value}}:d)}),`${focusedTrack.id}:dev:${deviceId}:${key}`)} onAddDevice={type=>addDevice(focusedTrack.id,type)} onRemoveDevice={deviceId=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)}))} onMoveDevice={(deviceId,offset)=>editTrack(focusedTrack.id,t=>moveDevice(t,deviceId,offset))} onToggleDevice={deviceId=>toggleDevice(focusedTrack.id,deviceId)} onTrackChange={patch=>changeTrack(focusedTrack.id,patch)} onPreview={()=>previewTrack(focusedTrack)}/>:<div className="editor-empty"><Icon name="plug" size={32}/><strong>소리의 흐름을 한눈에</strong><p>트랙 헤더를 클릭하면 악기와 연결된 이펙트가 여기에 열립니다.</p></div>:selectedClip?.kind==='midi'&&focusedTrack?<PianoRollBridge clip={selectedClip} color={focusedTrack.color} instrument={focusedTrack.instrument} zoom={zoom.piano} onZoomChange={piano=>setZoom(z=>({...z,piano}))} zoomRef={pianoZoom} onChange={clip=>changeClip(clip)} onPreview={pitch=>void engine.previewNote(focusedTrack.instrument,pitch,undefined,focusedTrack.id).catch(e=>notify(String(e)))}/>:selectedClip?.kind==='audio'?<div className="audio-editor"><div className="audio-wave-large">{assets.get(selectedClip.assetId)&&<Waveform peaks={assets.get(selectedClip.assetId)!.peaks} color={focusedTrack?.color}/>}</div><div className="audio-editor-settings"><label>클립 게인<input type="range" min="0" max="2" step=".01" value={selectedClip.gain} onChange={e=>changeClip({...selectedClip,gain:+e.target.value},`${selectedClip.id}:gain`)}/><span>{db(selectedClip.gain)} dB</span></label><label>페이드 인<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeIn} onChange={e=>changeClip({...selectedClip,fadeIn:+e.target.value},`${selectedClip.id}:fadeIn`)}/><span>{selectedClip.fadeIn.toFixed(2)} s</span></label><label>페이드 아웃<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeOut} onChange={e=>changeClip({...selectedClip,fadeOut:+e.target.value},`${selectedClip.id}:fadeOut`)}/><span>{selectedClip.fadeOut.toFixed(2)} s</span></label></div></div>:<div className="editor-empty"><Icon name="keys" size={32}/><strong>아이디어를 음표로</strong><p>클립을 선택하거나 타임라인을 더블 클릭해 패턴을 만드세요.</p>{focusedTrack?.kind==='instrument'&&<button onClick={()=>addMidiClip(focusedTrack.id,0)}><Icon name="plus" size={14}/> MIDI 클립 만들기</button>}</div>}
         </section>
       </main>
 
