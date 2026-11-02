@@ -1,6 +1,7 @@
 import type { EffectType } from './types'
+import { EFFECT_TYPES } from '../devices/effects/registry.js'
 
-/** This module has no runtime imports so the browser and Node MCP server share one contract. */
+/** The browser and Node MCP server share this contract and the side-effect-free built-in registry. */
 export const COMMAND_LIMITS = Object.freeze({
   maxCommands: 100, maxNotesPerClip: 8192, maxCreatedNotes: 16384,
   maxCreatedTracks: 32, maxCreatedClips: 512, maxRepeatCount: 64,
@@ -99,7 +100,7 @@ const idSchema: JsonSchema = { type: 'string', minLength: 1, maxLength: 200 }
 const nameSchema: JsonSchema = { type: 'string', minLength: 1, maxLength: 512 }
 const beatSchema: JsonSchema = { type: 'number', minimum: 0, maximum: COMMAND_LIMITS.maxBeat }
 const boolSchema: JsonSchema = { type: 'boolean' }
-const effectTypes = ['eq', 'filter', 'compressor', 'drive', 'delay', 'reverb'] as const satisfies readonly EffectType[]
+const effectTypes = EFFECT_TYPES
 const objectSchema = (properties: Record<string, JsonSchema>, required = Object.keys(properties)): JsonSchema => ({ type: 'object', properties, required, additionalProperties: false })
 const noteSchema = objectSchema({
   pitch: { type: 'integer', minimum: 0, maximum: 127 }, start: beatSchema,

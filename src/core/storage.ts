@@ -72,6 +72,9 @@ function validateAssets(project: Project, inputs: unknown[]): StoredAudioAsset[]
       if (clip.kind === 'audio' && !seen.has(clip.assetId)) {
         throw new Error(`The original audio file for “${clip.name}” is missing. The project was not saved.`)
       }
+      if (clip.kind === 'audio' && clip.pitch && !seen.has(clip.pitch.sourceAssetId)) {
+        throw new Error(`The original audio file for pitch editing “${clip.name}” is missing. The project was not saved.`)
+      }
     }
   }
   return assets

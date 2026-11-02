@@ -1,0 +1,998 @@
+{
+  "status": "Historical measurements of the unguarded candidate; the final application rejects every combination in this file.",
+  "candidateRenderer": "signalsmith-88061fd4-stretch-sinc64-formants-v2",
+  "differenceFromFinalRenderer": "The candidate allowed an effective envelope pre-shift beyond ±1200 cents. These are recorded measurements, not a current renderer execution or a passing quality result.",
+  "reproduction": "The earlier candidate run used node scripts/pitch-poc/formants.mjs with the same pinned WASM, analytic fixture, and formula, before the combined-shift validation was added. The final script replays the same requests to verify their explicit rejection and retains these historical measurements as evidence for that restriction.",
+  "fixture": {
+    "description": "Two-second generated harmonic vowel-like fixture; three Gaussian resonant envelopes plus a 0.025 baseline; amplitude decreases with sqrt(harmonic number), deterministic harmonic phases, 25 ms attack/release, 0.65 peak.",
+    "centersHz": [
+      650,
+      1250,
+      2500
+    ],
+    "widthsHz": [
+      90,
+      110,
+      160
+    ],
+    "heights": [
+      1,
+      0.8,
+      0.6
+    ],
+    "measurementSeconds": [
+      0.6,
+      1.4
+    ]
+  },
+  "sources": [
+    "https://github.com/Signalsmith-Audio/signalsmith-stretch/blob/88061fd4eda56a2353c5d65c74aa3f4ccf76f9da/signalsmith-stretch.h",
+    "https://github.com/Signalsmith-Audio/signalsmith-stretch/blob/88061fd4eda56a2353c5d65c74aa3f4ccf76f9da/web/emscripten/main.cpp",
+    "https://github.com/Signalsmith-Audio/signalsmith-stretch#formant-compensation"
+  ],
+  "measurements": [
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 110,
+      "pitchCents": 1200,
+      "formantCents": -1200,
+      "preserveFormants": true,
+      "expectedF0": 220,
+      "measuredF0": 219.99700522127296,
+      "f0ErrorCents": -0.023566809956499235,
+      "strongestHarmonicIndex": 1,
+      "strongestHarmonicF0": 219.99700522127296,
+      "strongestHarmonicF0ErrorCents": -0.023566809956499235,
+      "envelope": {
+        "expectedCents": -1200,
+        "fittedCents": 40,
+        "errorCents": 1240,
+        "fittedRmseDb": 22.870201910072037,
+        "targetRmseDb": 24.624175372777408
+      },
+      "peaks": [
+        {
+          "expectedHz": 325,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 625,
+          "measuredHz": 551.715222048729,
+          "errorHz": -73.28477795127105,
+          "resolved": true
+        },
+        {
+          "expectedHz": 1250,
+          "measuredHz": 1265.7880391013477,
+          "errorHz": 15.78803910134775,
+          "resolved": true
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.2756012575503773,
+      "renderedRms": 0.08565665251920725,
+      "rmsGainDb": -10.150401936575273,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved"
+      ],
+      "milliseconds": 66.27567200000021,
+      "outputSha256": "f4c0a9832bf300f63b0021b5b5e233954cc6fac10e47ec9a336200bcd1d04797"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 110,
+      "pitchCents": -1200,
+      "formantCents": 1200,
+      "preserveFormants": true,
+      "expectedF0": 55,
+      "measuredF0": 54.991288704415645,
+      "f0ErrorCents": -0.2742270180900774,
+      "strongestHarmonicIndex": 23,
+      "strongestHarmonicF0": 55.00000131085001,
+      "strongestHarmonicF0ErrorCents": 4.1261602737646134e-05,
+      "envelope": {
+        "expectedCents": 1200,
+        "fittedCents": 1235,
+        "errorCents": 35,
+        "fittedRmseDb": 5.224637527248448,
+        "targetRmseDb": 5.382406638255728
+      },
+      "peaks": [
+        {
+          "expectedHz": 1300,
+          "measuredHz": 1265.8500634875818,
+          "errorHz": -34.14993651241821,
+          "resolved": true
+        },
+        {
+          "expectedHz": 2500,
+          "measuredHz": 2446.370541639601,
+          "errorHz": -53.629458360398985,
+          "resolved": true
+        },
+        {
+          "expectedHz": 5000,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 1.4134382009506226,
+      "sourceRms": 0.2756012575503773,
+      "renderedRms": 0.4055768887392549,
+      "rmsGainDb": 3.3558400887693765,
+      "peakGainDb": 6.747269681756998,
+      "samplesAboveUnity": 3190,
+      "qualityFlags": [
+        "one-or-more-resonances-not-resolved",
+        "float-pcm-peak-exceeds-unity",
+        "weak-fundamental-error-over-0.2-cents"
+      ],
+      "milliseconds": 26.638850999999704,
+      "outputSha256": "42257b09eefee0e8cf54959b5fe004d58f3ce57cf5d25b78614749dbf5d9bf91"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 120,
+      "pitchCents": 1200,
+      "formantCents": -1200,
+      "preserveFormants": true,
+      "expectedF0": 240,
+      "measuredF0": 240.00824052782286,
+      "f0ErrorCents": 0.05944182264443707,
+      "strongestHarmonicIndex": 1,
+      "strongestHarmonicF0": 240.00824052782286,
+      "strongestHarmonicF0ErrorCents": 0.05944182264443707,
+      "envelope": {
+        "expectedCents": -1200,
+        "fittedCents": 15,
+        "errorCents": 1215,
+        "fittedRmseDb": 21.755059324089753,
+        "targetRmseDb": 23.579560208453348
+      },
+      "peaks": [
+        {
+          "expectedHz": 325,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 625,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 1250,
+          "measuredHz": 1239.573905994813,
+          "errorHz": -10.426094005186997,
+          "resolved": true
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.2623678454847428,
+      "renderedRms": 0.09328428436471355,
+      "rmsGainDb": -8.982042495918295,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved"
+      ],
+      "milliseconds": 57.133490000000165,
+      "outputSha256": "f2f78630551ca306333101ab85bde323b2ebbd79c20c2726a96300adf041eb70"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 120,
+      "pitchCents": -1200,
+      "formantCents": 1200,
+      "preserveFormants": true,
+      "expectedF0": 60,
+      "measuredF0": 60.00002676831227,
+      "f0ErrorCents": 0.0007723700551051611,
+      "strongestHarmonicIndex": 21,
+      "strongestHarmonicF0": 59.9999983384086,
+      "strongestHarmonicF0ErrorCents": -4.79433940558151e-05,
+      "envelope": {
+        "expectedCents": 1200,
+        "fittedCents": 1240,
+        "errorCents": 40,
+        "fittedRmseDb": 5.627831825002413,
+        "targetRmseDb": 5.805187722752508
+      },
+      "peaks": [
+        {
+          "expectedHz": 1300,
+          "measuredHz": 1246.6699021549907,
+          "errorHz": -53.33009784500928,
+          "resolved": true
+        },
+        {
+          "expectedHz": 2500,
+          "measuredHz": 2441.8139705009376,
+          "errorHz": -58.18602949906244,
+          "resolved": true
+        },
+        {
+          "expectedHz": 5000,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 1.2197177410125732,
+      "sourceRms": 0.2623678454847428,
+      "renderedRms": 0.37770963160715987,
+      "rmsGainDb": 3.1649490105265525,
+      "peakGainDb": 5.466920000818892,
+      "samplesAboveUnity": 2864,
+      "qualityFlags": [
+        "one-or-more-resonances-not-resolved",
+        "float-pcm-peak-exceeds-unity"
+      ],
+      "milliseconds": 25.69682400000056,
+      "outputSha256": "f4f75f1f807a2288876ff57a70a62da84fddb9aff6ed0502ca31a7229044eb7d"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 150,
+      "pitchCents": 1200,
+      "formantCents": -1200,
+      "preserveFormants": true,
+      "expectedF0": 300,
+      "measuredF0": 299.88870920024624,
+      "f0ErrorCents": -0.6423538937709374,
+      "strongestHarmonicIndex": 1,
+      "strongestHarmonicF0": 299.88870920024624,
+      "strongestHarmonicF0ErrorCents": -0.6423538937709374,
+      "envelope": {
+        "expectedCents": -1200,
+        "fittedCents": 95,
+        "errorCents": 1295,
+        "fittedRmseDb": 23.898629433367624,
+        "targetRmseDb": 24.541184265781084
+      },
+      "peaks": [
+        {
+          "expectedHz": 325,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 625,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 1250,
+          "measuredHz": 1224.1174332560015,
+          "errorHz": -25.882566743998495,
+          "resolved": true
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.2493878919435039,
+      "renderedRms": 0.12008939535094741,
+      "rmsGainDb": -6.347414120363142,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "weak-fundamental-error-over-0.2-cents"
+      ],
+      "milliseconds": 60.254762999999,
+      "outputSha256": "47331529f4c2dad5133364d0c072bd9a0dd335194d33e92d2f01fef7018beabd"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 150,
+      "pitchCents": -1200,
+      "formantCents": 1200,
+      "preserveFormants": true,
+      "expectedF0": 75,
+      "measuredF0": 74.99895320437571,
+      "f0ErrorCents": -0.02416347832435751,
+      "strongestHarmonicIndex": 17,
+      "strongestHarmonicF0": 74.99995531132946,
+      "strongestHarmonicF0ErrorCents": -0.0010315542812558006,
+      "envelope": {
+        "expectedCents": 1200,
+        "fittedCents": 1260,
+        "errorCents": 60,
+        "fittedRmseDb": 6.704711211958046,
+        "targetRmseDb": 6.944022526434923
+      },
+      "peaks": [
+        {
+          "expectedHz": 1300,
+          "measuredHz": 1244.784018029411,
+          "errorHz": -55.21598197058893,
+          "resolved": true
+        },
+        {
+          "expectedHz": 2500,
+          "measuredHz": 2428.823421535759,
+          "errorHz": -71.17657846424117,
+          "resolved": true
+        },
+        {
+          "expectedHz": 5000,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 1.1596266031265259,
+      "sourceRms": 0.2493878919435039,
+      "renderedRms": 0.346431971769962,
+      "rmsGainDb": 2.8548520301130607,
+      "peakGainDb": 5.028096585671898,
+      "samplesAboveUnity": 597,
+      "qualityFlags": [
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "float-pcm-peak-exceeds-unity"
+      ],
+      "milliseconds": 25.102661999999327,
+      "outputSha256": "4a8269d062334efb6931725a2af8850751c6555fd1f7c2fab757d7c98b45ff67"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 220,
+      "pitchCents": 1200,
+      "formantCents": -1200,
+      "preserveFormants": true,
+      "expectedF0": 440,
+      "measuredF0": 439.9993248352102,
+      "f0ErrorCents": -0.0026565208401004574,
+      "strongestHarmonicIndex": 3,
+      "strongestHarmonicF0": 440.00000280433704,
+      "strongestHarmonicF0ErrorCents": 1.1034008557718824e-05,
+      "envelope": {
+        "expectedCents": -1200,
+        "fittedCents": 20,
+        "errorCents": 1220,
+        "fittedRmseDb": 19.84807945770793,
+        "targetRmseDb": 22.960460193369446
+      },
+      "peaks": [
+        {
+          "expectedHz": 325,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 625,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 1250,
+          "measuredHz": 1254.999041172133,
+          "errorHz": 4.999041172133047,
+          "resolved": true
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.32143336031675684,
+      "renderedRms": 0.09330785987084082,
+      "rmsGainDb": -10.743454400578841,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved"
+      ],
+      "milliseconds": 72.53447000000051,
+      "outputSha256": "69a36f19973ca479c5e00cad3d0ced31273bb3f102f5da2f7a7e503aa849aaff"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 220,
+      "pitchCents": -1200,
+      "formantCents": 1200,
+      "preserveFormants": true,
+      "expectedF0": 110,
+      "measuredF0": 109.99996562372277,
+      "f0ErrorCents": -0.0005410308264815404,
+      "strongestHarmonicIndex": 11,
+      "strongestHarmonicF0": 109.99999923476503,
+      "strongestHarmonicF0ErrorCents": -1.2043644034247542e-05,
+      "envelope": {
+        "expectedCents": 1200,
+        "fittedCents": 1315,
+        "errorCents": 115,
+        "fittedRmseDb": 7.982836289946983,
+        "targetRmseDb": 8.490321399889266
+      },
+      "peaks": [
+        {
+          "expectedHz": 1300,
+          "measuredHz": 1257.4363977639375,
+          "errorHz": -42.56360223606248,
+          "resolved": true
+        },
+        {
+          "expectedHz": 2500,
+          "measuredHz": 2547.7955875748207,
+          "errorHz": 47.79558757482073,
+          "resolved": true
+        },
+        {
+          "expectedHz": 5000,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 1.375866413116455,
+      "sourceRms": 0.32143336031675684,
+      "renderedRms": 0.3940192514975955,
+      "rmsGainDb": 1.7685298632164943,
+      "peakGainDb": 6.513258566305431,
+      "samplesAboveUnity": 2221,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "float-pcm-peak-exceeds-unity"
+      ],
+      "milliseconds": 28.607778999999937,
+      "outputSha256": "7f04bc5b7411a91ae2011ae1054c8e9980818e76cee22c40296392358ab9586f"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 240,
+      "pitchCents": 1200,
+      "formantCents": -1200,
+      "preserveFormants": true,
+      "expectedF0": 480,
+      "measuredF0": 479.98905793337957,
+      "f0ErrorCents": -0.03946561295605361,
+      "strongestHarmonicIndex": 3,
+      "strongestHarmonicF0": 480.0052041572582,
+      "strongestHarmonicF0ErrorCents": 0.01876992791948124,
+      "envelope": {
+        "expectedCents": -1200,
+        "fittedCents": 125,
+        "errorCents": 1325,
+        "fittedRmseDb": 23.162318788642906,
+        "targetRmseDb": 27.922446317607594
+      },
+      "peaks": [
+        {
+          "expectedHz": 325,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 625,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 1250,
+          "measuredHz": 1297.0903233214735,
+          "errorHz": 47.090323321473534,
+          "resolved": true
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.31710987417350667,
+      "renderedRms": 0.051403243659306416,
+      "rmsGainDb": -15.804384809949816,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved"
+      ],
+      "milliseconds": 59.06108300000051,
+      "outputSha256": "65a3d5fedd8e16eb3ab432b817b070f0b0cb9e467268fb9c36a2b4d0e1aa8011"
+    },
+    {
+      "group": "voice-registers",
+      "sampleRate": 48000,
+      "sourceF0": 240,
+      "pitchCents": -1200,
+      "formantCents": 1200,
+      "preserveFormants": true,
+      "expectedF0": 120,
+      "measuredF0": 120.00000328260849,
+      "f0ErrorCents": 4.735802908153441e-05,
+      "strongestHarmonicIndex": 11,
+      "strongestHarmonicF0": 119.99999993059781,
+      "strongestHarmonicF0ErrorCents": -1.0012619632254501e-06,
+      "envelope": {
+        "expectedCents": 1200,
+        "fittedCents": 1325,
+        "errorCents": 125,
+        "fittedRmseDb": 8.636403257704561,
+        "targetRmseDb": 9.040073002576463
+      },
+      "peaks": [
+        {
+          "expectedHz": 1300,
+          "measuredHz": 1260.1336492727903,
+          "errorHz": -39.86635072720969,
+          "resolved": true
+        },
+        {
+          "expectedHz": 2500,
+          "measuredHz": 2372.5006793627877,
+          "errorHz": -127.49932063721235,
+          "resolved": true
+        },
+        {
+          "expectedHz": 5000,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        }
+      ],
+      "sourceFrames": 96000,
+      "outputFrames": 96000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 1.5611079931259155,
+      "sourceRms": 0.31710987417350667,
+      "renderedRms": 0.40431714176999656,
+      "rmsGainDb": 2.110247782615866,
+      "peakGainDb": 7.610392133552759,
+      "samplesAboveUnity": 2626,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "float-pcm-peak-exceeds-unity"
+      ],
+      "milliseconds": 26.75782799999979,
+      "outputSha256": "b289cd088655e8d9cfd11688567d88672d6855a6c080d45f4fab1775acf505db"
+    },
+    {
+      "group": "supported-rates",
+      "sampleRate": 8000,
+      "sourceF0": 150,
+      "pitchCents": 1200,
+      "formantCents": -1200,
+      "preserveFormants": true,
+      "expectedF0": 300,
+      "measuredF0": 299.87207738074653,
+      "f0ErrorCents": -0.7383707487151183,
+      "strongestHarmonicIndex": 1,
+      "strongestHarmonicF0": 299.87207738074653,
+      "strongestHarmonicF0ErrorCents": -0.7383707487151183,
+      "envelope": {
+        "expectedCents": -1200,
+        "fittedCents": -1275,
+        "errorCents": -75,
+        "fittedRmseDb": 28.225538532569693,
+        "targetRmseDb": 28.359766928252935
+      },
+      "peaks": [
+        {
+          "expectedHz": 325,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 625,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 1250,
+          "measuredHz": 1225.014666741179,
+          "errorHz": -24.9853332588209,
+          "resolved": true
+        }
+      ],
+      "sourceFrames": 16000,
+      "outputFrames": 16000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.25153576066883354,
+      "renderedRms": 0.12130878692523728,
+      "rmsGainDb": -6.334149545638023,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "weak-fundamental-error-over-0.2-cents"
+      ],
+      "milliseconds": 11.495311999999103,
+      "outputSha256": "7c4effcb6dd50f8c9093083e6d1a0c1a0245b78b4ce8bfba2398606090814509"
+    },
+    {
+      "group": "supported-rates",
+      "sampleRate": 8000,
+      "sourceF0": 150,
+      "pitchCents": -1200,
+      "formantCents": 1200,
+      "preserveFormants": true,
+      "expectedF0": 75,
+      "measuredF0": 74.99908380685972,
+      "f0ErrorCents": -0.02114872597555158,
+      "strongestHarmonicIndex": 17,
+      "strongestHarmonicF0": 74.99995294769043,
+      "strongestHarmonicF0ErrorCents": -0.0010861144794493,
+      "envelope": {
+        "expectedCents": 1200,
+        "fittedCents": 1205,
+        "errorCents": 5,
+        "fittedRmseDb": 6.477098814845436,
+        "targetRmseDb": 6.47818396964779
+      },
+      "peaks": [
+        {
+          "expectedHz": 1300,
+          "measuredHz": 1244.7948097522078,
+          "errorHz": -55.20519024779219,
+          "resolved": true
+        },
+        {
+          "expectedHz": 2500,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 5000,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        }
+      ],
+      "sourceFrames": 16000,
+      "outputFrames": 16000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.25153576066883354,
+      "renderedRms": 0.2769274978518321,
+      "rmsGainDb": 0.8353268910049934,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved"
+      ],
+      "milliseconds": 6.599641999999221,
+      "outputSha256": "8a042aa98a5c309a4c05462f462467771f0b428cbbcf8622ac8a7ab7db814fd3"
+    },
+    {
+      "group": "supported-rates",
+      "sampleRate": 96000,
+      "sourceF0": 150,
+      "pitchCents": 1200,
+      "formantCents": -1200,
+      "preserveFormants": true,
+      "expectedF0": 300,
+      "measuredF0": 299.8916426370718,
+      "f0ErrorCents": -0.6254194753702175,
+      "strongestHarmonicIndex": 1,
+      "strongestHarmonicF0": 299.8916426370718,
+      "strongestHarmonicF0ErrorCents": -0.6254194753702175,
+      "envelope": {
+        "expectedCents": -1200,
+        "fittedCents": 95,
+        "errorCents": 1295,
+        "fittedRmseDb": 24.59152819904872,
+        "targetRmseDb": 25.296810237799217
+      },
+      "peaks": [
+        {
+          "expectedHz": 325,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 625,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 1250,
+          "measuredHz": 1224.1398881987932,
+          "errorHz": -25.860111801206813,
+          "resolved": true
+        }
+      ],
+      "sourceFrames": 192000,
+      "outputFrames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.2493878901142819,
+      "renderedRms": 0.12008245855719252,
+      "rmsGainDb": -6.34791579925181,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "weak-fundamental-error-over-0.2-cents"
+      ],
+      "milliseconds": 118.9841120000001,
+      "outputSha256": "23c9ef697d769da60100b65247637b72bb218f7526e4946ca1921f09f29740a1"
+    },
+    {
+      "group": "supported-rates",
+      "sampleRate": 96000,
+      "sourceF0": 150,
+      "pitchCents": -1200,
+      "formantCents": 1200,
+      "preserveFormants": true,
+      "expectedF0": 75,
+      "measuredF0": 74.99894485147459,
+      "f0ErrorCents": -0.02435629205063246,
+      "strongestHarmonicIndex": 17,
+      "strongestHarmonicF0": 74.9999554654647,
+      "strongestHarmonicF0ErrorCents": -0.0010279963570380157,
+      "envelope": {
+        "expectedCents": 1200,
+        "fittedCents": 1260,
+        "errorCents": 60,
+        "fittedRmseDb": 6.7038001085009,
+        "targetRmseDb": 6.943065432460949
+      },
+      "peaks": [
+        {
+          "expectedHz": 1300,
+          "measuredHz": 1244.7780048980276,
+          "errorHz": -55.221995101972425,
+          "resolved": true
+        },
+        {
+          "expectedHz": 2500,
+          "measuredHz": 2428.711165471579,
+          "errorHz": -71.28883452842092,
+          "resolved": true
+        },
+        {
+          "expectedHz": 5000,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        }
+      ],
+      "sourceFrames": 192000,
+      "outputFrames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 1.2281503677368164,
+      "sourceRms": 0.2493878901142819,
+      "renderedRms": 0.34643742335765154,
+      "rmsGainDb": 2.8549887772708904,
+      "peakGainDb": 5.526764037811054,
+      "samplesAboveUnity": 1099,
+      "qualityFlags": [
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "float-pcm-peak-exceeds-unity"
+      ],
+      "milliseconds": 57.57006100000035,
+      "outputSha256": "9be8d16fb6c1c8fdaecdf3282de83aa50c18467c43ae0e656be28da631ca1195"
+    },
+    {
+      "group": "supported-rates",
+      "sampleRate": 192000,
+      "sourceF0": 150,
+      "pitchCents": 1200,
+      "formantCents": -1200,
+      "preserveFormants": true,
+      "expectedF0": 300,
+      "measuredF0": 299.89318556545066,
+      "f0ErrorCents": -0.6165123806283668,
+      "strongestHarmonicIndex": 1,
+      "strongestHarmonicF0": 299.89318556545066,
+      "strongestHarmonicF0ErrorCents": -0.6165123806283668,
+      "envelope": {
+        "expectedCents": -1200,
+        "fittedCents": 100,
+        "errorCents": 1300,
+        "fittedRmseDb": 26.390314294683815,
+        "targetRmseDb": 27.229498262311342
+      },
+      "peaks": [
+        {
+          "expectedHz": 325,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 625,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        },
+        {
+          "expectedHz": 1250,
+          "measuredHz": 1224.1510347333433,
+          "errorHz": -25.848965266656705,
+          "resolved": true
+        }
+      ],
+      "sourceFrames": 384000,
+      "outputFrames": 384000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 0.6499999761581421,
+      "sourceRms": 0.24935915171334253,
+      "renderedRms": 0.12006565865505062,
+      "rmsGainDb": -6.348130084015727,
+      "peakGainDb": 0,
+      "samplesAboveUnity": 0,
+      "qualityFlags": [
+        "aggregate-envelope-fit-error-over-100-cents",
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "weak-fundamental-error-over-0.2-cents"
+      ],
+      "milliseconds": 306.50334999999905,
+      "outputSha256": "c6f012ee18e5ee097b3ce6563da62bb5911a6b21e76dd5cccab0c9a2374b0f4f"
+    },
+    {
+      "group": "supported-rates",
+      "sampleRate": 192000,
+      "sourceF0": 150,
+      "pitchCents": -1200,
+      "formantCents": 1200,
+      "preserveFormants": true,
+      "expectedF0": 75,
+      "measuredF0": 74.99894083644875,
+      "f0ErrorCents": -0.024448972682825032,
+      "strongestHarmonicIndex": 17,
+      "strongestHarmonicF0": 74.99995554174554,
+      "strongestHarmonicF0ErrorCents": -0.0010262355559683372,
+      "envelope": {
+        "expectedCents": 1200,
+        "fittedCents": 1260,
+        "errorCents": 60,
+        "fittedRmseDb": 6.70339039806902,
+        "targetRmseDb": 6.942621066858232
+      },
+      "peaks": [
+        {
+          "expectedHz": 1300,
+          "measuredHz": 1244.7755305255548,
+          "errorHz": -55.224469474445186,
+          "resolved": true
+        },
+        {
+          "expectedHz": 2500,
+          "measuredHz": 2428.6478876225633,
+          "errorHz": -71.3521123774367,
+          "resolved": true
+        },
+        {
+          "expectedHz": 5000,
+          "measuredHz": null,
+          "errorHz": null,
+          "resolved": false
+        }
+      ],
+      "sourceFrames": 384000,
+      "outputFrames": 384000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "finite": true,
+      "sourcePeak": 0.6499999761581421,
+      "peak": 1.2203024625778198,
+      "sourceRms": 0.24935915171334253,
+      "renderedRms": 0.3463897041144431,
+      "rmsGainDb": 2.854793259239851,
+      "peakGainDb": 5.471082939367083,
+      "samplesAboveUnity": 2262,
+      "qualityFlags": [
+        "target-envelope-rmse-over-6-db",
+        "one-or-more-resonances-not-resolved",
+        "float-pcm-peak-exceeds-unity"
+      ],
+      "milliseconds": 119.10475299999962,
+      "outputSha256": "a5f75db16b9e11fb480ba3e19d5b6193bc77b6aadfe4f3c1329be43ac05fc691"
+    }
+  ]
+}

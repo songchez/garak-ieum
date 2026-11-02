@@ -1,19 +1,9 @@
-import type { EffectType } from './types'
+import type { ParamDef } from '../devices/contracts'
+export type { EffectDef, ParamDef, ParamUnit } from '../devices/contracts'
+export { EFFECT_DEFS, EFFECT_TYPES } from '../devices/effects/registry'
+export { paramValue } from '../devices/effects/shared'
 
 export type SynthId = 'drums' | 'bass' | 'keys' | 'pad' | 'pluck' | 'rhodes'
-export type ParamUnit = 'hz' | 'db' | 's' | 'ms' | 'pct' | 'signed' | 'ct' | 'st' | 'x' | 'q' | 'ratio' | 'gain' | 'pan'
-
-export interface ParamDef {
-  id: string
-  label: string
-  min: number
-  max: number
-  default: number
-  unit: ParamUnit
-  scale?: 'log'
-  options?: readonly { value: number; label: string }[]
-}
-
 const tone = (fallback = 0): ParamDef => ({ id: 'tone', label: '톤', min: -1, max: 1, default: fallback, unit: 'signed' })
 const level: ParamDef = { id: 'level', label: '레벨', min: 0, max: 2, default: 1, unit: 'gain' }
 const envelope = (attack: number, decay: number, sustain: number, release: number): ParamDef[] => [
@@ -63,78 +53,8 @@ export const SAMPLED_KIT_PARAMS: readonly ParamDef[] = [
   level,
 ]
 
-export interface EffectDef {
-  name: string
-  short: string
-  params: readonly ParamDef[]
-}
-
-const eqBand = (id: string, label: string): ParamDef => ({ id, label, min: -18, max: 18, default: 0, unit: 'db' })
-
-export const EFFECT_DEFS: Record<EffectType, EffectDef> = {
-  eq: {
-    name: '3밴드 EQ', short: 'EQ',
-    params: [eqBand('low', '저음'), eqBand('mid', '중음'), { id: 'midFreq', label: '중음 주파수', min: 200, max: 5000, default: 1000, unit: 'hz', scale: 'log' }, eqBand('high', '고음')],
-  },
-  filter: {
-    name: '필터', short: '필터',
-    params: [
-      { id: 'cutoff', label: '컷오프', min: 20, max: 20000, default: 1200, unit: 'hz', scale: 'log' },
-      { id: 'resonance', label: '레조넌스', min: 0.1, max: 18, default: 0.7, unit: 'q', scale: 'log' },
-      { id: 'mode', label: '모드', min: 0, max: 2, default: 0, unit: 'q', options: [{ value: 0, label: '로우패스' }, { value: 1, label: '하이패스' }, { value: 2, label: '밴드패스' }] },
-    ],
-  },
-  compressor: {
-    name: '컴프레서', short: '컴프',
-    params: [
-      { id: 'threshold', label: '스레숄드', min: -60, max: 0, default: -18, unit: 'db' },
-      { id: 'ratio', label: '비율', min: 1, max: 20, default: 4, unit: 'ratio', scale: 'log' },
-      { id: 'attack', label: '어택', min: 0.1, max: 100, default: 10, unit: 'ms', scale: 'log' },
-      { id: 'release', label: '릴리즈', min: 10, max: 1000, default: 150, unit: 'ms', scale: 'log' },
-      { id: 'makeup', label: '메이크업', min: 0, max: 24, default: 0, unit: 'db' },
-    ],
-  },
-  drive: {
-    name: '드라이브', short: '드라이브',
-    params: [
-      { id: 'drive', label: '드라이브', min: 0, max: 36, default: 9, unit: 'db' },
-      { id: 'tone', label: '톤', min: 500, max: 20000, default: 9000, unit: 'hz', scale: 'log' },
-      { id: 'mix', label: '믹스', min: 0, max: 1, default: 1, unit: 'pct' },
-      { id: 'output', label: '출력', min: -24, max: 6, default: 0, unit: 'db' },
-    ],
-  },
-  delay: {
-    name: '딜레이', short: '딜레이',
-    params: [
-      { id: 'amount', label: '양', min: 0, max: 1, default: 0.3, unit: 'pct' },
-      {
-        id: 'time', label: '시간', min: 0.25, max: 2, default: 0.75, unit: 'x',
-        options: [{ value: 0.25, label: '1/16' }, { value: 0.5, label: '1/8' }, { value: 0.75, label: '1/8.' }, { value: 1, label: '1/4' }, { value: 1.5, label: '1/4.' }, { value: 2, label: '1/2' }],
-      },
-      { id: 'feedback', label: '피드백', min: 0, max: 0.95, default: 0.32, unit: 'pct' },
-      { id: 'tone', label: '톤', min: 500, max: 16000, default: 3800, unit: 'hz', scale: 'log' },
-    ],
-  },
-  reverb: {
-    name: '리버브', short: '리버브',
-    params: [
-      { id: 'amount', label: '양', min: 0, max: 1, default: 0.3, unit: 'pct' },
-      { id: 'size', label: '크기', min: 0, max: 1, default: 0.35, unit: 'pct' },
-      { id: 'tone', label: '톤', min: 1000, max: 20000, default: 9000, unit: 'hz', scale: 'log' },
-    ],
-  },
-}
-
-export const EFFECT_TYPES = Object.keys(EFFECT_DEFS) as EffectType[]
-
 export function defaultParams(defs: readonly ParamDef[]): Record<string, number> {
   return Object.fromEntries(defs.map(def => [def.id, def.default]))
-}
-
-export function paramValue(defs: readonly ParamDef[], params: Record<string, number> | undefined, id: string): number {
-  const value = params?.[id]
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  return defs.find(def => def.id === id)?.default ?? 0
 }
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value))

@@ -262,7 +262,7 @@ describe('project validation', () => {
 
   it('rejects unsupported versions, duplicate IDs, and values that could break the engine', () => {
     const project = createEmptyProject()
-    expect(() => validateProject({ ...project, schemaVersion: 3 })).toThrow(/version/)
+    expect(() => validateProject({ ...project, schemaVersion: 4 })).toThrow(/version/)
     expect(() => validateProject({ ...project, bpm: Infinity })).toThrow(/Tempo/)
     expect(() => validateProject({ ...project, loop: { enabled: true, startBeat: 8, endBeat: 4 } })).toThrow(/Loop end/)
     const track = createTrack('instrument')
@@ -280,7 +280,7 @@ describe('project validation', () => {
     delete track.devices
     track.effects = { filter: 4200, reverb: 0.3, delay: 0 }
     const migrated = validateProject({ ...createEmptyProject(), schemaVersion: 1, tracks: [track] })
-    expect(migrated.schemaVersion).toBe(2)
+    expect(migrated.schemaVersion).toBe(3)
     expect(migrated.tracks[0].instrumentParams).toEqual(defaultInstrumentParams('pad'))
     expect(migrated.tracks[0].devices).toEqual([
       { id: 'old-pad/filter', type: 'filter', enabled: true, params: { cutoff: 4200, resonance: 0.65, mode: 0 } },

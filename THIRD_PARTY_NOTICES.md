@@ -127,3 +127,11 @@ SOFTWARE.
 - 라이선스: GPL-3.0-or-later <https://www.gnu.org/licenses/gpl-3.0.html> — 전문은 `public/samples/kit-808/LICENSE.txt`
 - 변경 사항: 트리밍, Opus/AAC 변환
 - 이 샘플 파일은 MIT 코드와 별개로 함께 배포하는 GPL 데이터입니다. 코드가 GPL이 되는 것은 아닙니다.
+
+## Signalsmith Stretch — 피치 편집 오프라인 DSP
+
+- 원본: [Signalsmith-Audio/signalsmith-stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch), 고정 커밋 `88061fd4eda56a2353c5d65c74aa3f4ccf76f9da`.
+- 공식 배포 웹 번들의 WASM factory를 별도 Worker/Node용으로 분리했습니다. 상위 AudioWorklet 래퍼는 실행하지 않습니다.
+- 라이선스: MIT. [원문](src/devices/pitch-editor/vendor/LICENSE.signalsmith.txt)을 함께 포함합니다.
+- 추출 방법·원본 출처·변경 범위는 [vendor 안내](src/devices/pitch-editor/vendor/README.md)에 기록합니다.
+- 이 모듈은 피치 편집 렌더에 사용하며 네이티브 플러그인 호스트나 실시간 마이크 피치 보정기를 제공하지 않습니다.

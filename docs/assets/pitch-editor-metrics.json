@@ -1,0 +1,256 @@
+{
+  "runtime": "v24.22.1",
+  "platform": "linux/x64",
+  "renderer": "signalsmith-88061fd4-stretch-sinc64-v1",
+  "sampleRate": 48000,
+  "sourceFrames": 192000,
+  "source": "Generated 220 Hz sine, 0.4 linear amplitude, 4 seconds; edit from 0.1 to 3.9 seconds; stable measurement window 1 to 3 seconds.",
+  "analysis": {
+    "notes": 1,
+    "contourPoints": 399,
+    "centerMidi": 56.999971813360034,
+    "absoluteErrorCents": 0.002818663996606574,
+    "milliseconds": 257.029949
+  },
+  "renders": [
+    {
+      "cents": -1200,
+      "expectedHz": 110,
+      "measuredHz": 110.00013783423803,
+      "absoluteErrorCents": 0.0021693016046722313,
+      "frames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "bitExactBypass": null,
+      "milliseconds": 98.14891499999999,
+      "outputSha256": "b653393a5a0167861d525f7c0340d9209374151ca0debf38ef07d766ee1d8a68"
+    },
+    {
+      "cents": -50,
+      "expectedHz": 213.7370270537933,
+      "measuredHz": 213.7370754504731,
+      "absoluteErrorCents": 0.00039200493984295416,
+      "frames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "bitExactBypass": null,
+      "milliseconds": 107.41762499999993,
+      "outputSha256": "f31eeb0aa0c2046fdd0d23137c2a56ba1b8ed646a9bcf45926a0ca99592daa58"
+    },
+    {
+      "cents": -20,
+      "expectedHz": 217.47308447763714,
+      "measuredHz": 217.47326519710845,
+      "absoluteErrorCents": 0.0014386496277611989,
+      "frames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "bitExactBypass": null,
+      "milliseconds": 112.191686,
+      "outputSha256": "a1e465d375226f18f8ff23b76d27ecb17e016daef6d3b073f68d490caa143f8e"
+    },
+    {
+      "cents": 0,
+      "expectedHz": 220,
+      "measuredHz": 220.00000003003973,
+      "absoluteErrorCents": 2.3639019570575506e-7,
+      "frames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "bitExactBypass": true,
+      "milliseconds": 3.5470490000000154,
+      "outputSha256": "7f789d79ae6226b9a163db7c18602a09063c6ea7cdeeb668ddf73b06c8dd3c39"
+    },
+    {
+      "cents": 20,
+      "expectedHz": 222.55627686642296,
+      "measuredHz": 222.55629747193123,
+      "absoluteErrorCents": 0.00016028735010708626,
+      "frames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "bitExactBypass": null,
+      "milliseconds": 145.307907,
+      "outputSha256": "ee97cf811c53125ed2cf6c4b1d60b500b5873b237e02ca5175d6c13f973a61ff"
+    },
+    {
+      "cents": 50,
+      "expectedHz": 226.44649206156825,
+      "measuredHz": 226.44648532713933,
+      "absoluteErrorCents": 0.00005148621524240031,
+      "frames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "bitExactBypass": null,
+      "milliseconds": 106.56549899999993,
+      "outputSha256": "1e4ee9d16f7b15c5d848ffbad244c8818469fd09c33c735f7d83a54ca36b81d0"
+    },
+    {
+      "cents": 700,
+      "expectedHz": 329.6275569128699,
+      "measuredHz": 329.62777879255833,
+      "absoluteErrorCents": 0.001165332005945882,
+      "frames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "bitExactBypass": null,
+      "milliseconds": 147.27532199999996,
+      "outputSha256": "d83adb18bc0abab2e770607e712288fc74160f4a532fdb42453176a0d99b729b"
+    },
+    {
+      "cents": 1200,
+      "expectedHz": 440,
+      "measuredHz": 439.99939122786066,
+      "absoluteErrorCents": 0.002395290420020651,
+      "frames": 192000,
+      "inputUnchanged": true,
+      "outsideUnchanged": true,
+      "bitExactBypass": null,
+      "milliseconds": 145.78202699999997,
+      "outputSha256": "6fd9f71f13a5e75a55a98ac3613b4b53df1a961d2850808d93cc2c6b6c7fd815"
+    }
+  ],
+  "limits": [
+    "Synthetic PCM measurement, not listening evaluation.",
+    "No real-browser/UI or hardware test.",
+    "No polyphonic note separation, time warping, or advanced vocal controls.",
+    "Formants move with pitch; no automatic formant preservation.",
+    "These synthetic steady-tone errors are not a universal accuracy guarantee for voices or transients."
+  ],
+  "precisionComparison": {
+    "conditions": "Same 4 s / 48 kHz / 220 Hz / 0.4 amplitude input; measure central 1–3 s; default 120 ms FFT block; legacy formant compensation enabled.",
+    "methods": [
+      "Interpolated positive zero crossings over 2 s.",
+      "Hann-window DFT: ±4 Hz search around target, 0.125 Hz grid, parabolic log-power interpolation."
+    ],
+    "legacyRenderer": "signalsmith-88061fd4-note-window-v1",
+    "finalRenderer": "signalsmith-88061fd4-stretch-sinc64-v1",
+    "measurements": [
+      {
+        "cents": -1200,
+        "expectedHz": 110,
+        "legacyHz": 110.50537172920457,
+        "legacyErrorCents": 7.935573361079193,
+        "legacyHannHz": 110.50536191186124,
+        "finalHz": 110.00013783423803,
+        "finalErrorCents": 0.0021693016046722313,
+        "finalHannHz": 109.99999989839321,
+        "finalHannErrorCents": -0.0000015991376336684218
+      },
+      {
+        "cents": -50,
+        "expectedHz": 213.7370270537933,
+        "legacyHz": 213.67416491630198,
+        "legacyErrorCents": -0.5092476549581165,
+        "legacyHannHz": 213.67433944340004,
+        "finalHz": 213.7370754504731,
+        "finalErrorCents": 0.00039200493984295416,
+        "finalHannHz": 213.7370271295293,
+        "finalHannErrorCents": 6.134491278335629e-7
+      },
+      {
+        "cents": -20,
+        "expectedHz": 217.47308447763714,
+        "legacyHz": 218.80070965308389,
+        "legacyErrorCents": 10.53667230960996,
+        "legacyHannHz": 218.80090662303277,
+        "finalHz": 217.47326519710845,
+        "finalErrorCents": 0.0014386496277611989,
+        "finalHannHz": 217.4730835343006,
+        "finalHannErrorCents": -0.000007509602165303596
+      },
+      {
+        "cents": 20,
+        "expectedHz": 222.55627686642296,
+        "legacyHz": 222.86101245017585,
+        "legacyErrorCents": 2.3688739234974783,
+        "legacyHannHz": 222.86114864425855,
+        "finalHz": 222.55629747193123,
+        "finalErrorCents": 0.00016028735010708626,
+        "finalHannHz": 222.5562766047927,
+        "finalHannErrorCents": -0.000002035185038604485
+      },
+      {
+        "cents": 50,
+        "expectedHz": 226.44649206156825,
+        "legacyHz": 227.38853405427818,
+        "legacyErrorCents": 7.187182222274874,
+        "legacyHannHz": 227.38836384468323,
+        "finalHz": 226.44648532713933,
+        "finalErrorCents": -0.00005148621524240031,
+        "finalHannHz": 226.44649177769946,
+        "finalHannErrorCents": -0.000002170240411004345
+      },
+      {
+        "cents": 1200,
+        "expectedHz": 440,
+        "legacyHz": 440.1456944846051,
+        "legacyErrorCents": 0.5731579587196972,
+        "legacyHannHz": 440.14565881929786,
+        "finalHz": 439.99939122786066,
+        "finalErrorCents": -0.002395290420020651,
+        "finalHannHz": 439.999999988655,
+        "finalHannErrorCents": -4.463821068651452e-8
+      }
+    ]
+  },
+  "motif": {
+    "description": "4.8 s generated harmonic motif MIDI 57-60-64-57, ±15-cent 5 Hz vibrato; detected second note +200 cents, fourth note -100 cents.",
+    "expectedNotes": 4,
+    "detectedNotes": 4,
+    "frames": 230400,
+    "outputFrames": 230400,
+    "inputUnchanged": true,
+    "outsideUnchanged": true,
+    "sourceSha256": "2acf941d7ff3d2f7e78982fa0814aa80c230f1093d8cf72045e985bc476c0e55",
+    "outputSha256": "6d0ea51c5c6eac68adba491072e6d88390095e159ff5bbc8b197734bcdc1f647",
+    "measurements": [
+      {
+        "expectedSourceMidi": 57,
+        "beforeMidi": 57.01281012981148,
+        "afterMidi": 57.01281012981148,
+        "expectedCents": 0,
+        "measuredCents": 0,
+        "absoluteErrorCents": 0
+      },
+      {
+        "expectedSourceMidi": 60,
+        "beforeMidi": 60.01331043363899,
+        "afterMidi": 62.00889957799379,
+        "expectedCents": 200,
+        "measuredCents": 199.55891443547955,
+        "absoluteErrorCents": 0.4410855645204492
+      },
+      {
+        "expectedSourceMidi": 64,
+        "beforeMidi": 64.0325321387256,
+        "afterMidi": 64.0325321387256,
+        "expectedCents": 0,
+        "measuredCents": 0,
+        "absoluteErrorCents": 0
+      },
+      {
+        "expectedSourceMidi": 57,
+        "beforeMidi": 57.01281012981148,
+        "afterMidi": 56.01704942202019,
+        "expectedCents": -100,
+        "measuredCents": -99.5760707791284,
+        "absoluteErrorCents": 0.42392922087159945
+      }
+    ]
+  },
+  "rangeBoundaryAnalysis": [
+    {
+      "expectedHz": 55,
+      "measuredHz": 55.000003844536444,
+      "absoluteErrorCents": 0.00012101440276524045,
+      "notes": 1
+    },
+    {
+      "expectedHz": 1600,
+      "measuredHz": 1599.9638522408713,
+      "absoluteErrorCents": 0.039113086455699886,
+      "notes": 1
+    }
+  ]
+}
