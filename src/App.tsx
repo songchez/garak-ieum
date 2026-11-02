@@ -5,9 +5,9 @@ import { InputCapture } from './audio/InputCapture'
 import { inputConstraints, loadAudioSettings, normalizeAudioSettings, saveAudioSettings, type AudioSettings, type SampleRate } from './core/audioSettings'
 import { recordingPlacement } from './core/recordingOffset'
 import type { AudioAsset, AudioClip, Clip, EffectType, InstrumentId, MidiClip, Project, Track } from './core/types'
-import { addMarker, applyDragMode, createDemoProject, createDevice, createEmptyProject, createMarker, createTrack, cycleClipIds, defaultInstrumentParams, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength, insertTracks, joinClips, moveDevice, moveMarker, renameMarker, splitClip, trimClipEnd, trimClipStart, trimClipStarts, uid, visibleTracks, type ClipStartTrim } from './core/project'
+import { addMarker, applyDragMode, createDevice, createEmptyProject, createMarker, createTrack, cycleClipIds, defaultInstrumentParams, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength, insertTracks, joinClips, moveDevice, moveMarker, renameMarker, splitClip, trimClipEnd, trimClipStart, trimClipStarts, uid, visibleTracks, type ClipStartTrim } from './core/project'
 import { SAMPLE_CREDITS, instrumentDef, previewPitch } from './core/instruments'
-import { exportProjectBundle, importProjectBundle, loadProject, saveProject } from './core/storage'
+import { exportProjectBundle, loadProject, saveProject } from './core/storage'
 import { clearRecallSolo, effectiveArm, implicitlyMuted, monitorTargets, pressTrackButton, recordTarget, sweepTrackButton, type TrackButtonKind, type TrackButtonMods } from './core/trackActions'
 import { TRACK_ICON_OPTIONS, TRACK_ZOOM_LIMITS, VIEW_STORAGE_KEY, loadTrackHeader, loadTrackZoom, loadView, pruneTrackZoom, resolveSnap, saveTrackHeader, saveTrackZoom, saveView, type TrackHeaderState, type TrackZoom, type ViewState } from './core/trackUi'
 import { Icon } from './components/Icon'
@@ -67,11 +67,23 @@ const shortcutText=(command:ProjectShortcut)=>shortcutLabel(command)
 const SCOPE_GROUPS:[string,string][]=[['timeline,piano,workspace','어디서나'],['timeline,workspace','타임라인·작업 공간'],['timeline,piano','타임라인·피아노롤'],['timeline','타임라인'],['piano','피아노롤'],['workspace','작업 공간']]
 const anchorAt=(el:Element|null|undefined,fallback={x:Math.max(8,window.innerWidth/2-160),y:160})=>{const r=el?.getBoundingClientRect();return r?{x:r.left,y:r.bottom+4}:fallback}
 
-export default function App(){
-  const [commandSession]=useState(()=>new ProjectSession(createDemoProject()))
+export interface StudioAppProps {
+  projectId:string
+  navigating:boolean
+  navigationError?:string
+  onHome():void
+  onNew():void
+  onImport(file:File):void
+  registerNavigationGuard(guard:()=>Promise<boolean>):()=>void
+}
+
+export default function App({projectId,navigating,navigationError,onHome,onNew,onImport,registerNavigationGuard}:StudioAppProps){
+  const [commandSession]=useState(()=>new ProjectSession({...createEmptyProject(),id:projectId}))
   const commandState=useSyncExternalStore(commandSession.subscribe,commandSession.getSnapshot,commandSession.getSnapshot)
   const history=commandState.history,dispatch=commandSession.dispatch
   const project=history.present
+  const [loaded,setLoaded]=useState(false)
+  const [restoreError,setRestoreError]=useState('')
   const projectRef=useRef(project);projectRef.current=project
   const [assets,setAssets]=useState<Map<string,AudioAsset>>(new Map())
   const assetsRef=useRef(assets);assetsRef.current=assets
@@ -104,19 +116,17 @@ export default function App(){
   const [trackHeader,setTrackHeader]=useState<TrackHeaderState>(()=>loadTrackHeader())
   const initialHeader=useRef(trackHeader)
   useEffect(()=>{if(trackHeader!==initialHeader.current)saveTrackHeader(trackHeader)},[trackHeader])
-  const [trackZoom,setTrackZoom]=useState<TrackZoom>(()=>loadTrackZoom(project.id,project.tracks.map(t=>t.id)))
+  const [trackZoom,setTrackZoom]=useState<TrackZoom>({})
   const trackZoomProject=useRef(project.id)
   useEffect(()=>{if(trackZoomProject.current===project.id)return;trackZoomProject.current=project.id;setTrackZoom(loadTrackZoom(project.id,projectRef.current.tracks.map(t=>t.id)))},[project.id])
-  useEffect(()=>{setTrackZoom(z=>pruneTrackZoom(z,project.tracks.map(t=>t.id)))},[project.tracks])
-  useEffect(()=>{if(trackZoomProject.current!==project.id)return;const id=window.setTimeout(()=>saveTrackZoom(project.id,trackZoom),250);return()=>clearTimeout(id)},[trackZoom,project.id])
+  useEffect(()=>{if(loaded)setTrackZoom(z=>pruneTrackZoom(z,project.tracks.map(t=>t.id)))},[loaded,project.tracks])
+  useEffect(()=>{if(!loaded||trackZoomProject.current!==project.id)return;const id=window.setTimeout(()=>saveTrackZoom(project.id,trackZoom),250);return()=>clearTimeout(id)},[loaded,trackZoom,project.id])
   const [hideView,setHideView]=useState(false)
   const [soloRecall,setSoloRecall]=useState<string[]|null>(null)
   const [palette,setPalette]=useState<{ids:string[];x:number;y:number}|null>(null)
   const [headerConfig,setHeaderConfig]=useState<{x:number;y:number}|null>(null)
   const [iconMenu,setIconMenu]=useState<{id:string;x:number;y:number}|null>(null)
   const [appMenu,setAppMenu]=useState<{x:number;y:number;trigger:HTMLElement}|null>(null)
-  const [loaded,setLoaded]=useState(false)
-  const [restoreError,setRestoreError]=useState('')
   const projectSession=useRef(0)
   const importing=useRef(false)
   const [saveStatus,setSaveStatus]=useState<'loading'|'saving'|'saved'|'error'>('loading')
@@ -143,7 +153,7 @@ export default function App(){
   const [bridgeClient]=useState(()=>new DawBridgeClient((method,params,context)=>bridgeHandler.current(method,params,context)))
   const bridgeState=useSyncExternalStore(bridgeClient.subscribe,bridgeClient.getSnapshot,bridgeClient.getSnapshot)
   useEffect(()=>()=>bridgeClient.disconnect(),[bridgeClient])
-  const [audioSettings,setAudioSettings]=useState<AudioSettings>(()=>({...initialAudioSettings}))
+  const [audioSettings,setAudioSettings]=useState<AudioSettings>(()=>({...engine.getAudioState().settings}))
   const audioSettingsRef=useRef(audioSettings);audioSettingsRef.current=audioSettings
   const [audioApplying,setAudioApplying]=useState(false)
   const audioApplyingRef=useRef(false)
@@ -159,9 +169,12 @@ export default function App(){
   const [inputCapture]=useState(()=>new InputCapture(()=>navigator.mediaDevices.getUserMedia(inputConstraints(audioSettingsRef.current,projectRef.current.sampleRate))))
   const monitorWarned=useRef(false)
   const saveQueue=useRef(Promise.resolve())
+  const saveTimer=useRef<number|null>(null)
   const saveRevision=useRef(0)
   const persistedProject=useRef<Project|null>(null)
+  const persistedAssets=useRef<Map<string,AudioAsset>|null>(null)
   const persistedRevision=useRef(-1)
+  const navigationGuard=useRef<()=>Promise<boolean>>(async()=>false)
   const focusedTrack=project.tracks.find(t=>t.id===focusedTrackId)
   const clipIndex=useMemo(()=>{const map=new Map<string,ClipEntry>();project.tracks.forEach((track,row)=>track.clips.forEach(clip=>map.set(clip.id,{clip,track,row})));return map},[project])
   const projectClipIds=useMemo(()=>new Set(clipIndex.keys()),[clipIndex])
@@ -227,7 +240,7 @@ export default function App(){
     getRuntime:()=>{
       const active=document.activeElement
       const textEditing=active instanceof HTMLElement&&!active.closest('.mcp-connection')&&active.matches('input:not([type="checkbox"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="file"]),textarea,select,[contenteditable="true"]')
-      const blockedReason=pitchBusyRef.current||pitchDirtyRef.current?'피치 작업을 적용하거나 취소한 뒤 AI 편집을 사용할 수 있습니다.':recordRef.current||recordPreparingRef.current?'녹음·녹음 준비가 끝난 뒤 편집할 수 있습니다.':audioApplyingRef.current||busy||importing.current?'오디오 설정이나 파일 처리가 끝난 뒤 편집할 수 있습니다.':modal&&modal!=='mcp'?'열린 대화상자를 닫은 뒤 편집할 수 있습니다.':activeControlEdits.current.size||document.querySelector('[data-daw-gesture]')||textEditing?'현재 입력·드래그가 끝난 뒤 편집할 수 있습니다.':null
+      const blockedReason=navigating?'프로젝트를 저장하고 이동하는 중입니다.':pitchBusyRef.current||pitchDirtyRef.current?'피치 작업을 적용하거나 취소한 뒤 AI 편집을 사용할 수 있습니다.':recordRef.current||recordPreparingRef.current?'녹음·녹음 준비가 끝난 뒤 편집할 수 있습니다.':audioApplyingRef.current||busy||importing.current?'오디오 설정이나 파일 처리가 끝난 뒤 편집할 수 있습니다.':modal&&modal!=='mcp'?'열린 대화상자를 닫은 뒤 편집할 수 있습니다.':activeControlEdits.current.size||document.querySelector('[data-daw-gesture]')||textEditing?'현재 입력·드래그가 끝난 뒤 편집할 수 있습니다.':null
       const current=commandSession.getSnapshot()
       return{ready:loaded&&!restoreError,editsAllowed:aiEditsAllowedRef.current,blockedReason,persistence:!loaded?'loading':saveStatus==='error'?'error':saveStatus==='saved'&&persistedProject.current===current.history.present&&persistedRevision.current===current.revision?'saved':'pending'}
     },
@@ -325,22 +338,74 @@ export default function App(){
   useEffect(()=>{engine.setAssets(assets)},[assets])
   useEffect(()=>{
     let cancelled=false
-    void(async()=>{try{const saved=await loadProject();if(cancelled)return;if(saved){const decoded=await Promise.all(saved.assets.map(a=>engine.decodeAsset(a.blob,a.name,a.id)));if(cancelled)return;const next=new Map(decoded.map(a=>[a.id,a]));engine.setAssets(next);setAssets(next);breakHistoryMerge();dispatch({type:'reset',project:saved.project});const first=saved.project.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'')}if(!cancelled)setLoaded(true)}catch(error){if(!cancelled){setRestoreError(error instanceof Error?error.message:'저장소 오류');setSaveStatus('error')}}})()
+    void(async()=>{try{
+      const saved=await loadProject(projectId)
+      if(cancelled)return
+      if(!saved)throw new Error('이 브라우저에 해당 프로젝트가 없습니다. 프로젝트 목록에서 선택하거나 .garak 파일을 가져와 주세요.')
+      // Decoding must use this project's rate, including persisted pitch sources.
+      engine.setProject(saved.project)
+      const decoded=await Promise.all(saved.assets.map(a=>engine.decodeAsset(a.blob,a.name,a.id)))
+      if(cancelled)return
+      const next=new Map(decoded.map(a=>[a.id,a]))
+      engine.setAssets(next);setAssets(next);assetsRef.current=next
+      breakHistoryMerge();dispatch({type:'reset',project:saved.project})
+      const state=commandSession.getSnapshot()
+      persistedProject.current=state.history.present;persistedRevision.current=state.revision;persistedAssets.current=next
+      setTrackZoom(loadTrackZoom(saved.project.id,saved.project.tracks.map(track=>track.id)))
+      const first=saved.project.tracks[0]
+      if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'')
+      setSaveStatus('saved');setLoaded(true)
+    }catch(error){if(!cancelled){setRestoreError(error instanceof Error?error.message:'저장소 오류');setSaveStatus('error')}}})()
     return()=>{cancelled=true}
-  },[notify])
+  },[projectId,notify])
+  useEffect(()=>{document.title=loaded?`${project.name} · ${BRAND.name}`:`프로젝트 열기 · ${BRAND.name}`},[loaded,project.name])
   useEffect(()=>{
     if(!loaded)return
+    if(persistedProject.current===project&&persistedAssets.current===assets&&persistedRevision.current===commandState.revision)return
     const revision=++saveRevision.current;setSaveStatus('saving')
-    const timer=window.setTimeout(()=>{saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{await saveProject(project,assets);if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=commandState.revision;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일을 내려받아 보관해주세요.`)}}})},650)
-    return()=>window.clearTimeout(timer)
-  },[project,assets,loaded,notify])
+    const timer=window.setTimeout(()=>{saveTimer.current=null;saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{await saveProject(project,assets);if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=commandState.revision;persistedAssets.current=assets;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일을 내려받아 보관해주세요.`)}}})},650)
+    saveTimer.current=timer
+    return()=>{window.clearTimeout(timer);if(saveTimer.current===timer)saveTimer.current=null}
+  },[project,assets,commandState.revision,loaded,notify])
+  navigationGuard.current=async()=>{
+    if(!loaded){engine.stop();return true}
+    // Commit an inline name/number before taking the final snapshot. Pitch inputs
+    // may become dirty on blur, so check their draft guard afterwards.
+    if(document.activeElement instanceof HTMLElement)document.activeElement.blur()
+    if(pitchPending())return false
+    if(recordRef.current||recordPreparingRef.current||busy||importing.current||audioApplyingRef.current||pitchBusyRef.current||activeControlEdits.current.size||document.querySelector('[data-daw-gesture]')){
+      notify('녹음·파일 처리·드래그가 끝난 뒤 프로젝트를 이동해 주세요.');return false
+    }
+    if(saveTimer.current!==null){window.clearTimeout(saveTimer.current);saveTimer.current=null}
+    const snapshot=commandSession.getSnapshot(),originals=assetsRef.current,revision=++saveRevision.current
+    try{
+      // Always finish with this snapshot. A queued older autosave may still be
+      // writing even after undo returned to the previously persisted object.
+      setSaveStatus('saving')
+      const saving=saveQueue.current.catch(()=>{}).then(()=>saveProject(snapshot.history.present,originals))
+      saveQueue.current=saving;await saving
+      if(commandSession.getSnapshot().revision!==snapshot.revision||assetsRef.current!==originals){
+        notify('저장 중 프로젝트가 변경되었습니다. 변경을 저장한 뒤 다시 이동해 주세요.');return false
+      }
+      if(saveRevision.current===revision){persistedProject.current=snapshot.history.present;persistedRevision.current=snapshot.revision;persistedAssets.current=originals;setSaveStatus('saved')}
+      engine.stop();return true
+    }catch(error){setSaveStatus('error');notify(`프로젝트를 저장하지 못해 이동을 멈췄습니다: ${error instanceof Error?error.message:'저장소 오류'}. 현재 작업을 .garak 파일로 보관할 수 있습니다.`);return false}
+  }
+  useEffect(()=>registerNavigationGuard(()=>navigationGuard.current()),[registerNavigationGuard])
+  useEffect(()=>{if(navigationError)notify(navigationError)},[navigationError,notify])
   useEffect(()=>{if(!notice)return;const id=window.setTimeout(()=>setNotice(''),7000);return()=>clearTimeout(id)},[notice])
-  useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(loaded&&(saveStatus!=='saved'||recording||recordPreparing||busy||pitchDirty||pitchBusy)){event.preventDefault();event.returnValue=''}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard)},[loaded,saveStatus,recording,recordPreparing,busy,pitchDirty,pitchBusy])
+  useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{
+    if(!loaded)return
+    if(document.activeElement instanceof HTMLElement)document.activeElement.blur()
+    const state=commandSession.getSnapshot()
+    if(persistedRevision.current!==state.revision||persistedProject.current!==state.history.present||persistedAssets.current!==assetsRef.current||saveStatus!=='saved'||recordRef.current||recordPreparingRef.current||busy||pitchDirtyRef.current||pitchBusyRef.current){event.preventDefault();event.returnValue=''}
+  };window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard)},[loaded,saveStatus,busy,commandSession])
   useEffect(()=>{const hide=()=>{cancelRecordPreparation();engine.pause();if(recordRef.current?.recorder.state==='recording')recordRef.current.recorder.stop()};window.addEventListener('pagehide',hide);return()=>window.removeEventListener('pagehide',hide)},[])
 
   // Recording preparation owns input too, before MediaRecorder has been created.
   useEffect(()=>()=>{
     projectSession.current+=1
+    engine.dispose()
     recordAttempt.current+=1
     recordPreparingRef.current=false
     const active=recordRef.current
@@ -705,7 +770,7 @@ export default function App(){
   }
   function addStoredAsset(asset:AudioAsset){const clip:AudioClip={id:uid(),kind:'audio',assetId:asset.id,name:asset.name.replace(/\.[^.]+$/,''),startBeat:Math.floor(engine.getSnapshot().beat/4)*4,lengthBeats:asset.buffer.duration*project.bpm/60,offsetSeconds:0,gain:1,fadeIn:.005,fadeOut:.01};let target=focusedTrack?.kind==='audio'?focusedTrack:createTrack('audio');target={...target,clips:[...target.clips,clip]};const targetId=target.id;commit(p=>withDragMode({...p,lengthBeats:Math.max(p.lengthBeats,Math.ceil((clip.startBeat+clip.lengthBeats)/4)*4),tracks:p.tracks.some(t=>t.id===targetId)?p.tracks.map(t=>t.id===targetId?target:t):[...p.tracks,target]},[{trackId:targetId,clip}]));selectClips([clip.id],clip.id,targetId)}
   async function saveBundle(){if(pitchPending())return;setBusy('프로젝트를 묶는 중…');try{downloadBlob(await exportProjectBundle(project,assets),`${safeFilename(project.name)}.garak`);notify('프로젝트와 원본 음원을 함께 내려받았습니다.')}catch(e){notify(`프로젝트 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
-  async function openBundle(file:File){if(pitchPending())return;if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 프로젝트를 열어주세요.');return}const session=++projectSession.current;setBusy('프로젝트를 여는 중…');try{const data=await importProjectBundle(file);const decoded=await Promise.all(data.assets.map(a=>engine.decodeAsset(a.blob,a.name,a.id)));if(session!==projectSession.current)return;engine.stop();const next=new Map(decoded.map(a=>[a.id,a]));engine.setAssets(next);setAssets(next);breakHistoryMerge();dispatch({type:'reset',project:data.project});const first=data.project.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'');notify('프로젝트를 불러왔습니다.')}catch(e){notify(`프로젝트를 열지 못했습니다: ${e instanceof Error?e.message:''}`)}finally{setBusy('');if(projectInput.current)projectInput.current.value=''}}
+  function openBundle(file:File){if(projectInput.current)projectInput.current.value='';onImport(file)}
   async function exportWav(){if(pitchPending())return;setModal(null);setBusy('오디오를 렌더링하는 중…');try{const blob=await engine.exportWav(project);downloadBlob(blob,`${safeFilename(project.name)}.wav`);notify('스테레오 WAV 파일을 내보냈습니다.')}catch(e){notify(`오디오 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
   /** Records onto the topmost armed audio track, else the focused audio track, else a new audio track (§2.5). */
   async function toggleRecord(){
@@ -748,12 +813,12 @@ export default function App(){
       if(current()){recordPreparingRef.current=false;setRecordPreparing(false);inputCapture.setNeeded('record',recordRef.current!==null)}
     }
   }
-  function newProject(demo=false){if(pitchPending())return;if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 새 프로젝트를 시작해주세요.');return}projectSession.current+=1;stop();setAssets(new Map());engine.setAssets(new Map());const next=demo?createDemoProject():createEmptyProject();breakHistoryMerge();dispatch({type:'reset',project:next});const first=next.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'',first?[first.id]:[]);setModal(null);notify(demo?'Midnight Sketches 데모를 열었습니다.':'새로운 프로젝트를 시작합니다.')}
+  function newProject(chooseTemplate=false){setModal(null);if(chooseTemplate)onHome();else onNew()}
 
   useEffect(()=>bindTransportShortcuts(window,e=>{
     const input=e.target instanceof HTMLInputElement?e.target:null
     return {
-      modalOpen:!loaded||!!modal||!!document.querySelector('[aria-modal="true"],dialog[open]')||!!(e.target instanceof Element&&e.target.closest('[role="dialog"],dialog')),
+      modalOpen:navigating||!loaded||!!modal||!!document.querySelector('[aria-modal="true"],dialog[open]')||!!(e.target instanceof Element&&e.target.closest('[role="dialog"],dialog')),
       textEditing:isTransportTextTarget(e.target),
       enabled:loaded&&!busy&&!audioApplyingRef.current,
       activateToggle:input&&!input.disabled&&(input.type==='checkbox'||input.type==='radio')?()=>input.click():undefined,
@@ -762,7 +827,7 @@ export default function App(){
 
   useEffect(()=>{
     const handler=(e:KeyboardEvent)=>{
-      if(isShortcutSuppressed(e,true)||!loaded)return
+      if(navigating||isShortcutSuppressed(e,true)||!loaded)return
       if(modal){if(e.key==='Escape'&&isUnmodified(e)){e.preventDefault();if(!e.repeat&&!(modal==='settings'&&audioApplyingRef.current))setModal(null)}return}
       // Settings is an application command, also available from a focused input or button.
       if(resolveProjectShortcut(e,'workspace',true)==='openSettings'){e.preventDefault();if(!e.repeat)openAudioSettings();return}
@@ -816,7 +881,7 @@ export default function App(){
       <Transport project={project} onChange={commit} onPlay={()=>void playTransport()} onStop={stop} onRecord={()=>void toggleRecord()} recording={recording} recordPreparing={recordPreparing} canUndo={history.past.length>0} canRedo={history.future.length>0} onUndo={()=>changeHistory('undo')} onRedo={()=>changeHistory('redo')}/>
       <div className="header-actions" role="group" aria-label="프로젝트 파일">
         <button className="header-text" onClick={()=>setModal('new')} title="새 프로젝트" aria-label="새 프로젝트"><Icon name="file-plus" size={15}/><span>새 프로젝트</span></button>
-        <button className="icon-button" onClick={()=>projectInput.current?.click()} title="프로젝트 열기" aria-label="프로젝트 열기"><Icon name="folder"/></button>
+        <button className="icon-button" onClick={onHome} title="프로젝트 목록" aria-label="프로젝트 목록"><Icon name="folder"/></button>
         <button className="icon-button" onClick={()=>void saveBundle()} title="프로젝트 파일 저장 · Ctrl/⌘ S" aria-label="프로젝트 파일 저장" disabled={!!busy||pitchBusy}><Icon name="save"/></button>
         <button className="export-button" onClick={()=>setModal('export')} title="오디오 내보내기" aria-label="오디오 내보내기" disabled={!!busy||pitchBusy}><Icon name="download" size={15}/><span>내보내기</span></button>
       </div>
@@ -840,18 +905,18 @@ export default function App(){
 
     <input ref={audioInput} type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aiff" multiple hidden onChange={e=>{if(e.target.files?.length)void addAudioFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0)}}/>
     <input ref={projectInput} type="file" accept=".garak,.noct,.json,application/json" hidden onChange={e=>{if(e.target.files?.[0])void openBundle(e.target.files[0])}}/>
-    {appMenu&&<ContextMenu {...appMenu} label={`${BRAND.name} 메뉴`} onClose={()=>setAppMenu(null)} items={[{label:'설정…',icon:'settings',shortcut:shortcutText('openSettings'),onSelect:openAudioSettings},{label:bridgeState.status==='connected'?'AI 연결 · 연결됨':'AI 연결…',icon:'plug',onSelect:()=>setModal('mcp')},{type:'separator'},{label:'새 프로젝트…',icon:'file-plus',onSelect:()=>setModal('new')},{label:'단축키 도움말',icon:'keyboard',onSelect:()=>setModal('help')},{label:`${BRAND.name} 정보`,icon:'info',onSelect:()=>setModal('about')}]}/>}
+    {appMenu&&<ContextMenu {...appMenu} label={`${BRAND.name} 메뉴`} onClose={()=>setAppMenu(null)} items={[{label:'설정…',icon:'settings',shortcut:shortcutText('openSettings'),onSelect:openAudioSettings},{label:bridgeState.status==='connected'?'AI 연결 · 연결됨':'AI 연결…',icon:'plug',onSelect:()=>setModal('mcp')},{type:'separator'},{label:'프로젝트 목록',icon:'folder',onSelect:onHome},{label:'새 프로젝트…',icon:'file-plus',onSelect:()=>setModal('new')},{label:'프로젝트 파일 가져오기…',icon:'upload',onSelect:()=>projectInput.current?.click()},{label:'단축키 도움말',icon:'keyboard',onSelect:()=>setModal('help')},{label:`${BRAND.name} 정보`,icon:'info',onSelect:()=>setModal('about')}]}/>}
     {modal==='mcp'&&<McpConnectionDialog client={bridgeClient} instanceId={instanceId} projectName={project.name} editsAllowed={aiEditsAllowed} onEditsAllowed={value=>{aiEditsAllowedRef.current=value;setAiEditsAllowed(value)}} onClose={()=>setModal(null)}/> }
     {modal==='settings'&&<AudioSettingsDialog engine={engine} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}
     {palette&&<ColorPalette x={palette.x} y={palette.y} value={project.tracks.find(t=>t.id===palette.ids[0])?.color??''} onPick={hex=>changeTracks(palette.ids.map(id=>({id,patch:{color:hex}})),`${palette.ids.join()}:color`)} onClose={()=>setPalette(null)}/>}
     {headerConfig&&<HeaderConfigPopover x={headerConfig.x} y={headerConfig.y} config={trackHeader.headerConfig} onChange={headerConfig=>setTrackHeader(h=>({...h,headerConfig}))} onClose={()=>setHeaderConfig(null)}/>}
     {iconMenu&&iconTrack&&<ContextMenu x={iconMenu.x} y={iconMenu.y} label="트랙 아이콘" onClose={()=>setIconMenu(null)} items={[{label:'기본',icon:iconTrack.kind==='audio'?'wave':instrumentDef(iconTrack.instrument).icon,checked:!iconTrack.icon,onSelect:()=>editTrack(iconTrack.id,t=>{const {icon:_i,...rest}=t;return rest})},{type:'separator'},...TRACK_ICON_OPTIONS.map(([name,label])=>({label,icon:name,checked:iconTrack.icon===name,onSelect:()=>changeTrack(iconTrack.id,{icon:name})}))]}/>}
-    {!loaded&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="restore-title">{restoreError?<><h2 id="restore-title">저장된 작업을 확인해주세요</h2><p data-selectable-text="" tabIndex={0}>{restoreError}</p><p>기존 저장본을 보존하기 위해 자동 저장을 멈췄습니다. 새 프로젝트를 시작하면 기존 자동 저장본이 교체됩니다.</p><div className="modal-buttons"><button onClick={()=>window.location.reload()}>다시 시도</button><button className="primary" onClick={()=>{newProject();setRestoreError('');setLoaded(true)}}>새 프로젝트 시작</button></div></>:<><span className="spinner"/><h2 id="restore-title" style={{marginTop:20}}>작업 공간을 준비합니다</h2><p>저장된 프로젝트와 원본 음원을 불러오고 있습니다.</p></>}</section></div>}
+    {!loaded&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="restore-title">{restoreError?<><h2 id="restore-title">저장된 작업을 확인해주세요</h2><p data-selectable-text="" tabIndex={0}>{restoreError}</p><p>자동 저장을 멈췄으며 기존 저장본은 그대로 보관됩니다. 프로젝트 목록으로 돌아가 다른 작업을 열 수 있습니다.</p><div className="modal-buttons"><button onClick={()=>window.location.reload()}>다시 시도</button><button className="primary" onClick={onHome}>프로젝트 목록</button></div></>:<><span className="spinner"/><h2 id="restore-title" style={{marginTop:20}}>작업 공간을 준비합니다</h2><p>저장된 프로젝트와 원본 음원을 불러오고 있습니다.</p></>}</section></div>}
     {notice&&<div className="toast" role="status"><Icon name="info" size={17}/><span data-selectable-text="" tabIndex={0}>{notice}</span><button onClick={()=>setNotice('')} aria-label="알림 닫기"><Icon name="close" size={15}/></button></div>}
     {busy&&<div className="busy-indicator" role="status"><span className="spinner"/>{busy}</div>}
     {modal==='newTracks'&&<NewTracksDialog focusedKind={focusedTrack?.kind} focusedInstrument={focusedTrack?.kind==='instrument'?focusedTrack.instrument:undefined} onCreate={createTracks} onClose={()=>setModal(null)}/>}
     {modal&&modal!=='newTracks'&&modal!=='settings'&&modal!=='mcp'&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className={`modal ${modal==='help'?'modal-help':''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" onClick={()=>setModal(null)} aria-label="창 닫기"><Icon name="close"/></button>
-      {modal==='new'?<><span className="modal-symbol"><Icon name="plus" size={27}/></span><h2 id="modal-title">다음 아이디어를 시작할까요?</h2><p>현재 프로젝트를 계속 보관하려면 먼저 프로젝트 파일을 내려받으세요. 새 프로젝트는 자동 저장된 작업을 대체합니다.</p><button className="modal-save" onClick={()=>void saveBundle()}><Icon name="save" size={16}/> 현재 프로젝트 내려받기</button><div className="modal-buttons"><button onClick={()=>newProject(true)}>데모 곡 열기</button><button className="primary" onClick={()=>newProject()}>빈 프로젝트 만들기</button></div></>:modal==='export'?<><span className="modal-symbol"><Icon name="download" size={26}/></span><h2 id="modal-title">음악을 밖으로</h2><p>모든 트랙과 현재 믹서 설정을 하나의 스테레오 파일로 만듭니다.</p><div className="export-summary"><span>파일 이름<b>{project.name||'Untitled'}.wav</b></span><span>범위<b>{project.lengthBeats/4} 마디 · {(project.lengthBeats*60/project.bpm).toFixed(1)}초</b></span><span>프로젝트<b>{project.tracks.length} tracks · {project.bpm} BPM</b></span><span>형식<b>Stereo PCM 16-bit WAV · {project.sampleRate/1000} kHz</b></span></div><button className="primary modal-wide" onClick={()=>void exportWav()}><Icon name="download" size={16}/> WAV 내보내기</button><button className="text-link" onClick={()=>{setModal(null);void saveBundle()}}>편집 가능한 프로젝트(.garak)로 보관하기</button></>:modal==='help'?<><span className="modal-symbol"><Icon name="keyboard" size={27}/></span><h2 id="modal-title">손끝에서 이어지는 작업</h2><div className="shortcut-groups" data-selectable-text="" tabIndex={0}>{SCOPE_GROUPS.map(([key,title])=>{const rows=SHORTCUT_TABLE.filter(r=>r.scopes.join(',')===key&&!ZOOM_COMMANDS.includes(r.command));return rows.length?<section key={key} className="shortcut-list"><h3>{title}</h3>{rows.map(r=><div key={r.command}><span>{r.label}</span><kbd>{(shortcutPlatform()==='mac'?r.mac:r.win)||'—'}</kbd></div>)}</section>:null})}<section className="shortcut-list"><h3>확대/축소 · 키 포커스가 있는 영역에 적용</h3>{SHORTCUT_TABLE.filter(r=>ZOOM_COMMANDS.includes(r.command)).map(r=><div key={r.command}><span>{r.label}</span><kbd>{shortcutPlatform()==='mac'?r.mac:r.win}</kbd></div>)}<div><span>가로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⌘':'Ctrl+'}휠 · 핀치</kbd></div><div><span>세로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⇧⌘':'Ctrl+Shift+'}휠 / {shortcutPlatform()==='mac'?'⌥':'Alt+'}휠</kbd></div></section></div><p className="modal-note">클릭은 선택, Shift/{shortcutPlatform()==='mac'?'⌘':'Ctrl'}+클릭은 선택 추가, 빈 곳 드래그는 범위 선택입니다. 드래그 중 {shortcutPlatform()==='mac'?'⌥':'Alt'} = 복사, Ctrl = 세밀하게, Ctrl+Shift = 스냅 무시, Shift = 축 고정. 클립을 더블 클릭하면 편집기가 열립니다.</p></>:<><Brand size="large"/><h2 id="modal-title">음악을 위한 나만의 공간.</h2><p>React와 Web Audio로 만드는 오픈소스 DAW입니다. 프로젝트와 음원은 브라우저에 로컬로 저장합니다.</p><div className="about-roadmap"><span><b>1.0</b> 웹 편집기 + 오디오 엔진 <small>개발 중</small></span><span><b>2.0</b> 로컬 호스트 + VST 연결 <small>예정</small></span></div><div className="about-meta" data-selectable-text="" tabIndex={0}>React 19.3.1 · TypeScript · 코드 MIT License</div><div className="about-meta" data-selectable-text="" tabIndex={0}><a href="https://lucide.dev" target="_blank" rel="noreferrer">Lucide Icons</a> · <a href="/licenses/lucide-LICENSE.txt" target="_blank" rel="noreferrer">ISC / MIT 라이선스</a></div><div className="sample-credits" data-selectable-text="" tabIndex={0}><strong>샘플 악기 출처</strong>{SAMPLE_CREDITS.map(c=><span key={c.title}>{c.url?<a href={c.url} target="_blank" rel="noreferrer">{c.title}</a>:c.title} — {c.author}, {c.license} <small>{c.instruments}</small></span>)}</div>{SOURCE_REPOSITORY_URL&&<a className="modal-save" href={SOURCE_REPOSITORY_URL} target="_blank" rel="noreferrer"><Icon name="external" size={16}/> GitHub 소스 코드</a>}<div className="font-credit" data-selectable-text="" tabIndex={0}>이름 글꼴: <a href={BRAND.fontSource} target="_blank" rel="noreferrer">{BRAND.fontName}</a><br/>국립한글박물관 · ㈜윤디자인그룹<br/><a href={BRAND.fontLicense} target="_blank" rel="noreferrer">공공누리 제3유형 · 글꼴 이용 조건</a></div></>}
+      {modal==='new'?<><span className="modal-symbol"><Icon name="plus" size={27}/></span><h2 id="modal-title">다음 아이디어를 시작할까요?</h2><p>현재 작업을 저장한 뒤 새 프로젝트를 만듭니다. 기존 작업은 프로젝트 목록에서 다시 열 수 있습니다.</p><button className="modal-save" onClick={()=>void saveBundle()}><Icon name="save" size={16}/> 현재 프로젝트 내려받기</button><div className="modal-buttons"><button onClick={()=>newProject(true)}>샘플 프로젝트 고르기</button><button className="primary" onClick={()=>newProject()}>빈 프로젝트 만들기</button></div></>:modal==='export'?<><span className="modal-symbol"><Icon name="download" size={26}/></span><h2 id="modal-title">음악을 밖으로</h2><p>모든 트랙과 현재 믹서 설정을 하나의 스테레오 파일로 만듭니다.</p><div className="export-summary"><span>파일 이름<b>{project.name||'Untitled'}.wav</b></span><span>범위<b>{project.lengthBeats/4} 마디 · {(project.lengthBeats*60/project.bpm).toFixed(1)}초</b></span><span>프로젝트<b>{project.tracks.length} tracks · {project.bpm} BPM</b></span><span>형식<b>Stereo PCM 16-bit WAV · {project.sampleRate/1000} kHz</b></span></div><button className="primary modal-wide" onClick={()=>void exportWav()}><Icon name="download" size={16}/> WAV 내보내기</button><button className="text-link" onClick={()=>{setModal(null);void saveBundle()}}>편집 가능한 프로젝트(.garak)로 보관하기</button></>:modal==='help'?<><span className="modal-symbol"><Icon name="keyboard" size={27}/></span><h2 id="modal-title">손끝에서 이어지는 작업</h2><div className="shortcut-groups" data-selectable-text="" tabIndex={0}>{SCOPE_GROUPS.map(([key,title])=>{const rows=SHORTCUT_TABLE.filter(r=>r.scopes.join(',')===key&&!ZOOM_COMMANDS.includes(r.command));return rows.length?<section key={key} className="shortcut-list"><h3>{title}</h3>{rows.map(r=><div key={r.command}><span>{r.label}</span><kbd>{(shortcutPlatform()==='mac'?r.mac:r.win)||'—'}</kbd></div>)}</section>:null})}<section className="shortcut-list"><h3>확대/축소 · 키 포커스가 있는 영역에 적용</h3>{SHORTCUT_TABLE.filter(r=>ZOOM_COMMANDS.includes(r.command)).map(r=><div key={r.command}><span>{r.label}</span><kbd>{shortcutPlatform()==='mac'?r.mac:r.win}</kbd></div>)}<div><span>가로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⌘':'Ctrl+'}휠 · 핀치</kbd></div><div><span>세로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⇧⌘':'Ctrl+Shift+'}휠 / {shortcutPlatform()==='mac'?'⌥':'Alt+'}휠</kbd></div></section></div><p className="modal-note">클릭은 선택, Shift/{shortcutPlatform()==='mac'?'⌘':'Ctrl'}+클릭은 선택 추가, 빈 곳 드래그는 범위 선택입니다. 드래그 중 {shortcutPlatform()==='mac'?'⌥':'Alt'} = 복사, Ctrl = 세밀하게, Ctrl+Shift = 스냅 무시, Shift = 축 고정. 클립을 더블 클릭하면 편집기가 열립니다.</p></>:<><Brand size="large"/><h2 id="modal-title">음악을 위한 나만의 공간.</h2><p>React와 Web Audio로 만드는 오픈소스 DAW입니다. 프로젝트와 음원은 브라우저에 로컬로 저장합니다.</p><div className="about-roadmap"><span><b>1.0</b> 웹 편집기 + 오디오 엔진 <small>개발 중</small></span><span><b>2.0</b> 로컬 호스트 + VST 연결 <small>예정</small></span></div><div className="about-meta" data-selectable-text="" tabIndex={0}>React 19.3.1 · TypeScript · 코드 MIT License</div><div className="about-meta" data-selectable-text="" tabIndex={0}><a href="https://lucide.dev" target="_blank" rel="noreferrer">Lucide Icons</a> · <a href="/licenses/lucide-LICENSE.txt" target="_blank" rel="noreferrer">ISC / MIT 라이선스</a></div><div className="sample-credits" data-selectable-text="" tabIndex={0}><strong>샘플 악기 출처</strong>{SAMPLE_CREDITS.map(c=><span key={c.title}>{c.url?<a href={c.url} target="_blank" rel="noreferrer">{c.title}</a>:c.title} — {c.author}, {c.license} <small>{c.instruments}</small></span>)}</div>{SOURCE_REPOSITORY_URL&&<a className="modal-save" href={SOURCE_REPOSITORY_URL} target="_blank" rel="noreferrer"><Icon name="external" size={16}/> GitHub 소스 코드</a>}<div className="font-credit" data-selectable-text="" tabIndex={0}>이름 글꼴: <a href={BRAND.fontSource} target="_blank" rel="noreferrer">{BRAND.fontName}</a><br/>국립한글박물관 · ㈜윤디자인그룹<br/><a href={BRAND.fontLicense} target="_blank" rel="noreferrer">공공누리 제3유형 · 글꼴 이용 조건</a></div></>}
     </section></div>}
   </div>
 }
