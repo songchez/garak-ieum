@@ -52,12 +52,12 @@ export function isUnmodified(event: ShortcutEvent, allowShift = false): boolean 
   return !event.ctrlKey && !event.metaKey && !event.altKey && (allowShift || !event.shiftKey)
 }
 
-/** Native text/control keys remain native, including inherited contenteditable. */
+/** Editing and explicitly copyable text keep native keys, including inherited contenteditable. */
 export function shortcutScope(target: EventTarget | null): ShortcutScope {
   if (!(target instanceof Element)) return 'outside'
   if (target.closest('[role="dialog"],dialog,[aria-modal="true"]')) return 'dialog'
   if ((target instanceof HTMLElement && target.isContentEditable)
-    || target.closest('input,textarea,select,[role="textbox"],[role="searchbox"],[role="combobox"],[role="spinbutton"],[role="slider"]')) return 'text'
+    || target.closest('input,textarea,select,[data-selectable-text],[role="textbox"],[role="searchbox"],[role="combobox"],[role="spinbutton"],[role="slider"]')) return 'text'
   const area = target.closest<HTMLElement>('[data-keyboard-scope]')?.dataset.keyboardScope
   // Note buttons are editing objects, while piano keys and ordinary buttons
   // retain native Space/Enter activation and do not edit the selected note.

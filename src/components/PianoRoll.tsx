@@ -680,7 +680,7 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.defaultPrevented || isShortcutSuppressed(event.nativeEvent, true)) return
     const target = event.target instanceof Element ? event.target : null
-    if (target?.closest('input,textarea,select,[contenteditable],[role="textbox"],[role="slider"]')
+    if (target?.closest('input,textarea,select,[contenteditable],[data-selectable-text],[role="textbox"],[role="slider"]')
       || (target?.closest('button') && !target.closest('.piano-note'))) return
     const native = event.nativeEvent
     const handled = () => { event.preventDefault(); event.stopPropagation() }

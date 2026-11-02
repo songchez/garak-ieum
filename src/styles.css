@@ -11,7 +11,24 @@
 
 :root{font-family:Inter,"Pretendard","Noto Sans KR",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink-87);background:var(--ink-09);font-synthesis:none;font-size:12px;font-weight:400;--bg:var(--ink-09);--panel:var(--ink-11);--line:var(--ink-18);--muted:var(--ink-51);--text:var(--ink-87);--accent:var(--seokganju-63);color-scheme:dark}
 *{box-sizing:border-box}body{margin:0;overflow:hidden}button,input,select{font:inherit}button,a,input,select{-webkit-tap-highlight-color:transparent}button{color:inherit;background:none;border:0;cursor:pointer}button:disabled{opacity:.3;cursor:not-allowed}button:focus-visible,a:focus-visible{outline:2px solid var(--seokganju-66);outline-offset:3px;border-radius:4px}input:focus-visible,select:focus-visible{outline:1px solid var(--seokganju-57);outline-offset:2px}input[type=range]{accent-color:var(--seokganju-63);cursor:pointer;height:3px;min-width:0}input[type=number]{appearance:textfield}input::-webkit-inner-spin-button{appearance:none}input,select{color:inherit}input[type=text],input:not([type]),input[type=number]{border:0}select{cursor:pointer}svg{flex-shrink:0;vertical-align:middle}a{color:inherit;text-decoration:none}button{transition:background .15s,color .15s,border-color .15s}button:hover:not(:disabled){color:var(--ink-96)}::selection{background:#d2867040}::-webkit-scrollbar{height:7px;width:6px}::-webkit-scrollbar-track{background:var(--ink-10)}::-webkit-scrollbar-thumb{background:var(--ink-25);border-radius:5px}::-webkit-scrollbar-thumb:hover{background:var(--ink-36)}kbd{font-family:inherit}
-.studio-app{height:100dvh;display:flex;flex-direction:column;min-width:620px;overflow:hidden}
+.studio-app{height:100dvh;display:flex;flex-direction:column;min-width:620px;overflow:hidden;-webkit-user-select:none;user-select:none}
+
+/* DAW gestures should not select labels. Native editing and marked copyable
+   text opt in; zero specificity preserves custom controls such as ValueField. */
+:where(.studio-app) :where(
+  input:not([type]), input[type="text"], input[type="search"],
+  input[type="number"], input[type="email"], input[type="url"],
+  input[type="tel"], input[type="password"], textarea,
+  [contenteditable]:not([contenteditable="false"]), [data-selectable-text]
+) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+.studio-app [data-selectable-text]:focus-visible {
+  outline: 1px solid var(--seokganju-57);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
 
 .online-dot{height:5px;width:5px;border-radius:50%;background:#91bda6}.icon-button{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;color:var(--ink-63);border-radius:5px;padding:0}.icon-button:hover:not(:disabled){background:var(--ink-21);color:var(--ink-93)}.icon-button.small{width:25px;height:25px}
 .zoom-control{display:flex;align-items:center;gap:4px;color:var(--ink-51);border-left:1px solid var(--ink-21);padding-left:13px}.zoom-control button{display:grid;place-items:center;width:22px;height:26px}
