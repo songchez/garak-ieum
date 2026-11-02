@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ComponentProps, InputHTMLAttributes } from 'react'
 import { WebAudioEngine } from './audio/WebAudioEngine'
 import { InputCapture } from './audio/InputCapture'
@@ -29,6 +29,10 @@ import { SHORTCUT_TABLE, ZOOM_COMMANDS, isShortcutSuppressed, isUnmodified, reso
 import { DEVICE_KEY_FACTOR, ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, loadZoom, saveZoom, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from './core/zoom'
 import { ZoomControls } from './components/ZoomControls'
 import AudioSettingsDialog from './components/AudioSettingsDialog'
+import McpConnectionDialog from './components/McpConnectionDialog'
+import { ProjectSession } from './core/ProjectSession'
+import { createDawRequestHandler } from './automation/host'
+import { DawBridgeClient, type DawBridgeHandler } from './automation/bridgeClient'
 
 // An application-session service, independent of React's render/effect lifecycle.
 const initialAudioSettings = loadAudioSettings()
@@ -37,22 +41,6 @@ const subscribeTransport = (cb:()=>void)=>engine.subscribe(cb)
 const readTransport = ()=>engine.getSnapshot()
 if(import.meta.hot)import.meta.hot.dispose(()=>engine.dispose())
 
-type History={past:Project[];present:Project;future:Project[]}
-type Action={type:'edit';edit:(p:Project)=>Project;merge:boolean}|{type:'live';edit:(p:Project)=>Project}|{type:'undo'|'redo'}|{type:'reset';project:Project}
-/** Record-enable and input monitoring are live state: they survive undo/redo instead of being replayed. */
-function carryLiveState(from:Project,to:Project):Project{
-  const live=new Map(from.tracks.map(t=>[t.id,t]));let changed=false
-  const tracks=to.tracks.map(t=>{const l=live.get(t.id);if(!l||(l.armed===t.armed&&l.monitor===t.monitor))return t;changed=true;return{...t,armed:l.armed,monitor:l.monitor}})
-  return changed?{...to,tracks}:to
-}
-function historyReducer(s:History,a:Action):History{
-  if(a.type==='reset')return{past:[],present:carryLiveState(s.present,a.project),future:[]}
-  if(a.type==='undo'){const previous=s.past.at(-1);return previous?{past:s.past.slice(0,-1),present:carryLiveState(s.present,previous),future:[s.present,...s.future]}:s}
-  if(a.type==='redo'){const next=s.future[0];return next?{past:[...s.past,s.present],present:carryLiveState(s.present,next),future:s.future.slice(1)}:s}
-  if(a.type==='live'){const next=a.edit(s.present);return next===s.present?s:{...s,present:next}}
-  if(a.type==='edit'){const next=a.edit(s.present);if(next===s.present)return s;return{past:a.merge?s.past:[...s.past.slice(-49),s.present],present:next,future:[]}}
-  return s
-}
 function downloadBlob(blob:Blob,name:string){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000)}
 const safeFilename=(name:string)=>name.replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').trim()||'Untitled'
 const db=(n:number)=>n<=0?'−∞':(20*Math.log10(n)).toFixed(1)
@@ -75,7 +63,9 @@ const SCOPE_GROUPS:[string,string][]=[['timeline,piano,workspace','어디서나'
 const anchorAt=(el:Element|null|undefined,fallback={x:Math.max(8,window.innerWidth/2-160),y:160})=>{const r=el?.getBoundingClientRect();return r?{x:r.left,y:r.bottom+4}:fallback}
 
 export default function App(){
-  const [history,dispatch]=useReducer(historyReducer,undefined,()=>({past:[],present:createDemoProject(),future:[]}))
+  const [commandSession]=useState(()=>new ProjectSession(createDemoProject()))
+  const commandState=useSyncExternalStore(commandSession.subscribe,commandSession.getSnapshot,commandSession.getSnapshot)
+  const history=commandState.history,dispatch=commandSession.dispatch
   const project=history.present
   const projectRef=useRef(project);projectRef.current=project
   const [assets,setAssets]=useState<Map<string,AudioAsset>>(new Map())
@@ -122,7 +112,26 @@ export default function App(){
   const [saveStatus,setSaveStatus]=useState<'loading'|'saving'|'saved'|'error'>('loading')
   const [notice,setNotice]=useState('')
   const [busy,setBusy]=useState('')
-  const [modal,setModal]=useState<'new'|'export'|'help'|'about'|'newTracks'|'settings'|null>(null)
+  const [modal,setModal]=useState<'new'|'export'|'help'|'about'|'newTracks'|'settings'|'mcp'|null>(null)
+  const [instanceId]=useState(()=>uid())
+  const [aiEditsAllowed,setAiEditsAllowed]=useState(true)
+  const aiEditsAllowedRef=useRef(aiEditsAllowed)
+  const activeControlEdits=useRef(new Set<string>())
+  useEffect(()=>{
+    const active=activeControlEdits.current
+    const down=(event:PointerEvent)=>{if(event.button===0&&event.target instanceof Element&&event.target.closest('input[type="range"],[data-track-button]'))active.add(`pointer:${event.pointerId}`)}
+    const up=(event:PointerEvent)=>{active.delete(`pointer:${event.pointerId}`)}
+    const keyDown=(event:KeyboardEvent)=>{if(event.target instanceof Element&&event.target.matches('input[type="range"]')&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'].includes(event.key))active.add(`key:${event.key}`)}
+    const keyUp=(event:KeyboardEvent)=>{active.delete(`key:${event.key}`)}
+    const clear=()=>active.clear()
+    document.addEventListener('pointerdown',down,true);window.addEventListener('pointerup',up,true);window.addEventListener('pointercancel',up,true)
+    document.addEventListener('keydown',keyDown,true);window.addEventListener('keyup',keyUp,true);window.addEventListener('blur',clear)
+    return()=>{document.removeEventListener('pointerdown',down,true);window.removeEventListener('pointerup',up,true);window.removeEventListener('pointercancel',up,true);document.removeEventListener('keydown',keyDown,true);window.removeEventListener('keyup',keyUp,true);window.removeEventListener('blur',clear);clear()}
+  },[])
+  const bridgeHandler=useRef<DawBridgeHandler>(()=>{throw new Error('프로젝트를 준비 중입니다.')})
+  const [bridgeClient]=useState(()=>new DawBridgeClient((method,params,context)=>bridgeHandler.current(method,params,context)))
+  const bridgeState=useSyncExternalStore(bridgeClient.subscribe,bridgeClient.getSnapshot,bridgeClient.getSnapshot)
+  useEffect(()=>()=>bridgeClient.disconnect(),[bridgeClient])
   const [audioSettings,setAudioSettings]=useState<AudioSettings>(()=>({...initialAudioSettings}))
   const audioSettingsRef=useRef(audioSettings);audioSettingsRef.current=audioSettings
   const [audioApplying,setAudioApplying]=useState(false)
@@ -140,7 +149,8 @@ export default function App(){
   const monitorWarned=useRef(false)
   const saveQueue=useRef(Promise.resolve())
   const saveRevision=useRef(0)
-  const lastEdit=useRef({key:'',time:0})
+  const persistedProject=useRef<Project|null>(null)
+  const persistedRevision=useRef(-1)
   const focusedTrack=project.tracks.find(t=>t.id===focusedTrackId)
   const clipIndex=useMemo(()=>{const map=new Map<string,ClipEntry>();project.tracks.forEach((track,row)=>track.clips.forEach(clip=>map.set(clip.id,{clip,track,row})));return map},[project])
   const anchorEntry=anchorClipId?clipIndex.get(anchorClipId):undefined
@@ -151,11 +161,25 @@ export default function App(){
   const monitorIds=useMemo(()=>audioSettings.softwareMonitoring?monitorTargets(project,recording):[],[project,recording,audioSettings.softwareMonitoring])
 
   const notify=useCallback((message:string)=>setNotice(message),[])
-  const commit=useCallback((edit:(p:Project)=>Project,key='')=>{
-    const now=performance.now();const merge=!!key&&lastEdit.current.key===key&&now-lastEdit.current.time<450
-    lastEdit.current={key,time:now};dispatch({type:'edit',edit,merge})
-  },[])
-  const breakHistoryMerge=useCallback(()=>{lastEdit.current={key:'',time:0}},[])
+  const commit=commandSession.edit
+  const breakHistoryMerge=commandSession.breakMerge
+  bridgeHandler.current=createDawRequestHandler({
+    session:commandSession,
+    getSelection:()=>({focusedTrackId,trackIds:[...selectedTrackIds],clipIds:[...selectedClipIds]}),
+    getTransport:()=>engine.getSnapshot(),
+    getRuntime:()=>{
+      const active=document.activeElement
+      const textEditing=active instanceof HTMLElement&&!active.closest('.mcp-connection')&&active.matches('input:not([type="checkbox"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="file"]),textarea,select,[contenteditable="true"]')
+      const blockedReason=recordRef.current||recordPreparingRef.current?'녹음·녹음 준비가 끝난 뒤 편집할 수 있습니다.':audioApplyingRef.current||busy||importing.current?'오디오 설정이나 파일 처리가 끝난 뒤 편집할 수 있습니다.':modal&&modal!=='mcp'?'열린 대화상자를 닫은 뒤 편집할 수 있습니다.':activeControlEdits.current.size||document.querySelector('[data-daw-gesture]')||textEditing?'현재 입력·드래그가 끝난 뒤 편집할 수 있습니다.':null
+      const current=commandSession.getSnapshot()
+      return{ready:loaded&&!restoreError,editsAllowed:aiEditsAllowedRef.current,blockedReason,persistence:!loaded?'loading':saveStatus==='error'?'error':saveStatus==='saved'&&persistedProject.current===current.history.present&&persistedRevision.current===current.revision?'saved':'pending'}
+    },
+    onMutation:summary=>{
+      projectRef.current=commandSession.getSnapshot().history.present
+      try{engine.setProject(projectRef.current);notify(`AI · ${summary}`)}
+      catch(error){notify(`AI 편집은 적용됐지만 오디오 갱신에 실패했습니다: ${error instanceof Error?error.message:'오디오 상태를 확인해주세요.'}`);throw error}
+    },
+  })
   const changeHistory=useCallback((type:'undo'|'redo')=>{
     if(audioApplyingRef.current)return
     const target=type==='undo'?history.past.at(-1):history.future[0]
@@ -231,7 +255,7 @@ export default function App(){
     if(renamingClipId&&!clipIndex.has(renamingClipId))setRenamingClipId(null)
   },[clipIndex])
 
-  useEffect(()=>{engine.setProject(project)},[project])
+  useEffect(()=>{engine.setProject(commandSession.getSnapshot().history.present)},[project,commandSession])
   // Opening a project or undoing its sample rate must also update an existing context.
   useEffect(()=>{
     const state=engine.getAudioState()
@@ -250,7 +274,7 @@ export default function App(){
   useEffect(()=>{
     if(!loaded)return
     const revision=++saveRevision.current;setSaveStatus('saving')
-    const timer=window.setTimeout(()=>{saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{await saveProject(project,assets);if(saveRevision.current===revision)setSaveStatus('saved')}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일을 내려받아 보관해주세요.`)}}})},650)
+    const timer=window.setTimeout(()=>{saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{await saveProject(project,assets);if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=commandState.revision;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일을 내려받아 보관해주세요.`)}}})},650)
     return()=>window.clearTimeout(timer)
   },[project,assets,loaded,notify])
   useEffect(()=>{if(!notice)return;const id=window.setTimeout(()=>setNotice(''),7000);return()=>clearTimeout(id)},[notice])
@@ -689,7 +713,7 @@ export default function App(){
     if(loaded&&!modal)return
     const dialog=document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]');if(!dialog)return
     const previous=document.activeElement instanceof HTMLElement?document.activeElement:null
-    const focusable=()=>Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]),a[href],input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(el=>el.getClientRects().length>0)
+    const focusable=()=>Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]),a[href],input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])')).filter(el=>el.getClientRects().length>0)
     dialog.tabIndex=-1
     ;(focusable()[0]??dialog).focus({preventScroll:true})
     const trap=(event:KeyboardEvent)=>{
@@ -744,7 +768,8 @@ export default function App(){
 
     <input ref={audioInput} type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aiff" multiple hidden onChange={e=>{if(e.target.files?.length)void addAudioFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0)}}/>
     <input ref={projectInput} type="file" accept=".garak,.noct,.json,application/json" hidden onChange={e=>{if(e.target.files?.[0])void openBundle(e.target.files[0])}}/>
-    {appMenu&&<ContextMenu {...appMenu} label={`${BRAND.name} 메뉴`} onClose={()=>setAppMenu(null)} items={[{label:'설정…',icon:'settings',shortcut:shortcutText('openSettings'),onSelect:openAudioSettings},{type:'separator'},{label:'새 프로젝트…',icon:'file-plus',onSelect:()=>setModal('new')},{label:'단축키 도움말',icon:'keyboard',onSelect:()=>setModal('help')},{label:`${BRAND.name} 정보`,icon:'info',onSelect:()=>setModal('about')}]}/>}
+    {appMenu&&<ContextMenu {...appMenu} label={`${BRAND.name} 메뉴`} onClose={()=>setAppMenu(null)} items={[{label:'설정…',icon:'settings',shortcut:shortcutText('openSettings'),onSelect:openAudioSettings},{label:bridgeState.status==='connected'?'AI 연결 · 연결됨':'AI 연결…',icon:'plug',onSelect:()=>setModal('mcp')},{type:'separator'},{label:'새 프로젝트…',icon:'file-plus',onSelect:()=>setModal('new')},{label:'단축키 도움말',icon:'keyboard',onSelect:()=>setModal('help')},{label:`${BRAND.name} 정보`,icon:'info',onSelect:()=>setModal('about')}]}/>}
+    {modal==='mcp'&&<McpConnectionDialog client={bridgeClient} instanceId={instanceId} projectName={project.name} editsAllowed={aiEditsAllowed} onEditsAllowed={value=>{aiEditsAllowedRef.current=value;setAiEditsAllowed(value)}} onClose={()=>setModal(null)}/> }
     {modal==='settings'&&<AudioSettingsDialog engine={engine} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}
     {palette&&<ColorPalette x={palette.x} y={palette.y} value={project.tracks.find(t=>t.id===palette.ids[0])?.color??''} onPick={hex=>changeTracks(palette.ids.map(id=>({id,patch:{color:hex}})),`${palette.ids.join()}:color`)} onClose={()=>setPalette(null)}/>}
     {headerConfig&&<HeaderConfigPopover x={headerConfig.x} y={headerConfig.y} config={trackHeader.headerConfig} onChange={headerConfig=>setTrackHeader(h=>({...h,headerConfig}))} onClose={()=>setHeaderConfig(null)}/>}
@@ -753,7 +778,7 @@ export default function App(){
     {notice&&<div className="toast" role="status"><Icon name="info" size={17}/><span data-selectable-text="" tabIndex={0}>{notice}</span><button onClick={()=>setNotice('')} aria-label="알림 닫기"><Icon name="close" size={15}/></button></div>}
     {busy&&<div className="busy-indicator" role="status"><span className="spinner"/>{busy}</div>}
     {modal==='newTracks'&&<NewTracksDialog focusedKind={focusedTrack?.kind} focusedInstrument={focusedTrack?.kind==='instrument'?focusedTrack.instrument:undefined} onCreate={createTracks} onClose={()=>setModal(null)}/>}
-    {modal&&modal!=='newTracks'&&modal!=='settings'&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className={`modal ${modal==='help'?'modal-help':''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" onClick={()=>setModal(null)} aria-label="창 닫기"><Icon name="close"/></button>
+    {modal&&modal!=='newTracks'&&modal!=='settings'&&modal!=='mcp'&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className={`modal ${modal==='help'?'modal-help':''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" onClick={()=>setModal(null)} aria-label="창 닫기"><Icon name="close"/></button>
       {modal==='new'?<><span className="modal-symbol"><Icon name="plus" size={27}/></span><h2 id="modal-title">다음 아이디어를 시작할까요?</h2><p>현재 프로젝트를 계속 보관하려면 먼저 프로젝트 파일을 내려받으세요. 새 프로젝트는 자동 저장된 작업을 대체합니다.</p><button className="modal-save" onClick={()=>void saveBundle()}><Icon name="save" size={16}/> 현재 프로젝트 내려받기</button><div className="modal-buttons"><button onClick={()=>newProject(true)}>데모 곡 열기</button><button className="primary" onClick={()=>newProject()}>빈 프로젝트 만들기</button></div></>:modal==='export'?<><span className="modal-symbol"><Icon name="download" size={26}/></span><h2 id="modal-title">음악을 밖으로</h2><p>모든 트랙과 현재 믹서 설정을 하나의 스테레오 파일로 만듭니다.</p><div className="export-summary"><span>파일 이름<b>{project.name||'Untitled'}.wav</b></span><span>범위<b>{project.lengthBeats/4} 마디 · {(project.lengthBeats*60/project.bpm).toFixed(1)}초</b></span><span>프로젝트<b>{project.tracks.length} tracks · {project.bpm} BPM</b></span><span>형식<b>Stereo PCM 16-bit WAV · {project.sampleRate/1000} kHz</b></span></div><button className="primary modal-wide" onClick={()=>void exportWav()}><Icon name="download" size={16}/> WAV 내보내기</button><button className="text-link" onClick={()=>{setModal(null);void saveBundle()}}>편집 가능한 프로젝트(.garak)로 보관하기</button></>:modal==='help'?<><span className="modal-symbol"><Icon name="keyboard" size={27}/></span><h2 id="modal-title">손끝에서 이어지는 작업</h2><div className="shortcut-groups" data-selectable-text="" tabIndex={0}>{SCOPE_GROUPS.map(([key,title])=>{const rows=SHORTCUT_TABLE.filter(r=>r.scopes.join(',')===key&&!ZOOM_COMMANDS.includes(r.command));return rows.length?<section key={key} className="shortcut-list"><h3>{title}</h3>{rows.map(r=><div key={r.command}><span>{r.label}</span><kbd>{(shortcutPlatform()==='mac'?r.mac:r.win)||'—'}</kbd></div>)}</section>:null})}<section className="shortcut-list"><h3>확대/축소 · 키 포커스가 있는 영역에 적용</h3>{SHORTCUT_TABLE.filter(r=>ZOOM_COMMANDS.includes(r.command)).map(r=><div key={r.command}><span>{r.label}</span><kbd>{shortcutPlatform()==='mac'?r.mac:r.win}</kbd></div>)}<div><span>가로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⌘':'Ctrl+'}휠 · 핀치</kbd></div><div><span>세로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⇧⌘':'Ctrl+Shift+'}휠 / {shortcutPlatform()==='mac'?'⌥':'Alt+'}휠</kbd></div></section></div><p className="modal-note">클릭은 선택, Shift/{shortcutPlatform()==='mac'?'⌘':'Ctrl'}+클릭은 선택 추가, 빈 곳 드래그는 범위 선택입니다. 드래그 중 {shortcutPlatform()==='mac'?'⌥':'Alt'} = 복사, Ctrl = 세밀하게, Ctrl+Shift = 스냅 무시, Shift = 축 고정. 클립을 더블 클릭하면 편집기가 열립니다.</p></>:<><Brand size="large"/><h2 id="modal-title">음악을 위한 나만의 공간.</h2><p>React와 Web Audio로 만드는 오픈소스 DAW입니다. 프로젝트와 음원은 브라우저에 로컬로 저장합니다.</p><div className="about-roadmap"><span><b>1.0</b> 웹 편집기 + 오디오 엔진 <small>개발 중</small></span><span><b>2.0</b> 로컬 호스트 + VST 연결 <small>예정</small></span></div><div className="about-meta" data-selectable-text="" tabIndex={0}>React 19.3.1 · TypeScript · 코드 MIT License</div><div className="about-meta" data-selectable-text="" tabIndex={0}><a href="https://lucide.dev" target="_blank" rel="noreferrer">Lucide Icons</a> · <a href="/licenses/lucide-LICENSE.txt" target="_blank" rel="noreferrer">ISC / MIT 라이선스</a></div><div className="sample-credits" data-selectable-text="" tabIndex={0}><strong>샘플 악기 출처</strong>{SAMPLE_CREDITS.map(c=><span key={c.title}>{c.url?<a href={c.url} target="_blank" rel="noreferrer">{c.title}</a>:c.title} — {c.author}, {c.license} <small>{c.instruments}</small></span>)}</div>{SOURCE_REPOSITORY_URL&&<a className="modal-save" href={SOURCE_REPOSITORY_URL} target="_blank" rel="noreferrer"><Icon name="external" size={16}/> GitHub 소스 코드</a>}<div className="font-credit" data-selectable-text="" tabIndex={0}>이름 글꼴: <a href={BRAND.fontSource} target="_blank" rel="noreferrer">{BRAND.fontName}</a><br/>국립한글박물관 · ㈜윤디자인그룹<br/><a href={BRAND.fontLicense} target="_blank" rel="noreferrer">공공누리 제3유형 · 글꼴 이용 조건</a></div></>}
     </section></div>}
   </div>

@@ -1,0 +1,1485 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-02T12:27:43.389Z",
+  "versions": {
+    "node": "v24.22.1",
+    "esbuild": "0.28.2",
+    "scribbletune": "5.5.5",
+    "strudelCore": "1.2.6",
+    "strudelMini": "1.2.6"
+  },
+  "method": {
+    "meter": "4/4",
+    "cycleBeats": 4,
+    "quarterLengthInScribble": 128,
+    "pitch": "scientific C4=60; DAW display C3=60",
+    "velocity": "Scribble amp/127; Strudel velocity assigned the same normalized value",
+    "windowPolicy": "Intersect whole note intervals with [startBeat,endBeat), keep absolute beat positions; this is an adapter policy, not a claim of identical native window APIs.",
+    "epsilon": 1e-12,
+    "runtime": "esbuild browser IIFE in a worker-like node:vm context; not a real browser, audio playback, or security sandbox validation",
+    "randomTest": "Scribble unknown seed property is tested with controlled Math.random in the isolated VM; this override is not a proposed production design."
+  },
+  "summary": {
+    "fixtures": 25,
+    "scribbleExactPass": 16,
+    "strudelExactPass": 25,
+    "scribbleFailed": [
+      "triplet",
+      "nested-triplet",
+      "native-one-measure",
+      "triplet-8-bars",
+      "triplet-16-bars",
+      "triplet-32-bars",
+      "nested-triplet-8-bars",
+      "nested-triplet-16-bars",
+      "nested-triplet-32-bars"
+    ],
+    "strudelFailed": []
+  },
+  "bundles": {
+    "scribbleDefault": {
+      "build": false,
+      "errors": [
+        "Could not resolve \"fs\""
+      ]
+    },
+    "scribbleExternalFs": {
+      "build": true,
+      "bytes": 17707,
+      "imports": [
+        {
+          "path": "fs",
+          "kind": "require-call",
+          "external": true
+        }
+      ],
+      "kabelsalatBytes": 0,
+      "tonePackageBytes": 0,
+      "workerLikeExecution": "not-run-external-imports"
+    },
+    "scribbleBrowser": {
+      "build": true,
+      "bytes": 19196,
+      "imports": [],
+      "kabelsalatBytes": 0,
+      "tonePackageBytes": 0,
+      "workerLikeExecution": "pass",
+      "startupCalls": {
+        "audioConstructors": 0,
+        "timers": 0,
+        "network": 0
+      },
+      "startupMessages": [],
+      "clipCall": "fail",
+      "clipError": "Tone is not defined"
+    },
+    "scribblePureCore": {
+      "build": true,
+      "bytes": 17285,
+      "imports": [],
+      "kabelsalatBytes": 0,
+      "tonePackageBytes": 0,
+      "workerLikeExecution": "pass",
+      "startupCalls": {
+        "audioConstructors": 0,
+        "timers": 0,
+        "network": 0
+      },
+      "startupMessages": []
+    },
+    "strudelCoreMini": {
+      "build": true,
+      "bytes": 138736,
+      "imports": [],
+      "kabelsalatBytes": 34158,
+      "tonePackageBytes": 0,
+      "workerLikeExecution": "pass",
+      "startupCalls": {
+        "audioConstructors": 0,
+        "timers": 0,
+        "network": 0
+      },
+      "startupMessages": [
+        "cannot use window: not in browser?",
+        "%c🌀 @strudel/core loaded 🌀 background-color: black;color:white;border-radius:15px"
+      ]
+    }
+  },
+  "runtimeCalls": {
+    "scribble": {
+      "audioConstructors": 0,
+      "timers": 0,
+      "network": 0
+    },
+    "strudel": {
+      "audioConstructors": 0,
+      "timers": 0,
+      "network": 0
+    }
+  },
+  "nodeEntry": {
+    "strudel": {
+      "pass": false,
+      "error": "SyntaxError: The requested module '@kabelsalat/web' does not provide an export named 'SalatRepl'"
+    }
+  },
+  "pitchBoundary": {
+    "source": "C4",
+    "midi": 60,
+    "daw": "C3"
+  },
+  "randomness": {
+    "scribble": {
+      "nativeSeed": "unsupported",
+      "sameSeedDependsOnMathRandom": true,
+      "firstSequence": [
+        60,
+        60,
+        60,
+        60
+      ],
+      "secondSequence": [
+        67,
+        67,
+        67,
+        67
+      ]
+    },
+    "strudel": {
+      "rng": "precise",
+      "seed": 42,
+      "repeatSameSeed": true,
+      "differentSeedChangesResult": true,
+      "finiteWindowMatchesFull": true,
+      "events": 256,
+      "hash": "681dd5bfb810d7790262f11f6af7d686a09d41966a555f11ad11f86ea4493edb"
+    }
+  },
+  "results": [
+    {
+      "id": "quarter",
+      "category": "quarter",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4",
+          "pattern": "xxxx",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4 d4 e4 f4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 4,
+        "expectedCount": 4,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 4,
+        "expectedCount": 4,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "eighth",
+      "category": "eighth",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4 B4 C5",
+          "pattern": "xxxxxxxx",
+          "subdiv": "8n",
+          "amp": 100
+        },
+        "strudel": "c4 d4 e4 f4 g4 a4 b4 c5"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 8,
+        "expectedCount": 8,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 8,
+        "expectedCount": 8,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "rests",
+      "category": "rest",
+      "source": {
+        "scribble": {
+          "notes": "C4 E4",
+          "pattern": "x-x-",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4 ~ e4 ~"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 2,
+        "expectedCount": 2,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 2,
+        "expectedCount": 2,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "tie-rest",
+      "category": "tie",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4",
+          "pattern": "x__-xx--",
+          "subdiv": "8n",
+          "amp": 100
+        },
+        "strudel": "c4@3 ~ d4 e4 ~ ~"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 3,
+        "expectedCount": 3,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 3,
+        "expectedCount": 3,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "chords",
+      "category": "chord",
+      "source": {
+        "scribble": {
+          "notes": [
+            [
+              "C4",
+              "E4",
+              "G4"
+            ],
+            [
+              "D4",
+              "F4",
+              "A4"
+            ]
+          ],
+          "pattern": "x_x_",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "[c4,e4,g4] [d4,f4,a4]"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 6,
+        "expectedCount": 6,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 6,
+        "expectedCount": 6,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "nested-binary",
+      "category": "nested pattern",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4 B4",
+          "pattern": "x[xx][x[xx]]x",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4 [d4 e4] [f4 [g4 a4]] b4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 7,
+        "expectedCount": 7,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 7,
+        "expectedCount": 7,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "triplet",
+      "category": "triplet",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4",
+          "pattern": "[xxx]xxx",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "[c4 d4 e4] f4 g4 a4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 6,
+        "expectedCount": 6,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0.00520833333333337,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 0,
+            "expected": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 1,
+            "expected": {
+              "pitch": 62,
+              "start": 0.3333333333333333,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 62,
+              "start": 0.3359375,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 2,
+            "expected": {
+              "pitch": 64,
+              "start": 0.6666666666666666,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 64,
+              "start": 0.671875,
+              "duration": 0.328125,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 6,
+        "expectedCount": 6,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 5.551115123125783e-17,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "nested-triplet",
+      "category": "nested triplet",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4 B4",
+          "pattern": "x[x[xxx]]xx",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4 [d4 [e4 f4 g4]] a4 b4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 7,
+        "expectedCount": 7,
+        "lengthBeats": 3.984375,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0.015625,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 2,
+            "expected": {
+              "pitch": 64,
+              "start": 1.5,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 64,
+              "start": 1.5,
+              "duration": 0.1640625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 3,
+            "expected": {
+              "pitch": 65,
+              "start": 1.6666666666666667,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 65,
+              "start": 1.6640625,
+              "duration": 0.1640625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 4,
+            "expected": {
+              "pitch": 67,
+              "start": 1.8333333333333333,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 67,
+              "start": 1.828125,
+              "duration": 0.15625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 5,
+            "expected": {
+              "pitch": 69,
+              "start": 2,
+              "duration": 1,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 69,
+              "start": 1.984375,
+              "duration": 1,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 7,
+        "expectedCount": 7,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 1.3877787807814457e-16,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "quarter-8-bars",
+      "category": "long arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4",
+          "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4 d4 e4 f4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 32,
+        "expectedCount": 32,
+        "lengthBeats": 32,
+        "expectedLengthBeats": 32,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 32,
+        "expectedCount": 32,
+        "lengthBeats": 32,
+        "expectedLengthBeats": 32,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "quarter-16-bars",
+      "category": "long arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4",
+          "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4 d4 e4 f4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 64,
+        "expectedCount": 64,
+        "lengthBeats": 64,
+        "expectedLengthBeats": 64,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 64,
+        "expectedCount": 64,
+        "lengthBeats": 64,
+        "expectedLengthBeats": 64,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "quarter-32-bars",
+      "category": "long arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4",
+          "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4 d4 e4 f4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 128,
+        "expectedCount": 128,
+        "lengthBeats": 128,
+        "expectedLengthBeats": 128,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 128,
+        "expectedCount": 128,
+        "lengthBeats": 128,
+        "expectedLengthBeats": 128,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "finite-window",
+      "category": "finite window",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4",
+          "pattern": "x_____x-",
+          "subdiv": "8n",
+          "amp": 100
+        },
+        "strudel": "c4@6 d4 ~"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 2,
+        "expectedCount": 2,
+        "lengthBeats": 2.25,
+        "expectedLengthBeats": 2.25,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 2,
+        "expectedCount": 2,
+        "lengthBeats": 2.25,
+        "expectedLengthBeats": 2.25,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "cross-bar-tie",
+      "category": "cross-bar tie",
+      "source": {
+        "scribble": {
+          "notes": "C4",
+          "pattern": "x_______",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4/2"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 8,
+        "expectedLengthBeats": 8,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 8,
+        "expectedLengthBeats": 8,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "cross-bar-window",
+      "category": "cross-bar window",
+      "source": {
+        "scribble": {
+          "notes": "C4",
+          "pattern": "x_______",
+          "subdiv": "4n",
+          "amp": 100
+        },
+        "strudel": "c4/2"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 5,
+        "expectedLengthBeats": 5,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 5,
+        "expectedLengthBeats": 5,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "native-one-measure",
+      "category": "native bar unit",
+      "source": {
+        "scribble": {
+          "notes": "C4",
+          "pattern": "x",
+          "subdiv": "1m",
+          "amp": 100
+        },
+        "strudel": "c4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 16,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 12,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 0,
+            "expected": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 4,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 16,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "velocity-0",
+      "category": "velocity",
+      "source": {
+        "scribble": {
+          "notes": "C4",
+          "pattern": "x___",
+          "subdiv": "4n",
+          "amp": 0
+        },
+        "strudel": "c4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "velocity-1",
+      "category": "velocity",
+      "source": {
+        "scribble": {
+          "notes": "C4",
+          "pattern": "x___",
+          "subdiv": "4n",
+          "amp": 1
+        },
+        "strudel": "c4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "velocity-64",
+      "category": "velocity",
+      "source": {
+        "scribble": {
+          "notes": "C4",
+          "pattern": "x___",
+          "subdiv": "4n",
+          "amp": 64
+        },
+        "strudel": "c4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "velocity-127",
+      "category": "velocity",
+      "source": {
+        "scribble": {
+          "notes": "C4",
+          "pattern": "x___",
+          "subdiv": "4n",
+          "amp": 127
+        },
+        "strudel": "c4"
+      },
+      "scribble": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 1,
+        "expectedCount": 1,
+        "lengthBeats": 4,
+        "expectedLengthBeats": 4,
+        "maxTimeErrorBeats": 0,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "triplet-8-bars",
+      "category": "long triplet arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4",
+          "pattern": "[xxx]xxx",
+          "subdiv": "4n",
+          "repeat": 8
+        },
+        "strudel": "[c4 d4 e4] f4 g4 a4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 48,
+        "expectedCount": 48,
+        "lengthBeats": 32,
+        "expectedLengthBeats": 32,
+        "maxTimeErrorBeats": 0.0052083333333339255,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 0,
+            "expected": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 1,
+            "expected": {
+              "pitch": 62,
+              "start": 0.3333333333333333,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 62,
+              "start": 0.3359375,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 2,
+            "expected": {
+              "pitch": 64,
+              "start": 0.6666666666666666,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 64,
+              "start": 0.671875,
+              "duration": 0.328125,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 6,
+            "expected": {
+              "pitch": 60,
+              "start": 4,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 60,
+              "start": 4,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 48,
+        "expectedCount": 48,
+        "lengthBeats": 32,
+        "expectedLengthBeats": 32,
+        "maxTimeErrorBeats": 2.3869795029440866e-15,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "triplet-16-bars",
+      "category": "long triplet arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4",
+          "pattern": "[xxx]xxx",
+          "subdiv": "4n",
+          "repeat": 16
+        },
+        "strudel": "[c4 d4 e4] f4 g4 a4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 96,
+        "expectedCount": 96,
+        "lengthBeats": 64,
+        "expectedLengthBeats": 64,
+        "maxTimeErrorBeats": 0.005208333333335702,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 0,
+            "expected": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 1,
+            "expected": {
+              "pitch": 62,
+              "start": 0.3333333333333333,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 62,
+              "start": 0.3359375,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 2,
+            "expected": {
+              "pitch": 64,
+              "start": 0.6666666666666666,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 64,
+              "start": 0.671875,
+              "duration": 0.328125,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 6,
+            "expected": {
+              "pitch": 60,
+              "start": 4,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 60,
+              "start": 4,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 96,
+        "expectedCount": 96,
+        "lengthBeats": 64,
+        "expectedLengthBeats": 64,
+        "maxTimeErrorBeats": 4.718447854656915e-15,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "triplet-32-bars",
+      "category": "long triplet arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4",
+          "pattern": "[xxx]xxx",
+          "subdiv": "4n",
+          "repeat": 32
+        },
+        "strudel": "[c4 d4 e4] f4 g4 a4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 192,
+        "expectedCount": 192,
+        "lengthBeats": 128,
+        "expectedLengthBeats": 128,
+        "maxTimeErrorBeats": 0.005208333333335702,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 0,
+            "expected": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 60,
+              "start": 0,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 1,
+            "expected": {
+              "pitch": 62,
+              "start": 0.3333333333333333,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 62,
+              "start": 0.3359375,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 2,
+            "expected": {
+              "pitch": 64,
+              "start": 0.6666666666666666,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 64,
+              "start": 0.671875,
+              "duration": 0.328125,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 6,
+            "expected": {
+              "pitch": 60,
+              "start": 4,
+              "duration": 0.3333333333333333,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 60,
+              "start": 4,
+              "duration": 0.3359375,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 192,
+        "expectedCount": 192,
+        "lengthBeats": 128,
+        "expectedLengthBeats": 128,
+        "maxTimeErrorBeats": 9.492406860545088e-15,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "nested-triplet-8-bars",
+      "category": "long triplet arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4 B4",
+          "pattern": "x[x[xxx]]xx",
+          "subdiv": "4n",
+          "repeat": 8
+        },
+        "strudel": "c4 [d4 [e4 f4 g4]] a4 b4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 56,
+        "expectedCount": 56,
+        "lengthBeats": 31.875,
+        "expectedLengthBeats": 32,
+        "maxTimeErrorBeats": 0.125,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 2,
+            "expected": {
+              "pitch": 64,
+              "start": 1.5,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 64,
+              "start": 1.5,
+              "duration": 0.1640625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 3,
+            "expected": {
+              "pitch": 65,
+              "start": 1.6666666666666667,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 65,
+              "start": 1.6640625,
+              "duration": 0.1640625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 4,
+            "expected": {
+              "pitch": 67,
+              "start": 1.8333333333333333,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 67,
+              "start": 1.828125,
+              "duration": 0.15625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 5,
+            "expected": {
+              "pitch": 69,
+              "start": 2,
+              "duration": 1,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 69,
+              "start": 1.984375,
+              "duration": 1,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 56,
+        "expectedCount": 56,
+        "lengthBeats": 32,
+        "expectedLengthBeats": 32,
+        "maxTimeErrorBeats": 2.3592239273284576e-15,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "nested-triplet-16-bars",
+      "category": "long triplet arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4 B4",
+          "pattern": "x[x[xxx]]xx",
+          "subdiv": "4n",
+          "repeat": 16
+        },
+        "strudel": "c4 [d4 [e4 f4 g4]] a4 b4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 112,
+        "expectedCount": 112,
+        "lengthBeats": 63.75,
+        "expectedLengthBeats": 64,
+        "maxTimeErrorBeats": 0.25,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 2,
+            "expected": {
+              "pitch": 64,
+              "start": 1.5,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 64,
+              "start": 1.5,
+              "duration": 0.1640625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 3,
+            "expected": {
+              "pitch": 65,
+              "start": 1.6666666666666667,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 65,
+              "start": 1.6640625,
+              "duration": 0.1640625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 4,
+            "expected": {
+              "pitch": 67,
+              "start": 1.8333333333333333,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 67,
+              "start": 1.828125,
+              "duration": 0.15625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 5,
+            "expected": {
+              "pitch": 69,
+              "start": 2,
+              "duration": 1,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 69,
+              "start": 1.984375,
+              "duration": 1,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 112,
+        "expectedCount": 112,
+        "lengthBeats": 64,
+        "expectedLengthBeats": 64,
+        "maxTimeErrorBeats": 4.746203430272544e-15,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    },
+    {
+      "id": "nested-triplet-32-bars",
+      "category": "long triplet arrangement",
+      "source": {
+        "scribble": {
+          "notes": "C4 D4 E4 F4 G4 A4 B4",
+          "pattern": "x[x[xxx]]xx",
+          "subdiv": "4n",
+          "repeat": 32
+        },
+        "strudel": "c4 [d4 [e4 f4 g4]] a4 b4"
+      },
+      "scribble": {
+        "pass": false,
+        "eventCount": 224,
+        "expectedCount": 224,
+        "lengthBeats": 127.5,
+        "expectedLengthBeats": 128,
+        "maxTimeErrorBeats": 0.5,
+        "maxVelocityError": 0,
+        "differences": [
+          {
+            "index": 2,
+            "expected": {
+              "pitch": 64,
+              "start": 1.5,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 64,
+              "start": 1.5,
+              "duration": 0.1640625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 3,
+            "expected": {
+              "pitch": 65,
+              "start": 1.6666666666666667,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 65,
+              "start": 1.6640625,
+              "duration": 0.1640625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 4,
+            "expected": {
+              "pitch": 67,
+              "start": 1.8333333333333333,
+              "duration": 0.16666666666666666,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 67,
+              "start": 1.828125,
+              "duration": 0.15625,
+              "velocity": 0.7874015748031497
+            }
+          },
+          {
+            "index": 5,
+            "expected": {
+              "pitch": 69,
+              "start": 2,
+              "duration": 1,
+              "velocity": 0.7874015748031497
+            },
+            "actual": {
+              "pitch": 69,
+              "start": 1.984375,
+              "duration": 1,
+              "velocity": 0.7874015748031497
+            }
+          }
+        ]
+      },
+      "strudel": {
+        "pass": true,
+        "eventCount": 224,
+        "expectedCount": 224,
+        "lengthBeats": 128,
+        "expectedLengthBeats": 128,
+        "maxTimeErrorBeats": 9.46465128492946e-15,
+        "maxVelocityError": 0,
+        "differences": []
+      }
+    }
+  ]
+}
