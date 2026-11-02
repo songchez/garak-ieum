@@ -62,13 +62,13 @@ export function DeviceChain({track,engine,scale=1,onScaleChange,zoomRef,...on}:P
     </section>}
     {track.devices.map((device,index)=>{const d=EFFECT_DEFS[device.type];return <Fragment key={device.id}><Wire/>
       <section className={`dc-card dc-effect ${device.enabled?'':'bypassed'}`} role="listitem" aria-label={`${index+1}번 ${d.name}${device.enabled?'':' (바이패스)'}`}>
-        <header className="dc-head"><button className={`dc-power ${device.enabled?'on':''}`} aria-pressed={device.enabled} aria-label={`${d.name} 켜기/끄기`} title="켜기/끄기 (바이패스)" onClick={()=>on.onToggleDevice(device.id)}><Icon name="power" size={11}/></button><strong title={d.name}>{d.name}</strong><span className="dc-tools"><button onClick={()=>on.onMoveDevice(device.id,-1)} disabled={index===0} title="왼쪽으로 이동" aria-label={`${d.name} 왼쪽으로 이동`}><Icon name="left" size={11}/></button><button onClick={()=>on.onMoveDevice(device.id,1)} disabled={index===track.devices.length-1} title="오른쪽으로 이동" aria-label={`${d.name} 오른쪽으로 이동`}><Icon name="right" size={11}/></button><button onClick={()=>on.onRemoveDevice(device.id)} title="디바이스 삭제" aria-label={`${d.name} 삭제`}><Icon name="close" size={11}/></button></span></header>
+        <header className="dc-head"><button className={`dc-power ${device.enabled?'on':''}`} aria-pressed={device.enabled} aria-label={`${d.name} 켜기/끄기`} title="켜기/끄기 (바이패스)" onClick={()=>on.onToggleDevice(device.id)}><Icon name="power" size={11}/></button><span className="dc-icon"><Icon name={device.type} size={14}/></span><strong title={d.name}>{d.name}</strong><span className="dc-tools"><button onClick={()=>on.onMoveDevice(device.id,-1)} disabled={index===0} title="왼쪽으로 이동" aria-label={`${d.name} 왼쪽으로 이동`}><Icon name="left" size={11}/></button><button onClick={()=>on.onMoveDevice(device.id,1)} disabled={index===track.devices.length-1} title="오른쪽으로 이동" aria-label={`${d.name} 오른쪽으로 이동`}><Icon name="right" size={11}/></button><button onClick={()=>on.onRemoveDevice(device.id)} title="디바이스 삭제" aria-label={`${d.name} 삭제`}><Icon name="close" size={11}/></button></span></header>
         <div className="dc-knobs" style={{'--cols':Math.ceil(d.params.length/2)} as React.CSSProperties}>{d.params.map(p=><Knob key={p.id} def={p} value={paramValue(d.params,device.params,p.id)} onChange={v=>on.onDeviceParam(device.id,p.id,v)}/>)}</div>
       </section></Fragment>})}
     <Wire/>
     <section className="dc-card dc-add" role="listitem" aria-label="디바이스 추가">
       <header className="dc-head"><span className="dc-icon"><Icon name="plug" size={13}/></span><strong>디바이스 추가</strong></header>
-      <div className="dc-add-list">{EFFECT_TYPES.map(type=><button key={type} onClick={()=>on.onAddDevice(type)} title={`${EFFECT_DEFS[type].name}를 체인 끝에 추가`}><Icon name="plus" size={10}/>{EFFECT_DEFS[type].short}</button>)}</div>
+      <div className="dc-add-list">{EFFECT_TYPES.map(type=><button key={type} onClick={()=>on.onAddDevice(type)} title={`${EFFECT_DEFS[type].name}를 체인 끝에 추가`}><Icon name={type} size={12}/>{EFFECT_DEFS[type].short}</button>)}</div>
     </section>
     <Wire/>
     <section className="dc-card dc-output" role="listitem" aria-label="출력">

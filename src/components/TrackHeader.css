@@ -1,26 +1,26 @@
 /* Track header (Logic layout): [color bar][number][icon] name / buttons … [volume+meter] (pan). Selectors carry [data-track-id] to outrank the legacy .track-header rules in styles.css. */
-.track-header[data-track-id]{position:sticky;left:0;z-index:12;width:var(--header-width,208px);flex-shrink:0;display:flex;align-items:center;gap:6px;box-sizing:border-box;padding:0 8px 0 7px;background:var(--ink-12);border-right:1px solid var(--ink-23);cursor:default;-webkit-user-select:none;user-select:none;container-type:inline-size;overflow:hidden}
+.track-header[data-track-id]{position:sticky;left:0;z-index:12;width:var(--header-width,208px);flex-shrink:0;display:flex;align-items:center;gap:6px;box-sizing:border-box;padding:0 8px 0 7px;background:var(--surface-panel);border-right:1px solid var(--border-default);cursor:default;-webkit-user-select:none;user-select:none;container-type:inline-size;overflow:hidden}
 .track-header[data-track-id].with-color-bar{padding-left:11px}
-.track-header[data-track-id].selected{background:var(--ink-16)}
-.track-header[data-track-id].focused{background:var(--ink-18)}
+.track-header[data-track-id].selected{background:var(--surface-selected)}
+.track-header[data-track-id].focused{background:var(--surface-selected);box-shadow:inset 0 0 0 1px var(--accent-border)}
 .track-header[data-track-id][data-kind]::before{content:none}
 .track-header[data-track-id] .track-color-bar{position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--track-color)}
-.track-header[data-track-id] .track-number{flex-shrink:0;min-width:14px;margin:0;align-self:center;font-family:Consolas,"SFMono-Regular",monospace;font-size:8px;line-height:1;text-align:right;color:var(--ink-42);cursor:grab;touch-action:none}
-.track-header[data-track-id] .track-number.focused{color:#c8c8c8}
+.track-header[data-track-id] .track-number{flex-shrink:0;min-width:14px;margin:0;align-self:center;font-family:Consolas,"SFMono-Regular",monospace;font-size:8px;line-height:1;text-align:right;color:var(--text-muted);cursor:grab;touch-action:none}
+.track-header[data-track-id] .track-number.focused{color:var(--text-primary)}
 .track-header[data-track-id] .track-icon{position:relative;flex-shrink:0;display:grid;place-items:center;width:18px;height:18px;color:var(--track-color);opacity:.85}
 .track-header[data-track-id] .track-icon .sample-dot{right:-4px;top:-3px}
 .track-header[data-track-id] .track-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .track-header[data-track-id].tier-0 .track-main{flex-direction:row;align-items:center;gap:6px}
 .track-header[data-track-id] .track-name-row{display:flex;align-items:center;gap:4px;min-width:0;min-height:14px}
 .track-header[data-track-id].tier-0 .track-name-row{flex:1}
-.track-header[data-track-id] .track-name{flex:1;min-width:0;display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:10px;font-weight:500;letter-spacing:.1px;line-height:14px;color:var(--ink-78)}
-.track-header[data-track-id].selected .track-name{color:var(--ink-87)}
-.track-header[data-track-id].focused .track-name{color:var(--ink-93)}
+.track-header[data-track-id] .track-name{flex:1;min-width:0;display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:10px;font-weight:500;letter-spacing:.1px;line-height:14px;color:var(--text-secondary)}
+.track-header[data-track-id].selected .track-name{color:var(--text-primary)}
+.track-header[data-track-id].focused .track-name{color:var(--text-primary)}
 .track-header[data-track-id].tier-3 .track-name{font-size:11px}
 .track-header[data-track-id] .track-name-input{height:16px;font-size:10px}
 .track-header[data-track-id] .track-hide-badge,.track-header[data-track-id] .track-off-badge{flex-shrink:0;display:inline-grid;place-items:center;height:11px;min-width:11px;padding:0 2px;border-radius:2px;font-size:7px;font-weight:700;line-height:1}
 .track-header[data-track-id] .track-hide-badge{color:var(--track-hide);border:1px solid color-mix(in srgb,var(--track-hide) 60%,transparent)}
-.track-header[data-track-id] .track-off-badge{color:var(--ink-45);border:1px solid var(--ink-25)}
+.track-header[data-track-id] .track-off-badge{color:var(--ink-45);border:1px solid var(--border-default)}
 .track-header[data-track-id] .track-side{flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:5px;width:78px}
 .track-header[data-track-id].tier-3 .track-side{gap:7px}
 /* Header narrower than 230px (content box = width − 19px padding) hides the slider and knob. */
@@ -37,28 +37,28 @@
 /* Track buttons (shared with ChannelStrip via size="strip") */
 .track-header[data-track-id],.track-buttons{--track-mute:#3d8fd6;--track-solo:#e0c24c;--track-arm:#e5533d;--track-monitor:#e8923a;--track-hide:#4fae7a}
 .track-buttons{display:flex;align-items:center;gap:3px;flex-shrink:0}
-.track-button{display:inline-grid;place-items:center;width:18px;height:16px;padding:0;border:1px solid var(--ink-25);border-radius:3px;background:var(--ink-16);color:var(--ink-54);font-size:9px;font-weight:700;line-height:1;cursor:pointer;position:relative;touch-action:none;transition:background-color .08s,color .08s,border-color .08s}
+.track-button{display:inline-grid;place-items:center;width:18px;height:16px;padding:0;border:1px solid var(--border-default);border-radius:3px;background:var(--ink-16);color:var(--text-muted);font-size:9px;font-weight:700;line-height:1;cursor:pointer;position:relative;touch-action:none;transition:background-color .08s,color .08s,border-color .08s}
 .track-buttons--strip .track-button{width:22px;height:18px;font-size:10px;border-radius:4px}
-.track-button:hover{border-color:var(--ink-33);color:var(--ink-75)}
-.track-button:focus-visible{outline:1px solid var(--seokganju-66);outline-offset:1px}
+.track-button:hover{border-color:var(--border-strong);color:var(--text-secondary)}
+.track-button:focus-visible{outline:1px solid var(--accent-hover);outline-offset:1px}
 .track-button--mute.on{background:var(--track-mute);border-color:var(--track-mute);color:#fff}
 .track-button--mute.implicit{color:var(--track-mute);border-color:color-mix(in srgb,var(--track-mute) 70%,transparent);animation:track-implicit-mute 1s steps(1,end) infinite}
-.track-button--solo.on{background:var(--track-solo);border-color:var(--track-solo);color:var(--ink-12)}
+.track-button--solo.on{background:var(--track-solo);border-color:var(--track-solo);color:var(--text-inverse)}
 .track-button--solo.safe::after{content:"";position:absolute;inset:-1px;border-radius:inherit;background:linear-gradient(135deg,transparent 44%,var(--track-arm) 44%,var(--track-arm) 56%,transparent 56%);pointer-events:none}
 .track-button--arm.auto{color:var(--track-arm)}
 .track-button--arm.on{background:var(--track-arm);border-color:var(--track-arm);color:#fff;animation:track-arm-blink 1s steps(1,end) infinite}
 .track-button--arm.on.recording{animation:none}
-.track-button--monitor.on{background:var(--track-monitor);border-color:var(--track-monitor);color:var(--ink-12)}
-.track-button--hidden.on{background:var(--track-hide);border-color:var(--track-hide);color:var(--ink-12)}
-.track-button--enabled{color:var(--ink-60)}
-.track-button--enabled.off{color:var(--ink-36);background:var(--ink-13);border-color:var(--ink-20)}
+.track-button--monitor.on{background:var(--track-monitor);border-color:var(--track-monitor);color:var(--text-inverse)}
+.track-button--hidden.on{background:var(--track-hide);border-color:var(--track-hide);color:var(--text-inverse)}
+.track-button--enabled{color:var(--text-muted)}
+.track-button--enabled.off{color:var(--ink-36);background:var(--surface-panel-soft);border-color:var(--border-subtle)}
 .track-button--enabled.off::after{content:"";position:absolute;left:3px;right:3px;top:50%;height:1px;background:var(--ink-42);transform:rotate(-30deg)}
 @keyframes track-implicit-mute{0%,100%{background:color-mix(in srgb,var(--track-mute) 35%,var(--ink-16))}50%{background:var(--ink-16)}}
 @keyframes track-arm-blink{0%,100%{background:var(--track-arm);color:#fff}50%{background:color-mix(in srgb,var(--track-arm) 30%,var(--ink-16));color:var(--track-arm)}}
 
 /* Volume slider with built-in meter (horizontal in the header, vertical in the channel strip) */
 .volume-slider{display:flex;align-items:center;gap:4px;outline:none;touch-action:none;border-radius:3px}
-.volume-slider:focus-visible{outline:1px solid var(--seokganju-57);outline-offset:1px}
+.volume-slider:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
 .volume-slider.disabled{opacity:.4;pointer-events:none}
 .volume-slider--horizontal{width:100%;height:14px;cursor:ew-resize}
 .volume-slider--vertical{flex-direction:column;height:100%;cursor:ns-resize}
@@ -73,13 +73,13 @@
 .volume-slider--horizontal .volume-thumb{top:-3px;width:4px;height:14px;margin-left:-2px}
 .volume-slider--vertical .volume-thumb{left:-4px;width:16px;height:4px;margin-bottom:-2px}
 .volume-slider:hover .volume-thumb,.volume-slider[data-daw-gesture] .volume-thumb{background:var(--ink-99)}
-.volume-readout{flex-shrink:0;width:26px;font-family:Consolas,"SFMono-Regular",monospace;font-size:8px;line-height:1;text-align:right;color:var(--ink-60);font-variant-numeric:tabular-nums}
+.volume-readout{flex-shrink:0;width:26px;font-family:Consolas,"SFMono-Regular",monospace;font-size:8px;line-height:1;text-align:right;color:var(--text-muted);font-variant-numeric:tabular-nums}
 .volume-slider--vertical .volume-readout{width:auto;text-align:center}
-.volume-slider:hover .volume-readout{color:var(--ink-78)}
+.volume-slider:hover .volume-readout{color:var(--text-secondary)}
 
 /* Pan knob (header 20px, strip larger) */
 .pan-knob{display:grid;place-items:center;flex-shrink:0;outline:none;cursor:ns-resize;touch-action:none;border-radius:50%}
-.pan-knob:focus-visible{outline:1px solid var(--seokganju-57);outline-offset:1px}
+.pan-knob:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
 .pan-knob svg{display:block}
 .pan-cap{fill:var(--ink-16);stroke:var(--ink-28);stroke-width:1.5}
 .pan-track{fill:none;stroke:var(--ink-24);stroke-width:4;stroke-linecap:round}

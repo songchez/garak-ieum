@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { Icon } from './Icon'
 import './ContextMenu.css'
 
 export type ContextMenuItem =
-  | { type?: 'item'; label: string; shortcut?: string; disabled?: boolean; danger?: boolean; checked?: boolean; onSelect?: () => void; items?: ContextMenuItem[] }
+  | { type?: 'item'; label: string; icon?: string; shortcut?: string; disabled?: boolean; danger?: boolean; checked?: boolean; onSelect?: () => void; items?: ContextMenuItem[] }
   | { type: 'separator' }
 
 export interface ContextMenuProps {
@@ -24,8 +25,9 @@ const menuButtons = (menu: Element | null | undefined) => menu ? [...menu.queryS
 function MenuList({ items, onClose, label, flip, submenu = false }: { items: ContextMenuItem[]; onClose: () => void; label?: string; flip: boolean; submenu?: boolean }) {
   const [open, setOpen] = useState<number | null>(null)
   const ref = useRef<HTMLUListElement>(null)
+  const hasIcons = items.some(item => !isSeparator(item) && !!item.icon)
   useEffect(() => { if (submenu) menuButtons(ref.current)[0]?.focus({ preventScroll: true }) }, [submenu])
-  return <ul ref={ref} className={`context-menu-list${submenu ? ' context-menu-list--sub' : ''}${flip ? ' context-menu-list--flip' : ''}`} role="menu" aria-label={label}>
+  return <ul ref={ref} className={`context-menu-list${submenu ? ' context-menu-list--sub' : ''}${flip ? ' context-menu-list--flip' : ''}${hasIcons ? ' context-menu-list--icons' : ''}`} role="menu" aria-label={label}>
     {items.map((item, index) => isSeparator(item)
       ? <li key={`sep-${index}`} role="separator" className="context-menu-separator" />
       : <li key={`${item.label}-${index}`} className="context-menu-entry" role="none"
@@ -49,8 +51,9 @@ function MenuList({ items, onClose, label, flip, submenu = false }: { items: Con
             item.onSelect?.()
           }}
         >
+          {hasIcons && <span className="context-menu-icon" aria-hidden="true">{item.icon && <Icon name={item.icon} size={15}/>}</span>}
           <span className="context-menu-label">{item.label}</span>
-          {item.items ? <span className="context-menu-arrow" aria-hidden="true">▸</span> : item.shortcut && <kbd className="context-menu-shortcut">{item.shortcut}</kbd>}
+          {item.items ? <span className="context-menu-arrow" aria-hidden="true"><Icon name="right" size={12}/></span> : item.shortcut && <kbd className="context-menu-shortcut">{item.shortcut}</kbd>}
         </button>
         {item.items && open === index && <MenuList items={item.items} onClose={onClose} label={item.label} flip={flip} submenu />}
       </li>)}
