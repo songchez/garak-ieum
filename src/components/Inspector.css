@@ -29,8 +29,8 @@
 .insp-more{display:flex;align-items:center;gap:4px;height:20px;padding:0 2px;margin:2px 0 0;color:var(--text-muted);font-size:9px}
 .insp-more.open{color:var(--text-secondary)}
 .insp-icon-button{display:grid;place-items:center;width:24px;height:18px;border:1px solid var(--border-subtle);border-radius:3px;background:var(--surface-canvas)}
-.insp-swatch{width:24px;height:18px;border:1px solid #ffffff22;border-radius:3px;padding:0}
-.insp-swatch:hover{border-color:#ffffff66}
+.insp-swatch{width:24px;height:18px;border:1px solid var(--border-default);border-radius:3px;padding:0}
+.insp-swatch:hover{border-color:var(--border-strong)}
 
 /* Channel strips: focused track on the left, Stereo Out on the right. */
 .strips{display:flex;gap:6px;justify-content:center}
@@ -49,7 +49,7 @@
 .cstrip-insert.bypassed{background:var(--surface-panel-soft);border-color:var(--border-subtle);color:var(--ink-45)}
 .cstrip-power{width:12px;height:100%;padding:0;display:grid;place-items:center;flex-shrink:0;border-radius:0}
 .cstrip-power::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--ink-33)}
-.cstrip-power.on::before{background:#8fd0a8;box-shadow:0 0 4px #8fd0a8aa}
+.cstrip-power.on::before{background:var(--success);box-shadow:0 0 4px color-mix(in srgb,var(--success) 60%,transparent)}
 .cstrip-insert-empty{justify-content:center;color:var(--text-muted);border-style:dashed;background:transparent;width:100%}
 .cstrip-insert-empty:hover:not(:disabled){border-color:var(--border-strong);color:var(--ink-72)}
 .cstrip-output{justify-content:center;color:var(--text-muted);font-size:8px}
@@ -86,7 +86,7 @@
 /* (0,1,0): above the global `button` reset, below B's `.track-buttons--strip .track-button` and state rules. */
 :where(.cstrip) .track-button{width:18px;height:18px;padding:0;display:grid;place-items:center;border:1px solid var(--border-default);border-radius:3px;background:var(--ink-16);color:var(--text-muted);font-size:9px;font-weight:700;touch-action:none}
 .cstrip-icon{display:grid;place-items:center;height:22px;color:var(--track-color,var(--ink-60));padding:0}
-.cstrip-name{margin:0 -4px;height:20px;display:flex;align-items:center;justify-content:center;padding:0 4px;background:var(--track-color,var(--ink-33));color:var(--text-inverse);font-size:9px;font-weight:600;border-radius:0 0 3px 3px}
+.cstrip-name{margin:0 -4px;height:20px;display:flex;align-items:center;justify-content:center;padding:0 4px;background:var(--track-color,var(--ink-33));color:var(--track-label-color,var(--on-track-color));font-size:9px;font-weight:600;border-radius:0 0 3px 3px}
 .cstrip-name span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cstrip-master .cstrip-name{background:var(--surface-raised);color:var(--text-primary)}
 

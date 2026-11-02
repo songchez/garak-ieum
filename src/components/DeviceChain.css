@@ -23,7 +23,7 @@
 .dc-knobs{flex:1;display:grid;grid-template-columns:repeat(var(--cols,2),56px);align-content:center;justify-content:center;gap:8px 4px;padding:8px 10px}
 .dc-note{margin:0;padding:14px 12px;width:170px;font-size:9px;line-height:1.7;color:var(--text-muted)}
 .dc-credit{margin:0;padding:0 10px 7px;font-size:7.5px;line-height:1.5;color:var(--text-muted);max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dc-credit.error{color:#e88f85}
+.dc-credit.error{color:var(--danger)}
 .dc-wire{flex-shrink:0;width:22px;display:flex;align-items:center;justify-content:center;position:relative;color:var(--ink-36)}
 .dc-wire i{position:absolute;left:2px;right:7px;top:50%;height:1px;background:var(--ink-28)}
 .dc-wire svg{position:relative;margin-left:8px}

@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 import type { AudioEngine } from '../core/types'
+import { getThemeSnapshot, subscribeTheme } from '../core/theme'
 import './TrackHeader.css'
 
 export const VOLUME_MAX = 1.5
@@ -17,6 +18,7 @@ export function VolumeSlider({ value, onChange, orientation, meter, ariaLabel = 
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
+  const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeSnapshot)
   const latest = useRef({ value, onChange, disabled })
   latest.current = { value, onChange, disabled }
   const cancelDrag = useRef<(() => void) | null>(null)
@@ -40,6 +42,8 @@ export function VolumeSlider({ value, onChange, orientation, meter, ariaLabel = 
   const engine = meter?.engine, trackId = meter?.trackId
   useEffect(() => {
     if (!engine) return
+    const element = canvas.current; if (!element) return
+    const styles = getComputedStyle(element), low = styles.getPropertyValue('--meter-low').trim(), high = styles.getPropertyValue('--meter-high').trim()
     let raf = 0, held = 0, last = 0
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame)
@@ -53,12 +57,12 @@ export function VolumeSlider({ value, onChange, orientation, meter, ariaLabel = 
       const fill = Math.min(1, Math.sqrt(held) * 1.6)
       ctx.clearRect(0, 0, w, h)
       if (fill <= 0) return
-      ctx.fillStyle = held > .85 ? '#e5533d' : '#9fcfb4'
+      ctx.fillStyle = held > .85 ? high : low
       if (vertical) ctx.fillRect(0, h * (1 - fill), w, h * fill); else ctx.fillRect(0, 0, w * fill, h)
     }
     raf = requestAnimationFrame(frame)
     return () => cancelAnimationFrame(raf)
-  }, [engine, trackId, vertical])
+  }, [engine, trackId, vertical, theme])
 
   function startDrag(e: React.PointerEvent<HTMLDivElement>) {
     e.stopPropagation()

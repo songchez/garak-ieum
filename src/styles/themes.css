@@ -1,0 +1,18 @@
+/* Palette values live in core/theme.ts. Shared roles continue to use CSS variables. */
+:root {
+  --success: var(--accent-hover);
+  --danger: #f1b0a1;
+  --warning: var(--brass);
+  --loop-fill: var(--brass);
+  --meter-empty: #212824;
+  --meter-low: #83bd9c;
+  --meter-mid: var(--brass);
+  --meter-high: #ed8d77;
+  --on-accent: var(--text-inverse);
+  --on-play: var(--text-inverse);
+  --on-record: #fff;
+  --on-brass: var(--text-inverse);
+  --on-track-color: #202821;
+}
+:root[data-theme-mode="light"] { color-scheme: light; }
+:root[data-theme-mode="dark"] { color-scheme: dark; }

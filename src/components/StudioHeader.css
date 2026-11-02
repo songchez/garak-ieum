@@ -32,6 +32,10 @@
 }
 
 .app-header .brand { height: 28px; }
+:root:not([data-theme="dawn-hanok"]) .app-header::after {
+  background-color: var(--giwa);
+  background-blend-mode: luminosity;
+}
 .header-project { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .header-divider { width: 1px; height: 18px; background: var(--ink-22); flex-shrink: 0; }
 .project-identity { display: flex; flex-direction: column; align-items: flex-start; flex: 1; min-width: 0; max-width: 240px; }
@@ -47,9 +51,9 @@
 }
 .project-identity input:focus { background: var(--surface-overlay); border-radius: 3px; }
 .save-indicator { display: flex; align-items: center; gap: 4px; padding-left: 2px; height: 12px; flex-shrink: 0; color:var(--text-muted); font-size: 9px; line-height: 1; white-space: nowrap; }
-.save-indicator i { height: 5px; width: 5px; border-radius: 50%; background: #91bda6; }
-.save-indicator.saving i, .save-indicator.loading i { background: #c7ae76; }
-.save-indicator.error i { background: #e88f85; }
+.save-indicator i { height: 5px; width: 5px; border-radius: 50%; background: var(--success); }
+.save-indicator.saving i, .save-indicator.loading i { background: var(--loop-fill); }
+.save-indicator.error i { background: var(--danger); }
 .header-actions { justify-self: end; display: flex; gap: 6px; align-items: center; }
 .header-text { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 28px; padding: 0 4px; border-radius: 5px; font-size: 11px; white-space: nowrap; color:var(--text-muted); }
 .header-text:hover { color:var(--text-primary); background: var(--ink-21); }
@@ -89,8 +93,8 @@
 .play-button.playing svg { fill: none; stroke-width: 3; }
 .stop-button svg { fill: currentColor; stroke: none; }
 .record-button { width: 28px; height: 28px; display: grid; place-items: center; }
-.record-button i { width: 11px; height: 11px; border-radius: 50%; background: #be746c; box-shadow: 0 0 0 3px #be746c12; }
-.record-button:hover i { background: #eb978e; }
+.record-button i { width: 11px; height: 11px; border-radius: 50%; background: var(--record); box-shadow: 0 0 0 3px color-mix(in srgb,var(--record) 7%,transparent); }
+.record-button:hover i { background: var(--danger); }
 .record-button.recording i { background: var(--record); animation: record-pulse 1s infinite; }
 .loop-toggle.active { color: var(--brass); background: var(--brass-soft); }
 .time-display { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 104px; flex-shrink: 0; font-family: "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; }

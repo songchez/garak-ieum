@@ -28,6 +28,19 @@ export function hexToRgb(hex: string): [number, number, number] | null {
   return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)]
 }
 
+/** Readable text for a user-owned track color; whiteMix matches an sRGB color-mix with white. */
+export function contrastTextColor(hex: string, whiteMix = 0): string {
+  const rgb = hexToRgb(hex)
+  if (!rgb) return 'var(--on-track-color)'
+  const mix = Math.max(0, Math.min(1, whiteMix))
+  const linear = rgb.map(value => {
+    const channel = (value * (1 - mix) + 255 * mix) / 255
+    return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4
+  })
+  const luminance = .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2]
+  return (luminance + .05) / .05 >= 1.05 / (luminance + .05) ? '#000' : '#fff'
+}
+
 const normalizeHex = (hex: string): string | null => { const rgb = hexToRgb(hex); return rgb ? rgbToHex(rgb) : null }
 
 export function rgbToHsl([r, g, b]: readonly [number, number, number]): [number, number, number] {
