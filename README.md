@@ -26,6 +26,7 @@
 | 프로젝트 보관 | IndexedDB 자동 저장·다시 열기, 원본 오디오를 포함한 `.garak` 파일 내보내기·가져오기 |
 | 결과물 | 전체 편곡을 스테레오 16-bit PCM WAV로 내보내기 |
 | 편집 이력 | 세션 안에서 프로젝트 편집의 실행 취소·다시 실행 |
+| AI 연결 | 로컬 MCP 클라이언트에서 프로젝트·선택·악기 조회, 트랙·리전·믹싱 19개 명령, 편집 미리 보기·일괄 적용·Undo. 로고 메뉴의 **AI 연결**에서 명시적으로 연결 |
 
 현재 엔진은 Web Audio의 기본 오디오 노드를 사용하는 `WebAudioEngine`입니다. openDAW, Tracktion Engine, JUCE를 통합한 상태가 아니며, AudioWorklet·WASM 엔진이나 네이티브 VST 호스트도 아직 포함하지 않습니다. 구현 위치와 데이터 흐름은 [아키텍처 문서](docs/ARCHITECTURE.md)에 정리했습니다.
 
@@ -62,6 +63,15 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
+Windows PowerShell에서 pnpm이 설치되어 있지 않다면 아래 명령을 차례로 실행합니다. **첫 설치가 성공한 뒤** 개발 서버를 실행합니다.
+
+```powershell
+npx.cmd --yes pnpm@11.25.0 install --frozen-lockfile
+npx.cmd --yes pnpm@11.25.0 dev
+```
+
+`npm i`에서 `Unsupported URL Type "workspace:"`가 발생하거나 설치 중단 뒤 `lucide-react`를 찾지 못하면, 실행 중인 서버를 Ctrl+C로 멈추고 위 pnpm 설치를 완료한 뒤 다시 시작합니다. 이 저장소의 의존성과 잠금 파일은 pnpm으로 관리합니다.
+
 터미널에 표시되는 로컬 주소를 브라우저에서 엽니다. 기본 개발 서버 포트가 사용 중이면 Vite가 다른 포트를 사용할 수 있으므로 실제 출력 주소를 확인합니다.
 
 ```bash
@@ -71,6 +81,14 @@ pnpm preview
 ```
 
 `build`는 TypeScript 검사 후 `dist/`에 웹 배포 파일을 만듭니다. `test`는 Vitest를 실행합니다. `dev`, `test`, `build`, `preview`는 모두 package.json의 스크립트이므로 의존성을 설치한 뒤 `npm run dev` 같은 방식으로도 실행할 수 있습니다. 의존성 설치와 잠금 파일 관리는 저장소의 pnpm 설정을 기준으로 합니다.
+
+## AI와 연결하기
+
+MCP 첫 구현은 **같은 컴퓨터의 로컬 MCP 클라이언트와 브라우저 작업실**을 연결합니다. `pnpm mcp:build`로 Node 서버를 빌드하고 연결 키를 생성한 뒤, MCP 클라이언트가 서버를 실행하도록 등록합니다. 앱의 **로고 → AI 연결**에서 같은 키를 입력하면 현재 열린 프로젝트가 연결됩니다. **AI 편집 허용**을 끄면 조회와 미리 보기만 가능합니다.
+
+AI는 실제 트랙 ID와 revision을 읽고, 볼륨을 dB로 조절하거나 음표로 된 MIDI 초안을 만들고, 변경 묶음을 Undo 한 번으로 되돌릴 수 있습니다. 지원 도구·명령·PowerShell 설치·클라이언트 설정·재시도 규칙은 [MCP 연결 안내](docs/MCP.md)에 있습니다. 현재 브라우저 Origin은 localhost/127.0.0.1의 5173·4173 포트만 허용합니다.
+
+모든 화면 기능의 MCP 노출은 아직 완료되지 않았습니다. 재생·녹음·오디오 장치 변경, 음원 분석·청음·렌더 작업, 작곡 코드 실행은 이번 도구에 포함하지 않습니다. 코드 작곡 후보는 별도 [비교 실험](docs/COMPOSITION_LANGUAGE_POC.md)과 [재현 스크립트](scripts/composition-poc/run-isolated.sh)에서 검증했으며, 두 후보를 앱 의존성에 추가하지 않았습니다.
 
 ## 처음 사용하기
 

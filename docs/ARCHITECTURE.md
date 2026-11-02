@@ -4,11 +4,14 @@
 
 ## 1. 현재 실행 구조
 
-React는 프로젝트 편집과 화면을 담당합니다. `WebAudioEngine`은 React 컴포넌트의 재렌더링 수명 주기 밖에서 유지되는 서비스이며, 브라우저의 `AudioContext`와 오디오 그래프를 소유합니다. 프로젝트 저장과 원본 음원 보관은 별도 저장 모듈이 담당합니다.
+React는 편집 화면을 담당하며 `ProjectSession`의 프로젝트·이력을 구독합니다. 화면 조작과 MCP 편집이 같은 세션을 변경합니다. `WebAudioEngine`은 React 컴포넌트의 재렌더링 수명 주기 밖에서 유지되는 서비스이며, 브라우저의 `AudioContext`와 오디오 그래프를 소유합니다. 프로젝트 저장과 원본 음원 보관은 별도 저장 모듈이 담당합니다.
 
 ```mermaid
 flowchart TD
-  UI["React 편집 화면"] --> P["Project 편집 상태"]
+  UI["React 편집 화면"] --> P["ProjectSession · 편집/이력"]
+  AI["로컬 MCP 클라이언트"] --> M["Node MCP 서버"]
+  M --> H["브라우저 명령 호스트"]
+  H --> P
   P --> E["WebAudioEngine"]
   P --> S["IndexedDB / .garak"]
   A["원본 오디오 Blob"] --> S
@@ -19,13 +22,16 @@ flowchart TD
   G --> O["OfflineAudioContext WAV 출력"]
 ```
 
-오디오 계산을 서버로 보내지 않습니다. 웹 파일을 호스팅하더라도 각 사용자의 브라우저가 재생·렌더링을 수행합니다. 백엔드 서비스, 계정, 클라우드 저장소는 현재 구성에 없습니다.
+오디오 계산을 서버로 보내지 않습니다. 웹 파일을 호스팅하더라도 각 사용자의 브라우저가 재생·렌더링을 수행합니다. 선택적으로 실행하는 로컬 MCP 프로세스는 명령과 결과를 전달하며 오디오 엔진을 소유하지 않습니다. 계정·클라우드 저장 백엔드는 현재 구성에 없습니다.
 
 ## 2. 모듈 지도
 
 | 파일 | 책임 |
 | --- | --- |
-| [`src/App.tsx`](../src/App.tsx) | 프로젝트 편집 상태·Undo/Redo, 선택 상태, 자동 저장 연결, 가져오기·내보내기, 마이크 녹음 UI, 전역 단축키 |
+| [`src/App.tsx`](../src/App.tsx) | 공통 세션 구독, 선택 상태, 자동 저장·엔진 연결, 가져오기·내보내기, 마이크 녹음 UI, 전역 단축키 |
+| [`src/core/ProjectSession.ts`](../src/core/ProjectSession.ts), [`src/core/commands.ts`](../src/core/commands.ts) | 프로젝트·Undo/Redo·revision, 명령 계약과 검증, 미리 보기·원자적 적용·재시도 중복 방지 |
+| [`src/automation/host.ts`](../src/automation/host.ts), [`src/automation/bridgeClient.ts`](../src/automation/bridgeClient.ts) | 범위를 제한한 상태 조회, 편집 허용·작업 중 보호, 명시적인 브리지 연결과 취소·만료 처리 |
+| [`mcp/server.ts`](../mcp/server.ts), [`mcp/tools.ts`](../mcp/tools.ts), [`mcp/bridgeServer.ts`](../mcp/bridgeServer.ts) | 공식 SDK stdio 도구, loopback WebSocket 라우팅·인증, 실제 브라우저 응답 대기 |
 | [`src/core/types.ts`](../src/core/types.ts) | Project·Track·Clip·MidiNote·AudioAsset 및 AudioEngine 계약 |
 | [`src/core/project.ts`](../src/core/project.ts) | 새 프로젝트·트랙, 오리지널 데모, 클립 복제·분할, 외부 프로젝트 유효성 검사 |
 | [`src/core/audioSettings.ts`](../src/core/audioSettings.ts) | 프로젝트 레이트 허용값·기본값, 앱 오디오 설정의 정규화·로컬 저장, 입력 제약 요청과 실제 상태 타입 |
@@ -67,7 +73,9 @@ flowchart TD
 
 오디오 클립 분할은 원본 파일을 수정하지 않고 새 클립의 시작 위치·길이·원본 오프셋을 계산합니다. MIDI 클립 분할은 클립 경계를 가로지르는 노트를 나누고 오른쪽 노트의 시작 위치를 새 클립 기준으로 다시 계산합니다.
 
-Undo/Redo는 `App`의 프로젝트 스냅숏 이력으로 처리합니다. 일반 편집 시 과거 스냅숏을 최대 50개 수준으로 유지하고, 같은 조절기의 연속 입력은 짧은 시간 창에서 합칩니다. 피아노롤과 타임라인의 포인터 이동은 임시 화면 상태로 표시한 뒤 드래그 종료 시 프로젝트에 반영합니다. 이력은 현재 앱 세션의 메모리에 있으며 `.garak`이나 IndexedDB에 함께 저장하지 않습니다.
+Undo/Redo는 `ProjectSession`의 프로젝트 스냅숏 이력으로 처리합니다. 일반 편집 시 과거 스냅숏을 최대 50개 유지하고, 같은 조절기의 연속 입력은 450ms 안에서 합칩니다. 피아노롤과 타임라인의 포인터 이동은 임시 화면 상태로 표시한 뒤 드래그 종료 시 프로젝트에 반영합니다. 이력은 현재 앱 세션의 메모리에 있으며 `.garak`이나 IndexedDB에 함께 저장하지 않습니다.
+
+MCP 편집은 `projectId`·`expectedRevision`·`operationId`와 명시적인 명령 배열을 받습니다. 모든 명령을 검증한 뒤 Undo 하나로 적용하고, UI 입력과 병합하지 않습니다. 성공 요청은 최근 256개를 세션 안에서 기억하며 동일 요청 재시도는 원래 결과를 반환합니다. 프로젝트를 다시 열면 캐시를 비우고 revision을 증가시킵니다. 조회 결과의 revision과 원래 요청 결과의 revision을 구분하고, 저장 완료는 별도 `persistence`로 확인합니다. 자세한 수명·범위는 [MCP 연결 안내](MCP.md)에 있습니다.
 
 프로젝트 샘플레이트의 명시적 변경도 프로젝트 이력에 포함합니다. 레이트를 바꾸는 Undo/Redo는 녹음·녹음 준비 중 차단합니다. 입력/출력 장치 ID·지연 요청·모니터링·수동 녹음 보정 등의 앱 환경은 `localStorage`의 `garak-ieum:audio-settings:v1`에 별도로 보관하며 프로젝트 파일·편집 이력에 넣지 않습니다.
 
