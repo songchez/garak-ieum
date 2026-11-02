@@ -6,7 +6,7 @@ const point=(c:number,r:number,deg:number)=>{const a=deg*Math.PI/180;return [c+r
 function arc(c:number,r:number,from:number,to:number){if(Math.abs(to-from)<.01)return '';const [a,b]=from<to?[from,to]:[to,from];const [x1,y1]=point(c,r,a),[x2,y2]=point(c,r,b);return `M${x1.toFixed(2)} ${y1.toFixed(2)}A${r} ${r} 0 ${b-a>180?1:0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`}
 const angleOf=(n:number)=>-SWEEP+n*SWEEP*2
 
-export function Knob({def,value,onChange,color='var(--seokganju-60)',size=38}:{def:ParamDef;value:number;onChange:(v:number)=>void;color?:string;size?:number}){
+export function Knob({def,value,onChange,color='var(--accent)',size=38}:{def:ParamDef;value:number;onChange:(v:number)=>void;color?:string;size?:number}){
   const ref=useRef<HTMLDivElement>(null)
   const latest=useRef({def,value,onChange})
   latest.current={def,value,onChange}

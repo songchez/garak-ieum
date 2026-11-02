@@ -751,21 +751,21 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
 
   const hasSelection = selectedIds.size > 0 && selectedNotes.length > 0
   const menuItems: ContextMenuItem[] = [
-    { label: '삭제', shortcut: 'Del', danger: true, disabled: !hasSelection, onSelect: deleteSelected },
-    { label: '복제', shortcut: `${modLabel}D`, disabled: !hasSelection, onSelect: duplicateSelected },
+    { label: '삭제', icon: 'trash', shortcut: 'Del', danger: true, disabled: !hasSelection, onSelect: deleteSelected },
+    { label: '복제', icon: 'copy', shortcut: `${modLabel}D`, disabled: !hasSelection, onSelect: duplicateSelected },
     { type: 'separator' },
-    { label: '잘라내기', shortcut: `${modLabel}X`, disabled: !hasSelection, onSelect: () => { if (copySelected()) deleteSelected() } },
-    { label: '복사', shortcut: `${modLabel}C`, disabled: !hasSelection, onSelect: copySelected },
-    { label: '붙여넣기', shortcut: `${modLabel}V`, disabled: !noteClipboard.length, onSelect: () => paste(menu?.kind === 'grid' ? menu.beat : undefined) },
+    { label: '잘라내기', icon: 'scissors', shortcut: `${modLabel}X`, disabled: !hasSelection, onSelect: () => { if (copySelected()) deleteSelected() } },
+    { label: '복사', icon: 'copy', shortcut: `${modLabel}C`, disabled: !hasSelection, onSelect: copySelected },
+    { label: '붙여넣기', icon: 'paste', shortcut: `${modLabel}V`, disabled: !noteClipboard.length, onSelect: () => paste(menu?.kind === 'grid' ? menu.beat : undefined) },
     { type: 'separator' },
-    { label: hasSelection ? '퀀타이즈' : '모두 퀀타이즈', shortcut: 'Q', disabled: !clip.notes.length, onSelect: () => quantize(false) },
-    { label: '벨로시티', disabled: !hasSelection, items: [100, 75, 50, 25].map(percent => ({ label: `${percent}%`, checked: hasSelection && selectedNotes.every(note => Math.abs(note.velocity - percent / 100) < 0.005), onSelect: () => setSelectionVelocity(percent / 100) })) },
+    { label: hasSelection ? '퀀타이즈' : '모두 퀀타이즈', icon: 'grid', shortcut: 'Q', disabled: !clip.notes.length, onSelect: () => quantize(false) },
+    { label: '벨로시티', icon: 'volume', disabled: !hasSelection, items: [100, 75, 50, 25].map(percent => ({ label: `${percent}%`, checked: hasSelection && selectedNotes.every(note => Math.abs(note.velocity - percent / 100) < 0.005), onSelect: () => setSelectionVelocity(percent / 100) })) },
     ...(drumMode ? [] : [
-      { label: '옥타브 ↑', shortcut: `${altLabel}⇧↑`, disabled: !hasSelection, onSelect: () => transposeSelected(1, true) },
-      { label: '옥타브 ↓', shortcut: `${altLabel}⇧↓`, disabled: !hasSelection, onSelect: () => transposeSelected(-1, true) },
+      { label: '옥타브 ↑', icon: 'arrowsV', shortcut: `${altLabel}⇧↑`, disabled: !hasSelection, onSelect: () => transposeSelected(1, true) },
+      { label: '옥타브 ↓', icon: 'arrowsV', shortcut: `${altLabel}⇧↓`, disabled: !hasSelection, onSelect: () => transposeSelected(-1, true) },
     ]),
     { type: 'separator' },
-    { label: '모두 선택', shortcut: `${modLabel}A`, disabled: !clip.notes.length, onSelect: selectAll },
+    { label: '모두 선택', icon: 'select-all', shortcut: `${modLabel}A`, disabled: !clip.notes.length, onSelect: selectAll },
   ]
 
   const visualStep = snap || 0.25

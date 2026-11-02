@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AudioEngine, SampleStatus, Track } from '../core/types'
 import type { ArmState } from '../core/trackActions'
 import type { TrackHeaderConfig } from '../core/trackUi'
-import { categoryIcon, instrumentDef } from '../core/instruments'
+import { instrumentDef } from '../core/instruments'
 import { shortcutPlatform } from '../core/input'
 import { Icon } from './Icon'
 import { TrackButtons, type TrackButtonKind, type TrackButtonMods } from './TrackButtons'
@@ -15,7 +15,7 @@ const MOD = MAC ? '⌘' : 'Ctrl+'
 
 /** Rows that fit: 0 = name + M/S on one line, 1 = name over buttons, 2 = + volume, 3 = + pan. */
 export const headerTier = (height: number) => height < 44 ? 0 : height < 72 ? 1 : height < 96 ? 2 : 3
-export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : categoryIcon(instrumentDef(track.instrument).category))
+export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : instrumentDef(track.instrument).icon)
 const CONTROL = 'button,input,[role="slider"],.track-resize-corner'
 
 export interface TrackHeaderProps {

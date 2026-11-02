@@ -37,8 +37,13 @@ const SAMUL_NAMES: Readonly<Record<number, string>> = {
 const synth = (id: SynthId, name: string, nameKo: string, type: string, category: InstrumentCategory, icon: string, color: string, description: string): InstrumentDef =>
   ({ id, name, nameKo, type, category, kind: 'synth', isKit: id === 'drums', icon, color, description, params: INSTRUMENT_PARAMS[id] })
 
+// Generic instrument-family symbols, not drawings of the individual Korean instruments.
+const SAMPLED_ICONS: Readonly<Record<string, string>> = {
+  samul: 'drum', gayageum: 'strings', haegeum: 'strings', daegeum: 'wind',
+}
+
 const sampled = (id: string, set: string, name: string, nameKo: string, type: string, category: InstrumentCategory, isKit: boolean, color: string, description: string, padNames?: Readonly<Record<number, string>>): InstrumentDef =>
-  ({ id, name, nameKo, type, category, kind: 'sampled', isKit, icon: categoryIcon(category), color, description, set, padNames, params: isKit ? SAMPLED_KIT_PARAMS : SAMPLED_PARAMS })
+  ({ id, name, nameKo, type, category, kind: 'sampled', isKit, icon: SAMPLED_ICONS[id] ?? categoryIcon(category), color, description, set, padNames, params: isKit ? SAMPLED_KIT_PARAMS : SAMPLED_PARAMS })
 
 export function categoryIcon(category: InstrumentCategory): string {
   switch (category) {
@@ -55,7 +60,7 @@ export const INSTRUMENTS: readonly InstrumentDef[] = [
   synth('rhodes', 'Tine EP', '틴 전기 피아노', 'FM TINE PIANO', 'keys', 'keys', '#86a8d8', 'FM 타인으로 만든 전기 피아노'),
   synth('bass', 'Mono Bass', '모노 베이스', 'ANALOG BASS', 'synth', 'synth', '#7fb59a', '낮게 흐르는 아날로그 베이스'),
   synth('drums', 'Pocket Drums', '포켓 드럼', 'DRUM MACHINE', 'synth', 'drum', '#e38457', '킥 · 스네어 · 하이햇 · 퍼커션'),
-  synth('pad', 'Cloud Pad', '클라우드 패드', 'ATMOSPHERIC', 'synth', 'wave', '#8cc7c0', '공간을 채우는 부드러운 패드'),
+  synth('pad', 'Cloud Pad', '클라우드 패드', 'ATMOSPHERIC', 'synth', 'pad', '#8cc7c0', '공간을 채우는 부드러운 패드'),
   synth('pluck', 'Glass Pluck', '글라스 플럭', 'PLUCK SYNTH', 'synth', 'note', '#d98a9f', '반짝이는 짧은 플럭 사운드'),
   sampled('grand', 'salamander', 'Grand Piano', '그랜드 피아노', 'SAMPLED GRAND', 'piano', false, '#d9b45a', '세 단계 세기로 녹음한 콘서트 그랜드'),
   sampled('wurlitzer', 'wurlitzer', 'Wurlitzer EP', '월리처', 'SAMPLED EP', 'keys', false, '#6f9fd0', '따뜻하게 일그러지는 빈티지 전기 피아노'),

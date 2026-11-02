@@ -79,6 +79,13 @@ const clamp=(v:number,min:number,max:number)=>Math.min(max,Math.max(min,v))
 const MAC=shortcutPlatform()==='mac'
 const ALT=MAC?'⌥':'Alt+', MOD=MAC?'⌘':'Ctrl+'
 const SEP:ContextMenuItem={type:'separator'}
+const COMMAND_ICONS:Partial<Record<ProjectShortcut,string>>={
+  undo:'undo',redo:'redo',cut:'scissors',copy:'copy',paste:'paste',deleteClip:'trash',
+  split:'scissors',join:'merge',repeat:'copy',selectAll:'select-all',muteClip:'volume-off',
+  loopClip:'loop',moveToPlayhead:'locate',renameClip:'rename',toggleInspector:'inspector',
+  toggleLibrary:'library',toggleBrowser:'folder',globalTracks:'flag',toggleHideView:'eye-off',
+  zoomFocusedTrack:'fit',
+}
 
 /** Scrolls the timeline while a gesture's pointer rests near an edge. */
 function edgeScroller(scroll:HTMLElement,headerWidth:()=>number,onScroll:()=>void){
@@ -215,7 +222,7 @@ export function Timeline(props:TimelineProps){
 
   function openMenu(e:React.MouseEvent,items:ContextMenuItem[],label:string,trigger?:Element|null){e.preventDefault();e.stopPropagation();cancelGesture.current?.();setMenu({x:e.clientX,y:e.clientY,items,label,trigger})}
   function openMenuAt(x:number,y:number,items:ContextMenuItem[],label:string,trigger?:Element|null){cancelGesture.current?.();setMenu({x,y,items,label,trigger})}
-  const cmd=(label:string,command:ProjectShortcut,extra:Partial<Extract<ContextMenuItem,{label:string}>>={},ctx?:{trackIds?:string[];clipIds?:string[]}):ContextMenuItem=>({label,shortcut:shortcutLabel(command)||undefined,onSelect:()=>latest.current.onCommand(command,ctx),...extra})
+  const cmd=(label:string,command:ProjectShortcut,extra:Partial<Extract<ContextMenuItem,{label:string}>>={},ctx?:{trackIds?:string[];clipIds?:string[]}):ContextMenuItem=>({label,icon:COMMAND_ICONS[command],shortcut:shortcutLabel(command)||undefined,onSelect:()=>latest.current.onCommand(command,ctx),...extra})
   /** Tracks a header action applies to: the whole selection when the clicked track belongs to it. */
   const targetIds=(trackId:string)=>{const sel=latest.current.selectedTrackIds;return sel.has(trackId)?latest.current.project.tracks.filter(t=>sel.has(t.id)).map(t=>t.id):[trackId]}
 
@@ -231,38 +238,38 @@ export function Timeline(props:TimelineProps){
     const unused=project.tracks.filter(t=>!t.clips.length).map(t=>t.id)
     const cfgItem=(key:keyof TrackHeaderConfig,label:string):ContextMenuItem=>({label,checked:ui.headerConfig[key],onSelect:()=>{const cfg=latest.current.ui.headerConfig;latest.current.onUiChange({headerConfig:{...cfg,[key]:!cfg[key]}})}})
     openMenu(e,[
-      {label:n>1?`${n}개 트랙 이름 변경`:'트랙 이름 변경',shortcut:shortcutLabel('renameTrack')||undefined,onSelect:()=>latest.current.onUiChange({renamingTrackId:track.id})},
+      {label:n>1?`${n}개 트랙 이름 변경`:'트랙 이름 변경',icon:'rename',shortcut:shortcutLabel('renameTrack')||undefined,onSelect:()=>latest.current.onUiChange({renamingTrackId:track.id})},
       SEP,
-      {label:'새 오디오 트랙',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:track.id})},
-      {label:'새 소프트웨어 악기 트랙',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:track.id})},
-      {label:'설정을 복제한 새로운 트랙',shortcut:shortcutLabel('duplicateTrack')||undefined,onSelect:()=>latest.current.onDuplicateTracks(ids,'settings')},
-      {label:'설정 및 콘텐츠를 복제한 새로운 트랙',shortcut:shortcutLabel('duplicateTrackContent')||undefined,onSelect:()=>latest.current.onDuplicateTracks(ids,'content')},
+      {label:'새 오디오 트랙',icon:'wave',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:track.id})},
+      {label:'새 소프트웨어 악기 트랙',icon:'keys',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:track.id})},
+      {label:'설정을 복제한 새로운 트랙',icon:'copy',shortcut:shortcutLabel('duplicateTrack')||undefined,onSelect:()=>latest.current.onDuplicateTracks(ids,'settings')},
+      {label:'설정 및 콘텐츠를 복제한 새로운 트랙',icon:'copy',shortcut:shortcutLabel('duplicateTrackContent')||undefined,onSelect:()=>latest.current.onDuplicateTracks(ids,'content')},
       SEP,
-      {label:'트랙 색상 지정…',shortcut:shortcutLabel('colorPalette')||undefined,onSelect:()=>latest.current.onOpenColorPalette(ids,at)},
-      {label:'트랙 아이콘…',onSelect:()=>latest.current.onIconMenu(track.id,at)},
+      {label:'트랙 색상 지정…',icon:'palette',shortcut:shortcutLabel('colorPalette')||undefined,onSelect:()=>latest.current.onOpenColorPalette(ids,at)},
+      {label:'트랙 아이콘…',icon:'note',onSelect:()=>latest.current.onIconMenu(track.id,at)},
       SEP,
-      {label:n>1?`트랙 ${n}개 삭제`:'트랙 삭제',shortcut:shortcutLabel('deleteTrack')||undefined,danger:true,onSelect:()=>latest.current.onDeleteTracks(ids)},
-      ...(unused.length?[{label:'사용하지 않는 트랙 삭제',onSelect:()=>latest.current.onDeleteTracks(unused)} as ContextMenuItem]:[]),
+      {label:n>1?`트랙 ${n}개 삭제`:'트랙 삭제',icon:'trash',shortcut:shortcutLabel('deleteTrack')||undefined,danger:true,onSelect:()=>latest.current.onDeleteTracks(ids)},
+      ...(unused.length?[{label:'사용하지 않는 트랙 삭제',icon:'trash',onSelect:()=>latest.current.onDeleteTracks(unused)} as ContextMenuItem]:[]),
       SEP,
-      {label:'선택한 트랙 가리기',shortcut:shortcutLabel('hideSelectedTracks')||undefined,onSelect:()=>latest.current.onCommand('hideSelectedTracks',{trackIds:ids})},
-      {label:'보기 가리기 토글',shortcut:shortcutLabel('toggleHideView')||undefined,checked:ui.hideView,onSelect:()=>latest.current.onUiChange({hideView:!latest.current.ui.hideView})},
-      {label:'트랙 가리기 모두 해제',shortcut:shortcutLabel('unhideAllTracks')||undefined,disabled:!project.tracks.some(t=>t.hidden),onSelect:()=>latest.current.onCommand('unhideAllTracks')},
+      {label:'선택한 트랙 가리기',icon:'eye-off',shortcut:shortcutLabel('hideSelectedTracks')||undefined,onSelect:()=>latest.current.onCommand('hideSelectedTracks',{trackIds:ids})},
+      {label:'보기 가리기 토글',icon:'eye-off',shortcut:shortcutLabel('toggleHideView')||undefined,checked:ui.hideView,onSelect:()=>latest.current.onUiChange({hideView:!latest.current.ui.hideView})},
+      {label:'트랙 가리기 모두 해제',icon:'eye',shortcut:shortcutLabel('unhideAllTracks')||undefined,disabled:!project.tracks.some(t=>t.hidden),onSelect:()=>latest.current.onCommand('unhideAllTracks')},
       SEP,
-      {label:'트랙 헤더 구성 요소',items:[cfgItem('mute','음소거'),cfgItem('solo','솔로'),cfgItem('record','녹음 가능'),cfgItem('monitor','입력 모니터링'),cfgItem('onOff','켬/끔'),cfgItem('hide','가리기'),SEP,cfgItem('volume','볼륨'),cfgItem('pan','팬'),SEP,cfgItem('trackNumber','트랙 번호'),cfgItem('colorBar','색상 막대'),cfgItem('icon','트랙 아이콘')]},
-      {label:'트랙 헤더 구성…',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>latest.current.onConfigureHeader(at)},
+      {label:'트랙 헤더 구성 요소',icon:'inspector',items:[cfgItem('mute','음소거'),cfgItem('solo','솔로'),cfgItem('record','녹음 가능'),cfgItem('monitor','입력 모니터링'),cfgItem('onOff','켬/끔'),cfgItem('hide','가리기'),SEP,cfgItem('volume','볼륨'),cfgItem('pan','팬'),SEP,cfgItem('trackNumber','트랙 번호'),cfgItem('colorBar','색상 막대'),cfgItem('icon','트랙 아이콘')]},
+      {label:'트랙 헤더 구성…',icon:'inspector',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>latest.current.onConfigureHeader(at)},
     ],'트랙 메뉴')
   }
   function laneMenu(e:React.MouseEvent,track:Track){
     const bar=Math.floor(laneBeat(e.currentTarget,e.clientX)/4)*4
     if(!selectedTrackIds.has(track.id))props.onTrackClick(track.id,{...plainMods,trackOnly:true})
-    openMenu(e,[cmd('붙여넣기','paste',{},{trackIds:[track.id]}),SEP,track.kind==='audio'?{label:'오디오 가져오기…',onSelect:()=>latest.current.onAddClip(track.id,bar)}:{label:'MIDI 클립 만들기',onSelect:()=>latest.current.onAddClip(track.id,bar)},SEP,{label:'새 트랙…',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:track.id})}],'레인 메뉴')
+    openMenu(e,[cmd('붙여넣기','paste',{},{trackIds:[track.id]}),SEP,track.kind==='audio'?{label:'오디오 가져오기…',icon:'upload',onSelect:()=>latest.current.onAddClip(track.id,bar)}:{label:'MIDI 클립 만들기',icon:'region',onSelect:()=>latest.current.onAddClip(track.id,bar)},SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:track.id})}],'레인 메뉴')
   }
   function emptyAreaMenu(e:React.MouseEvent){
-    openMenu(e,[{label:'새 오디오 트랙',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:null})},{label:'새 소프트웨어 악기 트랙',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:null})},SEP,{label:'새 트랙…',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:null})}],'트랙 추가 메뉴')
+    openMenu(e,[{label:'새 오디오 트랙',icon:'wave',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:null})},{label:'새 소프트웨어 악기 트랙',icon:'keys',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:null})},SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:null})}],'트랙 추가 메뉴')
   }
   function markerMenu(e:React.MouseEvent,marker:Marker){
     setMarkerState({selected:marker.id,renaming:null})
-    openMenu(e,[{label:'마커 이름 변경',onSelect:()=>setMarkerState({selected:marker.id,renaming:marker.id})},{label:'재생 위치로 이동',onSelect:()=>latest.current.onSeek(marker.startBeat)},SEP,{label:'마커 삭제',danger:true,onSelect:()=>latest.current.onMarker('delete',{id:marker.id})}],'마커 메뉴')
+    openMenu(e,[{label:'마커 이름 변경',icon:'rename',onSelect:()=>setMarkerState({selected:marker.id,renaming:marker.id})},{label:'재생 위치로 이동',icon:'locate',onSelect:()=>latest.current.onSeek(marker.startBeat)},SEP,{label:'마커 삭제',icon:'trash',danger:true,onSelect:()=>latest.current.onMarker('delete',{id:marker.id})}],'마커 메뉴')
   }
 
   // Menu bar popups (Logic: 편집 · 기능 · 보기 · Catch · Snap · Drag)
@@ -274,7 +281,7 @@ export function Timeline(props:TimelineProps){
   const editMenu=():ContextMenuItem[]=>[cmd('실행 취소','undo'),cmd('다시 실행','redo'),SEP,cmd('잘라내기','cut',{},selCtx()),cmd('복사','copy',{},selCtx()),cmd('붙여넣기','paste',{},selCtx()),cmd('삭제','deleteClip',{},selCtx()),SEP,cmd('재생 위치에서 분할','split',{},selCtx()),cmd('합치기','join',{disabled:selectedClipIds.size<2},selCtx()),cmd('반복','repeat',{},selCtx()),SEP,cmd('모두 선택','selectAll')]
   const functionsMenu=():ContextMenuItem[]=>[cmd('리전 뮤트','muteClip',{disabled:!selectedClipIds.size},selCtx()),cmd('루프','loopClip',{disabled:!selectedClipIds.size},selCtx()),cmd('재생 위치로 이동','moveToPlayhead',{disabled:!selectedClipIds.size},selCtx()),cmd('이름 변경','renameClip',{disabled:!selectedClipIds.size},selCtx())]
   const uiToggle=(label:string,key:'globalTracks'|'hideView'|'scrollInPlay'|'gridLines'|'zoomFocused'|'catch',command?:ProjectShortcut):ContextMenuItem=>({label,checked:ui[key],shortcut:command?shortcutLabel(command)||undefined:undefined,onSelect:()=>latest.current.onUiChange({[key]:!latest.current.ui[key]} as Partial<TimelineUi>)})
-  const viewMenu=():ContextMenuItem[]=>[cmd('인스펙터 보기','toggleInspector'),cmd('라이브러리 보기','toggleLibrary'),cmd('브라우저 보기','toggleBrowser'),SEP,uiToggle('글로벌 트랙 보기','globalTracks','globalTracks'),uiToggle('보기 가리기 토글','hideView','toggleHideView'),{label:'트랙 헤더 구성…',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>{const b=document.querySelector('.tracks-menubar [data-menu="view"]')?.getBoundingClientRect();latest.current.onConfigureHeader({x:b?.left??0,y:b?.bottom??0})}},SEP,uiToggle('재생 중 스크롤','scrollInPlay'),uiToggle('그리드 선','gridLines'),uiToggle('포커스된 트랙 확대/축소','zoomFocused','zoomFocusedTrack')]
+  const viewMenu=():ContextMenuItem[]=>[cmd('인스펙터 보기','toggleInspector'),cmd('라이브러리 보기','toggleLibrary'),cmd('브라우저 보기','toggleBrowser'),SEP,uiToggle('글로벌 트랙 보기','globalTracks','globalTracks'),uiToggle('보기 가리기 토글','hideView','toggleHideView'),{label:'트랙 헤더 구성…',icon:'inspector',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>{const b=document.querySelector('.tracks-menubar [data-menu="view"]')?.getBoundingClientRect();latest.current.onConfigureHeader({x:b?.left??0,y:b?.bottom??0})}},SEP,uiToggle('재생 중 스크롤','scrollInPlay'),uiToggle('그리드 선','gridLines'),uiToggle('포커스된 트랙 확대/축소','zoomFocused','zoomFocusedTrack')]
   const snapMenu=():ContextMenuItem[]=>{
     const set=(patch:Partial<TimelineUi['snap']>)=>latest.current.onUiChange({snap:{...latest.current.ui.snap,...patch}})
     const modes:SnapMode[]=['smart','bar','beat','division','ticks']
@@ -551,7 +558,7 @@ export function Timeline(props:TimelineProps){
         <button type="button" className="menubar-button" data-menu="functions" aria-haspopup="menu" aria-expanded={menu?.label==='기능'} onClick={e=>barMenu(e,functionsMenu(),'기능')}>기능 <Icon name="chevron" size={10}/></button>
         <button type="button" className="menubar-button" data-menu="view" aria-haspopup="menu" aria-expanded={menu?.label==='보기'} onClick={e=>barMenu(e,viewMenu(),'보기')}>보기 <Icon name="chevron" size={10}/></button>
         <span className="menubar-divider"/>
-        <button type="button" className={`icon-button small follow-toggle catch-toggle ${ui.catch?'active':''}`} aria-pressed={ui.catch} onClick={e=>{props.onUiChange({catch:!ui.catch});if(e.detail)e.currentTarget.blur()}} title={`Catch · 재생 위치 따라가기${ui.scrollInPlay?' (재생 중 스크롤)':''}`} aria-label="재생 위치 따라가기"><Icon name="right" size={14}/></button>
+        <button type="button" className={`icon-button small follow-toggle catch-toggle ${ui.catch?'active':''}`} aria-pressed={ui.catch} onClick={e=>{props.onUiChange({catch:!ui.catch});if(e.detail)e.currentTarget.blur()}} title={`Catch · 재생 위치 따라가기${ui.scrollInPlay?' (재생 중 스크롤)':''}`} aria-label="재생 위치 따라가기"><Icon name="locate" size={14}/></button>
         <span className="menubar-divider"/>
         <button type="button" className={`menubar-button menubar-popup ${ui.snap.on?'':'off'}`} data-menu="snap" aria-haspopup="menu" aria-expanded={menu?.label==='스냅'} onClick={e=>barMenu(e,snapMenu(),'스냅')} title={`스냅 · ${ui.snap.on?SNAP_MODE_LABELS[ui.snap.mode]:'끔'} · ${ui.snap.relative?'상대값':'절대값'}`}><small>Snap:</small> {ui.snap.on?SNAP_MODE_LABELS[ui.snap.mode]:'끔'} <Icon name="chevron" size={10}/></button>
         <button type="button" className="menubar-button menubar-popup" data-menu="drag" aria-haspopup="menu" aria-expanded={menu?.label==='드래그'} onClick={e=>barMenu(e,dragMenu(),'드래그')} title="드래그 모드"><small>Drag:</small> {DRAG_MODE_LABELS[ui.dragMode]} <Icon name="chevron" size={10}/></button>

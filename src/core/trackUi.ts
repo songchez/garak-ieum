@@ -8,6 +8,13 @@ export const SNAP_MODE_LABELS: Readonly<Record<SnapMode, string>> = { smart: '�
 export const DRAG_MODES: readonly DragMode[] = ['overlap', 'noOverlap']
 export const DRAG_MODE_LABELS: Readonly<Record<DragMode, string>> = { overlap: '겹침', noOverlap: '겹치지 않음' }
 
+/** Stable icon keys used by the track picker and saved projects. */
+export const TRACK_ICON_OPTIONS: readonly (readonly [name: string, label: string])[] = [
+  ['keys', '건반'], ['synth', '신스'], ['guitar', '기타'], ['strings', '현악'],
+  ['wind', '관악'], ['drum', '드럼 · 타악'], ['pad', '패드'], ['note', '음표'],
+  ['mic', '마이크'], ['vocal', '보컬'], ['wave', '오디오 파형'], ['audio', '오디오 파일'],
+]
+
 export interface SnapState { on: boolean; mode: SnapMode; relative: boolean }
 export interface InspectorSections { region: boolean; track: boolean; strips: boolean }
 

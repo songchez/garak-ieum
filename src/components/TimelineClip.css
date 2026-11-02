@@ -1,5 +1,5 @@
 /* Region display (Logic §5 / LOGIC_GAP §1.11). Selectors are prefixed with .track-lane to outrank the legacy .timeline-clip rules in styles.css. */
-.track-lane .timeline-clip{--clip-gray:#6b6b6b;background:color-mix(in srgb,var(--clip-color) 26%,var(--ink-12));border:1px solid color-mix(in srgb,var(--clip-color) 42%,var(--ink-12));color:var(--clip-color)}
+.track-lane .timeline-clip{--clip-gray:#6b6b6b;background:color-mix(in srgb,var(--clip-color) 26%,var(--surface-canvas));border:1px solid color-mix(in srgb,var(--clip-color) 42%,var(--surface-canvas));color:var(--clip-color)}
 .track-lane .timeline-clip .clip-title{position:relative;gap:4px}
 .track-lane .timeline-clip .clip-title>span:first-of-type{overflow:hidden;text-overflow:ellipsis;padding-right:12px}
 .track-lane .timeline-clip .clip-preview{color:var(--clip-color)}
@@ -10,7 +10,7 @@
 .track-lane .timeline-clip.clip-selected .clip-preview{color:#1d1b17;opacity:.75}
 
 /* Muted region = gray body and name, dot before the name (V-04) */
-.track-lane .timeline-clip.clip-muted{opacity:1;filter:none;background:color-mix(in srgb,var(--clip-gray) 30%,var(--ink-12));border-color:color-mix(in srgb,var(--clip-gray) 45%,var(--ink-12));color:#8d8d8d}
+.track-lane .timeline-clip.clip-muted{opacity:1;filter:none;background:color-mix(in srgb,var(--clip-gray) 30%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 45%,var(--surface-canvas));color:#8d8d8d}
 .track-lane .timeline-clip.clip-muted .clip-title,.track-lane .timeline-clip.clip-muted .clip-preview{color:#8d8d8d}
 .track-lane .timeline-clip.clip-muted .clip-title>span:first-of-type{text-decoration:none}
 .track-lane .timeline-clip.clip-muted.clip-selected{background:color-mix(in srgb,var(--clip-gray) 75%,#fff);border-color:#bdbdbd;color:#1d1b17}
@@ -18,9 +18,9 @@
 .clip-mute-dot{flex-shrink:0;width:4px;height:4px;border-radius:50%;background:currentColor}
 
 /* Track silenced by mute/solo = gray body, name keeps the track color; track off = everything gray (V-05) */
-.track-silent .track-lane .timeline-clip:not(.clip-selected){background:color-mix(in srgb,var(--clip-gray) 28%,var(--ink-12));border-color:color-mix(in srgb,var(--clip-gray) 40%,var(--ink-12))}
+.track-silent .track-lane .timeline-clip:not(.clip-selected){background:color-mix(in srgb,var(--clip-gray) 28%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 40%,var(--surface-canvas))}
 .track-silent .track-lane .timeline-clip:not(.clip-selected) .clip-preview{color:#8d8d8d}
-.track-off .track-lane .timeline-clip:not(.clip-selected){background:color-mix(in srgb,var(--clip-gray) 24%,var(--ink-12));border-color:color-mix(in srgb,var(--clip-gray) 36%,var(--ink-12));color:#7f7f7f}
+.track-off .track-lane .timeline-clip:not(.clip-selected){background:color-mix(in srgb,var(--clip-gray) 24%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 36%,var(--surface-canvas));color:#7f7f7f}
 .track-off .track-lane .timeline-clip:not(.clip-selected) .clip-title,.track-off .track-lane .timeline-clip:not(.clip-selected) .clip-preview{color:#7f7f7f}
 .track-silent .track-lane .timeline-clip.clip-selected,.track-off .track-lane .timeline-clip.clip-selected{background:color-mix(in srgb,var(--clip-gray) 75%,#fff);border-color:#bdbdbd;box-shadow:0 0 0 1px #8d8d8d66,0 1px 3px #0005}
 .track-hidden .track-lane .timeline-clip,.track-hidden .track-lane .clip-loop-ghost{opacity:.55}
@@ -30,9 +30,9 @@
 .timeline-clip:hover .clip-loop-handle{background:color-mix(in srgb,currentColor 18%,transparent);opacity:1}
 .timeline-clip.clip-looped .clip-loop-handle{opacity:1}
 .timeline-clip.clip-looped::after{content:"";position:absolute;right:-1px;top:0;bottom:0;width:3px;background:repeating-linear-gradient(to bottom,transparent 0 4px,color-mix(in srgb,currentColor 60%,transparent) 4px 6px);pointer-events:none}
-.clip-loop-ghost{--loop-color:var(--clip-color);--loop-text:var(--clip-color);--loop-preview:var(--clip-color);position:absolute;top:7px;height:calc(var(--row-h) - 15px);border-radius:4px;box-sizing:border-box;overflow:hidden;background:color-mix(in srgb,var(--loop-color) 12%,var(--ink-12));border:1px dashed color-mix(in srgb,var(--loop-color) 38%,transparent);color:var(--loop-text);cursor:grab;user-select:none;touch-action:none;opacity:.8;background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--loop-color) 7%,transparent) 6px 7px)}
+.clip-loop-ghost{--loop-color:var(--clip-color);--loop-text:var(--clip-color);--loop-preview:var(--clip-color);position:absolute;top:7px;height:calc(var(--row-h) - 15px);border-radius:4px;box-sizing:border-box;overflow:hidden;background:color-mix(in srgb,var(--loop-color) 12%,var(--surface-canvas));border:1px dashed color-mix(in srgb,var(--loop-color) 38%,transparent);color:var(--loop-text);cursor:grab;user-select:none;touch-action:none;opacity:.8;background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--loop-color) 7%,transparent) 6px 7px)}
 .clip-loop-ghost:hover{opacity:1}
-.clip-loop-ghost.clip-selected{background:color-mix(in srgb,var(--loop-color) 40%,var(--ink-12));border-color:color-mix(in srgb,var(--loop-color) 70%,transparent)}
+.clip-loop-ghost.clip-selected{background:color-mix(in srgb,var(--loop-color) 40%,var(--surface-canvas));border-color:color-mix(in srgb,var(--loop-color) 70%,transparent)}
 .clip-loop-ghost.clip-muted{--loop-color:#8d8d8d;--loop-text:#8d8d8d;--loop-preview:#8d8d8d}
 .track-silent .track-lane .clip-loop-ghost{--loop-color:#6b6b6b;--loop-preview:#8d8d8d}
 .track-off .track-lane .clip-loop-ghost{--loop-color:#6b6b6b;--loop-text:#7f7f7f;--loop-preview:#8d8d8d}
@@ -40,10 +40,10 @@
 .clip-loop-content .clip-title{color:var(--loop-text);border-bottom-color:color-mix(in srgb,var(--loop-color) 12%,transparent)}
 .clip-loop-content .clip-preview{color:var(--loop-preview);opacity:.6}
 .clip-loop-ghost.clip-moving{z-index:11;cursor:grabbing}
-.track-lane{--clip-notch-background:var(--ink-11)}
-.track-row:nth-child(even) .track-lane{--clip-notch-background:var(--ink-10)}
-.track-row.selected .track-lane{--clip-notch-background:var(--ink-13)}
-.track-row.focused .track-lane{--clip-notch-background:var(--ink-14)}
+.track-lane{--clip-notch-background:var(--surface-canvas-alt)}
+.track-row:nth-child(even) .track-lane{--clip-notch-background:var(--surface-canvas)}
+.track-row.selected .track-lane{--clip-notch-background:var(--surface-panel)}
+.track-row.focused .track-lane{--clip-notch-background:var(--surface-panel-soft)}
 .clip-loop-notch{position:absolute;left:-1px;width:7px;height:5px;background:var(--clip-notch-background);pointer-events:none}
 .clip-loop-notch.top{top:-1px;clip-path:polygon(0 0,100% 0,50% 100%)}
 .clip-loop-notch.bottom{bottom:-1px;clip-path:polygon(50% 0,100% 100%,0 100%)}
