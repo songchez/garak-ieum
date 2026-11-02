@@ -40,7 +40,7 @@ flowchart TD
 | --- | --- |
 | [`src/ProjectShell.tsx`](../src/ProjectShell.tsx) | URL별 목록/편집기 구성, 목록 갱신, 생성·가져오기 후 이동, 편집기의 이탈 보호 연결, 이동 중 진행 화면 |
 | [`src/core/projectNavigation.ts`](../src/core/projectNavigation.ts) | 프로젝트 URL 해석·생성, 브라우저 이력과 화면 전환, 비동기 이동 및 이탈 보호 |
-| [`src/components/ProjectLauncher.tsx`](../src/components/ProjectLauncher.tsx) | 저장된 작업 목록, 빈 프로젝트·가져오기·템플릿 선택, 실제 MIDI 리전의 정적 편곡 미리보기 |
+| [`src/components/ProjectLauncher.tsx`](../src/components/ProjectLauncher.tsx) | 내 프로젝트·샘플 분류와 검색, 공통 파일 아이콘·요약 정보 타일, 선택 항목의 읽기 전용 상세와 공통 열기, 빈 프로젝트·가져오기 |
 | [`src/core/projectLibrary.ts`](../src/core/projectLibrary.ts) | 빈 프로젝트/템플릿을 먼저 저장하고 반환, 가져온 번들을 새 프로젝트 ID로 저장; 오디오 디코딩 없음 |
 | [`src/core/projectTemplates.ts`](../src/core/projectTemplates.ts), [`src/core/projectTemplates/`](../src/core/projectTemplates/) | 국악 붐뱁·트랩·퓨전의 메타데이터와 순수 MIDI 팩토리; 호출마다 새 ID와 편집 객체 |
 | [`src/App.tsx`](../src/App.tsx) | 지정된 프로젝트 ID 복원, 공통 세션 구독, 선택 상태, 프로젝트별 자동 저장·이탈 전 저장, 엔진 연결, 오디오 파일 가져오기·내보내기, 녹음 UI, 편집기 단축키 |
@@ -207,6 +207,8 @@ Dry/wet 분기는 **각 이펙트 내부**에 있습니다. 드라이브는 원�
 ### URL과 작업 수명
 
 기본 `/`는 `ProjectLauncher`를 열고 `/projects/:id`는 해당 ID의 저장본만 엽니다. URL에 있는 프로젝트가 없으면 명시적인 복원 오류를 표시하며, 최근 프로젝트나 기본 데모로 대체하지 않습니다. 편집기에서는 헤더 폴더 버튼 또는 로고 메뉴의 **프로젝트 목록**으로 돌아올 수 있고, 번들 가져오기는 목록과 로고 메뉴 모두에서 진입합니다. 이 URL은 현재 브라우저·사이트의 IndexedDB를 가리키며 원격 공유 주소가 아닙니다.
+
+선택 화면은 내 프로젝트와 샘플을 같은 크기의 타일로 표시합니다. 타일은 공통 파일 아이콘과 이름·BPM·트랙 수·길이 요약을 사용하며 실제 MIDI 편곡을 그리지 않습니다. 클릭/Space는 선택 상태만 바꾸고 Enter/더블 클릭/하단 열기로 해당 열기 콜백을 실행합니다. 접이식 상세 영역은 선택한 항목의 읽기 전용 정보를 보여 주며 오디오 장치나 프로젝트 설정을 변경하지 않습니다.
 
 `createLocalProject()`는 빈 프로젝트 또는 템플릿을 만들고 `saveStoredProject()` 완료 뒤 반환합니다. `importAsNewLocalProject()`는 `importProjectBundle()`의 검증 결과에 새 프로젝트 ID를 부여하여 저장합니다. 내부 트랙·리전·오디오 자산의 연결은 유지하므로 같은 원본 ID의 파일을 여러 번 가져와도 기존 작업을 덮어쓰지 않습니다. 이 단계는 원본 Blob만 다루고 오디오 장치를 열지 않습니다. `ProjectShell`은 저장이 성공한 ID로 이동합니다.
 
