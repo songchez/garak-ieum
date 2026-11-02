@@ -58,6 +58,7 @@ export class WebAudioEngine implements AudioEngine {
   private lastSnapshotTime = 0
   private lifecycle = 0
   private transportRequest = 0
+  private pendingPlayRequest: number | null = null
   private musicalKey = ''
   private monitorStream: MediaStream | null = null
   private monitorSource: MediaStreamAudioSourceNode | null = null
@@ -401,18 +402,30 @@ export class WebAudioEngine implements AudioEngine {
     }, signal)
   }
 
+  /** A second toggle cancels even when the first play is still opening the device. */
+  async togglePlayback(): Promise<void> {
+    if (this.playing || this.pendingPlayRequest === this.transportRequest) this.pause()
+    else await this.play()
+  }
+
   async play(): Promise<void> {
     if (!this.project) throw new Error('재생할 프로젝트가 없습니다.')
     const request = ++this.transportRequest
     const lifecycle = this.lifecycle
-    await this.resume()
-    if (request !== this.transportRequest || lifecycle !== this.lifecycle || !this.context || !this.project) return
-    if (this.playing) return
-    let beat = normalizedStart(this.project, this.position)
-    if (!loopRange(this.project) && beat >= this.project.lengthBeats) beat = 0
-    this.playing = true
-    this.restartAt(beat)
-    this.publishSnapshot()
+    this.pendingPlayRequest = request
+    try {
+      await this.resume()
+      if (request !== this.transportRequest || lifecycle !== this.lifecycle || !this.context || !this.project) return
+      if (this.playing) return
+      let beat = normalizedStart(this.project, this.position)
+      if (!loopRange(this.project) && beat >= this.project.lengthBeats) beat = 0
+      this.playing = true
+      this.restartAt(beat)
+      this.publishSnapshot()
+    } finally {
+      // A cancelled play may settle after a newer play has already taken ownership.
+      if (this.pendingPlayRequest === request) this.pendingPlayRequest = null
+    }
   }
 
   pause(): void {

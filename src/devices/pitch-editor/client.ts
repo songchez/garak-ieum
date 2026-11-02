@@ -1,6 +1,6 @@
-import { PITCH_LIMITS, type PitchAnalysis, type PitchNote, type PitchTaskOptions } from './model'
+import { PITCH_LIMITS, type PitchAnalysis, type PitchNote, type PitchRenderSettings, type PitchRenderTaskOptions, type PitchTaskOptions } from './model'
 
-type Job = { kind: 'analyze' | 'render'; sampleRate: number; segments?: readonly PitchNote[]; shifts?: Readonly<Record<string, number>> }
+type Job = { kind: 'analyze' | 'render'; sampleRate: number; segments?: readonly PitchNote[]; shifts?: Readonly<Record<string, number>>; settings?: PitchRenderSettings }
 const aborted = () => new DOMException('피치 작업을 취소했습니다.', 'AbortError')
 
 /** A worker per job makes cancellation immediate even during a synchronous WASM block. */
@@ -52,7 +52,7 @@ export function analyzePitchInWorker(channels: readonly Float32Array[], sampleRa
 
 export function renderPitchInWorker(
   channels: readonly Float32Array[], sampleRate: number, segments: readonly PitchNote[],
-  shifts: Readonly<Record<string, number>>, options?: PitchTaskOptions,
+  shifts: Readonly<Record<string, number>>, options?: PitchRenderTaskOptions,
 ): Promise<Float32Array[]> {
-  return run<Float32Array[]>(channels, { kind: 'render', sampleRate, segments, shifts }, options)
+  return run<Float32Array[]>(channels, { kind: 'render', sampleRate, segments, shifts, settings: options?.settings }, options)
 }

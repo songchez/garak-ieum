@@ -35,7 +35,37 @@ Direct spectral transposition was rejected after two independent measurements
 showed 10.54 cents of error for a requested −20-cent shift of a 220 Hz sine.
 The replacement and original paths are both reproducible in
 [`scripts/pitch-poc`](../../../../scripts/pitch-poc/README.md).
-No automatic formant compensation is applied: formants move with pitch.
+The default/legacy settings leave formants following pitch. Version 2 adds
+optional, approximate spectral-envelope preservation and independent per-note
+formant offsets; preservation is off by default. The optional path still uses
+neutral spectral transposition, so it does not reintroduce the rejected direct
+pitch mapping.
+
+For pitch delta `p` and formant offset `f` in cents, the upstream formant shift
+before resampling is `f - (preserveFormants ? p : 0)`. Resampling adds `p` to the
+envelope, so the intended net envelope displacement is `f` with preservation,
+or `p + f` when following pitch. We pass `false` to the upstream compensation
+flag: that flag only accounts for the library's own transpose map, which remains
+neutral here. `_setFormantBase` receives the **source note** fundamental in
+Hz divided by sample rate, before the pitch edit. This follows the pinned
+[`setFormantSemitones`, `setFormantBase`, and `updateFormants` implementation](https://github.com/Signalsmith-Audio/signalsmith-stretch/blob/88061fd4eda56a2353c5d65c74aa3f4ccf76f9da/signalsmith-stretch.h)
+and its [C binding](https://github.com/Signalsmith-Audio/signalsmith-stretch/blob/88061fd4eda56a2353c5d65c74aa3f4ccf76f9da/web/emscripten/main.cpp).
+The upstream README's example uses `200/sampleRate`; its prose saying
+“relative to Nyquist” should not be used to double that normalized frequency.
+
+Both individual controls and the effective pre-resampling formant shift are
+limited to ±1200 cents, inclusive. A larger combined shift is rejected explicitly:
+the measured ±2400-cent candidate altered the dominant harmonic's pitch and
+had much worse envelope/level behavior. Its historical measurements remain in
+the experiment report, separate from accepted outputs.
+
+This is a smoothed envelope adjustment, not exact recovery of vocal resonances.
+The [reproducible synthetic vowel matrix](../../../../scripts/pitch-poc/README.md#formant-experiment)
+retains large-shift and high-register failures, separate weak-fundamental and
+strongest-harmonic frequency measurements, and peak/RMS changes. Formant shifts
+can alter level and exceed float-PCM unity. The adapter does not clip or normalize
+the output to conceal this behavior. Natural voices still require listening
+comparison before choosing these experimental controls.
 
 The source-window adapter renders changed notes with surrounding source context,
 preserves sample count and stereo channel layout, and crossfades into unchanged

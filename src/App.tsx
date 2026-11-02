@@ -18,7 +18,7 @@ import PianoRoll from './components/PianoRoll'
 import Mixer from './components/Mixer'
 import { Waveform } from './components/Waveform'
 import { DeviceChain } from './components/DeviceChain'
-import { applyPitchDocument, assertPitchSourceTiming, encodePitchWav, restorePitchSource, validatePitchDocument } from './devices/pitch-editor/state'
+import { applyPitchDocument, assertPitchSourceTiming, encodePitchWav, hasPitchAudioEdits, restorePitchSource, validatePitchDocument } from './devices/pitch-editor/state'
 import { firstPitchDraftId, pitchDrafts, reconcilePitchDrafts } from './devices/pitch-editor/draftCache'
 import type { PitchRenderedEdit } from './devices/pitch-editor/model'
 import { Inspector } from './components/Inspector'
@@ -29,6 +29,7 @@ import { ColorPalette } from './components/ColorPalette'
 import { HeaderConfigPopover } from './components/HeaderConfigPopover'
 import ContextMenu from './components/ContextMenu'
 import { SHORTCUT_TABLE, ZOOM_COMMANDS, isShortcutSuppressed, isUnmodified, resolveProjectShortcut, shortcutLabel, shortcutPlatform, shortcutScope, type ProjectShortcut, type ShortcutScope } from './core/input'
+import { bindTransportShortcuts, isTransportTextTarget } from './core/transportShortcuts'
 import { DEVICE_KEY_FACTOR, ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, loadZoom, saveZoom, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from './core/zoom'
 import { ZoomControls } from './components/ZoomControls'
 import AudioSettingsDialog from './components/AudioSettingsDialog'
@@ -122,6 +123,7 @@ export default function App(){
   const [notice,setNotice]=useState('')
   const [busy,setBusy]=useState('')
   const [modal,setModal]=useState<'new'|'export'|'help'|'about'|'newTracks'|'settings'|'mcp'|null>(null)
+  const transportKeyState=useRef({held:false})
   const [instanceId]=useState(()=>uid())
   const [aiEditsAllowed,setAiEditsAllowed]=useState(true)
   const aiEditsAllowedRef=useRef(aiEditsAllowed)
@@ -197,7 +199,7 @@ export default function App(){
     const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await source.blob.arrayBuffer())),byte=>byte.toString(16).padStart(2,'0')).join('')
     if(hash!==document.sourceHash)throw new Error('피치 분석과 원본 파일이 일치하지 않습니다. 원본을 다시 분석해 주세요.')
     if(signal?.aborted)throw new DOMException('피치 적용을 취소했습니다.','AbortError')
-    const changed=Object.values(document.shifts).some(value=>value!==0)
+    const changed=hasPitchAudioEdits(document)
     const rendered=changed?await engine.decodeAsset(encodePitchWav(result.channels,result.sampleRate),`${source.name} · 피치`):source
     if(signal?.aborted)throw new DOMException('피치 적용을 취소했습니다.','AbortError')
     if(recordRef.current||recordPreparingRef.current||audioApplyingRef.current||importing.current)throw new Error('처리 중 녹음·오디오 설정·가져오기가 시작되어 피치 적용을 취소했습니다. 작업이 끝난 뒤 다시 적용해 주세요.')
@@ -209,7 +211,7 @@ export default function App(){
     // This deliberate apply replaces the draft's base; it is not an external conflict.
     pitchDrafts.delete(expectedClip.id)
     breakHistoryMerge();commit(p=>mapClips(p,new Set([expectedClip.id]),()=>nextClip));breakHistoryMerge()
-    notify(changed?'피치 편집을 적용했습니다. 재생과 WAV 출력에 같은 결과가 사용됩니다.':'피치 분석과 음표 경계를 저장했습니다. 원본 음높이를 유지합니다.')
+    notify(changed?'피치·포먼트 편집을 적용했습니다. 재생과 WAV 출력에 같은 결과가 사용됩니다.':'피치 분석·음표 경계·처리 설정을 저장했습니다. 원본 소리를 유지합니다.')
   }
   function resetPitchEdit(expectedClip:AudioClip){
     const current=commandSession.getSnapshot().history.present.tracks.flatMap(t=>t.clips).find(c=>c.id===expectedClip.id)
@@ -417,10 +419,10 @@ export default function App(){
     }
   }
 
-  async function togglePlayback(){if(audioApplyingRef.current)return;try{if(engine.getSnapshot().playing)engine.pause();else await engine.play()}catch(e){notify(`오디오를 시작할 수 없습니다: ${e instanceof Error?e.message:''}`)}}
+  async function playTransport(action:'toggle'|'start'='toggle'){if(audioApplyingRef.current)return;try{if(action==='start')await engine.play();else await engine.togglePlayback()}catch(e){notify(`오디오를 시작할 수 없습니다: ${e instanceof Error?e.message:''}`)}}
   function cancelRecordPreparation(){if(!recordPreparingRef.current||recordRef.current)return;recordAttempt.current+=1;recordPreparingRef.current=false;setRecordPreparing(false);inputCapture.setNeeded('record',false)}
   function stop(){cancelRecordPreparation();if(recordRef.current?.recorder.state==='recording')recordRef.current.recorder.stop();engine.stop()}
-  function seekPlay(beat:number){engine.seek(Math.max(0,beat));if(!engine.getSnapshot().playing)void togglePlayback()}
+  function seekPlay(beat:number){engine.seek(Math.max(0,beat));if(!engine.getSnapshot().playing)void playTransport('start')}
   function addMidiClip(trackId:string,beat:number){
     const track=project.tracks.find(t=>t.id===trackId);if(!track)return
     if(track.kind==='audio'){importTarget.current={trackId,beat};audioInput.current?.click();return}
@@ -594,14 +596,14 @@ export default function App(){
     if(Object.keys(rest).length)patchView(rest)
   }
   function renameClip(clipId:string,name:string|null){setRenamingClipId(null);const trimmed=name?.trim();const entry=clipIndex.get(clipId);if(trimmed&&entry&&trimmed!==entry.clip.name)commit(p=>mapClips(p,new Set([clipId]),c=>({...c,name:trimmed.slice(0,512)})))}
-  async function playFromSelection(){if(selection.length)engine.seek(selectionStart());if(!engine.getSnapshot().playing)await togglePlayback()}
+  async function playFromSelection(){if(selection.length)engine.seek(selectionStart());if(!engine.getSnapshot().playing)await playTransport('start')}
   // Inside the piano roll these keys belong to note editing; the app never turns them into clip edits.
   const PIANO_OWNED=new Set<ProjectShortcut>(['copy','cut','paste','selectAll','nudgeLeft','nudgeRight','trimEndLeft','trimEndRight','transposeUp','transposeDown','transposeOctaveUp','transposeOctaveDown','deleteNotes','quantize'])
   function run(command:ProjectShortcut,ctx:CommandContext={}){
     if(ctx.scope==='piano'&&PIANO_OWNED.has(command))return
     const step=snapStep||.25,beat=playhead(),trackIds=ctx.trackIds??[...selectedTrackIds],entries=ctx.clipIds?entriesOf(ctx.clipIds):selection
     switch(command){
-      case 'playback':void togglePlayback();break
+      case 'playback':void playTransport();break
       case 'playFromSelection':void playFromSelection();break
       case 'undo':changeHistory('undo');break
       case 'redo':changeHistory('redo');break
@@ -748,6 +750,16 @@ export default function App(){
   }
   function newProject(demo=false){if(pitchPending())return;if(recordRef.current||recordPreparingRef.current||busy){notify('녹음이나 파일 처리가 끝난 뒤 새 프로젝트를 시작해주세요.');return}projectSession.current+=1;stop();setAssets(new Map());engine.setAssets(new Map());const next=demo?createDemoProject():createEmptyProject();breakHistoryMerge();dispatch({type:'reset',project:next});const first=next.tracks[0];if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'',first?[first.id]:[]);setModal(null);notify(demo?'Midnight Sketches 데모를 열었습니다.':'새로운 프로젝트를 시작합니다.')}
 
+  useEffect(()=>bindTransportShortcuts(window,e=>{
+    const input=e.target instanceof HTMLInputElement?e.target:null
+    return {
+      modalOpen:!loaded||!!modal||!!document.querySelector('[aria-modal="true"],dialog[open]')||!!(e.target instanceof Element&&e.target.closest('[role="dialog"],dialog')),
+      textEditing:isTransportTextTarget(e.target),
+      enabled:loaded&&!busy&&!audioApplyingRef.current,
+      activateToggle:input&&!input.disabled&&(input.type==='checkbox'||input.type==='radio')?()=>input.click():undefined,
+    }
+  },command=>run(command),transportKeyState.current))
+
   useEffect(()=>{
     const handler=(e:KeyboardEvent)=>{
       if(isShortcutSuppressed(e,true)||!loaded)return
@@ -787,18 +799,21 @@ export default function App(){
   const timelineUi:TimelineUi={headerWidth:trackHeader.headerWidth,headerConfig:trackHeader.headerConfig,hideView,recording,catch:view.catch,scrollInPlay:view.scrollInPlay,snap:view.snap,dragMode:view.dragMode,globalTracks:view.globalTracks,gridLines:view.gridLines,trackZoom,zoomFocused:view.zoomFocused,soloRecall,renamingTrackId}
   const iconTrack=iconMenu?project.tracks.find(t=>t.id===iconMenu.id):undefined
   const trackProps={project,engine,recording,onTrackChange:changeTrack,onTrackButton:trackButton,onTrackSweep:trackSweep,onInstrumentChange:changeInstrument,onAddDevice:addDevice,onToggleDevice:toggleDevice,onMoveDevice:(id:string,deviceId:string,offset:number)=>editTrack(id,t=>moveDevice(t,deviceId,offset)),onRemoveDevice:(id:string,deviceId:string)=>editTrack(id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)})),onOpenDevices:openDevices,onMasterChange:(value:number)=>commit(p=>({...p,masterVolume:value}),'master-volume'),onOpenColorPalette:paletteFor,onIconMenu:(id:string,e:React.MouseEvent)=>setIconMenu({id,...anchorAt(e.currentTarget)})}
-  // A pointer-clicked toolbar button must not keep focus, or Space would re-press it instead of playing.
-  return <div className="studio-app" onClick={e=>{if(e.detail>0&&e.target instanceof Element){const button=e.target.closest<HTMLElement>('.icon-button,.play-button,.record-button,.transport-bar button,.editor-toolbar button,.header-actions button,.status-bar button,.tracks-menubar button');if(button&&!button.closest('[role="dialog"]'))button.blur()}}}>
+  return <div className="studio-app">
     <header className="app-header">
       <div className="header-project">
-        <button className="brand" onClick={event=>setAppMenu(current=>current?null:{...anchorAt(event.currentTarget),trigger:event.currentTarget})} title={`${BRAND.name} 메뉴 · 설정 ${shortcutText('openSettings')}`} aria-label={`${BRAND.name} 메뉴`} aria-haspopup="menu" aria-expanded={!!appMenu}><Brand/></button>
+        <button className="brand" onClick={event=>{
+          // React clears currentTarget after dispatch; state updaters may run later.
+          const trigger=event.currentTarget,at=anchorAt(trigger)
+          setAppMenu(current=>current?null:{...at,trigger})
+        }} title={`${BRAND.name} 메뉴 · 설정 ${shortcutText('openSettings')}`} aria-label={`${BRAND.name} 메뉴`} aria-haspopup="menu" aria-expanded={!!appMenu}><Brand/></button>
         <span className="header-divider"/>
         <div className="project-identity">
           <NameInput aria-label="프로젝트 이름" title={project.name} value={project.name} onCommit={name=>commit(p=>({...p,name}),'project-name')}/>
           <span className={`save-indicator ${saveStatus}`} title={saveStatus==='saved'?'이 브라우저에 자동 저장됨':saveStatus==='error'?'저장 오류':saveStatus==='loading'?'불러오는 중':'저장 중'}><i/>{saveStatus==='saved'?'저장됨':saveStatus==='error'?'저장 실패':saveStatus==='loading'?'불러오는 중':'저장 중…'}</span>
         </div>
       </div>
-      <Transport project={project} onChange={commit} onPlay={()=>void togglePlayback()} onStop={stop} onRecord={()=>void toggleRecord()} recording={recording} recordPreparing={recordPreparing} canUndo={history.past.length>0} canRedo={history.future.length>0} onUndo={()=>changeHistory('undo')} onRedo={()=>changeHistory('redo')}/>
+      <Transport project={project} onChange={commit} onPlay={()=>void playTransport()} onStop={stop} onRecord={()=>void toggleRecord()} recording={recording} recordPreparing={recordPreparing} canUndo={history.past.length>0} canRedo={history.future.length>0} onUndo={()=>changeHistory('undo')} onRedo={()=>changeHistory('redo')}/>
       <div className="header-actions" role="group" aria-label="프로젝트 파일">
         <button className="header-text" onClick={()=>setModal('new')} title="새 프로젝트" aria-label="새 프로젝트"><Icon name="file-plus" size={15}/><span>새 프로젝트</span></button>
         <button className="icon-button" onClick={()=>projectInput.current?.click()} title="프로젝트 열기" aria-label="프로젝트 열기"><Icon name="folder"/></button>

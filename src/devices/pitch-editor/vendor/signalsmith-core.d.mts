@@ -7,6 +7,7 @@ export interface SignalsmithModule {
   _outputLatency(): number
   _setTransposeSemitones(semitones: number, tonalityLimit: number): void
   _setFormantSemitones(semitones: number, compensate: boolean): void
+  /** Original input fundamental in cycles/sample (Hz / sampleRate); 0 estimates it. */
   _setFormantBase(relativeFrequency: number): void
   _process(inputFrames: number, outputFrames: number): void
 }

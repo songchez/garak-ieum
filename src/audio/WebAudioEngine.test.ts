@@ -6,8 +6,9 @@ import { WebAudioEngine } from './WebAudioEngine'
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(yes => { resolve = yes })
-  return { promise, resolve }
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
 }
 
 // Web Audio API spies exercise real engine/graph wiring. They do not measure DSP or hardware latency.
@@ -266,6 +267,103 @@ afterEach(() => {
   engines = []
   vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('playback toggles during device startup', () => {
+  it('treats a second toggle before resume completes as pause and permits a later retry', async () => {
+    const engine = engineFor(), wait = deferred()
+    engine.seek(4)
+    ContextSpy.plans.push({ resume: wait.promise })
+    const first = engine.togglePlayback()
+    await engine.togglePlayback()
+    expect(engine.getSnapshot()).toMatchObject({ playing: false, beat: 4 })
+    wait.resolve()
+    await first
+    expect(engine.getSnapshot()).toMatchObject({ playing: false, beat: 4, ready: true })
+    await engine.togglePlayback()
+    expect(engine.getSnapshot().playing).toBe(true)
+    await engine.togglePlayback()
+    expect(engine.getSnapshot().playing).toBe(false)
+  })
+
+  it('honors three rapid toggles while the shared context is still preparing', async () => {
+    const engine = engineFor(), wait = deferred()
+    ContextSpy.plans.push({ resume: wait.promise })
+    const first = engine.togglePlayback()
+    const second = engine.togglePlayback()
+    const third = engine.togglePlayback()
+    expect(ContextSpy.instances).toHaveLength(1)
+    expect(engine.getSnapshot().playing).toBe(false)
+    wait.resolve()
+    await Promise.all([first, second, third])
+    expect(engine.getSnapshot().playing).toBe(true)
+    await engine.togglePlayback()
+    expect(engine.getSnapshot().playing).toBe(false)
+  })
+
+  it('does not resume after a pending toggle is stopped, and the next toggle starts at zero', async () => {
+    const engine = engineFor(), wait = deferred()
+    engine.seek(7)
+    ContextSpy.plans.push({ resume: wait.promise })
+    const pending = engine.togglePlayback()
+    engine.stop()
+    wait.resolve()
+    await pending
+    expect(engine.getSnapshot()).toMatchObject({ playing: false, beat: 0 })
+    await engine.togglePlayback()
+    expect(engine.getSnapshot()).toMatchObject({ playing: true, beat: 0 })
+  })
+
+  it('keeps a newer pending toggle owned when an older configure-cancelled play settles late', async () => {
+    const engine = engineFor(), oldResume = deferred(), newResume = deferred()
+    ContextSpy.plans.push({ resume: oldResume.promise })
+    const stale = engine.togglePlayback().catch(error => error)
+    ContextSpy.plans.push({ resume: newResume.promise })
+    const configure = engine.configure({ ...DEFAULT_AUDIO_SETTINGS, latencyHint: 'balanced' }, 48000)
+    const newer = engine.togglePlayback()
+    expect(ContextSpy.instances[0].state).toBe('closed')
+    oldResume.resolve()
+    expect(await stale).toMatchObject({ name: 'AbortError' })
+    // If the stale finally cleared the newer token, this would start playback.
+    // It must cancel the newer pending play without waiting for device startup.
+    await engine.togglePlayback()
+    newResume.resolve()
+    await Promise.all([configure, newer])
+    expect(engine.getSnapshot().playing).toBe(false)
+    expect(engine.getAudioState()).toMatchObject({ status: 'ready', settings: { latencyHint: 'balanced' } })
+    await engine.togglePlayback()
+    expect(engine.getSnapshot().playing).toBe(true)
+  })
+
+  it('allows an explicit toggle after disposal without the disposed request overriding it', async () => {
+    const engine = engineFor(), oldResume = deferred(), newResume = deferred()
+    ContextSpy.plans.push({ resume: oldResume.promise })
+    const stale = engine.togglePlayback().catch(error => error)
+    engine.dispose()
+    ContextSpy.plans.push({ resume: newResume.promise })
+    const fresh = engine.togglePlayback()
+    oldResume.resolve()
+    expect(await stale).toMatchObject({ name: 'AbortError' })
+    expect(engine.getSnapshot().playing).toBe(false)
+    newResume.resolve()
+    await fresh
+    expect(engine.getSnapshot()).toMatchObject({ playing: true, ready: true })
+    expect(ContextSpy.instances).toHaveLength(2)
+  })
+
+  it('clears a failed startup request so the next toggle retries playback', async () => {
+    const engine = engineFor(), wait = deferred()
+    ContextSpy.plans.push({ resume: wait.promise })
+    const failure = engine.togglePlayback().catch(error => error)
+    const denied = new DOMException('Device startup denied', 'NotAllowedError')
+    wait.reject(denied)
+    expect(await failure).toBe(denied)
+    expect(engine.getSnapshot().playing).toBe(false)
+    expect(ContextSpy.instances[0].state).toBe('closed')
+    await engine.togglePlayback()
+    expect(engine.getSnapshot()).toMatchObject({ playing: true, ready: true })
+    expect(ContextSpy.instances).toHaveLength(2)
+  })
 })
 
 describe('audio settings and context transactions', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderPitch } from './render'
-import type { PitchNote } from './model'
+import type { PitchNote, PitchRenderSettings } from './model'
 
 const sine = (hz: number, rate: number, seconds = 1) => Float32Array.from({ length: Math.round(rate * seconds) }, (_, i) => Math.sin(2 * Math.PI * hz * i / rate) * 0.4)
 const note = (id = 'one', start = 0.1, end = 0.9, midi = 57): PitchNote => ({ id, start, end, midi, confidence: 0.98 })
@@ -13,6 +13,50 @@ function frequency(channel: Float32Array, rate: number, start = 0.3, end = 0.7):
 }
 const rms = (channel: Float32Array) => Math.sqrt(channel.reduce((sum, value) => sum + value * value, 0) / channel.length)
 
+function vowelEnvelope(hz: number, f0 = 120): number {
+  const centers = [650, 1250, 2500], widths = [90, 110, 160], heights = [1, 0.8, 0.6]
+  return (0.025 + centers.reduce((sum, center, i) => sum + heights[i] * Math.exp(-0.5 * ((hz - center) / widths[i]) ** 2), 0)) * Math.sqrt(f0 / Math.max(f0, hz))
+}
+function vowel(rate = 48000, f0 = 120): Float32Array {
+  const result = new Float32Array(rate * 2)
+  for (let h = 1; h * f0 < Math.min(7500, rate * 0.45); h += 1) {
+    const amplitude = vowelEnvelope(h * f0, f0), omega = 2 * Math.PI * f0 * h / rate
+    for (let i = 0; i < result.length; i += 1) result[i] += amplitude * Math.sin(omega * i + 0.23 * h * h)
+  }
+  const peak = result.reduce((value, sample) => Math.max(value, Math.abs(sample)), 0)
+  return result.map(value => value * 0.65 / peak)
+}
+function weightedVowel(source: Float32Array, rate = 48000): Float64Array {
+  const count = Math.round(rate * 0.8), from = Math.round(rate * 0.6)
+  return Float64Array.from({ length: count }, (_, i) => source[from + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (count - 1))))
+}
+function magnitude(weighted: Float64Array, hz: number, rate = 48000): number {
+  const step = 2 * Math.PI * hz / rate, cr = Math.cos(step), ci = Math.sin(step)
+  let pr = 1, pi = 0, real = 0, imaginary = 0
+  for (const value of weighted) {
+    real += value * pr; imaginary += value * pi
+    const next = pr * cr - pi * ci
+    pi = pr * ci + pi * cr; pr = next
+  }
+  return Math.max(1e-15, Math.hypot(real, imaginary))
+}
+function vowelPitch(weighted: Float64Array, expectedHz: number): number {
+  const values = Array.from({ length: 17 }, (_, i) => Math.log(magnitude(weighted, expectedHz + (i - 8) * 0.125)))
+  const peak = values.indexOf(Math.max(...values))
+  if (!peak || peak === values.length - 1) throw new Error('Fundamental peak is outside the independent measurement window')
+  const offset = 0.5 * (values[peak - 1] - values[peak + 1]) / (values[peak - 1] - 2 * values[peak] + values[peak + 1])
+  return expectedHz + (peak - 8 + offset) * 0.125
+}
+function envelopeResidualDb(weighted: Float64Array, outputF0: number, formantCents = 0): number {
+  const ratio = 2 ** (formantCents / 1200)
+  const residuals = Array.from({ length: Math.floor(4500 / outputF0) }, (_, i) => {
+    const hz = (i + 1) * outputF0
+    return 20 * Math.log10(magnitude(weighted, hz) / vowelEnvelope(hz / ratio))
+  })
+  const gain = residuals.reduce((sum, value) => sum + value, 0) / residuals.length
+  return Math.sqrt(residuals.reduce((sum, value) => sum + (value - gain) ** 2, 0) / residuals.length)
+}
+
 describe('actual Signalsmith WASM note renderer', () => {
   it('bypasses absent/zero edits bit exactly without sharing mutable buffers', async () => {
     const source = sine(220, 48000)
@@ -23,6 +67,65 @@ describe('actual Signalsmith WASM note renderer', () => {
       output[0] = 100
       expect(source[0]).toBe(0)
     }
+    const [preserved] = await renderPitch([source], 48000, [note()], {}, undefined, { preserveFormants: true, formantShifts: { one: 0 } })
+    expect(preserved).toEqual(source)
+    expect(preserved).not.toBe(source)
+  })
+
+  it('reduces vowel-envelope displacement for upward and downward pitch edits without changing the pitch target', async () => {
+    const source = vowel(), segment = note('one', 0.1, 1.9, 69 + 12 * Math.log2(120 / 440))
+    for (const cents of [-600, 600]) {
+      const [follow] = await renderPitch([source], 48000, [segment], { one: cents })
+      const [preserve] = await renderPitch([source], 48000, [segment], { one: cents }, undefined, { preserveFormants: true, formantShifts: {} })
+      const expectedHz = 120 * 2 ** (cents / 1200), weighted = weightedVowel(preserve)
+      const error = envelopeResidualDb(weighted, expectedHz)
+      // This measured synthetic case improves the broad envelope; individual
+      // formants are approximate. Wider-register/extreme failures remain in the
+      // checked-in formant matrix and must not be described as exact recovery.
+      expect(error).toBeLessThan(6)
+      expect(error).toBeLessThan(envelopeResidualDb(weightedVowel(follow), expectedHz) * 0.65)
+      expect(Math.abs(1200 * Math.log2(vowelPitch(weighted, expectedHz) / expectedHz))).toBeLessThan(0.1)
+      expect(preserve.length).toBe(source.length)
+      expect(preserve.subarray(0, 4800)).toEqual(source.subarray(0, 4800))
+      expect(preserve.subarray(91200)).toEqual(source.subarray(91200))
+    }
+  })
+
+  it('renders formant-only offsets and keeps their direction independent from pitch', async () => {
+    const source = vowel(), original = source.slice(), segment = note('one', 0.1, 1.9, 69 + 12 * Math.log2(120 / 440))
+    for (const formantCents of [-300, 300]) {
+      const [output] = await renderPitch([source], 48000, [segment], {}, undefined, { preserveFormants: true, formantShifts: { one: formantCents } })
+      const weighted = weightedVowel(output), error = envelopeResidualDb(weighted, 120, formantCents)
+      expect(error).toBeLessThan(6)
+      expect(error).toBeLessThan(envelopeResidualDb(weightedVowel(source), 120, formantCents) * 0.65)
+      expect(error).toBeLessThan(envelopeResidualDb(weighted, 120, -formantCents) * 0.65)
+      expect(Math.abs(1200 * Math.log2(vowelPitch(weighted, 120) / 120))).toBeLessThan(0.1)
+      expect(output.length).toBe(source.length)
+      expect(output).not.toEqual(source)
+      expect(source).toEqual(original)
+    }
+  })
+
+  it('retains legacy output with empty settings and composes pitch and envelope offsets consistently', async () => {
+    const source = vowel(), segment = note('one', 0.1, 1.9, 69 + 12 * Math.log2(120 / 440))
+    const [legacy] = await renderPitch([source], 48000, [segment], { one: 300 })
+    const [explicitLegacy] = await renderPitch([source], 48000, [segment], { one: 300 }, undefined, { preserveFormants: false, formantShifts: { one: 0 } })
+    const [cancelCompensation] = await renderPitch([source], 48000, [segment], { one: 300 }, undefined, { preserveFormants: true, formantShifts: { one: 300 } })
+    expect(explicitLegacy).toEqual(legacy)
+    expect(cancelCompensation).toEqual(legacy)
+    const [preserve] = await renderPitch([source], 48000, [segment], { one: 300 }, undefined, { preserveFormants: true, formantShifts: {} })
+    const [manual] = await renderPitch([source], 48000, [segment], { one: 300 }, undefined, { preserveFormants: false, formantShifts: { one: -300 } })
+    expect(manual).toEqual(preserve)
+  })
+
+  it('clears the previous note formant state before rendering an adjacent pitch-only note', async () => {
+    const source = vowel(), midi = 69 + 12 * Math.log2(120 / 440)
+    const first = note('first', 0.1, 0.9, midi), second = note('second', 0.9, 1.9, midi)
+    const [together] = await renderPitch([source], 48000, [first, second], { second: 300 }, undefined, { preserveFormants: false, formantShifts: { first: -300 } })
+    const [alone] = await renderPitch([source], 48000, [second], { second: 300 })
+    expect(together.subarray(43200)).toEqual(alone.subarray(43200))
+    expect(together[43199]).toBe(source[43199])
+    expect(together[43200]).toBe(source[43200])
   })
 
   it('moves pitch up and down while keeping source duration and unedited samples', async () => {
@@ -126,6 +229,18 @@ describe('actual Signalsmith WASM note renderer', () => {
     await expect(renderPitch([source], 48000, [note()], { one: Infinity })).rejects.toThrow()
     await expect(renderPitch([source], 48000, [note()], { one: 1201 })).rejects.toThrow()
     await expect(renderPitch([source], 48000, [note(), note('two', 0.5, 0.95)], {})).rejects.toThrow()
+    for (const formantShifts of [{ missing: 100 }, { one: Infinity }, { one: 1201 }, { one: -1201 }] as Record<string, number>[]) {
+      await expect(renderPitch([source], 48000, [note()], {}, undefined, { preserveFormants: true, formantShifts })).rejects.toThrow('포먼트')
+    }
+    for (const cents of [-1200, 1200]) {
+      await expect(renderPitch([source], 48000, [note()], { one: cents }, undefined, { preserveFormants: true, formantShifts: { one: -Math.sign(cents) } })).rejects.toThrow('보정 차이')
+      const [boundary] = await renderPitch([source], 48000, [note()], { one: cents }, undefined, { preserveFormants: true, formantShifts: {} })
+      expect(boundary.length).toBe(source.length)
+      expect(boundary.every(Number.isFinite)).toBe(true)
+    }
+    for (const settings of [null, {}, { preserveFormants: 'true', formantShifts: {} }, { preserveFormants: true, formantShifts: [] }]) {
+      await expect(renderPitch([source], 48000, [note()], {}, undefined, settings as unknown as PitchRenderSettings)).rejects.toThrow('포먼트')
+    }
     const values: number[] = []
     await renderPitch([source], 48000, [note()], { one: 100 }, value => values.push(value))
     expect(values[0]).toBe(0)

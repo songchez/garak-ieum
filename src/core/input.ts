@@ -59,8 +59,8 @@ export function shortcutScope(target: EventTarget | null): ShortcutScope {
   if ((target instanceof HTMLElement && target.isContentEditable)
     || target.closest('input,textarea,select,[data-selectable-text],[role="textbox"],[role="searchbox"],[role="combobox"],[role="spinbutton"],[role="slider"]')) return 'text'
   const area = target.closest<HTMLElement>('[data-keyboard-scope]')?.dataset.keyboardScope
-  // Note buttons are editing objects, while piano keys and ordinary buttons
-  // retain native Space/Enter activation and do not edit the selected note.
+  // Note buttons are editing objects. Ordinary controls keep their native
+  // editing keys; global Space transport is handled separately in capture.
   if (target.closest('button,a[href],[role="checkbox"],[role="switch"]') && !target.closest('.piano-note')) return 'control'
   if (area === 'piano' || area === 'timeline' || area === 'mixer' || area === 'devices') return area
   if (target.closest('.studio-app') || target === document.body) return 'workspace'
@@ -190,7 +190,7 @@ export function shortcutLabel(command: ProjectShortcut, platform: ShortcutPlatfo
 }
 
 const META: Record<ProjectShortcut, { label: string; logic: string }> = {
-  playback: { label: '재생 / 정지', logic: 'Space' },
+  playback: { label: '재생 / 일시 정지', logic: 'Space' },
   playFromSelection: { label: '선택 위치부터 재생', logic: '⇧Space' },
   undo: { label: '실행 취소', logic: '⌘Z' },
   redo: { label: '다시 실행', logic: '⇧⌘Z' },

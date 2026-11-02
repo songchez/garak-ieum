@@ -109,7 +109,7 @@ export default function ContextMenu({ x, y, items, onClose, label = '컨텍스�
   }, [])
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    // The menu is modal for the keyboard: nothing reaches editors or global shortcuts.
+    // Menu navigation stays local. Global transport consumes Space in capture first.
     event.stopPropagation()
     const active = document.activeElement instanceof HTMLButtonElement ? document.activeElement : null
     const list = menuButtons(active?.closest('[role="menu"]') ?? ref.current?.firstElementChild)

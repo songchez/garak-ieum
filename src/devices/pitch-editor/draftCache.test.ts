@@ -7,7 +7,7 @@ import { segmentShift, shiftSegments } from './uiEditing'
 const clip = (id = 'clip'): AudioClip => ({ id, kind: 'audio', name: 'Voice', startBeat: 0, lengthBeats: 8, gain: 1, assetId: 'asset', offsetSeconds: 0, fadeIn: 0, fadeOut: 0 })
 const document = (): PitchEditDocument => {
   const notes = [{ id: 'note', start: 0, end: 4, midi: 60, confidence: 1 }]
-  return { version: 1, sourceAssetId: 'asset', sourceHash: 'a'.repeat(64), rendererId: 'test', analysis: { version: 1, algorithm: 'yin-v1', sampleRate: 48000, sourceFrames: 192000, notes, contour: [] }, segments: notes.map(note => ({ ...note })), shifts: {} }
+  return { version: 2, sourceAssetId: 'asset', sourceHash: 'a'.repeat(64), rendererId: 'test', analysis: { version: 1, algorithm: 'yin-v1', sampleRate: 48000, sourceFrames: 192000, notes, contour: [] }, segments: notes.map(note => ({ ...note })), shifts: {}, preserveFormants: true, formantShifts: {} }
 }
 function storeDraft(source: AudioClip) {
   pitchDrafts.set(source.id, { base: source.pitch, sourceId: source.pitch?.sourceAssetId ?? source.assetId, offset: source.offsetSeconds, length: source.lengthBeats, bpm: 120, name: source.name, snapshot: { document: document(), dirty: true }, past: [], future: [], selection: [] })
@@ -94,6 +94,42 @@ describe('pitch draft cache across editor unmounts', () => {
     expect(shifted.document!.shifts).toEqual({ note: 100 })
     const empty: PitchDraftSnapshot = { document: null, dirty: false }
     expect(scopePitchSnapshot(empty, 0.5, 1.5, makeId)).toBe(empty)
+  })
+
+  it('keeps formant-only edits and preservation settings through unmount, trim, and local Undo/Redo scope changes', () => {
+    const source = clip(); storeDraft(source)
+    const draft = pitchDrafts.get(source.id)!
+    const original = document()
+    const shifted: PitchEditDocument = { ...original, preserveFormants: false, formantShifts: { note: 125 } }
+    draft.past = [{ document: original, dirty: false }]
+    draft.snapshot = { document: shifted, dirty: true }
+    draft.future = [{ document: { ...shifted, formantShifts: { note: -150 } }, dirty: true }]
+    expect(reconcilePitchDrafts('project', [{ ...source, offsetSeconds: 0.5, lengthBeats: 2 }], 96)).toBe(true)
+    expect(pitchDrafts.get(source.id)).toBe(draft)
+    expect(draft.snapshot.document!.formantShifts).toEqual({ note: 125 })
+    expect(draft.future[0].document!.formantShifts).toEqual({ note: -150 })
+
+    let sequence = 0
+    const makeId = () => `formant-scope-${++sequence}`
+    const offsets = (value: PitchDraftSnapshot) => value.document!.segments.map(note => value.document!.formantShifts[note.id] ?? 0)
+    const restored = scopePitchSnapshot(draft.snapshot, 0.5, 1.5, makeId)
+    expect(restored.document!.segments.map(note => [note.start, note.end])).toEqual([[0, 0.5], [0.5, 1.5], [1.5, 4]])
+    expect(offsets(restored)).toEqual([125, 125, 125])
+    expect(restored.document!.shifts).toEqual({})
+    expect(restored.document!.preserveFormants).toBe(false)
+
+    const undo = scopePitchSnapshot(draft.past[0], 0.5, 1.5, makeId)
+    expect(undo.dirty).toBe(false)
+    expect(offsets(undo)).toEqual([0, 0, 0])
+    expect(undo.document!.preserveFormants).toBe(true)
+    const redo = scopePitchSnapshot(draft.future[0], 0.5, 1.5, makeId)
+    expect(redo.dirty).toBe(true)
+    expect(offsets(redo)).toEqual([-150, -150, -150])
+    expect(redo.document!.preserveFormants).toBe(false)
+    expect(scopePitchSnapshot(redo, 0, 4, makeId)).toBe(redo)
+    expect(shifted.formantShifts).toEqual({ note: 125 })
+    expect(original.formantShifts).toEqual({})
+    expect(original.segments).toHaveLength(1)
   })
 
   it('never carries drafts into another project even when clip IDs match', () => {

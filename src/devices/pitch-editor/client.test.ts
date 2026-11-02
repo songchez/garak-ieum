@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { analyzePitchInWorker, renderPitchInWorker } from './client'
+import type { PitchRenderSettings } from './model'
 
 class FakeWorker {
   static created: FakeWorker[] = []
@@ -7,7 +8,7 @@ class FakeWorker {
   onerror: ((event: { message: string }) => void) | null = null
   onmessageerror: (() => void) | null = null
   terminated = 0
-  sent: { kind: string; channels: Float32Array[]; sampleRate: number } | null = null
+  sent: { kind: string; channels: Float32Array[]; sampleRate: number; settings?: PitchRenderSettings } | null = null
   constructor(readonly url: URL, readonly options: WorkerOptions) { FakeWorker.created.push(this) }
   postMessage(message: unknown, transfer: Transferable[]) {
     this.sent = structuredClone(message, { transfer }) as typeof this.sent
@@ -62,9 +63,12 @@ describe('pitch worker client lifecycle', () => {
 
   it('forwards render data/progress and removes the abort handler after success', async () => {
     const abort = new AbortController(), progress = vi.fn()
-    const promise = renderPitchInWorker([Float32Array.of(0)], 48000, [], {}, { signal: abort.signal, onProgress: progress })
+    const settings = { preserveFormants: true, formantShifts: { vowel: -200 } }
+    const promise = renderPitchInWorker([Float32Array.of(0)], 48000, [], {}, { signal: abort.signal, onProgress: progress, settings })
     const worker = FakeWorker.created[0]
     expect(worker.sent?.kind).toBe('render')
+    expect(worker.sent?.settings).toEqual(settings)
+    expect(worker.sent?.settings).not.toBe(settings)
     worker.emit({ kind: 'progress', value: 0.5 })
     worker.emit({ kind: 'result', result: [Float32Array.of(0)] })
     expect(await promise).toEqual([Float32Array.of(0)])

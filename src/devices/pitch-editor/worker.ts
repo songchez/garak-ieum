@@ -1,6 +1,6 @@
 import { analyzePitch } from './analysis'
 import { renderPitch } from './render'
-import type { PitchNote } from './model'
+import type { PitchNote, PitchRenderSettings } from './model'
 
 type Request = {
   kind: 'analyze' | 'render'
@@ -8,6 +8,7 @@ type Request = {
   sampleRate: number
   segments?: PitchNote[]
   shifts?: Record<string, number>
+  settings?: PitchRenderSettings
 }
 
 // A small structural scope type avoids adding DOM WebWorker declarations to the app.
@@ -29,7 +30,7 @@ scope.onmessage = async ({ data }) => {
       const result = analyzePitch(data.channels, data.sampleRate, progress)
       scope.postMessage({ kind: 'result', result })
     } else if (data.kind === 'render') {
-      const result = await renderPitch(data.channels, data.sampleRate, data.segments ?? [], data.shifts ?? {}, progress)
+      const result = await renderPitch(data.channels, data.sampleRate, data.segments ?? [], data.shifts ?? {}, progress, data.settings)
       scope.postMessage({ kind: 'result', result }, result.map(channel => channel.buffer))
     } else throw new Error('알 수 없는 피치 작업입니다.')
   } catch (error) {

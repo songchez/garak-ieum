@@ -41,10 +41,25 @@ function notes(value: unknown, duration: number, name: string): PitchNote[] {
   })
 }
 
+function shiftMap(value: unknown, segmentIds: ReadonlySet<string>, min: number, max: number, name: string): Record<string, number> {
+  const result: Record<string, number> = {}
+  const entries = Object.entries(object(value, name))
+  if (entries.length > PITCH_LIMITS.maxNotes) throw new Error(`${name} 항목이 너무 많습니다.`)
+  for (const [id, input] of entries) {
+    identifier(id, `${name} ID`)
+    if (!segmentIds.has(id)) throw new Error(`${name}이 존재하지 않는 음표를 참조합니다.`)
+    const cents = finite(input, min, max, `${name}량`)
+    if (cents !== 0) result[id] = cents
+  }
+  return result
+}
+
 /** Parse known data into fresh containers; reject corrupt or unsupported editor state. */
 export function validatePitchDocument(input: unknown): PitchEditDocument {
   const doc = object(input, '피치 편집')
-  if (doc.version !== 1) throw new Error('지원하지 않는 피치 편집 버전입니다.')
+  if (doc.version !== 1 && doc.version !== 2) throw new Error('지원하지 않는 피치 편집 버전입니다.')
+  if (doc.version === 1 && ('preserveFormants' in doc || 'formantShifts' in doc)) throw new Error('포먼트 편집에는 피치 편집 버전 2가 필요합니다.')
+  if (doc.version === 2 && typeof doc.preserveFormants !== 'boolean') throw new Error('포먼트 보존 설정은 참 또는 거짓이어야 합니다.')
   const sourceAssetId = assetIdentifier(doc.sourceAssetId, '피치 원본')
   if (typeof doc.sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(doc.sourceHash)) throw new Error('피치 원본 해시가 올바르지 않습니다.')
   const rendererId = identifier(doc.rendererId, '피치 렌더러')
@@ -65,21 +80,23 @@ export function validatePitchDocument(input: unknown): PitchEditDocument {
   const analysis: PitchAnalysis = { version: 1, algorithm: 'yin-v1', sampleRate, sourceFrames, notes: notes(raw.notes, duration, '분석 음표'), contour }
   const segments = notes(doc.segments, duration, '편집 음표')
   const segmentIds = new Set(segments.map(note => note.id))
-  const shifts: Record<string, number> = {}
-  const entries = Object.entries(object(doc.shifts, '피치 이동'))
-  if (entries.length > PITCH_LIMITS.maxNotes) throw new Error('피치 이동 항목이 너무 많습니다.')
-  for (const [id, value] of entries) {
-    identifier(id, '피치 이동 ID')
-    if (!segmentIds.has(id)) throw new Error('피치 이동이 존재하지 않는 음표를 참조합니다.')
-    const cents = finite(value, PITCH_LIMITS.minCents, PITCH_LIMITS.maxCents, '피치 이동량')
-    if (cents !== 0) shifts[id] = cents
-  }
-  return { version: 1, sourceAssetId, sourceHash: doc.sourceHash, rendererId, analysis, segments, shifts }
+  const shifts = shiftMap(doc.shifts, segmentIds, PITCH_LIMITS.minCents, PITCH_LIMITS.maxCents, '피치 이동')
+  // Existing v1 renders retain their original renderer and behavior until explicitly applied again.
+  const preserveFormants = doc.version === 2 ? doc.preserveFormants as boolean : false
+  const formantShifts = doc.version === 2
+    ? shiftMap(doc.formantShifts, segmentIds, PITCH_LIMITS.minFormantCents, PITCH_LIMITS.maxFormantCents, '포먼트 이동')
+    : {}
+  return { version: 2, sourceAssetId, sourceHash: doc.sourceHash, rendererId, analysis, segments, shifts, preserveFormants, formantShifts }
 }
 
 /** Analysis is immutable; editable segmentation and shift values belong to each clip. */
 export function copyPitchDocument(doc: PitchEditDocument): PitchEditDocument {
-  return { ...doc, segments: doc.segments.map(note => ({ ...note })), shifts: { ...doc.shifts } }
+  return { ...doc, segments: doc.segments.map(note => ({ ...note })), shifts: { ...doc.shifts }, formantShifts: { ...doc.formantShifts } }
+}
+
+/** Preserving formants alone is inaudible; either nonzero offset requires a derived asset. */
+export function hasPitchAudioEdits(doc: PitchEditDocument): boolean {
+  return Object.values(doc.shifts).some(cents => cents !== 0) || Object.values(doc.formantShifts).some(cents => cents !== 0)
 }
 
 /** Re-decoding at a different project rate is valid when source time is preserved. */
@@ -107,7 +124,7 @@ export function applyPitchDocument(clip: AudioClip, document: PitchEditDocument,
   const pitch = validatePitchDocument(document)
   if (pitch.sourceAssetId !== (clip.pitch?.sourceAssetId ?? clip.assetId)) throw new Error('피치 편집 원본이 변경되었습니다. 다시 분석해 주세요.')
   const renderId = assetIdentifier(renderedAssetId, '피치 렌더 음원')
-  const changed = Object.keys(pitch.shifts).length > 0
+  const changed = hasPitchAudioEdits(pitch)
   if (changed && renderId === pitch.sourceAssetId) throw new Error('수정된 피치의 렌더 음원이 없습니다.')
   return { ...clip, assetId: changed ? renderId : pitch.sourceAssetId, pitch }
 }

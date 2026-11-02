@@ -1,7 +1,7 @@
 import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
 import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
-import { copyPitchDocument, validatePitchDocument } from '../devices/pitch-editor/state'
+import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
 import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
 
 let fallbackSequence = 0
@@ -671,8 +671,9 @@ export function validateProject(input: unknown): Project {
       if (clip.kind === 'audio') {
         if (clip.pitch !== undefined && version !== 3) throw new Error('Pitch editing requires project schema version 3.')
         const pitch = clip.pitch === undefined ? undefined : validatePitchDocument(clip.pitch)
-        if (pitch && Object.keys(pitch.shifts).length && clip.assetId === pitch.sourceAssetId) throw new Error(`${clipPath} is missing its pitch render.`)
-        if (pitch && !Object.keys(pitch.shifts).length && clip.assetId !== pitch.sourceAssetId) throw new Error(`${clipPath} has a pitch render without any pitch changes.`)
+        const changed = pitch && hasPitchAudioEdits(pitch)
+        if (pitch && changed && clip.assetId === pitch.sourceAssetId) throw new Error(`${clipPath} is missing its pitch render.`)
+        if (pitch && !changed && clip.assetId !== pitch.sourceAssetId) throw new Error(`${clipPath} has a pitch render without any pitch or formant changes.`)
         return {
           ...base,
           kind: 'audio',

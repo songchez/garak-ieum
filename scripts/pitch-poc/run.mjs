@@ -52,7 +52,7 @@ const report = {
   source: 'Generated 220 Hz sine, 0.4 linear amplitude, 4 seconds; edit from 0.1 to 3.9 seconds; stable measurement window 1 to 3 seconds.',
   analysis: { notes: analysis.notes.length, contourPoints: analysis.contour.length, centerMidi: middle[Math.floor(middle.length / 2)], absoluteErrorCents: Math.abs(middle[Math.floor(middle.length / 2)] - 57) * 100, milliseconds: analysisMs },
   renders,
-  limits: ['Synthetic PCM measurement, not listening evaluation.', 'No real-browser/UI or hardware test.', 'No polyphonic note separation, time warping, or advanced vocal controls.', 'Formants move with pitch; no automatic formant preservation.', 'These synthetic steady-tone errors are not a universal accuracy guarantee for voices or transients.'],
+  limits: ['Synthetic PCM measurement, not listening evaluation.', 'No real-browser/UI or hardware test.', 'No polyphonic note separation, time warping, or advanced vocal controls.', 'This script uses legacy/default settings: formants move with pitch. Optional approximate envelope controls are measured in formants.mjs.', 'These synthetic steady-tone errors are not a universal accuracy guarantee for voices or transients.'],
 }
 
 // Preserve the rejected direct-transpose path as a reproducible comparison.

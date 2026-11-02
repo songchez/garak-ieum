@@ -1,9 +1,9 @@
-import { PITCH_LIMITS, type PitchNote } from './model'
+import { PITCH_LIMITS, type PitchNote, type PitchRenderSettings } from './model'
 import { validatePitchPcm } from './analysis'
 import createSignalsmith, { type SignalsmithModule } from './vendor/signalsmith-core.mjs'
 export { PITCH_RENDERER_ID } from './metadata'
 
-function validateEdits(segments: readonly PitchNote[], shifts: Readonly<Record<string, number>>, duration: number, sampleRate: number): void {
+function validateEdits(segments: readonly PitchNote[], shifts: Readonly<Record<string, number>>, settings: PitchRenderSettings, duration: number, sampleRate: number): void {
   if (!Array.isArray(segments) || segments.length > PITCH_LIMITS.maxNotes) throw new Error('피치 음표 개수가 올바르지 않습니다.')
   const ids = new Set<string>()
   let previousEnd = 0
@@ -23,7 +23,19 @@ function validateEdits(segments: readonly PitchNote[], shifts: Readonly<Record<s
   for (const [id, cents] of Object.entries(shifts)) {
     if (!ids.has(id) || !Number.isFinite(cents) || cents < PITCH_LIMITS.minCents || cents > PITCH_LIMITS.maxCents) throw new Error('피치 변경은 선택한 음표에서 ±1옥타브까지 지원합니다.')
   }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings) || typeof settings.preserveFormants !== 'boolean' || !settings.formantShifts || typeof settings.formantShifts !== 'object' || Array.isArray(settings.formantShifts) || Object.keys(settings.formantShifts).length > PITCH_LIMITS.maxNotes) throw new Error('포먼트 설정이 올바르지 않습니다.')
+  for (const [id, cents] of Object.entries(settings.formantShifts)) {
+    if (!ids.has(id) || !Number.isFinite(cents) || cents < PITCH_LIMITS.minFormantCents || cents > PITCH_LIMITS.maxFormantCents) throw new Error('포먼트 변경은 선택한 음표에서 ±1옥타브까지 지원합니다.')
+  }
+  for (const note of segments) {
+    const preShift = ownShift(settings.formantShifts, note.id) - (settings.preserveFormants ? ownShift(shifts, note.id) : 0)
+    // Beyond an octave, measured envelope failures also perturb the dominant
+    // harmonic's frequency. Reject instead of silently changing the target.
+    if (Math.abs(preShift) > PITCH_LIMITS.maxFormantCents) throw new Error('피치와 포먼트의 보정 차이가 ±1200센트를 넘습니다. 이동량을 줄이거나 포먼트 보존을 꺼 주세요.')
+  }
 }
+
+const ownShift = (shifts: Readonly<Record<string, number>>, id: string): number => Object.hasOwn(shifts, id) ? shifts[id] : 0
 
 const RESAMPLE_HALF_TAPS = 32
 const RESAMPLE_PHASES = 1024
@@ -53,7 +65,7 @@ function resamplingKernel(ratio: number): Float32Array {
 /** Stretch at neutral pitch, then resample at the requested exact ratio. */
 function renderNote(
   module: SignalsmithModule, source: readonly Float32Array[], output: Float32Array[],
-  sampleRate: number, note: PitchNote, cents: number, kernel: Float32Array, onProgress: (fraction: number) => void,
+  sampleRate: number, note: PitchNote, cents: number, formantCents: number, kernel: Float32Array, onProgress: (fraction: number) => void,
 ): void {
   const blockSize = 512
   const ratio = 2 ** (cents / 1200)
@@ -70,9 +82,15 @@ function renderNote(
   module._reset()
   // Direct spectral transposition in this pinned release measured up to 10.54
   // cents of error on small shifts. Neutral stretching + resampling avoids that
-  // bin-mapping error. Formants move with pitch; no preservation is promised.
+  // bin-mapping error. Envelope shifting does not change this frequency map.
   module._setTransposeSemitones(0, 1)
-  module._setFormantSemitones(0, false)
+  // Apply the requested envelope displacement before resampling. Preservation
+  // subtracts the pitch delta here because resampling will add it back. The
+  // upstream compensation flag only sees its own transpose map, which is neutral.
+  module._setFormantSemitones(formantCents / 100, false)
+  // The upstream analysis receives the original, untransposed PCM. Frequencies
+  // are in cycles/sample (Hz/sampleRate), not relative to Nyquist or output F0.
+  module._setFormantBase(440 * 2 ** ((note.midi - 69) / 12) / sampleRate)
   const latency = module._inputLatency() * ratio + module._outputLatency()
   const bufferFrames = Math.ceil(blockSize * Math.max(1, ratio)) + 1
   const base = module._setBuffers(source.length, bufferFrames) / Float32Array.BYTES_PER_ELEMENT
@@ -115,7 +133,9 @@ function renderNote(
         let value = 0
         for (let tap = 0; tap < taps; tap += 1) value += recent[channel][(firstSample + tap) & ringMask] * kernel[kernelOffset + tap]
         if (!Number.isFinite(value)) throw new Error('피치 렌더링 중 유효하지 않은 오디오가 생성되었습니다.')
-        output[channel][nextFrame] = source[channel][nextFrame] * (1 - mix) + value * mix
+        // Retain the original endpoint exactly, including signed zero. Adding
+        // a zero-valued processed term can otherwise change -0 into +0.
+        if (mix !== 0) output[channel][nextFrame] = source[channel][nextFrame] * (1 - mix) + value * mix
       }
       nextFrame += 1
     }
@@ -129,11 +149,12 @@ function renderNote(
 export async function renderPitch(
   channels: readonly Float32Array[], sampleRate: number, segments: readonly PitchNote[],
   shifts: Readonly<Record<string, number>>, onProgress?: (progress: number) => void,
+  settings: PitchRenderSettings = { preserveFormants: false, formantShifts: {} },
 ): Promise<Float32Array[]> {
   const frames = validatePitchPcm(channels, sampleRate)
-  validateEdits(segments, shifts, frames / sampleRate, sampleRate)
+  validateEdits(segments, shifts, settings, frames / sampleRate, sampleRate)
   const output = channels.map(channel => channel.slice())
-  const changed = segments.filter(note => Object.hasOwn(shifts, note.id) && shifts[note.id] !== 0)
+  const changed = segments.filter(note => ownShift(shifts, note.id) !== 0 || ownShift(settings.formantShifts, note.id) !== 0)
   onProgress?.(0)
   if (!changed.length) { onProgress?.(1); return output }
   // One instance per operation: upstream's C binding stores a global stretcher.
@@ -146,9 +167,10 @@ export async function renderPitch(
   let kernel: Float32Array = new Float32Array(0)
   for (let index = 0; index < changed.length; index += 1) {
     const note = changed[index]
-    const cents = shifts[note.id]
+    const cents = ownShift(shifts, note.id)
+    const formantCents = ownShift(settings.formantShifts, note.id) - (settings.preserveFormants ? cents : 0)
     if (cents !== lastCents) { kernel = resamplingKernel(2 ** (cents / 1200)); lastCents = cents }
-    renderNote(module, channels, output, sampleRate, note, cents, kernel, fraction => onProgress?.((completed + fraction * weights[index]) / totalWeight))
+    renderNote(module, channels, output, sampleRate, note, cents, formantCents, kernel, fraction => onProgress?.((completed + fraction * weights[index]) / totalWeight))
     completed += weights[index]
   }
   onProgress?.(1)
