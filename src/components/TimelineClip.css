@@ -1,28 +1,25 @@
 /* Region display (Logic §5 / LOGIC_GAP §1.11). Selectors are prefixed with .track-lane to outrank the legacy .timeline-clip rules in styles.css. */
-.track-lane .timeline-clip{--clip-gray:#6b6b6b;background:color-mix(in srgb,var(--clip-color) 26%,var(--surface-canvas));border:1px solid color-mix(in srgb,var(--clip-color) 42%,var(--surface-canvas));color:var(--clip-color)}
+.track-lane .timeline-clip{--clip-gray:#6b6b6b;--clip-text:var(--text-primary);--clip-preview-color:color-mix(in srgb,var(--clip-color) 25%,var(--text-primary));background:color-mix(in srgb,var(--clip-color) 26%,var(--surface-canvas));border:1px solid color-mix(in srgb,var(--clip-color) 42%,var(--surface-canvas));color:var(--clip-text)}
 .track-lane .timeline-clip .clip-title{position:relative;gap:4px}
 .track-lane .timeline-clip .clip-title>span:first-of-type{overflow:hidden;text-overflow:ellipsis;padding-right:12px}
-.track-lane .timeline-clip .clip-preview{color:var(--clip-color)}
+.track-lane .timeline-clip .clip-preview{color:var(--clip-preview-color)}
 
-/* Selected = lighter fill, dark text (V-03) */
-.track-lane .timeline-clip.clip-selected{background:color-mix(in srgb,var(--clip-color) 80%,#fff);border-color:color-mix(in srgb,var(--clip-color) 60%,#fff);box-shadow:0 0 0 1px color-mix(in srgb,var(--clip-color) 40%,transparent),0 1px 3px #0005;color:#1d1b17}
-.track-lane .timeline-clip.clip-selected .clip-title{color:#1d1b17;font-weight:600;border-bottom-color:#0002}
-.track-lane .timeline-clip.clip-selected .clip-preview{color:#1d1b17;opacity:.75}
+/* Selected = lighter track fill, with foreground chosen from that fill (V-03). */
+.track-lane .timeline-clip.clip-selected{--clip-text:var(--clip-selected-text);--clip-preview-color:var(--clip-text);background:color-mix(in srgb,var(--clip-color) 80%,#fff);border-color:color-mix(in srgb,var(--clip-color) 60%,#fff);box-shadow:0 0 0 1px color-mix(in srgb,var(--clip-color) 40%,transparent),0 1px 3px #0005}
+.track-lane .timeline-clip.clip-selected .clip-title{font-weight:600;border-bottom-color:color-mix(in srgb,currentColor 15%,transparent)}
+.track-lane .timeline-clip.clip-selected .clip-preview{opacity:.75}
+.track-lane .timeline-clip:hover{filter:none;border-color:var(--focus)}
 
 /* Muted region = gray body and name, dot before the name (V-04) */
-.track-lane .timeline-clip.clip-muted{opacity:1;filter:none;background:color-mix(in srgb,var(--clip-gray) 30%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 45%,var(--surface-canvas));color:#8d8d8d}
-.track-lane .timeline-clip.clip-muted .clip-title,.track-lane .timeline-clip.clip-muted .clip-preview{color:#8d8d8d}
+.track-lane .timeline-clip.clip-muted{--clip-text:var(--text-muted);--clip-preview-color:var(--text-muted);opacity:1;filter:none;background:color-mix(in srgb,var(--clip-gray) 30%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 45%,var(--surface-canvas))}
 .track-lane .timeline-clip.clip-muted .clip-title>span:first-of-type{text-decoration:none}
-.track-lane .timeline-clip.clip-muted.clip-selected{background:color-mix(in srgb,var(--clip-gray) 75%,#fff);border-color:#bdbdbd;color:#1d1b17}
-.track-lane .timeline-clip.clip-muted.clip-selected .clip-title,.track-lane .timeline-clip.clip-muted.clip-selected .clip-preview{color:#1d1b17}
+.track-lane .timeline-clip.clip-muted.clip-selected{--clip-text:var(--on-track-color);--clip-preview-color:var(--clip-text);background:color-mix(in srgb,var(--clip-gray) 75%,#fff);border-color:#bdbdbd}
 .clip-mute-dot{flex-shrink:0;width:4px;height:4px;border-radius:50%;background:currentColor}
 
-/* Track silenced by mute/solo = gray body, name keeps the track color; track off = everything gray (V-05) */
-.track-silent .track-lane .timeline-clip:not(.clip-selected){background:color-mix(in srgb,var(--clip-gray) 28%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 40%,var(--surface-canvas))}
-.track-silent .track-lane .timeline-clip:not(.clip-selected) .clip-preview{color:#8d8d8d}
-.track-off .track-lane .timeline-clip:not(.clip-selected){background:color-mix(in srgb,var(--clip-gray) 24%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 36%,var(--surface-canvas));color:#7f7f7f}
-.track-off .track-lane .timeline-clip:not(.clip-selected) .clip-title,.track-off .track-lane .timeline-clip:not(.clip-selected) .clip-preview{color:#7f7f7f}
-.track-silent .track-lane .timeline-clip.clip-selected,.track-off .track-lane .timeline-clip.clip-selected{background:color-mix(in srgb,var(--clip-gray) 75%,#fff);border-color:#bdbdbd;box-shadow:0 0 0 1px #8d8d8d66,0 1px 3px #0005}
+/* Track silenced by mute/solo = gray body with a readable name; track off = subdued text (V-05). */
+.track-silent .track-lane .timeline-clip:not(.clip-selected){--clip-preview-color:var(--text-muted);background:color-mix(in srgb,var(--clip-gray) 28%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 40%,var(--surface-canvas))}
+.track-off .track-lane .timeline-clip:not(.clip-selected){--clip-text:var(--text-disabled);--clip-preview-color:var(--text-disabled);background:color-mix(in srgb,var(--clip-gray) 24%,var(--surface-canvas));border-color:color-mix(in srgb,var(--clip-gray) 36%,var(--surface-canvas))}
+.track-silent .track-lane .timeline-clip.clip-selected,.track-off .track-lane .timeline-clip.clip-selected{--clip-text:var(--on-track-color);--clip-preview-color:var(--clip-text);background:color-mix(in srgb,var(--clip-gray) 75%,#fff);border-color:#bdbdbd;box-shadow:0 0 0 1px #8d8d8d66,0 1px 3px #0005}
 .track-hidden .track-lane .timeline-clip,.track-hidden .track-lane .clip-loop-ghost{opacity:.55}
 
 /* Loop pointer zone (top-right 10px) and shaded repeats with notches (V-06) */
@@ -30,12 +27,12 @@
 .timeline-clip:hover .clip-loop-handle{background:color-mix(in srgb,currentColor 18%,transparent);opacity:1}
 .timeline-clip.clip-looped .clip-loop-handle{opacity:1}
 .timeline-clip.clip-looped::after{content:"";position:absolute;right:-1px;top:0;bottom:0;width:3px;background:repeating-linear-gradient(to bottom,transparent 0 4px,color-mix(in srgb,currentColor 60%,transparent) 4px 6px);pointer-events:none}
-.clip-loop-ghost{--loop-color:var(--clip-color);--loop-text:var(--clip-color);--loop-preview:var(--clip-color);position:absolute;top:7px;height:calc(var(--row-h) - 15px);border-radius:4px;box-sizing:border-box;overflow:hidden;background:color-mix(in srgb,var(--loop-color) 12%,var(--surface-canvas));border:1px dashed color-mix(in srgb,var(--loop-color) 38%,transparent);color:var(--loop-text);cursor:grab;user-select:none;touch-action:none;opacity:.8;background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--loop-color) 7%,transparent) 6px 7px)}
+.clip-loop-ghost{--loop-color:var(--clip-color);--loop-text:var(--text-primary);--loop-preview:color-mix(in srgb,var(--clip-color) 25%,var(--text-primary));position:absolute;top:7px;height:calc(var(--row-h) - 15px);border-radius:4px;box-sizing:border-box;overflow:hidden;background:color-mix(in srgb,var(--loop-color) 12%,var(--surface-canvas));border:1px dashed color-mix(in srgb,var(--loop-color) 38%,transparent);color:var(--loop-text);cursor:grab;user-select:none;touch-action:none;opacity:.8;background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--loop-color) 7%,transparent) 6px 7px)}
 .clip-loop-ghost:hover{opacity:1}
 .clip-loop-ghost.clip-selected{background:color-mix(in srgb,var(--loop-color) 40%,var(--surface-canvas));border-color:color-mix(in srgb,var(--loop-color) 70%,transparent)}
-.clip-loop-ghost.clip-muted{--loop-color:#8d8d8d;--loop-text:#8d8d8d;--loop-preview:#8d8d8d}
-.track-silent .track-lane .clip-loop-ghost{--loop-color:#6b6b6b;--loop-preview:#8d8d8d}
-.track-off .track-lane .clip-loop-ghost{--loop-color:#6b6b6b;--loop-text:#7f7f7f;--loop-preview:#8d8d8d}
+.clip-loop-ghost.clip-muted{--loop-color:#8d8d8d;--loop-text:var(--text-muted);--loop-preview:var(--text-muted)}
+.track-silent .track-lane .clip-loop-ghost{--loop-color:#6b6b6b;--loop-preview:var(--text-muted)}
+.track-off .track-lane .clip-loop-ghost{--loop-color:#6b6b6b;--loop-text:var(--text-disabled);--loop-preview:var(--text-disabled)}
 .clip-loop-content{position:relative;height:100%;overflow:hidden;pointer-events:none}
 .clip-loop-content .clip-title{color:var(--loop-text);border-bottom-color:color-mix(in srgb,var(--loop-color) 12%,transparent)}
 .clip-loop-content .clip-preview{color:var(--loop-preview);opacity:.6}

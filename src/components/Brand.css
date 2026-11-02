@@ -22,9 +22,18 @@
 .brand-wordmark {
   display: block;
   height: 18px;
-  width: auto;
-  object-fit: contain;
+  width: 58px;
+  flex-shrink: 0;
+  background: var(--hanji);
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
 }
+
+:root[data-theme-mode="light"] .brand-wordmark { background: var(--text-primary); }
 
 .brand-lockup--compact { gap: 6px; }
 .brand-lockup--compact .brand-logo { border-radius: 4px; }
@@ -35,7 +44,7 @@
 }
 
 .brand-lockup--large .brand-logo { border-radius: 12px; }
-.brand-lockup--large .brand-wordmark { height: 60px; }
+.brand-lockup--large .brand-wordmark { height: 60px; width: 193px; }
 
 .font-credit {
   font-size: 10px;

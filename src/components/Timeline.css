@@ -30,15 +30,15 @@
 .corner-button:disabled{opacity:.35;pointer-events:none}
 .corner-button.active{color:var(--accent-hover);background:var(--accent-soft)}
 .corner-letter{font-family:Consolas,"SFMono-Regular",monospace;font-size:10px}
-.corner-button.hidden-exist{color:#e8923a;border-color:#e8923a66}
-.corner-button.hide-view-on{color:var(--text-inverse);background:#4fae7a;border-color:#4fae7a}
-.corner-button.solo-on{color:var(--text-inverse);background:#e0c24c;border-color:#e0c24c}
-.corner-button.solo-recall{color:#b9a65a;border-color:#b9a65a66}
+.corner-button.hidden-exist{color:var(--warning);border-color:color-mix(in srgb,var(--warning) 45%,transparent)}
+.corner-button.hide-view-on,.corner-button.hide-view-on:hover:not(:disabled){color:var(--on-track-color);background:#4fae7a;border-color:#4fae7a}
+.corner-button.solo-on,.corner-button.solo-on:hover:not(:disabled){color:var(--on-track-color);background:#e0c24c;border-color:#e0c24c}
+.corner-button.solo-recall{color:var(--warning);border-color:color-mix(in srgb,var(--warning) 45%,transparent)}
 
 /* Ruler: cycle band (upper 16px) in dancheong gold, seek band below */
 .timeline-sheet .loop-region{height:7px;background:color-mix(in srgb,var(--brass) 55%,transparent);border-top:1px solid var(--brass)}
 .timeline-sheet .loop-region span{background:var(--brass);width:6px;height:9px;border-radius:0 0 2px 2px}
-.timeline-sheet .loop-region.disabled{background:#8a837533;border-top-color:var(--border-strong)}
+.timeline-sheet .loop-region.disabled{background:color-mix(in srgb,var(--text-muted) 20%,transparent);border-top-color:var(--border-strong)}
 .timeline-sheet .loop-region.disabled span{background:var(--ink-42)}
 .timeline-ruler.cycle-grabbing{cursor:grabbing!important}
 .timeline-ruler.cycle-sizing{cursor:ew-resize!important}
@@ -51,7 +51,7 @@
 .global-lane{position:relative;flex-shrink:0;overflow:hidden;background-image:linear-gradient(to right,var(--grid-major) 1px,transparent 1px);background-size:var(--bar-px,80px) 100%}
 .marker{position:absolute;top:2px;height:18px;display:flex;align-items:center;gap:4px;padding:0 6px 0 4px;box-sizing:border-box;border-radius:2px 3px 3px 2px;background:var(--brass-soft);border-left:2px solid var(--brass);color:var(--text-secondary);font-size:9px;white-space:nowrap;overflow:hidden;cursor:grab;touch-action:none;user-select:none;outline:0}
 .marker:hover{background:color-mix(in srgb,var(--brass) 23%,transparent)}
-.marker.selected{background:var(--brass);color:var(--text-inverse);font-weight:600}
+.marker.selected{background:var(--loop-fill);color:var(--on-brass);font-weight:600}
 .marker.dragging{opacity:.8;cursor:grabbing}
 .marker:focus-visible{box-shadow:0 0 0 1px var(--accent-hover)}
 .marker-flag{width:0;height:0;border-left:5px solid currentColor;border-top:4px solid transparent;border-bottom:4px solid transparent;opacity:.8;flex-shrink:0}

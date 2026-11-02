@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import type { AudioEngine, EffectType, InstrumentId, Project, Track } from '../core/types'
 import { EFFECT_DEFS, EFFECT_TYPES } from '../core/devices'
 import { INSTRUMENTS, INSTRUMENT_SECTIONS, instrumentDef } from '../core/instruments'
+import { contrastTextColor } from '../core/colors'
 import type { TrackButtonKind, TrackButtonMods } from '../core/trackActions'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import { Icon } from './Icon'
@@ -87,7 +88,7 @@ export function ChannelStrip(props: ChannelStripProps) {
     const up = () => { dragFrom.current = null; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up)
   }
-  return <div className={`cstrip ${focused ? 'focused' : ''} ${compact ? 'compact' : ''} ${track.enabled ? '' : 'off'}`} style={{ '--track-color': track.color } as React.CSSProperties} aria-label={`${track.name} 채널 스트립`} onClick={onSelect}>
+  return <div className={`cstrip ${focused ? 'focused' : ''} ${compact ? 'compact' : ''} ${track.enabled ? '' : 'off'}`} style={{ '--track-color': track.color, '--track-label-color': contrastTextColor(track.color) } as React.CSSProperties} aria-label={`${track.name} 채널 스트립`} onClick={onSelect}>
     <div className="cstrip-slot cstrip-kind">{track.kind === 'audio' ? '오디오' : '악기'}</div>
     {track.kind === 'instrument' && <div className="cstrip-slot cstrip-instrument" title={`${def.name} · ${def.nameKo}`}>
       <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); if (props.onOpenDevices) props.onOpenDevices(id); else open('instrument', e) }} aria-label={`악기 ${def.name}`}><Icon name={def.icon} size={11} /><span>{def.name}</span></button>

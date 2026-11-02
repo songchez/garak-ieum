@@ -4,6 +4,7 @@ import type { InstrumentId, MidiClip, MidiNote } from '../core/types'
 import { crossedDragThreshold, dragModifiers, isShortcutSuppressed, isUnmodified, shortcutPlatform, snapDragDelta } from '../core/input'
 import { GM_KIT_NAMES, instrumentDef } from '../core/instruments'
 import { pitchClassName, pitchName } from '../core/pitch'
+import { contrastTextColor } from '../core/colors'
 import { ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from '../core/zoom'
 import ContextMenu from './ContextMenu'
 import type { ContextMenuItem } from './ContextMenu'
@@ -771,6 +772,8 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
   const visualStep = snap || 0.25
   const style = {
     '--piano-color': color,
+    '--piano-note-text': contrastTextColor(color),
+    '--piano-note-selected-text': contrastTextColor(color, .2),
     '--piano-row': `${ROW}px`,
     '--piano-step': `${beatWidth * visualStep}px`,
     '--piano-beat': `${beatWidth}px`,

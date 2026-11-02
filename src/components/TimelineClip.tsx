@@ -4,6 +4,7 @@ import { instrumentDef } from '../core/instruments'
 import { clipOccurrences, isTrackEnabled } from '../core/playback'
 import { regionDisplayName } from '../core/regionDisplay'
 import { isShortcutSuppressed, isUnmodified } from '../core/input'
+import { contrastTextColor } from '../core/colors'
 import { Icon } from './Icon'
 import { Waveform } from './Waveform'
 import './TimelineClip.css'
@@ -57,16 +58,15 @@ export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,bpm,p
   const cls=['timeline-clip',clip.kind]
   if(selected)cls.push('clip-selected');if(preview)cls.push('clip-moving');if(clip.mute)cls.push('clip-muted');if(clip.loop)cls.push('clip-looped')
   const label=regionDisplayName(displayClip)
-  // Canvas does not repaint when only an ancestor's CSS color changes. Pass an explicit color
-  // so muting/soloing/selection updates audio thumbnails just as it updates MIDI previews.
-  const waveformColor=(repeat:boolean)=>!repeat&&selected?'#1d1b17':clip.mute||silent||!isTrackEnabled(track)?'#8d8d8d':track.color
+  // Ancestor state changes also invalidate the canvas, whose color follows the same CSS as MIDI previews.
+  const waveformAppearance=`${selected}:${!!clip.mute}:${silent}:${isTrackEnabled(track)}:${track.color}`
   const contents=(repeat=false)=><>
     <div className="clip-title"><Icon name={clip.kind==='audio'?'wave':'note'} size={11}/>{clip.mute&&<i className="clip-mute-dot" aria-hidden="true"/>}{!repeat&&renaming?<InlineName value={clip.name} label="클립 이름" onDone={name=>actions.current.renameDone(clip.id,name)}/>:<span>{label}</span>}</div>
-    <div className="clip-preview">{clip.kind==='audio'&&asset?<Waveform peaks={asset.peaks} color={waveformColor(repeat)}/>:<svg width="100%" height="100%" preserveAspectRatio="none" viewBox={`0 0 ${Math.max(.01,length)*20} 32`} aria-hidden="true">{repeat?<use href={`#${notePreviewId}`}/>:<g id={notePreviewId}>{notes.filter(n=>n.start<length).map(n=><rect key={n.id} x={n.start*20} y={3+(1-(n.pitch-min)/Math.max(12,max-min))*23} width={Math.max(1,Math.min(n.duration,length-n.start)*20-1)} height={instrumentDef(track.instrument).isKit?4:2.5} rx=".7" fill="currentColor" opacity={.45+n.velocity*.5}/>)}</g>}</svg>}</div>
+    <div className="clip-preview">{clip.kind==='audio'&&asset?<Waveform peaks={asset.peaks} color={repeat?'var(--loop-preview)':'var(--clip-preview-color)'} appearanceKey={waveformAppearance}/>:<svg width="100%" height="100%" preserveAspectRatio="none" viewBox={`0 0 ${Math.max(.01,length)*20} 32`} aria-hidden="true">{repeat?<use href={`#${notePreviewId}`}/>:<g id={notePreviewId}>{notes.filter(n=>n.start<length).map(n=><rect key={n.id} x={n.start*20} y={3+(1-(n.pitch-min)/Math.max(12,max-min))*23} width={Math.max(1,Math.min(n.duration,length-n.start)*20-1)} height={instrumentDef(track.instrument).isKit?4:2.5} rx=".7" fill="currentColor" opacity={.45+n.velocity*.5}/>)}</g>}</svg>}</div>
     {fades&&<svg className="clip-fades" aria-hidden="true" width={widthPx} height="100%" viewBox={`0 0 ${widthPx} 100`} preserveAspectRatio="none">{fades.inPx>0&&<polygon points={`0,0 ${fades.inPx},0 0,100`}/>}{fades.outPx>0&&<polygon points={`${widthPx-fades.outPx},0 ${widthPx},0 ${widthPx},100`}/>}</svg>}
   </>
   return <>
-    <div ref={regionRef} className={cls.join(' ')} tabIndex={0} role="button" aria-pressed={selected} aria-label={`${label}, ${clip.startBeat/4+1} 마디${clip.mute?', 뮤트됨':''}${clip.loop?', 루프':''}`} onFocus={()=>{if(!focusFromPointer&&!selected)onSelect(track.id,clip.id)}} onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'move')} onDoubleClick={e=>{if(!(e.target as Element).closest('input,.clip-loop-handle'))actions.current.open(track.id,clip.id)}} onContextMenu={e=>actions.current.clipMenu(e,track,clip)} onKeyDown={e=>{if(e.key==='Enter'&&isUnmodified(e.nativeEvent)&&!isShortcutSuppressed(e.nativeEvent,true)){e.preventDefault();e.stopPropagation();if(!e.repeat)onSelect(track.id,clip.id)}}} style={{left:start*ppb,width:widthPx,transform:dy?`translateY(${dy}px)`:undefined,'--clip-color':track.color} as React.CSSProperties}>
+    <div ref={regionRef} className={cls.join(' ')} tabIndex={0} role="button" aria-pressed={selected} aria-label={`${label}, ${clip.startBeat/4+1} 마디${clip.mute?', 뮤트됨':''}${clip.loop?', 루프':''}`} onFocus={()=>{if(!focusFromPointer&&!selected)onSelect(track.id,clip.id)}} onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'move')} onDoubleClick={e=>{if(!(e.target as Element).closest('input,.clip-loop-handle'))actions.current.open(track.id,clip.id)}} onContextMenu={e=>actions.current.clipMenu(e,track,clip)} onKeyDown={e=>{if(e.key==='Enter'&&isUnmodified(e.nativeEvent)&&!isShortcutSuppressed(e.nativeEvent,true)){e.preventDefault();e.stopPropagation();if(!e.repeat)onSelect(track.id,clip.id)}}} style={{left:start*ppb,width:widthPx,transform:dy?`translateY(${dy}px)`:undefined,'--clip-color':track.color,'--clip-selected-text':contrastTextColor(track.color,.2)} as React.CSSProperties}>
       {contents()}
       <div className="clip-resize-left" title="드래그하여 시작 지점 자르기" onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'trimStart')}/>
       <div className="clip-resize" title="드래그하여 클립 길이 조절" onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'trimEnd')}/>

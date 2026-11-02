@@ -10,10 +10,12 @@ import type { Project } from '../core/types'
 import { parseRecordingOffset } from '../core/recordingOffset'
 import { Icon } from './Icon'
 import { useAudioDevices } from './useAudioDevices'
+import AppearanceSettings from './AppearanceSettings'
 import './AudioSettingsDialog.css'
 
-type Tab = 'devices' | 'recording' | 'project' | 'status'
+type Tab = 'appearance' | 'devices' | 'recording' | 'project' | 'status'
 const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: 'appearance', label: '화면 테마', icon: 'palette' },
   { id: 'devices', label: '오디오 장치', icon: 'headphones' },
   { id: 'recording', label: '녹음·모니터링', icon: 'mic' },
   { id: 'project', label: '프로젝트 오디오', icon: 'wave' },
@@ -116,13 +118,14 @@ export default function AudioSettingsDialog({ engine, inputCapture, settings, pr
   return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !applying) onClose() }}>
     <section className="modal audio-settings" role="dialog" aria-modal="true" aria-labelledby="audio-settings-title" aria-busy={applying}
       onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) onClose() } }}>
-      <header className="audio-settings-heading"><div className="audio-settings-symbol"><Icon name="settings" size={20}/></div><div><h2 id="audio-settings-title">설정</h2><p>오디오 장치와 프로젝트의 소리를 설정합니다.</p></div><button className="icon-button" aria-label="설정 닫기" disabled={applying} onClick={onClose}><Icon name="close" size={17}/></button></header>
+      <header className="audio-settings-heading"><div className="audio-settings-symbol"><Icon name="settings" size={20}/></div><div><h2 id="audio-settings-title">설정</h2><p>화면 테마와 오디오 환경을 설정합니다.</p></div><button className="icon-button" aria-label="설정 닫기" disabled={applying} onClick={onClose}><Icon name="close" size={17}/></button></header>
       <div className="audio-settings-layout">
         <nav className="audio-settings-nav" aria-label="설정 분류">
-          {TABS.map(item => <button key={item.id} type="button" aria-current={tab === item.id ? 'page' : undefined} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}><Icon name={item.icon} size={16}/><span>{item.label}</span></button>)}
-          <p>장치 설정은 이 브라우저에,<br/>샘플레이트는 프로젝트에<br/>저장합니다.</p>
+          {TABS.map(item => <button key={item.id} type="button" aria-current={tab === item.id ? 'page' : undefined} className={tab === item.id ? 'active' : ''} disabled={applying} onClick={() => setTab(item.id)}><Icon name={item.icon} size={16}/><span>{item.label}</span></button>)}
+          <p>테마·장치 설정은 이 브라우저에,<br/>샘플레이트는 프로젝트에<br/>저장합니다.</p>
         </nav>
         <div className="audio-settings-content">
+          {tab === 'appearance' && <AppearanceSettings disabled={applying}/>}
           {tab === 'devices' && <>
             <div className="audio-settings-section-title"><h3>입출력 장치</h3><button className="audio-small-button" disabled={locked || devices.loading} onClick={() => void devices.refresh()}>{devices.loading ? '확인 중…' : '목록 새로고침'}</button></div>
             <SettingRow label="입력 장치" hint="녹음과 트랙 입력 모니터링에 사용할 마이크 또는 오디오 인터페이스입니다.">
@@ -197,11 +200,12 @@ export default function AudioSettingsDialog({ engine, inputCapture, settings, pr
             <h3>오디오 인터페이스에서 설정할 항목</h3><p className="audio-settings-note">하드웨어 버퍼·마이크 프리앰프 게인·팬텀 파워·직접 모니터링·클럭 소스는 오인페의 제어판 또는 운영체제 오디오 설정을 사용하세요.</p>
           </>}
 
-          {message && <div className={`audio-settings-feedback ${problem ? 'error' : ''}`} role="status" data-selectable-text="" tabIndex={0}>{message}</div>}
-          {audio.needsReconfiguration && <p className="audio-settings-note">오디오 장치를 다시 준비해야 합니다. 장치와 샘플레이트를 확인하고 적용해주세요.</p>}
+          {tab !== 'appearance' && message && <div className={`audio-settings-feedback ${problem ? 'error' : ''}`} role="status" data-selectable-text="" tabIndex={0}>{message}</div>}
+          {tab !== 'appearance' && audio.needsReconfiguration && <p className="audio-settings-note">오디오 장치를 다시 준비해야 합니다. 장치와 샘플레이트를 확인하고 적용해주세요.</p>}
         </div>
       </div>
-      <footer className="audio-settings-footer"><button className="audio-reset-button" disabled={locked} onClick={() => { setDraft({ ...DEFAULT_AUDIO_SETTINGS }); setSampleRate(DEFAULT_SAMPLE_RATE); setOffsetText('0'); setFeedback(null) }}>기본값으로</button><div className="audio-settings-footer-status" role="status">{applying ? '오디오 설정을 적용하는 중…' : blockedReason || (dirty ? '적용하지 않은 변경 사항이 있습니다.' : requiresApply ? '오디오 장치를 다시 확인하고 적용해주세요.' : '현재 설정')}</div><div className="audio-settings-footer-actions"><button disabled={applying} onClick={onClose}>취소</button><button disabled={locked || (!dirty && !requiresApply)} onClick={() => void apply()}>적용</button><button className="primary" disabled={locked} onClick={() => void apply(true)}>완료</button></div></footer>
+      {tab === 'appearance' ? <footer className="audio-settings-footer appearance-footer"><div className="audio-settings-footer-status" role="status">{applying ? '오디오 설정을 적용하는 중…' : dirty ? '테마는 즉시 적용됩니다. 적용하지 않은 오디오 변경도 있습니다.' : '테마는 선택하는 즉시 적용·저장됩니다.'}</div><div className="audio-settings-footer-actions">{(dirty || requiresApply) && <button disabled={applying} onClick={() => setTab('devices')}>오디오 설정 확인</button>}<button className="primary" disabled={applying} onClick={onClose}>닫기</button></div></footer> :
+      <footer className="audio-settings-footer"><button className="audio-reset-button" disabled={locked} onClick={() => { setDraft({ ...DEFAULT_AUDIO_SETTINGS }); setSampleRate(DEFAULT_SAMPLE_RATE); setOffsetText('0'); setFeedback(null) }}>오디오 기본값</button><div className="audio-settings-footer-status" role="status">{applying ? '오디오 설정을 적용하는 중…' : blockedReason || (dirty ? '적용하지 않은 오디오 변경이 있습니다.' : requiresApply ? '오디오 장치를 다시 확인하고 적용해주세요.' : '현재 오디오 설정')}</div><div className="audio-settings-footer-actions"><button disabled={applying} onClick={onClose} title="미적용 오디오 변경을 취소하고 닫기 · 선택한 테마는 유지">닫기</button><button disabled={locked || (!dirty && !requiresApply)} onClick={() => void apply()}>오디오 적용</button><button className="primary" disabled={locked} onClick={() => void apply(true)}>완료</button></div></footer>}
     </section>
   </div>
 }

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AudioAsset, AudioEngine, Clip, Marker, Project, Track } from '../core/types'
 import { MIN_CLIP_BEATS, trimClipStart, visibleTracks, type ClipStartTrim } from '../core/project'
 import { audibleTracks, effectiveArm, type TrackButtonKind } from '../core/trackActions'
@@ -9,6 +9,7 @@ import { Icon } from './Icon'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import { crossedDragThreshold, dragModifiers, isShortcutSuppressed, isUnmodified, shortcutLabel, shortcutPlatform, type ProjectShortcut } from '../core/input'
 import { ZOOM_LIMITS, zoomAround, zoomBy } from '../core/zoom'
+import { getThemeSnapshot, subscribeTheme } from '../core/theme'
 import { useZoomWheel } from './useZoomWheel'
 import { ZoomControls } from './ZoomControls'
 import { TrackHeader } from './TrackHeader'
@@ -641,8 +642,27 @@ function Playhead({engine,ppb,scrollRef,uiRef,expectedScroll,markerRef}:{engine:
     raf=requestAnimationFrame(frame)};frame();return()=>cancelAnimationFrame(raf)},[engine,ppb,scrollRef,uiRef,expectedScroll,markerRef])
   return <div className="playhead" ref={ref}><i/></div>
 }
-export function MiniMeter({engine,trackId,color='#9fcfb4',vertical=false}:{engine:AudioEngine;trackId?:string;color?:string;vertical?:boolean}){
+export function MiniMeter({engine,trackId,color='var(--meter-low)',vertical=false}:{engine:AudioEngine;trackId?:string;color?:string;vertical?:boolean}){
   const ref=useRef<HTMLCanvasElement>(null)
-  useEffect(()=>{let raf=0;let held=0;let last=0;const frame=(now:number)=>{if(now-last>33){last=now;const c=ref.current;const ctx=c?.getContext('2d');if(c&&ctx){const value=trackId?engine.getTrackLevel(trackId):engine.getMasterLevel();held=Math.max(value,held*.88);const fill=Math.min(1,Math.sqrt(held)*1.6);ctx.clearRect(0,0,c.width,c.height);ctx.fillStyle='#2d2a25';ctx.fillRect(0,0,c.width,c.height);ctx.fillStyle=held>.85?'#e5533d':color;if(vertical)ctx.fillRect(0,c.height*(1-fill),c.width,c.height*fill);else ctx.fillRect(0,0,c.width*fill,c.height)}}raf=requestAnimationFrame(frame)};raf=requestAnimationFrame(frame);return()=>cancelAnimationFrame(raf)},[engine,trackId,color,vertical])
-  return <canvas ref={ref} width={vertical?5:38} height={vertical?120:4} className={vertical?'meter-vertical':'mini-meter'} aria-label="실시간 오디오 레벨"/>
+  const theme=useSyncExternalStore(subscribeTheme,getThemeSnapshot,getThemeSnapshot)
+  useEffect(()=>{
+    const canvas=ref.current;if(!canvas)return
+    const styles=getComputedStyle(canvas),empty=styles.getPropertyValue('--meter-empty').trim(),high=styles.getPropertyValue('--meter-high').trim(),low=styles.color
+    let raf=0,held=0,last=0
+    const frame=(now:number)=>{
+      if(now-last>33){
+        last=now;const ctx=canvas.getContext('2d')
+        if(ctx){
+          const value=trackId?engine.getTrackLevel(trackId):engine.getMasterLevel();held=Math.max(value,held*.88)
+          const fill=Math.min(1,Math.sqrt(held)*1.6)
+          ctx.clearRect(0,0,canvas.width,canvas.height);ctx.fillStyle=empty;ctx.fillRect(0,0,canvas.width,canvas.height)
+          ctx.fillStyle=held>.85?high:low
+          if(vertical)ctx.fillRect(0,canvas.height*(1-fill),canvas.width,canvas.height*fill);else ctx.fillRect(0,0,canvas.width*fill,canvas.height)
+        }
+      }
+      raf=requestAnimationFrame(frame)
+    }
+    raf=requestAnimationFrame(frame);return()=>cancelAnimationFrame(raf)
+  },[engine,trackId,color,vertical,theme])
+  return <canvas ref={ref} width={vertical?5:38} height={vertical?120:4} className={vertical?'meter-vertical':'mini-meter'} style={{color}} aria-label="실시간 오디오 레벨"/>
 }

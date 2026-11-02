@@ -6,7 +6,8 @@ export function Brand({ size = 'compact' }: { size?: 'compact' | 'large' }) {
   return (
     <span className={`brand-lockup brand-lockup--${size}`}>
       <img className="brand-logo" src={BRAND.mark} alt="" width={markSize} height={markSize} decoding="async" />
-      <img className="brand-wordmark" src={BRAND.wordmark} alt={BRAND.name} width={size === 'large' ? 193 : 58} height={size === 'large' ? 60 : 18} decoding="async" />
+      <span className="brand-wordmark" role="img" aria-label={BRAND.name}
+        style={{ maskImage: `url(${BRAND.wordmark})`, WebkitMaskImage: `url(${BRAND.wordmark})` }} />
     </span>
   )
 }
