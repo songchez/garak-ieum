@@ -8,11 +8,14 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function microphone() {
+function microphone(settings: MediaTrackSettings = {}) {
   let active = true
+  const events = new EventTarget()
   const stop = vi.fn(() => { active = false })
-  const stream = { get active() { return active }, getTracks: () => [{ stop }] } as unknown as MediaStream
-  return { stream, stop }
+  const track = { stop, label: 'USB interface', getSettings: () => settings,
+    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) }
+  const stream = { get active() { return active }, getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream
+  return { stream, stop, end: () => { active = false; events.dispatchEvent(new Event('ended')) } }
 }
 
 describe('InputCapture microphone ownership', () => {
@@ -136,6 +139,140 @@ describe('InputCapture microphone ownership', () => {
     nextPermission.resolve(next.stream)
     await nextResult
     expect(open).toHaveBeenCalledTimes(2)
+    input.dispose()
+  })
+})
+
+describe('InputCapture settings transactions and diagnostics', () => {
+  it('requests the new device after I off, settings change, and I on while old permission is pending', async () => {
+    let configuredDevice = 'old-device'
+    const permission = deferred<MediaStream>()
+    const old = microphone({ deviceId: 'old-device' })
+    const replacement = microphone({ deviceId: 'new-device' })
+    const open = vi.fn(() => configuredDevice === 'old-device' ? permission.promise : Promise.resolve(replacement.stream))
+    const input = new InputCapture(open)
+    input.setNeeded('monitor', true)
+    const stale = input.acquire().catch(error => error)
+    await Promise.resolve()
+    input.setNeeded('monitor', false)
+    configuredDevice = 'new-device'
+    input.setNeeded('monitor', true)
+    expect(await input.acquire()).toBe(replacement.stream)
+    permission.resolve(old.stream)
+    expect(await stale).toMatchObject({ name: 'AbortError' })
+    expect(old.stop).toHaveBeenCalledTimes(1)
+    expect(open).toHaveBeenCalledTimes(2)
+    expect(input.getInputState().settings?.deviceId).toBe('new-device')
+    input.dispose()
+  })
+
+  it('keeps actual capture values distinct from missing settings and reports device disconnection', async () => {
+    const mic = microphone({ sampleRate: 44100, channelCount: 2, echoCancellation: false })
+    const input = new InputCapture(async () => mic.stream)
+    const changed = vi.fn()
+    const unsubscribe = input.subscribeInputState(changed)
+    const idle = input.getInputState()
+    expect(input.getInputState()).toBe(idle)
+    input.setNeeded('monitor', true)
+    const pending = input.acquire()
+    expect(input.getInputState().status).toBe('requesting')
+    await pending
+    expect(input.getInputState()).toMatchObject({ status: 'active', deviceLabel: 'USB interface', settings: { sampleRate: 44100, channelCount: 2, echoCancellation: false } })
+    expect(input.getInputState().settings?.noiseSuppression).toBeUndefined()
+    mic.end()
+    expect(input.getInputState()).toMatchObject({ status: 'error', settings: null })
+    expect(input.getInputState().error).toContain('연결이 종료')
+    expect(changed).toHaveBeenCalled()
+    unsubscribe()
+    input.dispose()
+  })
+
+  it('does not open an unused input when applying preferences while idle', async () => {
+    const open = vi.fn<() => Promise<MediaStream>>()
+    const input = new InputCapture(open)
+    const prepared = await input.prepare(open)
+    expect(prepared.stream).toBeNull()
+    expect(open).not.toHaveBeenCalled()
+    prepared.commit()
+    expect(input.getInputState().status).toBe('idle')
+  })
+
+  it('keeps the old input through failed preparation and rollback, then swaps once on commit', async () => {
+    const old = microphone({ deviceId: 'old' })
+    const input = new InputCapture(async () => old.stream)
+    input.setNeeded('monitor', true)
+    await input.acquire()
+    await expect(input.prepare(async () => { throw new DOMException('denied', 'NotAllowedError') })).rejects.toMatchObject({ name: 'NotAllowedError' })
+    expect(await input.acquire()).toBe(old.stream)
+    expect(old.stop).not.toHaveBeenCalled()
+    const discarded = microphone()
+    const rollback = await input.prepare(async () => discarded.stream)
+    rollback.rollback()
+    rollback.rollback()
+    expect(discarded.stop).toHaveBeenCalledTimes(1)
+    expect(old.stop).not.toHaveBeenCalled()
+    const replacement = microphone({ deviceId: 'replacement' })
+    const prepared = await input.prepare(async () => replacement.stream)
+    expect(await input.acquire()).toBe(old.stream)
+    prepared.commit()
+    prepared.commit()
+    expect(old.stop).toHaveBeenCalledTimes(1)
+    expect(await input.acquire()).toBe(replacement.stream)
+    expect(input.getInputState().settings?.deviceId).toBe('replacement')
+    input.dispose()
+    expect(replacement.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let an old permission reply overwrite the committed input', async () => {
+    const permission = deferred<MediaStream>()
+    const input = new InputCapture(() => permission.promise)
+    input.setNeeded('monitor', true)
+    const oldRequest = input.acquire().catch(error => error)
+    await Promise.resolve()
+    const replacement = microphone()
+    const prepared = await input.prepare(async () => replacement.stream)
+    prepared.commit()
+    const old = microphone()
+    permission.resolve(old.stream)
+    expect(await oldRequest).toMatchObject({ name: 'AbortError' })
+    expect(old.stop).toHaveBeenCalledTimes(1)
+    expect(await input.acquire()).toBe(replacement.stream)
+    expect(input.getInputState().status).toBe('active')
+    input.dispose()
+  })
+
+  it('invalidates stale preparations and stops permission grants after disposal', async () => {
+    const old = microphone()
+    const input = new InputCapture(async () => old.stream)
+    input.setNeeded('monitor', true)
+    await input.acquire()
+    const first = microphone()
+    const stale = await input.prepare(async () => first.stream)
+    const permission = deferred<MediaStream>()
+    const late = input.prepare(() => permission.promise).catch(error => error)
+    expect(first.stop).toHaveBeenCalledTimes(1)
+    expect(() => stale.commit()).toThrow(expect.objectContaining({ name: 'AbortError' }))
+    expect(first.stop).toHaveBeenCalledTimes(1)
+    input.dispose()
+    const second = microphone()
+    permission.resolve(second.stream)
+    expect(await late).toMatchObject({ name: 'AbortError' })
+    expect(second.stop).toHaveBeenCalledTimes(1)
+    expect(old.stop).toHaveBeenCalledTimes(1)
+    expect(input.getInputState().status).toBe('idle')
+  })
+
+  it('rejects a candidate disconnected before commit without stopping the old input', async () => {
+    const old = microphone()
+    const input = new InputCapture(async () => old.stream)
+    input.setNeeded('monitor', true)
+    await input.acquire()
+    const candidate = microphone()
+    const prepared = await input.prepare(async () => candidate.stream)
+    candidate.end()
+    expect(() => prepared.commit()).toThrow('연결이 종료')
+    expect(old.stop).not.toHaveBeenCalled()
+    expect(await input.acquire()).toBe(old.stream)
     input.dispose()
   })
 })

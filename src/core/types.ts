@@ -1,3 +1,5 @@
+import type { SampleRate } from './audioSettings'
+
 /** A key of INSTRUMENTS in core/instruments.ts. Saved files store it as plain text. */
 export type InstrumentId = string
 export type SampleStatus = 'idle' | 'loading' | 'ready' | 'error'
@@ -101,6 +103,8 @@ export interface Project {
   id: string
   name: string
   bpm: number
+  /** Project rendering rate; device preferences are stored separately in this browser. */
+  sampleRate: SampleRate
   beatsPerBar: 4
   lengthBeats: number
   masterVolume: number
