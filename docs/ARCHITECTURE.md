@@ -28,17 +28,22 @@ flowchart TD
 | [`src/App.tsx`](../src/App.tsx) | 프로젝트 편집 상태·Undo/Redo, 선택 상태, 자동 저장 연결, 가져오기·내보내기, 마이크 녹음 UI, 전역 단축키 |
 | [`src/core/types.ts`](../src/core/types.ts) | Project·Track·Clip·MidiNote·AudioAsset 및 AudioEngine 계약 |
 | [`src/core/project.ts`](../src/core/project.ts) | 새 프로젝트·트랙, 오리지널 데모, 클립 복제·분할, 외부 프로젝트 유효성 검사 |
+| [`src/core/audioSettings.ts`](../src/core/audioSettings.ts) | 프로젝트 레이트 허용값·기본값, 앱 오디오 설정의 정규화·로컬 저장, 입력 제약 요청과 실제 상태 타입 |
+| [`src/core/recordingOffset.ts`](../src/core/recordingOffset.ts) | 수동 녹음 보정의 부호·범위 검증, 리전 배치와 프로젝트 0 경계의 소스 오프셋 계산 |
 | [`src/core/instruments.ts`](../src/core/instruments.ts) | 악기 레지스트리: 합성·샘플 악기의 ID, 이름, 분류, 색, 조절기 정의, 샘플 세트 ID, 출처 표기 |
 | [`src/core/devices.ts`](../src/core/devices.ts) | 악기·이펙트 조절기 정의(범위·단위·기본값)와 값 변환 |
 | [`src/audio/samples.ts`](../src/audio/samples.ts) | 샘플 세트 로더: 매니페스트 해석, 포맷 선택, 디코딩 캐시, 존 선택, 로딩 상태 알림 |
 | [`src/core/storage.ts`](../src/core/storage.ts) | IndexedDB 트랜잭션, 저장 순서 보장, 원본 Blob 검증, `.garak` 가져오기·내보내기 |
 | [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 오디오 컨텍스트 수명 주기, 재생 위치·루프·예약, 파일 디코딩, 오프라인 출력, UI에 제공하는 스냅숏과 레벨 |
+| [`src/audio/InputCapture.ts`](../src/audio/InputCapture.ts) | 녹음·모니터링 입력 공유, 입력 변경의 준비·확정·복구, 지연된 권한 응답과 장치 종료 처리 |
+| [`src/audio/AudioDeviceProbe.ts`](../src/audio/AudioDeviceProbe.ts), [`src/audio/OutputTest.ts`](../src/audio/OutputTest.ts) | 설정 창의 임시 입력 권한·레벨 테스트, 취소 가능한 적용 출력 테스트와 각 자원의 정리 |
 | [`src/audio/graph.ts`](../src/audio/graph.ts) | 기본 악기, 트랙·마스터 오디오 연결, 효과, 음성 수명 주기, 범위별 음표·오디오 클립 예약 |
 | [`src/audio/math.ts`](../src/audio/math.ts) | 박자·시간 변환, 루프 위치, 페이드 계산, 16-bit PCM WAV 인코딩 |
 | [`src/components/Timeline.tsx`](../src/components/Timeline.tsx) | 타임라인, 클립 이동·길이 편집, 재생 커서, 트랙·마스터 미터 |
 | [`src/components/PianoRoll.tsx`](../src/components/PianoRoll.tsx) | 음표·세기 편집, 음표 단위 단축키, 미리듣기 요청 |
 | [`src/components/Mixer.tsx`](../src/components/Mixer.tsx) | 트랙·마스터 믹서 조작 |
 | [`src/components/Waveform.tsx`](../src/components/Waveform.tsx) | 미리 계산한 피크를 이용하는 파형 표시 |
+| [`src/components/AudioSettingsDialog.tsx`](../src/components/AudioSettingsDialog.tsx), [`src/components/useAudioDevices.ts`](../src/components/useAudioDevices.ts) | 장치·녹음·프로젝트·진단 설정 초안, 적용/취소 UI, 수동 권한·장치 목록·테스트 연결 |
 
 ## 3. 프로젝트 모델과 편집
 
@@ -46,6 +51,7 @@ flowchart TD
 
 | 값 | 기준 |
 | --- | --- |
+| `Project.sampleRate` | 실시간 엔진·WAV 출력 처리율(Hz). 44100/48000/88200/96000/176400/192000, 새 프로젝트·누락된 구버전 필드의 기본값은 48000 |
 | `Clip.startBeat` | 프로젝트 시작을 기준으로 한 박 위치 |
 | `Clip.lengthBeats` | 클립의 박 단위 길이 |
 | `MidiNote.start` | 해당 클립 시작을 기준으로 한 박 위치 |
@@ -63,9 +69,19 @@ flowchart TD
 
 Undo/Redo는 `App`의 프로젝트 스냅숏 이력으로 처리합니다. 일반 편집 시 과거 스냅숏을 최대 50개 수준으로 유지하고, 같은 조절기의 연속 입력은 짧은 시간 창에서 합칩니다. 피아노롤과 타임라인의 포인터 이동은 임시 화면 상태로 표시한 뒤 드래그 종료 시 프로젝트에 반영합니다. 이력은 현재 앱 세션의 메모리에 있으며 `.garak`이나 IndexedDB에 함께 저장하지 않습니다.
 
+프로젝트 샘플레이트의 명시적 변경도 프로젝트 이력에 포함합니다. 레이트를 바꾸는 Undo/Redo는 녹음·녹음 준비 중 차단합니다. 입력/출력 장치 ID·지연 요청·모니터링·수동 녹음 보정 등의 앱 환경은 `localStorage`의 `garak-ieum:audio-settings:v1`에 별도로 보관하며 프로젝트 파일·편집 이력에 넣지 않습니다.
+
 ## 4. 오디오 엔진의 실제 범위
 
 현재 백엔드는 직접 작성한 `WebAudioEngine` 하나입니다. `AudioEngine.kind`에 `'native'`라는 미래 구분값이 있지만, 네이티브 구현·브리지·플러그인 호스트는 존재하지 않습니다. openDAW 또는 Tracktion Engine을 가져온 코드도 아닙니다.
+
+### 오디오 장치 설정
+
+`App`은 설정 적용 시 재생을 일시 정지하고, 활성 모니터링에 필요한 입력 변경을 먼저 준비한 뒤 `engine.configure(settings, sampleRate)`를 호출합니다. 엔진은 후보 컨텍스트의 레이트·출력·실행 상태를 확인한 뒤 교체하며 실패한 후보는 기존 엔진을 대체하지 않습니다. 입력 확정까지 성공하면 로컬 설정과 프로젝트 레이트를 반영하고, 중간 실패 시 준비 입력을 정리하고 엔진 복구를 시도합니다. 녹음·녹음 준비·파일 처리 중 적용은 차단합니다.
+
+`latencyHint`와 지원 시 `renderSizeHint`는 요청입니다. `getAudioState()`/`subscribeAudioState()`는 실제 엔진 레이트·블록·지연·출력·오류를 별도 스냅숏으로 제공합니다. 렌더 블록은 하드웨어 I/O 버퍼가 아니며, 보고된 지연은 왕복 실측값이 아닙니다. `AudioContext`의 레이트도 물리 인터페이스 클럭을 제어했다는 뜻은 아닙니다. 지원 범위와 공식 근거는 [오디오 설정 벤치마크](AUDIO_SETTINGS_BENCHMARK.md)에 있습니다.
+
+브라우저가 출력 변경·오류를 보고하면 엔진은 선택된 특정 출력의 ID와 현재 경로를 확인합니다. 확인할 수 없거나 다른 출력으로 바뀌었으면 재생·모니터링 출력을 막고 선택값을 유지합니다. 정상 재생으로 돌아가려면 사용자가 장치·권한을 확인해 재적용하거나 기본 출력을 직접 선택해야 합니다. 장치 목록이 제한된 상태를 물리 분리라고 단정하지 않습니다.
 
 ### 재생 예약
 
@@ -114,9 +130,11 @@ flowchart TD
 
 가져온 파일은 `decodeAudioData()`로 전체 디코딩합니다. `AudioAsset`에는 원본 `Blob`, 재생용 `AudioBuffer`, 파형 표시용 피크가 함께 존재합니다. 원본은 그대로 보관하고, 피크는 채널을 살펴 최대 320개 지점으로 요약합니다. 확대 수준별 파형 캐시나 부분 디코딩은 없습니다.
 
-마이크 녹음은 현재 `App`에서 `getUserMedia()`와 `MediaRecorder`로 처리합니다. 사용 가능한 MIME 형식 중 하나를 선택하고 받은 청크를 하나의 Blob으로 합칩니다. 녹음을 끝내면 같은 디코딩 경로를 거쳐 오디오 클립으로 추가합니다.
+마이크 입력은 `InputCapture`가 녹음·모니터링의 사용 요구와 `getUserMedia()` 스트림을 관리하고, `App`이 `MediaRecorder`로 녹음합니다. 특정 입력 ID는 `exact`로 고정하며 채널 수·샘플레이트·AEC/NS/AGC는 독립적인 요청으로 전달합니다. 모노/스테레오 채널 수 요청은 인터페이스의 물리 포트 선택이 아닙니다. 현재 입력 값은 트랙의 `getSettings()`에서 읽습니다.
 
-클립 위치는 녹음 시작 시 transport 위치를 기준으로 잡습니다. 입력 장치·녹음 인코더·재생 시작 지연을 측정하여 보정하는 단계는 아직 없습니다. 이 경로는 샘플 단위로 정렬된 전문 다중 트랙 레코더와 동일하지 않습니다.
+사용 가능한 MIME 형식(WebM/Opus, MP4, Ogg/Opus 등) 중 하나를 선택하고 받은 청크를 하나의 Blob으로 합칩니다. 녹음을 끝내면 같은 디코딩 경로를 거쳐 오디오 클립으로 추가합니다. 프로젝트 레이트 선택이 녹음 원본의 코덱이나 비트 깊이 선택을 제공하지는 않습니다. 24-bit·32-bit float PCM 원본 녹음·다중 입력 녹음은 지원하지 않습니다.
+
+클립 위치는 녹음 시작 시 transport 위치와 그때 적용된 `recordingOffsetMs`(-1000~1000ms 정수)를 사용합니다. 양수는 뒤로, 음수는 앞으로 배치합니다. 0 이전 구간은 원본을 재작성하지 않고 소스 오프셋으로 제외하며, 전체가 0 이전이면 리전을 만들지 않고 알립니다. 입력 장치·녹음 인코더·재생 시작 지연을 자동 측정하여 보상하는 단계는 아직 없습니다. 이 수동 정렬은 샘플 단위로 정렬된 다중 트랙 레코더의 보상을 뜻하지 않습니다.
 
 ## 6. 보관과 교환 형식
 
@@ -130,7 +148,7 @@ IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저�
 {
   "format": "noct-studio",
   "schemaVersion": 1,
-  "project": { "schemaVersion": 1 },
+  "project": { "schemaVersion": 2, "sampleRate": 48000 },
   "assets": [
     {
       "id": "asset-id",
@@ -151,7 +169,7 @@ IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저�
 
 실시간 재생과 `OfflineAudioContext`는 같은 그래프 생성·범위 예약 함수를 사용합니다. 출력은 프로젝트 시작부터 끝까지 한 번 렌더링하고, 사용 중인 효과에 맞춘 잔향 시간을 더합니다. 반복 재생용 루프는 파일 길이에 적용하지 않습니다.
 
-출력은 2채널 16-bit PCM WAV입니다. 샘플레이트는 열린 AudioContext의 값을 사용하고, 컨텍스트가 없으면 48kHz를 사용합니다. 최종 PCM 인코딩에서 표현 범위를 벗어나는 값은 제한합니다.
+출력은 2채널 16-bit PCM WAV입니다. 샘플레이트는 **`Project.sampleRate`**로 결정하며, 열린 실시간 컨텍스트의 값이나 유무에 의존하지 않습니다. 오프라인 렌더링과 WAV 헤더에 같은 레이트를 사용하고 최종 PCM 인코딩에서 표현 범위를 벗어나는 값은 제한합니다.
 
 현재 구현은 렌더 결과 전체를 RAM에 만들기 때문에 잔향을 포함한 15분 상한을 둡니다. 트랙별 스템, 범위 지정 출력, 스트리밍 인코딩, 다른 비트 깊이·코덱 선택은 아직 제공하지 않습니다.
 
@@ -164,6 +182,9 @@ IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저�
 | `src/audio/math.test.ts` | 루프·재생 위치, 페이드, WAV 헤더·채널·PCM 값 |
 | `src/core/instruments.test.ts` | 악기 레지스트리 일관성, 알 수 없는 ID 처리, 샘플 악기 트랙 생성·검증 |
 | `src/audio/samples.test.ts` | 존·레이어 선택, 매니페스트 해석, 로더의 요청·캐시·상태·오류 처리(네트워크와 디코딩은 모의) |
+| `src/core/audioSettings.test.ts`, `src/core/recordingOffset.test.ts` | 로컬 설정·입력 요청·수동 녹음 정렬과 0 경계 |
+| `src/audio/InputCapture.test.ts`, `src/audio/AudioDeviceProbe.test.ts` | 입력 준비·권한·취소·전환과 테스트 자원 수명 |
+| `src/audio/WebAudioEngine.test.ts`, `src/audio/OutputTest.test.ts` | 컨텍스트 교체·복구·프로젝트 레이트·WAV·출력 장치 오류와 테스트음 취소 |
 
 이 테스트들은 실제 브라우저의 오디오 장치, 마이크 지연, 네이티브 플러그인 호환성, 장시간 재생 성능을 측정하지 않습니다. 실제 브라우저에서의 편집·저장·새로고침·다시 재생·녹음·내보내기는 별도 검증 항목입니다.
 

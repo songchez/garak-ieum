@@ -25,7 +25,7 @@ export interface ShortcutEvent {
 }
 
 export type ProjectShortcut =
-  | 'playback' | 'playFromSelection' | 'undo' | 'redo' | 'save' | 'home' | 'rewind' | 'forward' | 'escape' | 'help'
+  | 'playback' | 'playFromSelection' | 'undo' | 'redo' | 'save' | 'home' | 'rewind' | 'forward' | 'escape' | 'help' | 'openSettings'
   | 'cycle' | 'record' | 'metronome' | 'snapToggle' | 'zoomIn' | 'zoomOut' | 'zoomInV' | 'zoomOutV' | 'zoomToFit' | 'setLoopFromSelection'
   | 'deleteClip' | 'split' | 'join' | 'repeat' | 'copy' | 'cut' | 'paste' | 'selectAll'
   | 'loopClip' | 'muteClip' | 'renameClip' | 'moveToPlayhead' | 'selectPrev' | 'selectNext'
@@ -128,7 +128,7 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('zoomFocusedTrack', letter('Z'), 'ctrl', TW, MAC),
   bind('playback', SPACE, '', TPW), bind('playFromSelection', SPACE, 'shift', TPW),
   bind('undo', letter('Z'), 'mod', TPW), bind('redo', letter('Z'), 'modShift', TPW), bind('redo', letter('Y'), 'ctrl', TPW, PC),
-  bind('save', letter('S'), 'mod', TPW),
+  bind('save', letter('S'), 'mod', TPW), bind('openSettings', punct('Comma', ','), 'mod', TPW),
   bind('home', named('Home', 'Home'), '', TPW), bind('home', ENTER, '', TW),
   bind('rewind', punct('Comma', ','), '', TW), bind('forward', punct('Period', '.'), '', TW),
   bind('escape', named('Escape', 'Esc'), '', TPW), bind('help', named('?', '?'), 'anyShift', TPW),
@@ -200,6 +200,7 @@ const META: Record<ProjectShortcut, { label: string; logic: string }> = {
   forward: { label: '앞으로 감기', logic: '.' },
   escape: { label: '선택 해제 / 취소', logic: 'Esc (도구 메뉴)' },
   help: { label: '단축키 도움말', logic: '—' },
+  openSettings: { label: '설정 열기', logic: '⌘,' },
   cycle: { label: '반복 구간(사이클) 켜기/끄기', logic: 'C' },
   record: { label: '녹음', logic: 'R' },
   metronome: { label: '메트로놈 켜기/끄기', logic: 'K' },

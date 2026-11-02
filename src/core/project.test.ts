@@ -7,6 +7,7 @@ import {
   trimClipStart, trimClipStarts, validateProject, visibleTracks, DEFAULT_TRACK_COLORS, MIN_CLIP_BEATS,
 } from './project'
 import { instrumentDef } from './instruments'
+import { SAMPLE_RATES } from './audioSettings'
 import { QUANTIZE_VALUES, type AudioClip, type Clip, type MidiClip, type Project, type Track } from './types'
 
 function midi(): MidiClip {
@@ -19,6 +20,21 @@ function midi(): MidiClip {
     ],
   }
 }
+
+describe('project sample rate', () => {
+  it('defaults new and legacy projects to 48 kHz and preserves supported project rates', () => {
+    const project = createEmptyProject()
+    expect(project.sampleRate).toBe(48000)
+    const { sampleRate: _old, ...legacy } = project
+    expect(validateProject(legacy).sampleRate).toBe(48000)
+    expect(validateProject({ ...legacy, schemaVersion: 1 }).sampleRate).toBe(48000)
+    for (const sampleRate of SAMPLE_RATES) expect(validateProject({ ...project, sampleRate }).sampleRate).toBe(sampleRate)
+  })
+
+  it('rejects explicit malformed rates instead of silently changing the project', () => {
+    for (const sampleRate of [null, '48000', 12345, Infinity]) expect(() => validateProject({ ...createEmptyProject(), sampleRate })).toThrow(/sample rate/)
+  })
+})
 
 describe('original demo project', () => {
   it('opens as a valid eight-bar arrangement with real notes on every track', () => {

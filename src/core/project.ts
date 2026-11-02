@@ -1,4 +1,5 @@
 import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
+import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
 
@@ -70,6 +71,7 @@ export function createEmptyProject(): Project {
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
+    sampleRate: DEFAULT_SAMPLE_RATE,
     beatsPerBar: 4,
     lengthBeats: 64,
     masterVolume: 0.8,
@@ -739,6 +741,7 @@ export function validateProject(input: unknown): Project {
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),
+    sampleRate: projectSampleRate(source.sampleRate),
     beatsPerBar: 4,
     lengthBeats,
     masterVolume: number(source.masterVolume, 'Master volume', 0, 2),

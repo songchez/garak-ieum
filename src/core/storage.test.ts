@@ -25,6 +25,15 @@ function audioFixture(): { project: Project; assets: Map<string, AudioAsset>; by
 afterEach(() => vi.unstubAllGlobals())
 
 describe('portable project bundles', () => {
+  it('preserves the project rendering rate and migrates older bundles without it', async () => {
+    const project: Project = { ...createEmptyProject(), sampleRate: 96000 }
+    const blob = await exportProjectBundle(project, new Map())
+    expect((await importProjectBundle(blob)).project.sampleRate).toBe(96000)
+    const legacy = JSON.parse(await blob.text())
+    delete legacy.project.sampleRate
+    expect((await importProjectBundle(new Blob([JSON.stringify(legacy)]))).project.sampleRate).toBe(48000)
+  })
+
   it('round-trips all original audio bytes, filenames, clip source offsets, and shared references', async () => {
     const { project, assets, bytes } = audioFixture()
     const blob = await exportProjectBundle(project, assets)

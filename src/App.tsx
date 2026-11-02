@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncE
 import type { ComponentProps, InputHTMLAttributes } from 'react'
 import { WebAudioEngine } from './audio/WebAudioEngine'
 import { InputCapture } from './audio/InputCapture'
+import { inputConstraints, loadAudioSettings, normalizeAudioSettings, saveAudioSettings, type AudioSettings, type SampleRate } from './core/audioSettings'
+import { recordingPlacement } from './core/recordingOffset'
 import type { AudioAsset, AudioClip, Clip, EffectType, InstrumentId, MidiClip, Project, Track } from './core/types'
 import { addMarker, applyDragMode, createDemoProject, createDevice, createEmptyProject, createMarker, createTrack, cycleClipIds, defaultInstrumentParams, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength, insertTracks, joinClips, moveDevice, moveMarker, renameMarker, splitClip, trimClipEnd, trimClipStart, trimClipStarts, uid, visibleTracks, type ClipStartTrim } from './core/project'
 import { SAMPLE_CREDITS, instrumentDef, previewPitch } from './core/instruments'
@@ -26,9 +28,11 @@ import ContextMenu from './components/ContextMenu'
 import { SHORTCUT_TABLE, ZOOM_COMMANDS, isShortcutSuppressed, isUnmodified, resolveProjectShortcut, shortcutLabel, shortcutPlatform, shortcutScope, type ProjectShortcut, type ShortcutScope } from './core/input'
 import { DEVICE_KEY_FACTOR, ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, loadZoom, saveZoom, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from './core/zoom'
 import { ZoomControls } from './components/ZoomControls'
+import AudioSettingsDialog from './components/AudioSettingsDialog'
 
 // An application-session service, independent of React's render/effect lifecycle.
-const engine = new WebAudioEngine()
+const initialAudioSettings = loadAudioSettings()
+const engine = new WebAudioEngine(undefined, initialAudioSettings)
 const subscribeTransport = (cb:()=>void)=>engine.subscribe(cb)
 const readTransport = ()=>engine.getSnapshot()
 if(import.meta.hot)import.meta.hot.dispose(()=>engine.dispose())
@@ -60,7 +64,6 @@ type NewTrackOptions={kind?:Track['kind'];sameAsFocused?:boolean;empty?:boolean;
 type CommandContext={trackIds?:string[];clipIds?:string[];scope?:ShortcutScope}
 const LIVE_KEYS=new Set<keyof Track>(['armed','monitor'])
 const TRACK_ICONS:[string,string][]=[['keys','건반'],['synth','신스'],['drum','드럼'],['wave','파형'],['note','음표'],['mic','마이크']]
-const INPUT_CONSTRAINTS:MediaStreamConstraints={audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}}
 /** Replaces the listed clips (null removes, an array splits) and keeps untouched tracks' identity. */
 function mapClips(p:Project,ids:ReadonlySet<string>,fn:(clip:Clip,track:Track)=>Clip|Clip[]|null):Project{
   let changed=false
@@ -112,6 +115,7 @@ export default function App(){
   const [palette,setPalette]=useState<{ids:string[];x:number;y:number}|null>(null)
   const [headerConfig,setHeaderConfig]=useState<{x:number;y:number}|null>(null)
   const [iconMenu,setIconMenu]=useState<{id:string;x:number;y:number}|null>(null)
+  const [appMenu,setAppMenu]=useState<{x:number;y:number;trigger:HTMLElement}|null>(null)
   const [loaded,setLoaded]=useState(false)
   const [restoreError,setRestoreError]=useState('')
   const projectSession=useRef(0)
@@ -119,7 +123,12 @@ export default function App(){
   const [saveStatus,setSaveStatus]=useState<'loading'|'saving'|'saved'|'error'>('loading')
   const [notice,setNotice]=useState('')
   const [busy,setBusy]=useState('')
-  const [modal,setModal]=useState<'new'|'export'|'help'|'about'|'newTracks'|null>(null)
+  const [modal,setModal]=useState<'new'|'export'|'help'|'about'|'newTracks'|'settings'|null>(null)
+  const [audioSettings,setAudioSettings]=useState<AudioSettings>(()=>({...initialAudioSettings}))
+  const audioSettingsRef=useRef(audioSettings);audioSettingsRef.current=audioSettings
+  const [audioApplying,setAudioApplying]=useState(false)
+  const audioApplyingRef=useRef(false)
+  const [inputRevision,setInputRevision]=useState(0)
   const [recording,setRecording]=useState(false)
   const [recordPreparing,setRecordPreparing]=useState(false)
   const recordPreparingRef=useRef(false)
@@ -128,7 +137,7 @@ export default function App(){
   const projectInput=useRef<HTMLInputElement>(null)
   const recordRef=useRef<{recorder:MediaRecorder;stream:MediaStream}|null>(null)
   const importTarget=useRef<{trackId?:string;beat?:number}>({})
-  const [inputCapture]=useState(()=>new InputCapture(()=>navigator.mediaDevices.getUserMedia(INPUT_CONSTRAINTS)))
+  const [inputCapture]=useState(()=>new InputCapture(()=>navigator.mediaDevices.getUserMedia(inputConstraints(audioSettingsRef.current,projectRef.current.sampleRate))))
   const monitorWarned=useRef(false)
   const saveQueue=useRef(Promise.resolve())
   const saveRevision=useRef(0)
@@ -140,7 +149,7 @@ export default function App(){
   const selectedClip=anchorEntry&&anchorEntry.track.id===focusedTrackId?anchorEntry.clip:undefined
   const selection=[...selectedClipIds].map(id=>clipIndex.get(id)).filter((e):e is ClipEntry=>!!e).sort((a,b)=>a.clip.startBeat-b.clip.startBeat||a.row-b.row)
   const snapStep=resolveSnap(view.snap,ppb)
-  const monitorIds=useMemo(()=>monitorTargets(project,recording),[project,recording])
+  const monitorIds=useMemo(()=>audioSettings.softwareMonitoring?monitorTargets(project,recording):[],[project,recording,audioSettings.softwareMonitoring])
 
   const notify=useCallback((message:string)=>setNotice(message),[])
   const commit=useCallback((edit:(p:Project)=>Project,key='')=>{
@@ -148,7 +157,12 @@ export default function App(){
     lastEdit.current={key,time:now};dispatch({type:'edit',edit,merge})
   },[])
   const breakHistoryMerge=useCallback(()=>{lastEdit.current={key:'',time:0}},[])
-  const changeHistory=useCallback((type:'undo'|'redo')=>{breakHistoryMerge();dispatch({type})},[breakHistoryMerge])
+  const changeHistory=useCallback((type:'undo'|'redo')=>{
+    if(audioApplyingRef.current)return
+    const target=type==='undo'?history.past.at(-1):history.future[0]
+    if((recordRef.current||recordPreparingRef.current)&&target&&target.sampleRate!==projectRef.current.sampleRate){notify('샘플레이트를 바꾸는 실행 취소·다시 실행은 녹음이 끝난 뒤 사용할 수 있습니다.');return}
+    breakHistoryMerge();dispatch({type})
+  },[breakHistoryMerge,history.past,history.future,notify])
   /** Patches that only touch armed/monitor bypass history (live state). */
   const changeTracks=useCallback((patches:{id:string;patch:Partial<Track>}[],key='')=>{
     if(!patches.length)return
@@ -219,6 +233,15 @@ export default function App(){
   },[clipIndex])
 
   useEffect(()=>{engine.setProject(project)},[project])
+  // Opening a project or undoing its sample rate must also update an existing context.
+  useEffect(()=>{
+    const state=engine.getAudioState()
+    if(!loaded||audioApplying||recording||recordPreparing||busy||state.sampleRate===null||state.sampleRate===project.sampleRate)return
+    let cancelled=false
+    engine.pause()
+    void engine.configure(audioSettingsRef.current,project.sampleRate).catch(error=>{if(!cancelled)notify(`프로젝트 오디오 설정을 적용하지 못했습니다: ${error instanceof Error?error.message:''}`)})
+    return()=>{cancelled=true}
+  },[project.sampleRate,loaded,audioApplying,recording,recordPreparing,busy,notify])
   useEffect(()=>{engine.setAssets(assets)},[assets])
   useEffect(()=>{
     let cancelled=false
@@ -247,18 +270,75 @@ export default function App(){
     inputCapture.dispose()
   },[inputCapture])
   const clearMonitorFlags=useCallback(()=>dispatch({type:'live',edit:p=>p.tracks.some(t=>t.monitor)?{...p,tracks:p.tracks.map(t=>t.monitor?{...t,monitor:false}:t)}:p}),[])
+  useEffect(()=>inputCapture.subscribeInputState(()=>{
+    const state=inputCapture.getInputState()
+    if(state.status!=='error')return
+    engine.setInputMonitor(null,[])
+    inputCapture.setNeeded('monitor',false)
+    clearMonitorFlags()
+    notify(`오디오 입력을 확인해주세요: ${state.error??'입력 장치에 연결하지 못했습니다.'}`)
+  }),[inputCapture,clearMonitorFlags,notify])
+  useEffect(()=>{
+    let previous:string|null=null
+    return engine.subscribeAudioState(()=>{const state=engine.getAudioState();if(state.error&&state.error!==previous)notify(`오디오 장치를 확인해주세요: ${state.error}`);previous=state.error})
+  },[notify])
   const monitorKey=monitorIds.join('\n')
   useEffect(()=>{
+    if(audioApplying)return
     engine.setInputMonitor(null,[])
     inputCapture.setNeeded('monitor',monitorIds.length>0)
     if(!monitorIds.length)return
     if(!navigator.mediaDevices?.getUserMedia){inputCapture.setNeeded('monitor',false);notify('이 브라우저에서는 입력 모니터링을 사용할 수 없습니다.');clearMonitorFlags();return}
     let cancelled=false
-    void(async()=>{try{await engine.resume();if(cancelled)return;const stream=await inputCapture.acquire();if(cancelled)return;engine.setInputMonitor(stream,monitorIds);if(!monitorWarned.current&&projectRef.current.tracks.some(t=>t.monitor)){monitorWarned.current=true;notify('피드백을 막으려면 헤드폰을 사용하세요')}}catch(e){if(cancelled)return;inputCapture.setNeeded('monitor',false);notify(`입력 모니터링을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`);clearMonitorFlags()}})()
+    void(async()=>{try{await engine.resume();if(cancelled||audioApplyingRef.current)return;const stream=await inputCapture.acquire();if(cancelled||audioApplyingRef.current)return;engine.setInputMonitor(stream,monitorIds);if(!monitorWarned.current&&projectRef.current.tracks.some(t=>t.monitor)){monitorWarned.current=true;notify('피드백을 막으려면 헤드폰을 사용하세요')}}catch(e){if(cancelled||audioApplyingRef.current)return;inputCapture.setNeeded('monitor',false);notify(`입력 모니터링을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`);clearMonitorFlags()}})()
     return()=>{cancelled=true}
-  },[monitorKey,inputCapture])
+  },[monitorKey,inputCapture,inputRevision,audioApplying])
 
-  async function togglePlayback(){try{if(engine.getSnapshot().playing)engine.pause();else await engine.play()}catch(e){notify(`오디오를 시작할 수 없습니다: ${e instanceof Error?e.message:''}`)}}
+  function openAudioSettings(){setAppMenu(null);setPalette(null);setHeaderConfig(null);setIconMenu(null);setModal('settings')}
+  async function applyAudioSettings(value:AudioSettings,sampleRate:SampleRate):Promise<{persisted:boolean}>{
+    if(audioApplyingRef.current||recordRef.current||recordPreparingRef.current||busy||importing.current)throw new Error('녹음이나 파일 처리가 끝난 뒤 오디오 설정을 적용해주세요.')
+    const next=normalizeAudioSettings(value),previous=audioSettingsRef.current,previousRate=projectRef.current.sampleRate
+    const session=projectSession.current
+    const previousTargets=previous.softwareMonitoring?monitorTargets(projectRef.current,false):[]
+    const nextTargets=next.softwareMonitoring?monitorTargets(projectRef.current,false):[]
+    let prepared:Awaited<ReturnType<InputCapture['prepare']>>|undefined
+    let configured=false
+    audioApplyingRef.current=true;setAudioApplying(true);setBusy('오디오 설정을 적용하는 중…');engine.pause()
+    try{
+      const inputChanged=JSON.stringify(inputConstraints(next,sampleRate))!==JSON.stringify(inputConstraints(previous,previousRate))
+      if(nextTargets.length&&(inputChanged||inputCapture.getInputState().status!=='active')){
+        inputCapture.setNeeded('monitor',true)
+        prepared=await inputCapture.prepare(()=>navigator.mediaDevices.getUserMedia(inputConstraints(next,sampleRate)))
+      }
+      if(session!==projectSession.current)throw new DOMException('오디오 설정 적용이 취소되었습니다.','AbortError')
+      await engine.configure(next,sampleRate);configured=true
+      if(session!==projectSession.current)throw new DOMException('오디오 설정 적용이 취소되었습니다.','AbortError')
+      prepared?.commit();prepared=undefined
+      audioSettingsRef.current=next;setAudioSettings(next)
+      engine.setInputMonitor(null,[])
+      if(!nextTargets.length)inputCapture.setNeeded('monitor',false)
+      if(sampleRate!==projectRef.current.sampleRate){breakHistoryMerge();commit(p=>({...p,sampleRate}),'project-sample-rate')}
+      setInputRevision(revision=>revision+1)
+      return{persisted:saveAudioSettings(next)}
+    }catch(error){
+      prepared?.rollback()
+      if(!previousTargets.length)inputCapture.setNeeded('monitor',false)
+      if(configured&&session===projectSession.current){
+        try{await engine.configure(previous,previousRate)}catch(rollbackError){
+          const actual=engine.getAudioState().settings
+          audioSettingsRef.current=actual;setAudioSettings(actual)
+          engine.setInputMonitor(null,[]);inputCapture.setNeeded('monitor',false);clearMonitorFlags()
+          throw new Error(`입력 변경 후 이전 출력 설정으로 복구하지 못해 모니터링을 중지했습니다. 장치를 다시 확인해주세요. ${rollbackError instanceof Error?rollbackError.message:''}`)
+        }
+      }
+      throw error
+    }finally{
+      audioApplyingRef.current=false
+      if(session===projectSession.current){setAudioApplying(false);setBusy('')}
+    }
+  }
+
+  async function togglePlayback(){if(audioApplyingRef.current)return;try{if(engine.getSnapshot().playing)engine.pause();else await engine.play()}catch(e){notify(`오디오를 시작할 수 없습니다: ${e instanceof Error?e.message:''}`)}}
   function cancelRecordPreparation(){if(!recordPreparingRef.current||recordRef.current)return;recordAttempt.current+=1;recordPreparingRef.current=false;setRecordPreparing(false);inputCapture.setNeeded('record',false)}
   function stop(){cancelRecordPreparation();if(recordRef.current?.recorder.state==='recording')recordRef.current.recorder.stop();engine.stop()}
   function seekPlay(beat:number){engine.seek(Math.max(0,beat));if(!engine.getSnapshot().playing)void togglePlayback()}
@@ -452,6 +532,7 @@ export default function App(){
       case 'forward':engine.seek(Math.min(project.lengthBeats,Math.floor(beat/4+1e-6)*4+4));break
       case 'escape':setRenamingTrackId(null);setRenamingClipId(null);setPalette(null);setHeaderConfig(null);setIconMenu(null);breakHistoryMerge();setSelectedClipIds(new Set());setAnchorClipId(null);break
       case 'help':setModal('help');break
+      case 'openSettings':openAudioSettings();break
       case 'cycle':commit(p=>({...p,loop:{...p.loop,enabled:!p.loop.enabled}}));break
       case 'record':void toggleRecord();break
       case 'metronome':notify('메트로놈은 아직 오디오 엔진에 없습니다. 곧 지원됩니다.');break
@@ -564,7 +645,7 @@ export default function App(){
     try{
       await engine.resume();if(!current())return
       const stream=await inputCapture.acquire();if(!current())return
-      const chunks:Blob[]=[];const mime=['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus'].find(t=>MediaRecorder.isTypeSupported(t));const recorder=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);const beat=engine.getSnapshot().beat;const bpm=project.bpm;const trackId=target.trackId??undefined
+      const chunks:Blob[]=[];const mime=['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus'].find(t=>MediaRecorder.isTypeSupported(t));const recorder=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);const beat=engine.getSnapshot().beat;const bpm=project.bpm;const recordingOffsetMs=audioSettingsRef.current.recordingOffsetMs;const trackId=target.trackId??undefined
       pendingRecorder=recorder
       recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onerror=()=>{if(current())notify('녹음 중 오류가 발생했습니다.')}
       recorder.onstop=()=>{
@@ -573,7 +654,7 @@ export default function App(){
         inputCapture.setNeeded('record',false)
         if(!current())return
         setRecording(false);setBusy('녹음 파일을 처리하는 중…')
-        void(async()=>{try{const blob=new Blob(chunks,{type:recorder.mimeType});if(!blob.size)return;const name=`Recording ${new Date().toLocaleTimeString('ko-KR',{hour12:false})}`;const asset=await engine.decodeAsset(blob,name);if(session!==projectSession.current)return;setAssets(prev=>{const next=new Map(prev);next.set(asset.id,asset);return next});const clip:AudioClip={id:uid(),kind:'audio',name,startBeat:beat,lengthBeats:asset.buffer.duration*bpm/60,gain:1,assetId:asset.id,offsetSeconds:0,fadeIn:.005,fadeOut:.01};const newTrack=createTrack('audio');newTrack.name='Recording';const destination=trackId??newTrack.id;commit(p=>{const tracks=p.tracks.some(t=>t.id===destination)?p.tracks:[...p.tracks,{...newTrack,id:destination}];return{...p,lengthBeats:Math.max(p.lengthBeats,Math.ceil((beat+clip.lengthBeats)/4)*4),tracks:tracks.map(t=>t.id===destination?{...t,clips:[...t.clips,clip]}:t)}});selectClips([clip.id],clip.id,destination);notify('녹음을 오디오 클립으로 추가했습니다.')}catch(e){if(session===projectSession.current)notify(`녹음 처리 실패: ${e instanceof Error?e.message:''}`)}finally{if(session===projectSession.current)setBusy('')}})()
+        void(async()=>{try{const blob=new Blob(chunks,{type:recorder.mimeType});if(!blob.size)return;const name=`Recording ${new Date().toLocaleTimeString('ko-KR',{hour12:false})}`;const asset=await engine.decodeAsset(blob,name);if(session!==projectSession.current)return;const placement=recordingPlacement(beat,bpm,asset.buffer.duration,recordingOffsetMs);if(!placement){notify('녹음 위치 보정으로 전체 녹음이 프로젝트 시작 이전에 놓였습니다. 보정값을 확인해주세요.');return}setAssets(prev=>{const next=new Map(prev);next.set(asset.id,asset);return next});const clip:AudioClip={id:uid(),kind:'audio',name,...placement,gain:1,assetId:asset.id,fadeIn:.005,fadeOut:.01};const newTrack=createTrack('audio');newTrack.name='Recording';const destination=trackId??newTrack.id;commit(p=>{const tracks=p.tracks.some(t=>t.id===destination)?p.tracks:[...p.tracks,{...newTrack,id:destination}];return{...p,lengthBeats:Math.max(p.lengthBeats,Math.ceil((clip.startBeat+clip.lengthBeats)/4)*4),tracks:tracks.map(t=>t.id===destination?{...t,clips:[...t.clips,clip]}:t)}});selectClips([clip.id],clip.id,destination);notify('녹음을 오디오 클립으로 추가했습니다.')}catch(e){if(session===projectSession.current)notify(`녹음 처리 실패: ${e instanceof Error?e.message:''}`)}finally{if(session===projectSession.current)setBusy('')}})()
       }
       recordRef.current={recorder,stream};recorder.start(100);setRecording(true);if(!engine.getSnapshot().playing)await engine.play()
     }catch(e){
@@ -590,7 +671,9 @@ export default function App(){
   useEffect(()=>{
     const handler=(e:KeyboardEvent)=>{
       if(isShortcutSuppressed(e,true)||!loaded)return
-      if(modal){if(e.key==='Escape'&&isUnmodified(e)){e.preventDefault();if(!e.repeat)setModal(null)}return}
+      if(modal){if(e.key==='Escape'&&isUnmodified(e)){e.preventDefault();if(!e.repeat&&!(modal==='settings'&&audioApplyingRef.current))setModal(null)}return}
+      // Settings is an application command, also available from a focused input or button.
+      if(resolveProjectShortcut(e,'workspace',true)==='openSettings'){e.preventDefault();if(!e.repeat)openAudioSettings();return}
       const scope=shortcutScope(e.target),command=resolveProjectShortcut(e,scope,true);if(!command)return
       // Consume owned repeats so a held Space cannot scroll the document and
       // a held save key cannot fall through to the browser's Save Page dialog.
@@ -628,7 +711,7 @@ export default function App(){
   return <div className="studio-app" onClick={e=>{if(e.detail>0&&e.target instanceof Element){const button=e.target.closest<HTMLElement>('.icon-button,.play-button,.record-button,.transport-bar button,.editor-toolbar button,.header-actions button,.status-bar button,.tracks-menubar button');if(button&&!button.closest('[role="dialog"]'))button.blur()}}}>
     <header className="app-header">
       <div className="header-project">
-        <button className="brand" onClick={()=>setModal('about')} title={`${BRAND.name} 정보`} aria-label={`${BRAND.name} 정보`}><Brand/></button>
+        <button className="brand" onClick={event=>setAppMenu(current=>current?null:{...anchorAt(event.currentTarget),trigger:event.currentTarget})} title={`${BRAND.name} 메뉴 · 설정 ${shortcutText('openSettings')}`} aria-label={`${BRAND.name} 메뉴`} aria-haspopup="menu" aria-expanded={!!appMenu}><Brand/></button>
         <span className="header-divider"/>
         <div className="project-identity">
           <NameInput aria-label="프로젝트 이름" title={project.name} value={project.name} onCommit={name=>commit(p=>({...p,name}),'project-name')}/>
@@ -658,10 +741,12 @@ export default function App(){
       {view.browserOpen&&<Browser assets={assets} onAddAsset={addStoredAsset} onImport={()=>{importTarget.current={};audioInput.current?.click()}}/>}
     </div>
 
-    <footer className="status-bar"><div><button className={view.libraryOpen?'active':''} aria-pressed={view.libraryOpen} onClick={()=>patchView({libraryOpen:!view.libraryOpen})} aria-label="라이브러리 패널 전환" title={`라이브러리 · ${shortcutText('toggleLibrary')}`}><Icon name="panel" size={14}/></button><button className={view.inspectorOpen?'active':''} aria-pressed={view.inspectorOpen} onClick={()=>patchView({inspectorOpen:!view.inspectorOpen})} aria-label="인스펙터 패널 전환" title={`인스펙터 · ${shortcutText('toggleInspector')}`}><Icon name="settings" size={15}/></button><button className={view.browserOpen?'active':''} aria-pressed={view.browserOpen} onClick={()=>patchView({browserOpen:!view.browserOpen})} aria-label="브라우저 패널 전환" title={`브라우저 · ${shortcutText('toggleBrowser')}`}><Icon name="folder" size={14}/></button><span className={`status-dot ${saveStatus==='error'?'error':''}`}/><span>{saveStatus==='error'?'저장 공간을 확인해주세요':'로컬 작업 공간'}</span><span className="status-divider"/><span className="footer-caption">소리는 여기에서 시작됩니다.</span></div><div><AudioStatus/><span className="status-divider"/><button onClick={()=>setModal('help')} title="단축키" aria-label="단축키 도움말"><Icon name="keyboard" size={15}/></button><span className="version-tag">{BRAND.version} DEV</span></div></footer>
+    <footer className="status-bar"><div><button className={view.libraryOpen?'active':''} aria-pressed={view.libraryOpen} onClick={()=>patchView({libraryOpen:!view.libraryOpen})} aria-label="라이브러리 패널 전환" title={`라이브러리 · ${shortcutText('toggleLibrary')}`}><Icon name="panel" size={14}/></button><button className={view.inspectorOpen?'active':''} aria-pressed={view.inspectorOpen} onClick={()=>patchView({inspectorOpen:!view.inspectorOpen})} aria-label="인스펙터 패널 전환" title={`인스펙터 · ${shortcutText('toggleInspector')}`}><Icon name="settings" size={15}/></button><button className={view.browserOpen?'active':''} aria-pressed={view.browserOpen} onClick={()=>patchView({browserOpen:!view.browserOpen})} aria-label="브라우저 패널 전환" title={`브라우저 · ${shortcutText('toggleBrowser')}`}><Icon name="folder" size={14}/></button><span className={`status-dot ${saveStatus==='error'?'error':''}`}/><span>{saveStatus==='error'?'저장 공간을 확인해주세요':'로컬 작업 공간'}</span><span className="status-divider"/><span className="footer-caption">소리는 여기에서 시작됩니다.</span></div><div><AudioStatus onOpen={openAudioSettings}/><span className="status-divider"/><button onClick={()=>setModal('help')} title="단축키" aria-label="단축키 도움말"><Icon name="keyboard" size={15}/></button><span className="version-tag">{BRAND.version} DEV</span></div></footer>
 
     <input ref={audioInput} type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aiff" multiple hidden onChange={e=>{if(e.target.files?.length)void addAudioFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0)}}/>
     <input ref={projectInput} type="file" accept=".garak,.noct,.json,application/json" hidden onChange={e=>{if(e.target.files?.[0])void openBundle(e.target.files[0])}}/>
+    {appMenu&&<ContextMenu {...appMenu} label={`${BRAND.name} 메뉴`} onClose={()=>setAppMenu(null)} items={[{label:'설정…',shortcut:shortcutText('openSettings'),onSelect:openAudioSettings},{type:'separator'},{label:'새 프로젝트…',onSelect:()=>setModal('new')},{label:'단축키 도움말',onSelect:()=>setModal('help')},{label:`${BRAND.name} 정보`,onSelect:()=>setModal('about')}]}/>}
+    {modal==='settings'&&<AudioSettingsDialog engine={engine} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}
     {palette&&<ColorPalette x={palette.x} y={palette.y} value={project.tracks.find(t=>t.id===palette.ids[0])?.color??''} onPick={hex=>changeTracks(palette.ids.map(id=>({id,patch:{color:hex}})),`${palette.ids.join()}:color`)} onClose={()=>setPalette(null)}/>}
     {headerConfig&&<HeaderConfigPopover x={headerConfig.x} y={headerConfig.y} config={trackHeader.headerConfig} onChange={headerConfig=>setTrackHeader(h=>({...h,headerConfig}))} onClose={()=>setHeaderConfig(null)}/>}
     {iconMenu&&iconTrack&&<ContextMenu x={iconMenu.x} y={iconMenu.y} label="트랙 아이콘" onClose={()=>setIconMenu(null)} items={[{label:'기본',checked:!iconTrack.icon,onSelect:()=>editTrack(iconTrack.id,t=>{const {icon:_i,...rest}=t;return rest})},{type:'separator'},...TRACK_ICONS.map(([name,label])=>({label,checked:iconTrack.icon===name,onSelect:()=>changeTrack(iconTrack.id,{icon:name})}))]}/>}
@@ -669,8 +754,8 @@ export default function App(){
     {notice&&<div className="toast" role="status"><Icon name="info" size={17}/><span data-selectable-text="" tabIndex={0}>{notice}</span><button onClick={()=>setNotice('')} aria-label="알림 닫기"><Icon name="close" size={15}/></button></div>}
     {busy&&<div className="busy-indicator" role="status"><span className="spinner"/>{busy}</div>}
     {modal==='newTracks'&&<NewTracksDialog focusedKind={focusedTrack?.kind} focusedInstrument={focusedTrack?.kind==='instrument'?focusedTrack.instrument:undefined} onCreate={createTracks} onClose={()=>setModal(null)}/>}
-    {modal&&modal!=='newTracks'&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className={`modal ${modal==='help'?'modal-help':''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" onClick={()=>setModal(null)} aria-label="창 닫기"><Icon name="close"/></button>
-      {modal==='new'?<><span className="modal-symbol"><Icon name="plus" size={27}/></span><h2 id="modal-title">다음 아이디어를 시작할까요?</h2><p>현재 프로젝트를 계속 보관하려면 먼저 프로젝트 파일을 내려받으세요. 새 프로젝트는 자동 저장된 작업을 대체합니다.</p><button className="modal-save" onClick={()=>void saveBundle()}><Icon name="save" size={16}/> 현재 프로젝트 내려받기</button><div className="modal-buttons"><button onClick={()=>newProject(true)}>데모 곡 열기</button><button className="primary" onClick={()=>newProject()}>빈 프로젝트 만들기</button></div></>:modal==='export'?<><span className="modal-symbol"><Icon name="download" size={26}/></span><h2 id="modal-title">음악을 밖으로</h2><p>모든 트랙과 현재 믹서 설정을 하나의 스테레오 파일로 만듭니다.</p><div className="export-summary"><span>파일 이름<b>{project.name||'Untitled'}.wav</b></span><span>범위<b>{project.lengthBeats/4} 마디 · {(project.lengthBeats*60/project.bpm).toFixed(1)}초</b></span><span>프로젝트<b>{project.tracks.length} tracks · {project.bpm} BPM</b></span><span>형식<b>Stereo PCM WAV</b></span></div><button className="primary modal-wide" onClick={()=>void exportWav()}><Icon name="download" size={16}/> WAV 내보내기</button><button className="text-link" onClick={()=>{setModal(null);void saveBundle()}}>편집 가능한 프로젝트(.garak)로 보관하기</button></>:modal==='help'?<><span className="modal-symbol"><Icon name="keyboard" size={27}/></span><h2 id="modal-title">손끝에서 이어지는 작업</h2><div className="shortcut-groups" data-selectable-text="" tabIndex={0}>{SCOPE_GROUPS.map(([key,title])=>{const rows=SHORTCUT_TABLE.filter(r=>r.scopes.join(',')===key&&!ZOOM_COMMANDS.includes(r.command));return rows.length?<section key={key} className="shortcut-list"><h3>{title}</h3>{rows.map(r=><div key={r.command}><span>{r.label}</span><kbd>{(shortcutPlatform()==='mac'?r.mac:r.win)||'—'}</kbd></div>)}</section>:null})}<section className="shortcut-list"><h3>확대/축소 · 키 포커스가 있는 영역에 적용</h3>{SHORTCUT_TABLE.filter(r=>ZOOM_COMMANDS.includes(r.command)).map(r=><div key={r.command}><span>{r.label}</span><kbd>{shortcutPlatform()==='mac'?r.mac:r.win}</kbd></div>)}<div><span>가로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⌘':'Ctrl+'}휠 · 핀치</kbd></div><div><span>세로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⇧⌘':'Ctrl+Shift+'}휠 / {shortcutPlatform()==='mac'?'⌥':'Alt+'}휠</kbd></div></section></div><p className="modal-note">클릭은 선택, Shift/{shortcutPlatform()==='mac'?'⌘':'Ctrl'}+클릭은 선택 추가, 빈 곳 드래그는 범위 선택입니다. 드래그 중 {shortcutPlatform()==='mac'?'⌥':'Alt'} = 복사, Ctrl = 세밀하게, Ctrl+Shift = 스냅 무시, Shift = 축 고정. 클립을 더블 클릭하면 편집기가 열립니다.</p></>:<><Brand size="large"/><h2 id="modal-title">음악을 위한 나만의 공간.</h2><p>React와 Web Audio로 만드는 오픈소스 DAW입니다. 프로젝트와 음원은 브라우저에 로컬로 저장합니다.</p><div className="about-roadmap"><span><b>1.0</b> 웹 편집기 + 오디오 엔진 <small>개발 중</small></span><span><b>2.0</b> 로컬 호스트 + VST 연결 <small>예정</small></span></div><div className="about-meta" data-selectable-text="" tabIndex={0}>React 19.3.1 · TypeScript · 코드 MIT License</div><div className="sample-credits" data-selectable-text="" tabIndex={0}><strong>샘플 악기 출처</strong>{SAMPLE_CREDITS.map(c=><span key={c.title}>{c.url?<a href={c.url} target="_blank" rel="noreferrer">{c.title}</a>:c.title} — {c.author}, {c.license} <small>{c.instruments}</small></span>)}</div>{SOURCE_REPOSITORY_URL&&<a className="modal-save" href={SOURCE_REPOSITORY_URL} target="_blank" rel="noreferrer"><Icon name="external" size={16}/> GitHub 소스 코드</a>}<div className="font-credit" data-selectable-text="" tabIndex={0}>이름 글꼴: <a href={BRAND.fontSource} target="_blank" rel="noreferrer">{BRAND.fontName}</a><br/>국립한글박물관 · ㈜윤디자인그룹<br/><a href={BRAND.fontLicense} target="_blank" rel="noreferrer">공공누리 제3유형 · 글꼴 이용 조건</a></div></>}
+    {modal&&modal!=='newTracks'&&modal!=='settings'&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className={`modal ${modal==='help'?'modal-help':''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" onClick={()=>setModal(null)} aria-label="창 닫기"><Icon name="close"/></button>
+      {modal==='new'?<><span className="modal-symbol"><Icon name="plus" size={27}/></span><h2 id="modal-title">다음 아이디어를 시작할까요?</h2><p>현재 프로젝트를 계속 보관하려면 먼저 프로젝트 파일을 내려받으세요. 새 프로젝트는 자동 저장된 작업을 대체합니다.</p><button className="modal-save" onClick={()=>void saveBundle()}><Icon name="save" size={16}/> 현재 프로젝트 내려받기</button><div className="modal-buttons"><button onClick={()=>newProject(true)}>데모 곡 열기</button><button className="primary" onClick={()=>newProject()}>빈 프로젝트 만들기</button></div></>:modal==='export'?<><span className="modal-symbol"><Icon name="download" size={26}/></span><h2 id="modal-title">음악을 밖으로</h2><p>모든 트랙과 현재 믹서 설정을 하나의 스테레오 파일로 만듭니다.</p><div className="export-summary"><span>파일 이름<b>{project.name||'Untitled'}.wav</b></span><span>범위<b>{project.lengthBeats/4} 마디 · {(project.lengthBeats*60/project.bpm).toFixed(1)}초</b></span><span>프로젝트<b>{project.tracks.length} tracks · {project.bpm} BPM</b></span><span>형식<b>Stereo PCM 16-bit WAV · {project.sampleRate/1000} kHz</b></span></div><button className="primary modal-wide" onClick={()=>void exportWav()}><Icon name="download" size={16}/> WAV 내보내기</button><button className="text-link" onClick={()=>{setModal(null);void saveBundle()}}>편집 가능한 프로젝트(.garak)로 보관하기</button></>:modal==='help'?<><span className="modal-symbol"><Icon name="keyboard" size={27}/></span><h2 id="modal-title">손끝에서 이어지는 작업</h2><div className="shortcut-groups" data-selectable-text="" tabIndex={0}>{SCOPE_GROUPS.map(([key,title])=>{const rows=SHORTCUT_TABLE.filter(r=>r.scopes.join(',')===key&&!ZOOM_COMMANDS.includes(r.command));return rows.length?<section key={key} className="shortcut-list"><h3>{title}</h3>{rows.map(r=><div key={r.command}><span>{r.label}</span><kbd>{(shortcutPlatform()==='mac'?r.mac:r.win)||'—'}</kbd></div>)}</section>:null})}<section className="shortcut-list"><h3>확대/축소 · 키 포커스가 있는 영역에 적용</h3>{SHORTCUT_TABLE.filter(r=>ZOOM_COMMANDS.includes(r.command)).map(r=><div key={r.command}><span>{r.label}</span><kbd>{shortcutPlatform()==='mac'?r.mac:r.win}</kbd></div>)}<div><span>가로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⌘':'Ctrl+'}휠 · 핀치</kbd></div><div><span>세로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⇧⌘':'Ctrl+Shift+'}휠 / {shortcutPlatform()==='mac'?'⌥':'Alt+'}휠</kbd></div></section></div><p className="modal-note">클릭은 선택, Shift/{shortcutPlatform()==='mac'?'⌘':'Ctrl'}+클릭은 선택 추가, 빈 곳 드래그는 범위 선택입니다. 드래그 중 {shortcutPlatform()==='mac'?'⌥':'Alt'} = 복사, Ctrl = 세밀하게, Ctrl+Shift = 스냅 무시, Shift = 축 고정. 클립을 더블 클릭하면 편집기가 열립니다.</p></>:<><Brand size="large"/><h2 id="modal-title">음악을 위한 나만의 공간.</h2><p>React와 Web Audio로 만드는 오픈소스 DAW입니다. 프로젝트와 음원은 브라우저에 로컬로 저장합니다.</p><div className="about-roadmap"><span><b>1.0</b> 웹 편집기 + 오디오 엔진 <small>개발 중</small></span><span><b>2.0</b> 로컬 호스트 + VST 연결 <small>예정</small></span></div><div className="about-meta" data-selectable-text="" tabIndex={0}>React 19.3.1 · TypeScript · 코드 MIT License</div><div className="sample-credits" data-selectable-text="" tabIndex={0}><strong>샘플 악기 출처</strong>{SAMPLE_CREDITS.map(c=><span key={c.title}>{c.url?<a href={c.url} target="_blank" rel="noreferrer">{c.title}</a>:c.title} — {c.author}, {c.license} <small>{c.instruments}</small></span>)}</div>{SOURCE_REPOSITORY_URL&&<a className="modal-save" href={SOURCE_REPOSITORY_URL} target="_blank" rel="noreferrer"><Icon name="external" size={16}/> GitHub 소스 코드</a>}<div className="font-credit" data-selectable-text="" tabIndex={0}>이름 글꼴: <a href={BRAND.fontSource} target="_blank" rel="noreferrer">{BRAND.fontName}</a><br/>국립한글박물관 · ㈜윤디자인그룹<br/><a href={BRAND.fontLicense} target="_blank" rel="noreferrer">공공누리 제3유형 · 글꼴 이용 조건</a></div></>}
     </section></div>}
   </div>
 }
@@ -685,7 +770,12 @@ function PianoRollBridge(props:Omit<ComponentProps<typeof PianoRoll>,'playheadBe
   const snapshot=useSyncExternalStore(subscribeTransport,readTransport,readTransport)
   return <PianoRoll {...props} playheadBeat={snapshot.beat}/>
 }
-function AudioStatus(){const s=useSyncExternalStore(subscribeTransport,readTransport,readTransport);return <span className="audio-status"><Icon name="headphones" size={13}/>{s.ready?`${(s.sampleRate/1000).toFixed(1)} kHz · Stereo`:'오디오 준비됨'}</span>}
+function AudioStatus({onOpen}:{onOpen:()=>void}){
+  const audio=useSyncExternalStore(engine.subscribeAudioState,engine.getAudioState,engine.getAudioState)
+  const problem=audio.status==='error'||audio.needsReconfiguration
+  const label=problem?'오디오 장치 확인':audio.status==='configuring'?'오디오 설정 적용 중':audio.contextState==='running'&&audio.sampleRate?`${+(audio.sampleRate/1000).toFixed(1)} kHz · Stereo`:'오디오 설정'
+  return <button className={`audio-status${problem?' error':''}`} onClick={onOpen} title={`${audio.error??'오디오 설정'} · ${shortcutText('openSettings')}`} aria-label={`${label} · 설정 열기`}><Icon name="headphones" size={13}/>{label}<Icon name="settings" size={12}/></button>
+}
 function Transport({project,onChange,onPlay,onStop,onRecord,recording,recordPreparing,canUndo,canRedo,onUndo,onRedo}:{project:Project;onChange:(fn:(p:Project)=>Project,key?:string)=>void;onPlay:()=>void;onStop:()=>void;onRecord:()=>void;recording:boolean;recordPreparing:boolean;canUndo:boolean;canRedo:boolean;onUndo:()=>void;onRedo:()=>void}){
   const snapshot=useSyncExternalStore(subscribeTransport,readTransport,readTransport)
   const bar=Math.floor(snapshot.beat/4)+1,beat=Math.floor(snapshot.beat%4)+1,tick=Math.floor((snapshot.beat%1)*100)
