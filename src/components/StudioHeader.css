@@ -1,7 +1,6 @@
-/* Compact studio chrome: keep the hanok roof as a boundary, give height back to the tracks. */
+/* One studio bar: project, transport, and file actions share the 40px above the roof. */
 .studio-app {
-  --app-header-height: 40px;
-  --transport-height: 42px;
+  --app-header-height: 48px;
   --header-roof-height: 8px;
 }
 
@@ -9,7 +8,8 @@
   height: var(--app-header-height);
   min-height: var(--app-header-height);
   flex-shrink: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(188px, 1fr) auto minmax(max-content, 1fr);
   align-items: center;
   padding: 0 12px var(--header-roof-height);
   gap: 12px;
@@ -32,29 +32,29 @@
 }
 
 .app-header .brand { height: 28px; }
+.header-project { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .header-divider { width: 1px; height: 18px; background: var(--ink-22); flex-shrink: 0; }
-.project-identity { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; max-width: 480px; }
+.project-identity { display: flex; flex-direction: column; align-items: flex-start; flex: 1; min-width: 0; max-width: 240px; }
 .project-identity input {
   background: transparent;
-  flex: 1;
   width: 100%;
   min-width: 0;
-  height: 28px;
-  padding: 2px 4px;
+  height: 22px;
+  padding: 0 2px;
   font-size: 12px;
   font-weight: 550;
   letter-spacing: .1px;
 }
 .project-identity input:focus { background: var(--ink-15); border-radius: 3px; }
-.save-indicator { display: flex; align-items: center; gap: 5px; flex-shrink: 0; color: var(--ink-57); font-size: 10px; white-space: nowrap; }
+.save-indicator { display: flex; align-items: center; gap: 4px; padding-left: 2px; height: 12px; flex-shrink: 0; color: var(--ink-57); font-size: 9px; line-height: 1; white-space: nowrap; }
 .save-indicator i { height: 5px; width: 5px; border-radius: 50%; background: #91bda6; }
 .save-indicator.saving i, .save-indicator.loading i { background: #c7ae76; }
 .save-indicator.error i { background: #e88f85; }
-.header-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-.header-text { height: 28px; padding: 0 4px; font-size: 11px; color: var(--ink-60); }
-.header-text:hover { color: var(--ink-87); }
-.app-header .icon-button, .transport-bar .icon-button { width: 28px; height: 28px; flex-shrink: 0; }
-.app-header button:focus-visible, .app-header input:focus-visible { outline-offset: 0; }
+.header-actions { justify-self: end; display: flex; gap: 6px; align-items: center; }
+.header-text { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 28px; padding: 0 4px; border-radius: 5px; font-size: 11px; white-space: nowrap; color: var(--ink-60); }
+.header-text:hover { color: var(--ink-87); background: var(--ink-21); }
+.app-header .icon-button { width: 28px; height: 28px; flex-shrink: 0; }
+.app-header button:focus-visible, .app-header input:focus-visible, .app-header select:focus-visible { outline-offset: 0; }
 .export-button {
   height: 28px;
   display: flex;
@@ -68,20 +68,16 @@
   border-radius: 5px;
   font-weight: 650;
   font-size: 11px;
+  white-space: nowrap;
   box-shadow: inset 0 1px 0 #ffffff28;
 }
 .export-button:hover { background: var(--seokganju-69) !important; }
 
 .transport-bar {
-  height: var(--transport-height);
-  min-height: var(--transport-height);
-  flex-shrink: 0;
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  gap: 12px;
-  background: var(--ink-11);
-  border-bottom: 1px solid var(--ink-18);
+  flex-wrap: nowrap;
+  gap: 10px;
 }
 .history-buttons, .transport-buttons { display: flex; align-items: center; flex-shrink: 0; }
 .history-buttons { gap: 0; }
@@ -97,37 +93,42 @@
 .record-button:hover i { background: #eb978e; }
 .record-button.recording i { background: #e5533d; animation: record-pulse 1s infinite; }
 .loop-toggle.active { color: var(--seokganju-63); background: #d2867012; }
-.time-display { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 104px; flex-shrink: 0; font-family: "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; }
-.time-display strong { font-size: 18px; font-weight: 400; letter-spacing: .5px; color: var(--ink-90); line-height: 1; }
+.time-display { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 104px; flex-shrink: 0; font-family: "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; }
+.time-display strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 400; letter-spacing: .5px; color: var(--ink-90); line-height: 1; }
 .time-display strong i { color: var(--ink-42); font-style: normal; margin: 0 3px; }
 .time-display > span { font-size: 10px; line-height: 1; color: var(--ink-48); letter-spacing: 1px; }
-.tempo-box { border-left: 1px solid var(--ink-21); padding-left: 12px; display: flex; flex-direction: column; align-items: center; gap: 2px; flex-shrink: 0; }
+.tempo-box { border-left: 1px solid var(--ink-21); padding-left: 10px; display: flex; flex-direction: column; align-items: center; gap: 2px; flex-shrink: 0; }
 .tempo-box input { width: 44px; height: 24px; background: transparent; text-align: center; font-family: Consolas, monospace; font-size: 16px; padding: 0; color: var(--ink-84); }
 .tempo-box > span, .time-signature > span, .loop-length label { font-size: 8px; line-height: 1; color: var(--ink-48); letter-spacing: 1px; }
 .time-signature { display: flex; flex-direction: column; gap: 3px; align-items: center; min-width: 55px; flex-shrink: 0; }
 .time-signature strong { font-size: 13px; font-family: Consolas, monospace; font-weight: 400; }
-.loop-length { border-left: 1px solid var(--ink-18); padding-left: 12px; flex-shrink: 0; }
+.loop-length { border-left: 1px solid var(--ink-18); padding-left: 10px; flex-shrink: 0; }
 .loop-length label { display: flex; align-items: center; gap: 6px; }
 .loop-length select { font-size: 10px; background: transparent; border: 0; padding: 0; width: 70px; height: 28px; letter-spacing: 0; }
-.transport-spacer { flex: 1; min-width: 0; }
 
 @media (max-width: 1250px) {
-  .header-text, .loop-length { display: none; }
+  .time-signature, .loop-length { display: none; }
+  .header-text > span, .export-button > span { display: none; }
+  .header-text, .export-button { width: 28px; padding: 0; }
 }
 
-@media (max-width: 1020px) {
-  .time-signature { display: none; }
-}
-
-@media (max-width: 780px) {
-  .app-header { gap: 8px; padding-inline: 10px; }
-  .project-identity { gap: 6px; }
+@media (max-width: 900px) {
+  .app-header { grid-template-columns: minmax(94px, 1fr) auto minmax(max-content, 1fr); gap: 8px; padding-inline: 10px; }
+  .header-project { gap: 6px; }
+  .app-header .brand-wordmark, .header-project > .header-divider { display: none; }
   .project-identity input { font-size: 11px; }
-  .save-indicator { font-size: 9px; }
-  .header-actions { gap: 4px; }
-  .header-actions .header-divider { display: none; }
-  .export-button { padding-inline: 8px; font-size: 10px; }
-  .transport-bar { gap: 8px; padding-inline: 10px; }
-  .transport-buttons { gap: 3px; }
-  .tempo-box { padding-left: 10px; }
+  .header-actions { gap: 2px; }
+  .transport-bar { gap: 6px; }
+  .transport-buttons { gap: 2px; }
+  .time-display { width: 88px; }
+  .time-display strong { font-size: 15px; letter-spacing: 0; }
+  .time-display strong i { margin-inline: 1px; }
+  .time-display > span { font-size: 9px; }
+  .tempo-box { padding-left: 6px; }
+}
+
+@media (max-width: 680px) {
+  .app-header { gap: 6px; padding-inline: 8px; }
+  .transport-bar { gap: 4px; }
+  .tempo-box { padding-left: 2px; }
 }
