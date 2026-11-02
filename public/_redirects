@@ -1,0 +1,2 @@
+# Keep project URLs on refresh; static assets keep their own paths.
+/projects/* /index.html 200

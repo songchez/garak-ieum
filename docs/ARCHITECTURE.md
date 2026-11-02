@@ -4,10 +4,14 @@
 
 ## 1. 현재 실행 구조
 
-React는 편집 화면을 담당하며 `ProjectSession`의 프로젝트·이력을 구독합니다. 화면 조작과 MCP 편집이 같은 세션을 변경합니다. `WebAudioEngine`은 React 컴포넌트의 재렌더링 수명 주기 밖에서 유지되는 서비스이며, 브라우저의 `AudioContext`와 오디오 그래프를 소유합니다. 프로젝트 저장과 원본 음원 보관은 별도 저장 모듈이 담당합니다.
+`ProjectShell`은 기본 `/`의 프로젝트 선택 화면과 `/projects/:id`의 편집기를 나눕니다. 편집기의 React 화면은 `ProjectSession`의 프로젝트·이력을 구독하며, 화면 조작과 MCP 편집이 같은 세션을 변경합니다. `WebAudioEngine`은 편집기 안의 재렌더링 수명 주기 밖에서 유지되는 서비스이며, 브라우저의 `AudioContext`와 오디오 그래프를 소유합니다. 프로젝트 저장과 원본 음원 보관은 별도 저장 모듈이 담당합니다.
 
 ```mermaid
 flowchart TD
+  Shell["ProjectShell · URL/화면 전환"] --> L["ProjectLauncher · 작업 목록/샘플"]
+  Shell --> UI
+  L --> Create["projectLibrary · 생성/가져오기"]
+  Create --> S
   UI["React 편집 화면"] --> P["ProjectSession · 편집/이력"]
   AI["로컬 MCP 클라이언트"] --> M["Node MCP 서버"]
   M --> H["브라우저 명령 호스트"]
@@ -24,17 +28,28 @@ flowchart TD
 
 오디오 계산을 서버로 보내지 않습니다. 웹 파일을 호스팅하더라도 각 사용자의 브라우저가 재생·렌더링을 수행합니다. 선택적으로 실행하는 로컬 MCP 프로세스는 명령과 결과를 전달하며 오디오 엔진을 소유하지 않습니다. 계정·클라우드 저장 백엔드는 현재 구성에 없습니다.
 
+### 프로젝트 이동의 보호 범위
+
+이동은 인라인 입력 blur → 진행 상태 → 이전 프로젝트의 최종 저장 → 대상 프로젝트 저장/확인 → URL과 화면 변경 순서다. 브라우저 Back/Forward는 앱이 기록한 방문 인덱스로 현재 작업 주소에 먼저 복귀한 뒤 같은 저장 가드를 적용한다. 이동을 거절하면 기존 방문 항목과 앞으로 가기 목록을 유지한다. 진행 중 추가 이동은 별도 생성 함수를 실행하지 않는다.
+
+앱 밖의 코드가 삽입한 방문 항목은 브라우저가 위치 인덱스를 제공할 때 이를 읽어 복구한다. 인덱스와 앱 메타데이터가 모두 없는 외부 항목은 방향을 추측할 수 없으므로, 이동 거절 시 기존 항목을 교체하지 않고 현재 작업 주소를 새로 추가한다. 이 제한된 경우에는 앞으로 가기 목록이 사라질 수 있다. 페이지 자체를 떠나는 새로고침·탭 닫기에는 동기적인 미저장 상태 확인과 브라우저 종료 경고를 사용한다.
+
 ## 2. 모듈 지도
 
 | 파일 | 책임 |
 | --- | --- |
-| [`src/App.tsx`](../src/App.tsx) | 공통 세션 구독, 선택 상태, 자동 저장·엔진 연결, 가져오기·내보내기, 마이크 녹음 UI, 전역 단축키 |
+| [`src/ProjectShell.tsx`](../src/ProjectShell.tsx) | URL별 목록/편집기 구성, 목록 갱신, 생성·가져오기 후 이동, 편집기의 이탈 보호 연결, 이동 중 진행 화면 |
+| [`src/core/projectNavigation.ts`](../src/core/projectNavigation.ts) | 프로젝트 URL 해석·생성, 브라우저 이력과 화면 전환, 비동기 이동 및 이탈 보호 |
+| [`src/components/ProjectLauncher.tsx`](../src/components/ProjectLauncher.tsx) | 저장된 작업 목록, 빈 프로젝트·가져오기·템플릿 선택, 실제 MIDI 리전의 정적 편곡 미리보기 |
+| [`src/core/projectLibrary.ts`](../src/core/projectLibrary.ts) | 빈 프로젝트/템플릿을 먼저 저장하고 반환, 가져온 번들을 새 프로젝트 ID로 저장; 오디오 디코딩 없음 |
+| [`src/core/projectTemplates.ts`](../src/core/projectTemplates.ts), [`src/core/projectTemplates/`](../src/core/projectTemplates/) | 국악 붐뱁·트랩·퓨전의 메타데이터와 순수 MIDI 팩토리; 호출마다 새 ID와 편집 객체 |
+| [`src/App.tsx`](../src/App.tsx) | 지정된 프로젝트 ID 복원, 공통 세션 구독, 선택 상태, 프로젝트별 자동 저장·이탈 전 저장, 엔진 연결, 오디오 파일 가져오기·내보내기, 녹음 UI, 편집기 단축키 |
 | [`src/core/input.ts`](../src/core/input.ts), [`src/core/transportShortcuts.ts`](../src/core/transportShortcuts.ts) | 편집 영역별 키맵과 입력 보호, Space 재생 명령의 capture 처리·키 수명 관리 |
 | [`src/core/ProjectSession.ts`](../src/core/ProjectSession.ts), [`src/core/commands.ts`](../src/core/commands.ts) | 프로젝트·Undo/Redo·revision, 명령 계약과 검증, 미리 보기·원자적 적용·재시도 중복 방지 |
 | [`src/automation/host.ts`](../src/automation/host.ts), [`src/automation/bridgeClient.ts`](../src/automation/bridgeClient.ts) | 범위를 제한한 상태 조회, 편집 허용·작업 중 보호, 명시적인 브리지 연결과 취소·만료 처리 |
 | [`mcp/server.ts`](../mcp/server.ts), [`mcp/tools.ts`](../mcp/tools.ts), [`mcp/bridgeServer.ts`](../mcp/bridgeServer.ts) | 공식 SDK stdio 도구, loopback WebSocket 라우팅·인증, 실제 브라우저 응답 대기 |
 | [`src/core/types.ts`](../src/core/types.ts) | Project·Track·Clip·MidiNote·AudioAsset 및 AudioEngine 계약 |
-| [`src/core/project.ts`](../src/core/project.ts) | 새 프로젝트·트랙, 오리지널 데모, 클립 복제·분할, 외부 프로젝트 유효성 검사 |
+| [`src/core/project.ts`](../src/core/project.ts) | 새 프로젝트·트랙, 클립 복제·분할, 외부 프로젝트 유효성 검사. 이전 8마디 데모 팩토리는 호환 테스트용으로 남으며 시작 화면은 새 템플릿 카탈로그를 사용 |
 | [`src/core/audioSettings.ts`](../src/core/audioSettings.ts) | 프로젝트 레이트 허용값·기본값, 앱 오디오 설정의 정규화·로컬 저장, 입력 제약 요청과 실제 상태 타입 |
 | [`src/core/recordingOffset.ts`](../src/core/recordingOffset.ts) | 수동 녹음 보정의 부호·범위 검증, 리전 배치와 프로젝트 0 경계의 소스 오프셋 계산 |
 | [`src/core/instruments.ts`](../src/core/instruments.ts) | 악기 레지스트리: 합성·샘플 악기의 ID, 이름, 분류, 색, 조절기 정의, 샘플 세트 ID, 출처 표기 |
@@ -42,7 +57,7 @@ flowchart TD
 | [`src/devices/contracts.ts`](../src/devices/contracts.ts), [`src/devices/effects/registry.ts`](../src/devices/effects/registry.ts) | 실시간 이펙트 계약과 여섯 모듈 등록; 각 모듈이 정의·DSP·잔향 시간을 소유 |
 | [`src/devices/pitch-editor/`](../src/devices/pitch-editor/) | 리전 피치/포먼트 UI·음계 보정·세션 초안/도구옵션·원본 분석·Worker 렌더·v2 문서 검증·float WAV 자산 |
 | [`src/audio/samples.ts`](../src/audio/samples.ts) | 샘플 세트 로더: 매니페스트 해석, 포맷 선택, 디코딩 캐시, 존 선택, 로딩 상태 알림 |
-| [`src/core/storage.ts`](../src/core/storage.ts) | IndexedDB 트랜잭션, 저장 순서 보장, 원본 Blob 검증, `.garak` 가져오기·내보내기 |
+| [`src/core/storage.ts`](../src/core/storage.ts) | ID별 프로젝트 번들·요약 목록, 기존 latest 이전, IndexedDB 원자적 저장·순서 보장, 원본 Blob 검증, `.garak` 가져오기·내보내기 |
 | [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 오디오 컨텍스트 수명 주기, 재생 위치·루프·예약, 파일 디코딩, 오프라인 출력, UI에 제공하는 스냅숏과 레벨 |
 | [`src/audio/InputCapture.ts`](../src/audio/InputCapture.ts) | 녹음·모니터링 입력 공유, 입력 변경의 준비·확정·복구, 지연된 권한 응답과 장치 종료 처리 |
 | [`src/audio/AudioDeviceProbe.ts`](../src/audio/AudioDeviceProbe.ts), [`src/audio/OutputTest.ts`](../src/audio/OutputTest.ts) | 설정 창의 임시 입력 권한·레벨 테스트, 취소 가능한 적용 출력 테스트와 각 자원의 정리 |
@@ -179,7 +194,7 @@ Dry/wet 분기는 **각 이펙트 내부**에 있습니다. 드라이브는 원�
 
 ## 5. 가져오기와 녹음
 
-가져온 파일은 `decodeAudioData()`로 전체 디코딩합니다. `AudioAsset`에는 원본 `Blob`, 재생용 `AudioBuffer`, 파형 표시용 피크가 함께 존재합니다. 원본은 그대로 보관하고, 피크는 채널을 살펴 최대 320개 지점으로 요약합니다. 확대 수준별 파형 캐시나 부분 디코딩은 없습니다.
+편집기의 **오디오 파일 가져오기**는 `decodeAudioData()`로 전체 디코딩합니다. `AudioAsset`에는 원본 `Blob`, 재생용 `AudioBuffer`, 파형 표시용 피크가 함께 존재합니다. 원본은 그대로 보관하고, 피크는 채널을 살펴 최대 320개 지점으로 요약합니다. 확대 수준별 파형 캐시나 부분 디코딩은 없습니다. **프로젝트 번들 가져오기**는 별도로 `projectLibrary.ts`가 검증한 Project와 원본 Blob을 먼저 저장하며, 목록 화면에서 오디오를 디코딩하지 않습니다. 저장 후 편집기를 열 때 해당 프로젝트의 샘플레이트로 원본을 디코딩합니다.
 
 마이크 입력은 `InputCapture`가 녹음·모니터링의 사용 요구와 `getUserMedia()` 스트림을 관리하고, `App`이 `MediaRecorder`로 녹음합니다. 특정 입력 ID는 `exact`로 고정하며 채널 수·샘플레이트·AEC/NS/AGC는 독립적인 요청으로 전달합니다. 모노/스테레오 채널 수 요청은 인터페이스의 물리 포트 선택이 아닙니다. 현재 입력 값은 트랙의 `getSettings()`에서 읽습니다.
 
@@ -189,7 +204,19 @@ Dry/wet 분기는 **각 이펙트 내부**에 있습니다. 드라이브는 원�
 
 ## 6. 보관과 교환 형식
 
-IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저장소를 사용합니다. 현재 프로젝트는 `latest` 키 하나에 저장합니다. 프로젝트와 모든 원본 Blob을 한 읽기·쓰기 트랜잭션으로 갱신하고, 저장 호출은 순서대로 처리합니다. 오디오 버퍼와 미터 값은 저장하지 않습니다.
+### URL과 작업 수명
+
+기본 `/`는 `ProjectLauncher`를 열고 `/projects/:id`는 해당 ID의 저장본만 엽니다. URL에 있는 프로젝트가 없으면 명시적인 복원 오류를 표시하며, 최근 프로젝트나 기본 데모로 대체하지 않습니다. 편집기에서는 헤더 폴더 버튼 또는 로고 메뉴의 **프로젝트 목록**으로 돌아올 수 있고, 번들 가져오기는 목록과 로고 메뉴 모두에서 진입합니다. 이 URL은 현재 브라우저·사이트의 IndexedDB를 가리키며 원격 공유 주소가 아닙니다.
+
+`createLocalProject()`는 빈 프로젝트 또는 템플릿을 만들고 `saveStoredProject()` 완료 뒤 반환합니다. `importAsNewLocalProject()`는 `importProjectBundle()`의 검증 결과에 새 프로젝트 ID를 부여하여 저장합니다. 내부 트랙·리전·오디오 자산의 연결은 유지하므로 같은 원본 ID의 파일을 여러 번 가져와도 기존 작업을 덮어쓰지 않습니다. 이 단계는 원본 Blob만 다루고 오디오 장치를 열지 않습니다. `ProjectShell`은 저장이 성공한 ID로 이동합니다.
+
+편집기는 목록·새 프로젝트·가져오기·프로젝트 이동 전에 이탈 보호를 통해 마지막 편집 스냅숏과 자산을 저장합니다. 녹음·파일 처리·진행 중 드래그와 미적용 피치 작업은 이동을 막고, 저장 실패도 현재 편집기를 유지합니다. 전환 중에는 이전 화면을 `inert`로 두고 진행 대화상자를 보여주어 저장 스냅숏 뒤의 입력을 차단합니다. 기존 자동 저장과 마지막 저장의 순서를 맞추고, 저장 도중 revision이나 자산이 달라지면 이동하지 않습니다.
+
+### IndexedDB
+
+데이터베이스 이름은 `noct-studio`, 버전은 **2**입니다. `project-bundles`는 프로젝트 ID를 키로 Project와 원본 Blob 배열을 보관하고, `project-summaries`는 이름·BPM·트랙 수·길이·생성/수정 시각만 보관합니다. 목록 조회는 요약 저장소만 읽어 오디오를 로드하거나 디코딩하지 않습니다. 번들과 요약은 같은 읽기·쓰기 트랜잭션에서 함께 갱신합니다. 저장 호출은 순서대로 처리하고, 변경 시각은 같은 밀리초 또는 뒤로 간 시스템 시각에서도 순서가 유지되도록 증가시킵니다. `AudioBuffer`와 미터 값은 저장하지 않습니다.
+
+버전 1의 `projects` 저장소 `latest`와 `audio-assets` 원본은 업그레이드 트랜잭션 안에서 새 번들·요약으로 함께 이전합니다. 기존 저장소는 삭제하거나 덮어쓰지 않습니다. 데이터 검증 또는 쓰기가 실패하면 업그레이드를 롤백하고 원본을 유지합니다. 명시적인 ID를 준 `loadProject(id)`는 다른 저장본을 반환하지 않으며, 인수 없는 호환 호출만 가장 최근 수정본을 조회합니다. 기본 URL은 이 호환 호출로 자동 복원하지 않습니다.
 
 프로젝트를 가져올 때 버전·수치 범위·중복 식별자·오디오 참조를 검증합니다. 참조하는 원본 파일이 없으면 완료된 저장이나 완전한 복원으로 처리하지 않습니다.
 
@@ -214,7 +241,7 @@ IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저�
 
 위 예시의 `project`와 오디오 데이터는 구조 설명용으로 생략했습니다. 이 예시 자체는 유효한 프로젝트 파일이 아닙니다. 실제 파일은 전체 Project와 원본 바이트를 담으며, 가져올 때 원본 길이와 참조 관계를 검사합니다.
 
-현재 형식은 압축 컨테이너나 스트리밍 형식이 아닙니다. 큰 파일에서는 base64 문자열·JSON·디코딩 버퍼가 동시에 메모리를 점유할 수 있습니다. IndexedDB 자동 저장 역시 여러 프로젝트 버전의 백업을 제공하지 않습니다.
+현재 형식은 압축 컨테이너나 스트리밍 형식이 아닙니다. 큰 파일에서는 base64 문자열·JSON·디코딩 버퍼가 동시에 메모리를 점유할 수 있습니다. IndexedDB는 여러 프로젝트의 현재 저장본을 보관하지만 프로젝트별 과거 버전 백업은 제공하지 않습니다. 다른 브라우저·기기로 옮기거나 별도로 보관하려면 `.garak` 파일을 사용합니다.
 
 피치 렌더 자산은 Undo/Redo가 참조할 수 있도록 원본과 함께 유지합니다. 현재 자산 맵의 이전 렌더도 번들에 포함될 수 있어 반복 적용은 메모리와 파일 크기를 늘립니다. 자산 참조 집계와 캐시 정리는 후속 작업입니다.
 
@@ -230,7 +257,10 @@ IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저�
 
 | 테스트 | 다루는 범위 |
 | --- | --- |
-| `src/core/project.test.ts` | 오리지널 데모, 비파괴 클립 편집, 가져온 프로젝트 검증 |
+| `src/core/project.test.ts` | 이전 데모 호환, 비파괴 클립 편집, 가져온 프로젝트 검증 |
+| `src/core/projectTemplates.test.ts` | 세 샘플의 유효성·독립 ID·편곡 경계·실제 샘플 존과 파일·조성·그루브·섹션 변형 |
+| `src/core/projectLibrary.test.ts` | 저장 완료 후 생성/가져오기, 같은 템플릿의 수정 격리, 같은 원본 ID 파일의 새 저장본과 Blob 보존, 오류 시 기존 목록 유지 |
+| `src/core/projectLibraryStorage.test.ts` | fake-indexeddb를 통한 다중 프로젝트·요약 목록·저장 순서·원자적 실패·기존 latest 이전 및 원본 보존 |
 | `src/core/storage.test.ts` | `.garak` 원본 바이트·참조 왕복, 손상·누락·중복 검출, 저장소 사용 불가 처리 |
 | `src/audio/math.test.ts` | 루프·재생 위치, 페이드, WAV 헤더·채널·PCM 값 |
 | `src/core/instruments.test.ts` | 악기 레지스트리 일관성, 알 수 없는 ID 처리, 샘플 악기 트랙 생성·검증 |
@@ -239,7 +269,7 @@ IndexedDB 데이터베이스 `noct-studio`는 `projects`와 `audio-assets` 저�
 | `src/audio/InputCapture.test.ts`, `src/audio/AudioDeviceProbe.test.ts` | 입력 준비·권한·취소·전환과 테스트 자원 수명 |
 | `src/audio/WebAudioEngine.test.ts`, `src/audio/OutputTest.test.ts` | 컨텍스트 교체·복구·프로젝트 레이트·WAV·출력 장치 오류와 테스트음 취소 |
 
-이 테스트들은 실제 브라우저의 오디오 장치, 마이크 지연, 네이티브 플러그인 호환성, 장시간 재생 성능을 측정하지 않습니다. 실제 브라우저에서의 편집·저장·새로고침·다시 재생·녹음·내보내기는 별도 검증 항목입니다.
+이 테스트들은 실제 브라우저의 오디오 장치, 마이크 지연, 네이티브 플러그인 호환성, 장시간 재생 성능을 측정하지 않습니다. fake-indexeddb 저장소 검사와 실제 브라우저의 IndexedDB 실행도 구분합니다. 실제 화면에서의 URL 직접 열기·뒤로/앞으로·새로고침·저장 복원·녹음·내보내기와 세 샘플의 청음·최종 음량 확인은 별도 검증 항목입니다.
 
 ## 9. 2.0 네이티브 호스트 경계
 

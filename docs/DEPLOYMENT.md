@@ -1,16 +1,16 @@
 # 가락이음 배포 준비 안내
 
-2026-10-30 · Cloudflare Pages의 GitHub 연동을 사용하는 정적 Vite 배포
+2026-11-02 · Cloudflare Pages의 GitHub 연동을 사용하는 정적 Vite 배포
 
 ## 현재 상태
 
-이 문서는 배포에 사용할 설정을 정리한 것입니다. **작성 시점에는 GitHub 저장소 생성, Cloudflare 연결, 첫 배포 성공을 검증하지 않았습니다.** 아래 계획값을 실제 생성 결과나 운영 중인 주소로 해석하지 않습니다.
+이 문서는 배포에 사용할 설정을 정리한 것입니다. **GitHub 저장소와 `main` 브랜치는 확인했으며, Cloudflare 연결과 공개 배포 성공은 아직 검증하지 않았습니다.** 배포 주소와 Pages 설정은 확인 전 계획값입니다.
 
 | 항목 | 계획 또는 확인 상태 |
 |---|---|
 | 제품 이름 | 가락이음 — 사용자 확정 |
-| GitHub 소유자 / 저장소 | `songchez/garak-ieum` — 생성·연결 검증 전 |
-| 저장소 URL | 미정 — 저장소 생성·연결 검증 전 |
+| GitHub 소유자 / 저장소 | `songchez/garak-ieum` — 저장소 확인, Cloudflare 연결 미검증 |
+| 저장소 URL | [songchez/garak-ieum](https://github.com/songchez/garak-ieum) |
 | 프로덕션 브랜치 | `main` |
 | 배포 대상 | Cloudflare Pages, Git integration |
 | Pages 프로젝트 이름 | `garak-ieum` 예정 — 생성·사용 가능 여부 검증 전 |
@@ -39,7 +39,7 @@ Pages의 기본 의존성 설치 단계는 유지하고 `pnpm-lock.yaml`을 커�
 
 ## GitHub 연결과 자동 배포
 
-1. GitHub 저장소를 생성한 뒤 프로젝트 소스와 잠금 파일을 `main`에 올립니다.
+1. 배포할 변경을 검토해 GitHub 저장소 `songchez/garak-ieum`의 `main`에 반영합니다.
 2. Cloudflare의 **Workers & Pages**에서 Pages 프로젝트를 만들고 Git 저장소 가져오기를 선택합니다.
 3. 연결할 GitHub 계정과 `songchez/garak-ieum` 저장소를 확인합니다. Cloudflare가 이 저장소를 읽을 수 있도록 필요한 연결을 완료합니다.
 4. 위 표의 빌드 설정과 환경 변수를 입력하고 첫 배포를 실행합니다.
@@ -49,6 +49,20 @@ Pages의 기본 의존성 설치 단계는 유지하고 `pnpm-lock.yaml`을 커�
 Git 연동이 완료되고 자동 배포가 활성화되면 `main`에 새 커밋을 push할 때 프로덕션 빌드·배포가 실행됩니다. 다른 브랜치의 미리보기 배포는 Pages의 브랜치 설정을 따릅니다. 연결 화면을 설정한 것만으로 자동 배포 검증을 완료 처리하지 않고, 실제 push의 커밋과 Pages 배포의 커밋이 같은지 확인합니다. [Git 연동 안내](https://developers.cloudflare.com/pages/get-started/git-integration/)
 
 이 구성은 Pages의 Git 연동으로 배포하므로 별도 GitHub Actions 배포 워크플로, Wrangler 의존성, Worker 서버 코드를 요구하지 않습니다.
+
+## 프로젝트 URL과 직접 접속
+
+`/`는 프로젝트 선택 화면이고, `/projects/:id`는 현재 브라우저에 저장된 프로젝트 편집기입니다. 선택 화면에서 새 샘플·빈 프로젝트·가져온 파일을 저장한 후 고유 주소를 엽니다. 없는 ID는 자동으로 다른 프로젝트를 열지 않고 복구 안내와 목록 버튼을 표시합니다.
+
+`public/_redirects`의 다음 규칙은 Vite 빌드 때 `dist/_redirects`로 복사됩니다.
+
+```text
+/projects/* /index.html 200
+```
+
+Cloudflare Pages의 같은 사이트 내 200 프록시 규칙을 사용해 주소를 유지한 채 앱 진입 파일을 제공합니다. Pages는 루트 `404.html`이 없을 때 정적 파일이 없는 경로를 SPA로 처리하지만, 프로젝트 경로는 별도 규칙으로 명시합니다. `/assets/`, `/samples/`, 글꼴 경로는 이 규칙 대상이 아닙니다. 다른 호스팅을 쓰면 `/projects/*` 요청을 `index.html`로 처리하는 동등한 설정이 필요합니다. [리다이렉트와 200 프록시](https://developers.cloudflare.com/pages/configuration/redirects/#proxying) · [SPA 경로 처리](https://developers.cloudflare.com/pages/configuration/serving-pages/#single-page-application-spa-rendering)
+
+배포 확인에는 기본 주소에서 목록 열기, 샘플 만들기, 생성된 프로젝트 주소로 새로고침, 뒤로/앞으로 이동, 존재하지 않는 ID로 접속, 악기 샘플 파일 로딩을 포함합니다. 프로젝트 URL은 서버 공유 링크가 아니므로 같은 URL을 다른 기기에서 열면 그 기기의 저장소에서 찾습니다. 기기를 옮길 때는 `.garak` 파일을 사용합니다.
 
 ## 주소 변경과 로컬 음악 프로젝트
 
@@ -62,7 +76,7 @@ Git 연동이 완료되고 자동 배포가 활성화되면 `main`에 새 커밋
 
 | 검증 항목 | 현재 상태 |
 |---|---|
-| GitHub 저장소가 생성되고 `main` 커밋이 올라감 | 미검증 |
+| GitHub 저장소가 생성되고 `main` 커밋이 올라감 | 확인 (`588fc5533e47c7474751f25dce876be3bb97cd30`) |
 | Pages가 의도한 GitHub 저장소와 연결됨 | 미검증 |
 | Node 24 / pnpm 11.25.0으로 원격 빌드됨 | 미검증 |
 | 원격 테스트·빌드가 성공함 | 미검증 |
