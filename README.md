@@ -234,8 +234,8 @@ pnpm mcp:build
 
 ## 라이선스와 크레딧
 
-앱 코드와 오리지널 MIDI 편곡 코드는 **[MIT License](LICENSE)**로 제공합니다. 아이콘·글꼴·샘플 음원·외부 라이브러리는 각각의 라이선스를 따릅니다.
+앱 코드와 오리지널 MIDI 편곡 코드는 [MIT License](LICENSE)로 제공합니다. 아이콘·글꼴·샘플 음원·외부 라이브러리는 각각의 라이선스를 따릅니다.
 
-국립국악원의 국악 음원, Lucide 아이콘, 덕온공주체 워드마크, Signalsmith DSP와 함께 가락이음을 만듭니다. 전체 출처와 사용 조건은 **[제3자 자산 안내](THIRD_PARTY_NOTICES.md)**에 정리했습니다.
+국립국악원의 국악 음원, Lucide 아이콘, 덕온공주체 워드마크, Signalsmith DSP와 함께 가락이음을 만듭니다. 전체 출처와 사용 조건은 [제3자 자산 안내](THIRD_PARTY_NOTICES.md)에 정리했습니다.
 
 <p align="center"><strong>우리의 가락을, 당신의 음악으로.</strong><br><sub>가락이음 · Garak Ieum</sub></p>
