@@ -35,7 +35,7 @@ function failure(error: unknown): CallToolResult {
 }
 
 export function createGarakMcpServer(bridge: DawBridge): McpServer {
-  const server = new McpServer({ name: 'garak-ieum', version: '0.1.0' })
+  const server = new McpServer({ name: 'garak-ieum', version: '0.1.1' })
   server.registerTool('list_instances', {
     description: '명시적으로 연결된 가락이음 탭을 조회합니다. apply_edits/history는 여기서 받은 instanceId를 반드시 지정해야 합니다. 새로고침한 탭에는 새 ID가 부여됩니다.',
     inputSchema: fromJsonSchema<BridgeParams>(empty),

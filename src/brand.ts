@@ -1,7 +1,7 @@
 export const BRAND = {
   name: '가락이음',
   englishName: 'Garak Ieum',
-  version: '0.1.0',
+  version: '0.1.1',
   mark: '/brand/garak-ieum-mark.png',
   wordmark: '/brand/garak-ieum-wordmark.svg',
   fontName: '덕온공주체',
@@ -9,5 +9,4 @@ export const BRAND = {
   fontLicense: '/fonts/DeogonPrincess-LICENSE.txt',
 } as const
 
-// Populate only after the repository has actually been created and verified.
-export const SOURCE_REPOSITORY_URL: string | null = null
+export const SOURCE_REPOSITORY_URL = 'https://github.com/songchez/garak-ieum'

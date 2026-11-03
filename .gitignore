@@ -15,3 +15,9 @@ build/native/
 .dev.vars*
 
 .samples-cache/
+
+# Generated from the license originals and the current build's source identity.
+/public/licenses/GPL-3.0-only.txt
+/public/licenses/THIRD_PARTY_NOTICES.txt
+/public/licenses/SOURCE.txt
+/public/licenses/SOURCE.json

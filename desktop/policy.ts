@@ -46,11 +46,19 @@ export function isExternalUrl(value: string): boolean {
   } catch { return false }
 }
 
-/** Only this existing About link may open a document window; never a general app URL. */
+const BUNDLED_LICENSE_PATHS = new Set([
+  '/licenses/lucide-LICENSE.txt',
+  '/licenses/GPL-3.0-only.txt',
+  '/licenses/garak-ieum-MIT-notice.txt',
+  '/licenses/THIRD_PARTY_NOTICES.txt',
+  '/licenses/SOURCE.txt',
+])
+
+/** Only these bundled notices may open a document window; never a general app URL. */
 export function isBundledLicenseUrl(value: string): boolean {
   if (!isAppUrl(value)) return false
   const url = new URL(value)
-  return url.pathname === '/licenses/lucide-LICENSE.txt' && !url.search && !url.hash
+  return BUNDLED_LICENSE_PATHS.has(url.pathname) && !url.search && !url.hash
 }
 
 /** Formatting a failed MCP import must not depend on importing that module again. */

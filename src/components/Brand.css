@@ -55,6 +55,18 @@
 
 .font-credit a { text-decoration: underline; text-underline-offset: 3px; }
 
+.about-licenses {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: -8px 0 20px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+.about-licenses a { text-decoration: underline; text-underline-offset: 3px; }
+.about-licenses p { margin: 2px 0 0; }
+
 @media (max-width: 780px) {
   .brand-lockup--compact { gap: 5px; }
 }

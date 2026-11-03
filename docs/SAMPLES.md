@@ -87,4 +87,4 @@ scripts/samples/
 
 ## 출처 표기
 
-각 세트의 `attribution`을 `THIRD_PARTY_NOTICES.md`에 그대로 옮기고, 앱의 정보 창에서도 보여 줍니다. 이 저장소의 MIT 라이선스는 코드에만 적용되고 샘플에는 적용되지 않습니다.
+각 세트의 `attribution`을 `THIRD_PARTY_NOTICES.md`에 그대로 옮기고, 앱의 정보 창에서도 보여 줍니다. 앱 코드의 GPL-3.0-only는 샘플 자산의 라이선스를 대체하지 않습니다. 샘플마다 [제3자 자산 안내](../THIRD_PARTY_NOTICES.md)에 기록한 원래 이용 조건과 고지를 유지합니다.

@@ -1,16 +1,17 @@
 {
   "name": "garak-ieum",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "가락이음 — 로컬 음악 작업실",
   "author": "songchez",
   "main": "dist-desktop/main.js",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "packageManager": "pnpm@11.25.0",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build",
+    "dev": "pnpm licenses:prepare && vite --host 0.0.0.0",
+    "build": "pnpm licenses:prepare && tsc -b && vite build",
+    "licenses:prepare": "node scripts/prepare-licenses.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "mcp:build": "tsc -p tsconfig.mcp.json",
     "mcp:start": "node dist-mcp/mcp/server.js",
@@ -22,6 +23,7 @@
     "desktop:pack": "pnpm run desktop:launcher && pnpm run desktop:prepare && electron-builder --dir --publish never",
     "desktop:build": "pnpm run desktop:launcher --require-windows && pnpm run desktop:prepare && electron-builder --win nsis --x64 --publish never",
     "desktop:test": "node scripts/desktop-smoke.mjs",
+    "desktop:source": "node scripts/desktop-source.mjs",
     "test": "vitest run"
   },
   "dependencies": {

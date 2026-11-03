@@ -9,6 +9,10 @@ on:
       - 'scripts/desktop-*.mjs'
       - 'scripts/desktop-*.ps1'
       - 'scripts/build-mcp-launcher.*'
+      - 'scripts/prepare-licenses.mjs'
+      - 'scripts/source-info.mjs'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.md'
       - 'build/installer.nsh'
       - 'src/**'
       - 'public/**'
@@ -29,6 +33,10 @@ on:
       - 'scripts/desktop-*.mjs'
       - 'scripts/desktop-*.ps1'
       - 'scripts/build-mcp-launcher.*'
+      - 'scripts/prepare-licenses.mjs'
+      - 'scripts/source-info.mjs'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.md'
       - 'build/installer.nsh'
       - 'src/**'
       - 'public/**'
@@ -102,24 +110,35 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Calculate installer checksums
+      - name: Package matching project source
+        run: pnpm desktop:source
+
+      - name: Calculate installer and source checksums
         run: |
           $desktopInstallers = @(Get-ChildItem -LiteralPath release -Filter '*.exe' -File | Sort-Object Name)
           if ($desktopInstallers.Count -eq 0) {
             throw 'The Windows installer was not produced.'
           }
-          $desktopChecksums = $desktopInstallers | ForEach-Object {
+          $desktopSources = @(Get-ChildItem -LiteralPath release -Filter 'Garak-Ieum-Source-*.zip' -File | Sort-Object Name)
+          if ($desktopSources.Count -ne 1) {
+            throw 'Exactly one matching project source archive is required.'
+          }
+          $desktopChecksums = @($desktopInstallers) + @($desktopSources) | ForEach-Object {
             $desktopHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             '{0}  {1}' -f $desktopHash, $_.Name
           }
           $desktopChecksums | Set-Content -LiteralPath release/SHA256SUMS.txt -Encoding utf8NoBOM
 
-      - name: Upload tested installer
+      - name: Upload tested installer and matching source
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: garak-ieum-windows-x64-${{ github.sha }}
           path: |
             release/*.exe
+            release/Garak-Ieum-Source-*.zip
+            release/SOURCE.txt
+            release/LICENSE.txt
+            release/THIRD_PARTY_NOTICES.txt
             release/SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0

@@ -18,15 +18,22 @@ describe('packaged asset boundary', () => {
     expect(isExternalUrl('https://example.com/docs')).toBe(true)
     for (const url of ['file:///secret', 'javascript:alert(1)', 'https://u:p@example.com', 'garak://app/']) expect(isExternalUrl(url)).toBe(false)
   })
-  it('opens only the known bundled text license without query or fragment', () => {
-    expect(isBundledLicenseUrl('garak://app/licenses/lucide-LICENSE.txt')).toBe(true)
+  it.each([
+    'lucide-LICENSE.txt', 'GPL-3.0-only.txt', 'garak-ieum-MIT-notice.txt', 'THIRD_PARTY_NOTICES.txt', 'SOURCE.txt',
+  ])('opens bundled notice %s only at its exact path without query or fragment', filename => {
+    const url = `garak://app/licenses/${filename}`
+    expect(isBundledLicenseUrl(url)).toBe(true)
+    for (const suffix of ['?download=1', '#section', '.html', '/', '/index.html', '%00']) expect(isBundledLicenseUrl(`${url}${suffix}`)).toBe(false)
+    expect(isBundledLicenseUrl(`garak://app/licenses%2f${filename}`)).toBe(false)
+  })
+  it('rejects other documents, encoded filenames and foreign authorities', () => {
     for (const url of [
       'garak://app/', 'garak://app/projects/song', 'garak://app/index.html',
-      'garak://app/licenses/unknown.txt', 'garak://app/licenses/lucide-LICENSE.txt.html',
-      'garak://app/licenses/lucide-LICENSE.txt?download=1', 'garak://app/licenses/lucide-LICENSE.txt#section',
-      'garak://app/licenses%2flucide-LICENSE.txt', 'garak://user@app/licenses/lucide-LICENSE.txt',
-      'garak://app:80/licenses/lucide-LICENSE.txt', 'https://app/licenses/lucide-LICENSE.txt',
-      'file:///licenses/lucide-LICENSE.txt', 'not a URL',
+      'garak://app/licenses/unknown.txt', 'garak://app/licenses/GPL-3.0-or-later.txt',
+      'garak://app/licenses/source.txt', 'garak://app/licenses/%53OURCE.txt',
+      'garak://user@app/licenses/GPL-3.0-only.txt', 'garak://app.evil/licenses/GPL-3.0-only.txt',
+      'garak://app:80/licenses/THIRD_PARTY_NOTICES.txt', 'https://app/licenses/garak-ieum-MIT-notice.txt',
+      'file:///licenses/SOURCE.txt', 'not a URL',
     ]) expect(isBundledLicenseUrl(url)).toBe(false)
   })
 })
