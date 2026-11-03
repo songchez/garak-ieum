@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { access, appendFile, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
+import { access, appendFile, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -52,6 +52,28 @@ try {
   })
   const executable = path.join(contents, 'MacOS', info.CFBundleExecutable)
   await access(executable)
+  // A normalizing filesystem can resolve visually identical NFC/NFD paths,
+  // while Electron's native Helper lookup still requires the same name bytes.
+  // Compare actual directory entries and plist strings without normalization.
+  const frameworks = path.join(contents, 'Frameworks')
+  const helperNames = (await readdir(frameworks, { withFileTypes: true }))
+    .filter(entry => entry.isDirectory() && / Helper(?: \([^)]*\)| EH| NP)?\.app$/.test(entry.name))
+    .map(entry => entry.name)
+  checked('Korean bundle name exactly matches executable and Helper bundle names', () => {
+    assert.equal(info.CFBundleName, info.CFBundleExecutable, 'CFBundleName must exactly match the executable Unicode representation.')
+    assert.equal(info.CFBundleDisplayName, info.CFBundleName)
+    for (const suffix of ['', ' (Renderer)', ' (GPU)']) {
+      assert.ok(helperNames.includes(`${info.CFBundleName} Helper${suffix}.app`), `Missing exact-name ${suffix || 'main'} Helper bundle.`)
+    }
+    assert.ok(helperNames.every(name => name.startsWith(`${info.CFBundleName} Helper`)), 'All Helper bundle names must use the same Unicode representation as CFBundleName.')
+  })
+  for (const name of helperNames) {
+    const helperContents = path.join(frameworks, name, 'Contents')
+    const helperInfo = JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(helperContents, 'Info.plist')]))
+    assert.equal(helperInfo.CFBundleExecutable, name.slice(0, -4), 'Helper executable metadata must exactly match its bundle name.')
+    assert.ok((await readdir(path.join(helperContents, 'MacOS'))).includes(helperInfo.CFBundleExecutable), 'Helper executable entry must exactly match its plist.')
+  }
+  report.checks.push('all Helper executable names exactly match their plist and on-disk bundle names')
   const icon = await readFile(path.join(contents, 'Resources', info.CFBundleIconFile))
   checked('branded app icon', () => assert.equal(icon.subarray(0, 4).toString('ascii'), 'icns'))
   checked('.garak document type, UTI, and icon', () => {
@@ -87,6 +109,7 @@ try {
   Object.assign(report, {
     status: 'passed', version, dmg: path.basename(dmg), application, executable,
     minimumSystemVersion: info.LSMinimumSystemVersion ?? null,
+    bundleName: info.CFBundleName, helperNames,
     signature: 'ad-hoc', developerIDSigned: false, notarized: false,
     physicalMicrophoneTested: false, physicalAudioDevicesTested: false,
   })

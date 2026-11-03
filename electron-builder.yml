@@ -47,6 +47,11 @@ mac:
   # The build wrapper selects ad-hoc preview or verified Developer ID signing.
   notarize: false
   extendInfo:
+    # builder 26.18 writes Korean executable/Helper names as NFD. Electron's
+    # CFBundleName must match those bytes; both escapes below spell 가락이음.
+    # https://github.com/electron-userland/electron-builder/pull/9962
+    CFBundleName: "\u1100\u1161\u1105\u1161\u11a8\u110b\u1175\u110b\u1173\u11b7"
+    CFBundleDisplayName: "\u1100\u1161\u1105\u1161\u11a8\u110b\u1175\u110b\u1173\u11b7"
     NSMicrophoneUsageDescription: 가락이음에서 마이크나 오디오 입력을 녹음하고 모니터링하기 위해 사용합니다. 녹음 파일은 이 Mac에 저장됩니다.
     CFBundleDocumentTypes:
       - CFBundleTypeName: 가락이음 음악 프로젝트

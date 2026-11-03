@@ -48,6 +48,8 @@ pnpm desktop:source
 
 `desktop:install:mac:test`는 일회성 **GitHub-hosted macOS runner에서만** 실행됩니다. DMG를 읽기 전용으로 연결하고, 공백이 있는 임시 경로로 앱을 복사한 뒤 이미지를 해제합니다. 실제 `/Applications`와 사용자 프로젝트는 수정하지 않습니다. 번들 ID·버전·아이콘·UTI·CPU·서명·entitlement를 검증하고 설치한 실행 파일을 후속 스모크 검사에 전달합니다.
 
+고정된 electron-builder 26.18은 한글 실행 파일과 Helper 이름을 NFD로 작성하므로, macOS `CFBundleName`·`CFBundleDisplayName`에도 같은 표현을 명시합니다. 표시되는 앱 이름은 **가락이음**으로 유지합니다. 설치 검사는 문자열 정규화로 차이를 숨기지 않고 실제 Helper 디렉터리·실행 파일·plist 이름이 정확히 일치하는지 비교합니다. 향후 빌더를 올릴 때에는 이 검사를 유지하면서 [상위 프로젝트의 이름 일치 수정](https://github.com/electron-userland/electron-builder/pull/9962)에 맞춰 설정을 다시 확인합니다.
+
 기존 패키지 스모크는 격리한 임시 프로필에서 MCP 토큰·오류·표준 입출력·EOF 종료·JSON-RPC·실제 GUI 인증 연결, 렌더러 보안, GPL/소스 고지, BPM 숫자 편집·박자표, 프로젝트와 WAV 내보내기, 메뉴·파일 전달, 정상 종료·재시작 저장 복원을 검사합니다. macOS CI에는 실제 클립보드로 프로젝트 이름·MCP 키 붙여넣기, MIDI 클립의 선택·복사·붙여넣기·잘라내기·Undo/Redo와 파일 열기·저장 단축키, Launch Services를 통한 `.garak` 열기를 추가합니다. 텍스트 포커스 여부만 격리된 preload에서 전달하여 네이티브 텍스트 편집과 DAW 편집 단축키를 구분합니다. 검증 결과와 화면은 `garak-ieum-macos-smoke-arm64-<SHA>` Artifact에 저장합니다. **성공 여부는 해당 커밋의 CI 결과로 확인합니다.**
 
 ## 정식 배포 서명과 공증 준비
