@@ -15,6 +15,7 @@ export interface SampleAttribution {
 export interface MidiNote {
   id: string
   pitch: number
+  /** Stored source beat; subtract MidiClip.sourceOffsetBeats for the visible region position. */
   start: number
   duration: number
   velocity: number
@@ -29,11 +30,17 @@ export interface ClipBase {
   mute?: boolean
   /** Repeats the clip every lengthBeats until the next clip on the track or the project end. Absent = false. */
   loop?: boolean
+  /** Total span from startBeat to a manual repeat endpoint; at least lengthBeats. Absent = continuous loop.
+   * Relative to the clip so moving/copying it carries its endpoint. Ignored while loop is false. */
+  loopLengthBeats?: number
   /** Playback offset in ticks at 960 PPQ (−1920…1920). Absent = 0. */
   delayTicks?: number
 }
 export interface MidiClip extends ClipBase {
   kind: 'midi'
+  /** Source beat at the visible left edge. Notes keep their original source positions when trimmed.
+   * Absent = 0, preserving projects written before non-destructive MIDI trimming. */
+  sourceOffsetBeats?: number
   notes: MidiNote[]
   /** Non-destructive playback quantize grid in beats; one of QUANTIZE_VALUES. Absent/0 = off. */
   quantize?: number
@@ -102,7 +109,7 @@ export interface Marker {
   startBeat: number
 }
 export interface Project {
-  schemaVersion: 3
+  schemaVersion: 4
   id: string
   name: string
   bpm: number

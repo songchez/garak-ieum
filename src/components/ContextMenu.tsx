@@ -109,7 +109,8 @@ export default function ContextMenu({ x, y, items, onClose, label = '컨텍스�
   }, [])
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    // Menu navigation stays local. Global transport consumes Space in capture first.
+    // Keep menu navigation/activation local; app commands still follow the active editor.
+    if (!['Enter', ' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Escape', 'Tab'].includes(event.key)) return
     event.stopPropagation()
     const active = document.activeElement instanceof HTMLButtonElement ? document.activeElement : null
     const list = menuButtons(active?.closest('[role="menu"]') ?? ref.current?.firstElementChild)

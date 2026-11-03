@@ -371,7 +371,7 @@ describe('portable pitch project state', () => {
     const blob = await exportProjectBundle(project, assets)
     const restored = await importProjectBundle(blob)
     expect(restored.project).toEqual(project)
-    expect(restored.project.schemaVersion).toBe(3)
+    expect(restored.project.schemaVersion).toBe(4)
     expect(getClip(restored.project).pitch).toMatchObject({ version: 2, preserveFormants: true, shifts: formantOnly ? {} : { 'note-1': -20 }, formantShifts: { 'note-1': -150, 'note-2': 275.5 } })
     expect(restored.assets.map(asset => asset.id)).toEqual([sourceId, renderId])
     for (const asset of restored.assets) {
@@ -437,13 +437,14 @@ describe('portable pitch project state', () => {
     expect(getClip(restored.project).pitch!.preserveFormants).toBe(true)
   })
 
-  it('migrates plain schema 1/2 projects and refuses pitch data masquerading as an older schema', () => {
+  it('migrates plain schema 1/2 and pitch-enabled schema 3 projects without accepting invalid older pitch data', () => {
     const source = projectFor(originalClip())
     const v2 = { ...source, schemaVersion: 2 }
-    expect(validateProject(v2).schemaVersion).toBe(3)
+    expect(validateProject(v2).schemaVersion).toBe(4)
     const v1 = { ...source, schemaVersion: 1, tracks: source.tracks.map(track => ({ ...track, effects: { filter: 20000, reverb: 0, delay: 0 } })) }
-    expect(validateProject(v1).schemaVersion).toBe(3)
+    expect(validateProject(v1).schemaVersion).toBe(4)
     const edited = projectFor(applyPitchDocument(originalClip(), document(), 'render-1'))
+    expect(validateProject({ ...edited, schemaVersion: 3 })).toEqual(edited)
     expect(() => validateProject({ ...edited, schemaVersion: 2 })).toThrow(/requires project schema version 3/)
   })
 })

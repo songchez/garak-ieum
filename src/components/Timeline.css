@@ -42,6 +42,13 @@
 .timeline-sheet .loop-region.disabled span{background:var(--ink-42)}
 .timeline-ruler.cycle-grabbing{cursor:grabbing!important}
 .timeline-ruler.cycle-sizing{cursor:ew-resize!important}
+.timeline-ruler-mark{position:absolute;bottom:0;width:1px;height:6px;background:color-mix(in srgb,var(--grid-minor) 70%,transparent);pointer-events:none}
+.timeline-ruler-mark--beat{height:12px;background:var(--grid-minor)}
+.timeline-ruler-mark--bar{height:22px;background:var(--grid-major)}
+.timeline-ruler-mark>span{position:absolute;bottom:7px;left:5px;font-size:9px;font-variant-numeric:tabular-nums;color:var(--text-muted);white-space:nowrap}
+.timeline-ruler-mark--bar>span{color:var(--text-primary);font-weight:600}
+.region-alignment-guide{position:absolute;top:38px;bottom:0;width:1px;background:var(--focus);z-index:18;pointer-events:none;box-shadow:0 0 0 1px color-mix(in srgb,var(--surface-canvas) 65%,transparent)}
+.region-alignment-guide>span{position:sticky;top:40px;display:block;width:max-content;margin-left:4px;padding:2px 5px;border-radius:3px;background:var(--surface-overlay);border:1px solid var(--focus);color:var(--text-primary);font-size:9px}
 
 /* Global tracks row (markers) under the ruler */
 .timeline-global-row{height:22px;display:flex;position:sticky;top:38px;z-index:19;background:var(--surface-panel-soft);box-shadow:0 1px 0 var(--ink-23)}

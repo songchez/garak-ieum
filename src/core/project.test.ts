@@ -8,6 +8,7 @@ import {
 } from './project'
 import { instrumentDef } from './instruments'
 import { SAMPLE_RATES } from './audioSettings'
+import { visibleMidiNotes } from './midiRegions'
 import { QUANTIZE_VALUES, type AudioClip, type Clip, type MidiClip, type Project, type Track } from './types'
 
 function midi(): MidiClip {
@@ -84,7 +85,7 @@ describe('non-destructive clip editing', () => {
     expect(source.notes[0].pitch).toBe(60)
   })
 
-  it('splits crossing notes and rebases the right side from an absolute project beat', () => {
+  it('splits visible note windows without discarding the recoverable source', () => {
     const source = midi()
     const before = JSON.stringify(source)
     const [left, right] = splitClip(source, 10, 96)
@@ -93,12 +94,12 @@ describe('non-destructive clip editing', () => {
     if (left.kind !== 'midi' || right.kind !== 'midi') throw new Error('Expected MIDI clips')
     expect(left.startBeat).toBe(8)
     expect(left.lengthBeats).toBe(2)
-    expect(left.notes.map(({ pitch, start, duration }) => ({ pitch, start, duration }))).toEqual([
+    expect(visibleMidiNotes(left).map(({ pitch, start, duration }) => ({ pitch, start, duration }))).toEqual([
       { pitch: 60, start: 0, duration: 1 }, { pitch: 64, start: 1, duration: 1 },
     ])
     expect(right.startBeat).toBe(10)
     expect(right.lengthBeats).toBe(2)
-    expect(right.notes.map(({ pitch, start, duration }) => ({ pitch, start, duration }))).toEqual([
+    expect(visibleMidiNotes(right).map(({ pitch, start, duration }) => ({ pitch, start, duration }))).toEqual([
       { pitch: 64, start: 0, duration: 2 }, { pitch: 67, start: 0, duration: 0.5 },
     ])
     const ids = [...left.notes, ...right.notes].map(note => note.id)
@@ -145,13 +146,14 @@ function audio(patch: Partial<AudioClip> = {}): AudioClip {
     assetId: 'source-wav', offsetSeconds: 1, fadeIn: 0.1, fadeOut: 0.2, ...patch,
   }
 }
-const timing = (clip: MidiClip) => clip.notes.map(({ pitch, start, duration }) => ({ pitch, start, duration }))
+const timing = (clip: MidiClip) => visibleMidiNotes(clip).map(({ pitch, start, duration }) => ({ pitch, start, duration }))
 
 describe('trim, join and arrangement helpers', () => {
-  it('trims a MIDI clip start by shifting, cropping and dropping notes', () => {
+  it('trims the visible MIDI window while retaining source notes', () => {
     const trimmed = trimClipStart(midi(), 9.5, 120)
     if (trimmed.kind !== 'midi') throw new Error('Expected MIDI clip')
     expect(trimmed).toMatchObject({ id: 'original-clip', startBeat: 9.5, lengthBeats: 2.5 })
+    expect(trimmed.notes).toEqual(midi().notes)
     expect(timing(trimmed)).toEqual([{ pitch: 64, start: 0, duration: 2.5 }, { pitch: 67, start: 0.5, duration: 0.5 }])
   })
 
@@ -262,7 +264,7 @@ describe('project validation', () => {
 
   it('rejects unsupported versions, duplicate IDs, and values that could break the engine', () => {
     const project = createEmptyProject()
-    expect(() => validateProject({ ...project, schemaVersion: 4 })).toThrow(/version/)
+    expect(() => validateProject({ ...project, schemaVersion: 5 })).toThrow(/version/)
     expect(() => validateProject({ ...project, bpm: Infinity })).toThrow(/Tempo/)
     expect(() => validateProject({ ...project, loop: { enabled: true, startBeat: 8, endBeat: 4 } })).toThrow(/Loop end/)
     const track = createTrack('instrument')
@@ -280,7 +282,7 @@ describe('project validation', () => {
     delete track.devices
     track.effects = { filter: 4200, reverb: 0.3, delay: 0 }
     const migrated = validateProject({ ...createEmptyProject(), schemaVersion: 1, tracks: [track] })
-    expect(migrated.schemaVersion).toBe(3)
+    expect(migrated.schemaVersion).toBe(4)
     expect(migrated.tracks[0].instrumentParams).toEqual(defaultInstrumentParams('pad'))
     expect(migrated.tracks[0].devices).toEqual([
       { id: 'old-pad/filter', type: 'filter', enabled: true, params: { cutoff: 4200, resonance: 0.65, mode: 0 } },
@@ -405,7 +407,7 @@ describe('drag mode', () => {
     const result = applyDragMode(projectWith(track), ['t'], ['moved'], 'noOverlap')
     expect(layout(result.tracks[0].clips)).toEqual([['moved', 0, 6], ['a', 6, 12]])
     const a = result.tracks[0].clips[1] as MidiClip
-    expect(a.notes).toEqual([{ id: 'a-note', pitch: 60, start: 0, duration: 6, velocity: 0.7 }])
+    expect(visibleMidiNotes(a)).toEqual([{ id: 'a-note', pitch: 60, start: 0, duration: 6, velocity: 0.7 }])
   })
 
   it('trims the end of a clip whose ending is covered', () => {
@@ -422,7 +424,7 @@ describe('drag mode', () => {
     expect(clips[0].id).toBe('a')
     expect(clips[1].id).not.toBe('a')
     expect(clips[2].id).toBe('moved')
-    expect((clips[1] as MidiClip).notes[0]).toMatchObject({ start: 0, duration: 4 })
+    expect(visibleMidiNotes(clips[1] as MidiClip)[0]).toMatchObject({ start: 0, duration: 4 })
   })
 
   it('removes a clip that is entirely covered and leaves other tracks alone', () => {

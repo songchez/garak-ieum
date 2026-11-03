@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, RefObject } from 'react'
 import type { InstrumentId, MidiClip, MidiNote } from '../core/types'
-import { crossedDragThreshold, dragModifiers, isShortcutSuppressed, isUnmodified, shortcutPlatform, snapDragDelta } from '../core/input'
+import { crossedDragThreshold, dragModifiers, isShortcutSuppressed, isUnmodified, shortcutPlatform, snapDragDelta, type ProjectShortcut } from '../core/input'
 import { GM_KIT_NAMES, instrumentDef } from '../core/instruments'
 import { pitchClassName, pitchName } from '../core/pitch'
 import { contrastTextColor } from '../core/colors'
+import { applyMidiNoteEdits, midiEditorClip } from '../core/midiRegions'
+import { musicalGrid, musicalGridStyle, musicalRulerMarks, musicalSpan } from '../core/musicalGrid'
+import { snapToEdges } from '../core/edgeSnap'
 import { ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from '../core/zoom'
 import ContextMenu from './ContextMenu'
 import type { ContextMenuItem } from './ContextMenu'
@@ -29,6 +32,7 @@ interface PianoRollProps {
   zoom?: PianoZoom
   onZoomChange?: (zoom: PianoZoom) => void
   zoomRef?: RefObject<ZoomHandle | null>
+  commandRef?: RefObject<((command: ProjectShortcut) => boolean) | null>
 }
 
 type Press = { pointerId: number; target: HTMLElement; originX: number; originY: number; activated: boolean; prevSelection: Set<string> }
@@ -41,7 +45,7 @@ type VelocityGesture = Press & { kind: 'velocity'; anchorId: string; originals: 
 type Gesture = NoteGesture | MarqueeGesture | VelocityGesture
 type MenuState = { x: number; y: number; kind: 'note' | 'grid'; beat?: number }
 
-const SNAP_OPTIONS: [string, number][] = [['1/4', 1], ['1/8', 0.5], ['1/16', 0.25], ['1/32', 0.125], ['1/8T', 1 / 3], ['1/16T', 1 / 6], ['끔', 0]]
+const SNAP_OPTIONS: [string, number][] = [['1/4', 1], ['1/8', 0.5], ['1/16', 0.25], ['1/32', 0.125], ['1/64', 0.0625], ['1/4T', 2 / 3], ['1/8T', 1 / 3], ['1/16T', 1 / 6], ['끔', 0]]
 const ROW_HEIGHT = 19
 const COMPACT_ROW = 13
 const RULER_HEIGHT = 24
@@ -60,7 +64,8 @@ const byTime = (a: MidiNote, b: MidiNote) => a.start - b.start || a.pitch - b.pi
 const sameNote = (a: MidiNote, b: MidiNote) => a.start === b.start && a.pitch === b.pitch && a.duration === b.duration && a.velocity === b.velocity
 const newId = () => `note-${typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
 
-export default function PianoRoll({ clip, color, instrument, onChange, onPreview, playheadBeat, snap: snapProp, onSnapChange, zoom: zoomProp, onZoomChange, zoomRef }: PianoRollProps) {
+export default function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, playheadBeat, snap: snapProp, onSnapChange, zoom: zoomProp, onZoomChange, zoomRef, commandRef }: PianoRollProps) {
+  const clip = useMemo(() => midiEditorClip(sourceClip), [sourceClip])
   const scrollRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLElement>(null)
@@ -70,7 +75,7 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
   const anchorRef = useRef<string | null>(null)
   const pendingFocusRef = useRef<string | null>(null)
   const pointerFocusRef = useRef(false)
-  const [viewport, setViewport] = useState({ width: 760, height: 300 })
+  const [viewport, setViewport] = useState({ width: 760, height: 300, left: 0 })
   const viewportWidth = viewport.width
   const [zoomState, setZoomState] = useState<PianoZoom>({ ppb: null, rowHeight: ROW_HEIGHT })
   const zoom = zoomProp ?? zoomState
@@ -78,12 +83,15 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [draft, setDraft] = useState<MidiNote[] | null>(null)
   const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
+  const [alignmentBeat, setAlignmentBeat] = useState<number | null>(null)
   const [sliderDraft, setSliderDraft] = useState<number | null>(null)
   const [hoveredPitch, setHoveredPitch] = useState<number | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [showVelocity, setShowVelocity] = useState(true)
   const [snapState, setSnapState] = useState(0.25)
   const snap = snapProp ?? snapState
+  const previousSnap = useRef(.25)
+  if (snap > 0) previousSnap.current = snap
 
   const def = instrumentDef(instrument)
   const drumMode = def.isKit
@@ -126,7 +134,7 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
       if (gesture.target.hasPointerCapture(gesture.pointerId)) gesture.target.releasePointerCapture(gesture.pointerId)
       if (render && gesture.activated && (gesture.kind === 'marquee' || (gesture.kind === 'note' && gesture.copyIds))) setSelectedIds(gesture.prevSelection)
     }
-    if (render) { setDraft(null); setMarquee(null) }
+    if (render) { setDraft(null); setMarquee(null); setAlignmentBeat(null) }
   }
 
   function cancelSlider(render = true) {
@@ -161,7 +169,7 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
   useEffect(() => {
     const element = scrollRef.current
     if (!element) return
-    const update = () => setViewport({ width: element.clientWidth, height: element.clientHeight })
+    const update = () => setViewport({ width: element.clientWidth, height: element.clientHeight, left: element.scrollLeft })
     update()
     const observer = new ResizeObserver(update)
     observer.observe(element)
@@ -258,7 +266,7 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
   const labelForPitch = (pitch: number) => drumMode ? DRUM_NAMES[pitch] ?? pitchName(pitch) : pitchName(pitch)
 
   function commit(next: MidiNote[]) {
-    onChange({ ...clip, notes: [...next].sort(byTime) })
+    onChange(applyMidiNoteEdits(sourceClip, [...next].sort(byTime)))
   }
 
   function selectedFromClip() {
@@ -348,15 +356,28 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
     if (gesture.axis === 'x') dy = 0
     else if (gesture.axis === 'y') dx = 0
     const step = modifiers.noSnap ? 0 : modifiers.fine ? snap / 2 : snap
-    const delta = snapDragDelta(dx / beatWidth, step)
+    let delta = snapDragDelta(dx / beatWidth, step)
     const originals = gesture.originals
+    const rows = originals.map(note => pitchRows.get(note.pitch) ?? 0)
+    const rowDelta = gesture.mode === 'move' ? clamp(Math.round(dy / ROW), -Math.min(...rows), pitches.length - 1 - Math.max(...rows)) : 0
+    const targetPitches = new Set(rows.map(row => pitches[row + rowDelta]))
+    const originalIds = new Set(originals.map(note => note.id))
+    const minLengthFor = (note: MidiNote) => Math.min(note.duration, Math.max(step, MIN_LENGTH))
+    const minDelta = gesture.mode === 'resize' ? Math.max(...originals.map(note => minLengthFor(note) - note.duration)) : -Math.min(...originals.map(note => note.start))
+    const maxDelta = gesture.mode === 'resize-left' ? Math.min(...originals.map(note => note.duration - minLengthFor(note))) : Math.max(0, Math.min(...originals.map(note => clip.lengthBeats - note.start - note.duration)))
+    const snapped = snapToEdges({
+      rawDelta: dx / beatWidth, gridDelta: delta,
+      movingEdges: originals.flatMap(note => gesture.mode === 'move' ? [note.start, note.start + note.duration] : [note.start + (gesture.mode === 'resize' ? note.duration : 0)]),
+      targetEdges: clip.notes.filter(note => ((gesture.mode === 'move' && gesture.copyIds !== null) || !originalIds.has(note.id)) && targetPitches.has(note.pitch)).flatMap(note => [note.start, note.start + note.duration]),
+      ppb: beatWidth, enabled: snap > 0 && !modifiers.noSnap && gesture.axis !== 'y' && (gesture.mode !== 'move' || Math.abs(dx) >= 4), minDelta, maxDelta,
+    })
+    delta = snapped.delta
+    setAlignmentBeat(snapped.guide)
     let moved: MidiNote[]
     if (gesture.mode === 'move') {
       const minStart = Math.min(...originals.map(note => note.start))
       const maxRight = Math.max(0, Math.min(...originals.map(note => clip.lengthBeats - note.start - note.duration)))
       const timeDelta = clamp(delta, -minStart, maxRight)
-      const rows = originals.map(note => pitchRows.get(note.pitch) ?? 0)
-      const rowDelta = clamp(Math.round(dy / ROW), -Math.min(...rows), pitches.length - 1 - Math.max(...rows))
       moved = originals.map((note, index) => ({ ...note, id: gesture.copyIds?.[index] ?? note.id, start: note.start + timeDelta, pitch: pitches[rows[index] + rowDelta] }))
     } else {
       moved = originals.map(note => {
@@ -525,6 +546,7 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
     delete gesture.target.dataset.dawGesture
     if (gesture.target.hasPointerCapture(event.pointerId)) gesture.target.releasePointerCapture(event.pointerId)
     setDraft(null)
+    setAlignmentBeat(null)
     if (gesture.kind === 'note') endNoteGesture(gesture, commitChange)
     else if (gesture.kind === 'marquee') endMarquee(gesture, commitChange)
     else endVelocity(gesture, commitChange)
@@ -678,6 +700,28 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
     if (best) selectNote(best.note, additive)
   }
 
+  /** App shortcuts can target the last editor even while an ordinary toolbar owns DOM focus. */
+  function executeCommand(command: ProjectShortcut): boolean {
+    const actions: Partial<Record<ProjectShortcut, () => void>> = {
+      copy: () => { copySelected() }, cut: () => { if (copySelected()) deleteSelected() }, paste: () => paste(),
+      selectAll, deleteNotes: deleteSelected, quantize: () => quantize(false),
+      nudgeLeft: () => nudgeSelected(-1, false), nudgeRight: () => nudgeSelected(1, false),
+      trimEndLeft: () => nudgeSelected(-1, true), trimEndRight: () => nudgeSelected(1, true),
+      transposeUp: () => transposeSelected(1, false), transposeDown: () => transposeSelected(-1, false),
+      transposeOctaveUp: () => transposeSelected(1, !drumMode), transposeOctaveDown: () => transposeSelected(-1, !drumMode),
+      snapToggle: () => setSnap(snap > 0 ? 0 : previousSnap.current),
+    }
+    const action = actions[command]
+    if (!action) return false
+    if (!gestureRef.current && sliderDraftRef.current === null) action()
+    return true
+  }
+  useLayoutEffect(() => {
+    if (!commandRef) return
+    commandRef.current = executeCommand
+    return () => { commandRef.current = null }
+  })
+
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.defaultPrevented || isShortcutSuppressed(event.nativeEvent, true)) return
     const target = event.target instanceof Element ? event.target : null
@@ -705,8 +749,8 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
       return
     }
     if (mod && !event.shiftKey) {
-      const action = letter('KeyA', 'a') ? selectAll : letter('KeyC', 'c') ? copySelected : letter('KeyX', 'x') ? () => { if (copySelected()) deleteSelected() }
-        : letter('KeyV', 'v') ? () => paste() : letter('KeyD', 'd') ? duplicateSelected : null
+      const action = letter('KeyA', 'a') ? () => executeCommand('selectAll') : letter('KeyC', 'c') ? () => executeCommand('copy') : letter('KeyX', 'x') ? () => executeCommand('cut')
+        : letter('KeyV', 'v') ? () => executeCommand('paste') : letter('KeyD', 'd') ? duplicateSelected : letter('KeyG', 'g') ? () => executeCommand('snapToggle') : null
       if (!action) return
       handled()
       if (!event.repeat) action()
@@ -769,13 +813,15 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
     { label: '모두 선택', icon: 'select-all', shortcut: `${modLabel}A`, disabled: !clip.notes.length, onSelect: selectAll },
   ]
 
-  const visualStep = snap || 0.25
+  const grid = musicalGrid(beatWidth, { snap })
+  const gridStyle = musicalGridStyle(grid)
+  const rulerMarks = musicalRulerMarks(grid, Math.max(0, viewport.left / beatWidth - 4), Math.min(clipBeats, (viewport.left + Math.max(0, viewport.width - KEY_WIDTH)) / beatWidth + 4))
   const style = {
     '--piano-color': color,
     '--piano-note-text': contrastTextColor(color),
     '--piano-note-selected-text': contrastTextColor(color, .2),
     '--piano-row': `${ROW}px`,
-    '--piano-step': `${beatWidth * visualStep}px`,
+    '--piano-step': `${beatWidth * grid.stepBeats}px`,
     '--piano-beat': `${beatWidth}px`,
     '--piano-bar': `${beatWidth * 4}px`,
   } as CSSProperties
@@ -805,12 +851,12 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
         </div>
       </header>
 
-      <div className="piano-scroll" ref={scrollRef}>
+      <div className="piano-scroll" ref={scrollRef} onScroll={event => { const left = event.currentTarget.scrollLeft; setViewport(previous => previous.left === left ? previous : { ...previous, left }) }}>
         <div className="piano-content" style={{ width: gridWidth + KEY_WIDTH, height: gridHeight + RULER_HEIGHT + (showVelocity ? LANE_HEIGHT : 0) }}>
           <div className="piano-ruler" style={{ height: RULER_HEIGHT }}>
             <div className="piano-ruler-corner" style={{ width: KEY_WIDTH }}>NOTE</div>
             <div className="piano-ruler-beats" style={{ width: gridWidth }}>
-              {Array.from({ length: Math.ceil(clip.lengthBeats) }, (_, beat) => <span key={beat} className={`piano-ruler-mark${beat % 4 === 0 ? ' piano-ruler-mark--bar' : ''}`} style={{ left: beat * beatWidth }}>{beat % 4 === 0 ? `${Math.floor(beat / 4) + 1}` : beatWidth >= 30 ? `${Math.floor(beat / 4) + 1}.${beat % 4 + 1}` : ''}</span>)}
+              {rulerMarks.map(mark => <span key={mark.beat} className={`piano-ruler-mark piano-ruler-mark--${mark.kind}`} style={{ left: mark.beat * beatWidth }} aria-hidden="true">{mark.label && <span>{mark.label}</span>}</span>)}
               {showPlayhead && <span className="piano-ruler-playhead" style={{ left: localPlayhead! * beatWidth }} aria-hidden="true" />}
             </div>
           </div>
@@ -833,7 +879,7 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
               ><span>{drumMode ? labelForPitch(pitch) : pitch % 12 === 0 || isBlackKey(pitch) ? pitchName(pitch) : pitchClassName(pitch)}</span>{drumMode && <small>{pitch}</small>}</button>)}
             </div>
 
-            <div className="piano-grid" ref={canvasRef} style={{ width: gridWidth, height: gridHeight }}
+            <div className="piano-grid" ref={canvasRef} style={{ width: gridWidth, height: gridHeight, ...gridStyle }}
               onPointerDown={beginMarquee}
               {...pointerHandlers}
               onContextMenu={event => {
@@ -851,12 +897,13 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
                 if (row === undefined) return null
                 const original = clipNotesById.get(note.id) ?? note
                 const selected = selectedIds.has(note.id)
-                const width = Math.max(7, Math.min(note.duration, clip.lengthBeats - note.start) * beatWidth - 2)
+                const geometry = musicalSpan(note.start, Math.min(note.duration, clip.lengthBeats - note.start), beatWidth)
+                const width = geometry.width
                 const noteVelocity = selected && sliderDraft !== null ? sliderDraft : note.velocity
                 return <button
                   type="button" key={note.id} data-note-id={note.id}
                   className={`piano-note${selected ? ' piano-note--selected' : ''}${draft && selected ? ' piano-note--dragging' : ''}`}
-                  style={{ left: note.start * beatWidth + 1, top: row * ROW + 2, width, height: ROW - 4, '--note-velocity': clamp(noteVelocity, 0.1, 1) } as CSSProperties}
+                  style={{ ...geometry, top: row * ROW + 2, height: ROW - 4, borderWidth: width < 2 ? 0 : undefined, '--note-velocity': clamp(noteVelocity, 0.1, 1) } as CSSProperties}
                   onFocus={() => { if (!pointerFocusRef.current && !selectedIds.has(note.id)) { setSelectedIds(new Set([note.id])); anchorRef.current = note.id } }}
                   onPointerDown={event => beginNoteGesture(event, original, 'move')}
                   onMouseEnter={() => setHoveredPitch(note.pitch)}
@@ -874,17 +921,18 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
                   {width > 34 && ROW >= COMPACT_ROW && <span className="piano-note-label">{drumMode ? DRUM_NAMES[note.pitch]?.replace('CLOSED HAT', 'CH').replace('OPEN HAT', 'OH') ?? pitchName(note.pitch) : pitchName(note.pitch)}</span>}
                   <span className="piano-note-velocity" aria-hidden="true" />
                   {width >= 18 && <span className="piano-note-resize piano-note-resize--left" onPointerDown={event => beginNoteGesture(event, original, 'resize-left')} title="드래그하여 음표 시작 위치 조절" aria-hidden="true" />}
-                  <span className="piano-note-resize" onPointerDown={event => beginNoteGesture(event, original, 'resize')} title="드래그하여 음표 길이 조절" aria-hidden="true" />
+                  <span className="piano-note-resize" style={{ width: Math.min(7, width / 3) }} onPointerDown={event => beginNoteGesture(event, original, 'resize')} title="드래그하여 음표 길이 조절" aria-hidden="true" />
                 </button>
               })}
               {marquee && <div className="piano-marquee" style={marquee} aria-hidden="true" />}
+              {alignmentBeat !== null && <div className="piano-alignment-guide" style={{ left: alignmentBeat * beatWidth }} aria-hidden="true" />}
               {showPlayhead && <div className="piano-playhead" style={{ left: localPlayhead! * beatWidth }} aria-hidden="true" />}
             </div>
           </div>
 
           {showVelocity && <div className="piano-velocity-lane" style={{ height: LANE_HEIGHT }}>
             <div className="piano-velocity-corner" style={{ width: KEY_WIDTH }}>VELOCITY</div>
-            <div className="piano-velocity-bars" style={{ width: gridWidth }} {...pointerHandlers} aria-hidden="true">
+            <div className="piano-velocity-bars" style={{ width: gridWidth, ...gridStyle }} {...pointerHandlers} aria-hidden="true">
               {[...notes].sort((a, b) => Number(selectedIds.has(a.id)) - Number(selectedIds.has(b.id))).map(note => {
                 const selected = selectedIds.has(note.id)
                 const noteVelocity = selected && sliderDraft !== null ? sliderDraft : note.velocity
@@ -910,7 +958,6 @@ export default function PianoRoll({ clip, color, instrument, onChange, onPreview
             onChange={event => { sliderDraftRef.current = Number(event.currentTarget.value) / 127; setSliderDraft(sliderDraftRef.current) }}
             onPointerUp={event => commitSlider(Number(event.currentTarget.value))}
             onPointerCancel={() => cancelSlider()}
-            onKeyDown={event => event.stopPropagation()}
             onKeyUp={event => { event.stopPropagation(); if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) commitSlider(Number(event.currentTarget.value)) }}
             onBlur={event => { if (document.hasFocus()) commitSlider(Number(event.currentTarget.value)); else cancelSlider() }}
             title={hasSelection ? '선택한 음표의 연주 세기 조절' : '음표를 선택해 세기를 조절하세요'}

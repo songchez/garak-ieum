@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AudioEngine, EffectType, InstrumentId, Project, Track } from '../core/types'
 import { EFFECT_DEFS, EFFECT_TYPES } from '../core/devices'
 import { INSTRUMENTS, INSTRUMENT_SECTIONS, instrumentDef } from '../core/instruments'
@@ -10,6 +10,7 @@ import { TrackButtons } from './TrackButtons'
 import { VolumeSlider } from './VolumeSlider'
 import { PanKnob } from './PanKnob'
 import { trackIcon } from './TrackInspector'
+import { useHistoryGesture } from '../core/historyGesture'
 
 export const formatGainDb = (v: number) => v <= 0 ? '−∞' : `${v > 1 ? '+' : ''}${(20 * Math.log10(v)).toFixed(1)}`
 const BUTTONS: TrackButtonKind[] = ['mute', 'solo', 'arm', 'monitor']
@@ -45,6 +46,9 @@ export function ChannelStrip(props: ChannelStripProps) {
   const { track, project, engine, focused, compact, onSelect } = props
   const [menu, setMenu] = useState<Menu | null>(null)
   const dragFrom = useRef<{ id: string; index: number; pointerId: number } | null>(null)
+  const insertGesture = useHistoryGesture('디바이스 순서 변경')
+  const cancelInsertDrag = useRef<(() => void) | null>(null)
+  useEffect(() => () => cancelInsertDrag.current?.(), [])
   const open = (kind: Menu['kind'], e: React.MouseEvent, deviceId?: string) => { const trigger = e.currentTarget as HTMLElement; const r = trigger.getBoundingClientRect(); setMenu(m => m?.trigger === trigger ? null : { kind, deviceId, x: r.left, y: r.bottom + 2, trigger }) }
   const stop = (e: React.SyntheticEvent) => e.stopPropagation()
 
@@ -78,15 +82,21 @@ export function ChannelStrip(props: ChannelStripProps) {
   /** Vertical drag across insert slots reorders the chain one step at a time. */
   function insertPointerDown(e: React.PointerEvent<HTMLDivElement>, deviceId: string, index: number) {
     if (e.button !== 0 || !props.onMoveDevice) return
+    cancelInsertDrag.current?.()
+    const slots = e.currentTarget.parentElement!
+    insertGesture.begin()
+    slots.dataset.dawGesture = 'insert-order'
     dragFrom.current = { id: deviceId, index, pointerId: e.pointerId }
     const move = (ev: PointerEvent) => {
       const d = dragFrom.current; if (!d || ev.pointerId !== d.pointerId) return
       const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>('[data-insert-index]')
-      const target = over ? Number(over.dataset.insertIndex) : NaN
+      const target = over && slots.contains(over) ? Number(over.dataset.insertIndex) : NaN
       if (Number.isFinite(target) && target !== d.index) { props.onMoveDevice?.(id, d.id, target - d.index); d.index = target }
     }
-    const up = () => { dragFrom.current = null; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
-    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up)
+    const finish = () => { dragFrom.current = null; cancelInsertDrag.current = null; delete slots.dataset.dawGesture; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up); window.removeEventListener('blur', finish); insertGesture.end() }
+    const up = (event: PointerEvent) => { if (event.pointerId === e.pointerId) finish() }
+    cancelInsertDrag.current = finish
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up); window.addEventListener('blur', finish)
   }
   return <div className={`cstrip ${focused ? 'focused' : ''} ${compact ? 'compact' : ''} ${track.enabled ? '' : 'off'}`} style={{ '--track-color': track.color, '--track-label-color': contrastTextColor(track.color) } as React.CSSProperties} aria-label={`${track.name} 채널 스트립`} onClick={onSelect}>
     <div className="cstrip-slot cstrip-kind">{track.kind === 'audio' ? '오디오' : '악기'}</div>

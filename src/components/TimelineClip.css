@@ -1,8 +1,10 @@
 /* Region display (Logic §5 / LOGIC_GAP §1.11). Selectors are prefixed with .track-lane to outrank the legacy .timeline-clip rules in styles.css. */
-.track-lane .timeline-clip{--clip-gray:#6b6b6b;--clip-text:var(--text-primary);--clip-preview-color:color-mix(in srgb,var(--clip-color) 25%,var(--text-primary));background:color-mix(in srgb,var(--clip-color) 26%,var(--surface-canvas));border:1px solid color-mix(in srgb,var(--clip-color) 42%,var(--surface-canvas));color:var(--clip-text)}
+.track-lane .timeline-clip{--clip-gray:#6b6b6b;--clip-text:var(--text-primary);--clip-preview-color:color-mix(in srgb,var(--clip-color) 25%,var(--text-primary));background:color-mix(in srgb,var(--clip-color) 26%,var(--surface-canvas));border:1px solid color-mix(in srgb,var(--clip-color) 42%,var(--surface-canvas));color:var(--clip-text);min-width:0;border-radius:1px;box-sizing:border-box}
 .track-lane .timeline-clip .clip-title{position:relative;gap:4px}
 .track-lane .timeline-clip .clip-title>span:first-of-type{overflow:hidden;text-overflow:ellipsis;padding-right:12px}
 .track-lane .timeline-clip .clip-preview{color:var(--clip-preview-color)}
+/* A region's border must not squeeze the waveform/note time axis inwards by two pixels. */
+.track-lane .timeline-clip .clip-preview,.clip-loop-content .clip-preview{margin-left:-1px;width:calc(100% + 2px)}
 
 /* Selected = lighter track fill, with foreground chosen from that fill (V-03). */
 .track-lane .timeline-clip.clip-selected{--clip-text:var(--clip-selected-text);--clip-preview-color:var(--clip-text);background:color-mix(in srgb,var(--clip-color) 80%,#fff);border-color:color-mix(in srgb,var(--clip-color) 60%,#fff);box-shadow:0 0 0 1px color-mix(in srgb,var(--clip-color) 40%,transparent),0 1px 3px #0005}
@@ -26,6 +28,9 @@
 .clip-loop-handle{position:absolute;right:0;top:0;width:12px;height:12px;cursor:e-resize;display:grid;place-items:center;color:currentColor;opacity:.75;z-index:2;border-bottom-left-radius:3px}
 .timeline-clip:hover .clip-loop-handle{background:color-mix(in srgb,currentColor 18%,transparent);opacity:1}
 .timeline-clip.clip-looped .clip-loop-handle{opacity:1}
+.clip-loop-end{opacity:1;background:color-mix(in srgb,currentColor 12%,transparent)}
+.track-lane .clip-loop-ghost{border-radius:1px}
+.track-lane .clip-ghost{border-radius:1px}
 .timeline-clip.clip-looped::after{content:"";position:absolute;right:-1px;top:0;bottom:0;width:3px;background:repeating-linear-gradient(to bottom,transparent 0 4px,color-mix(in srgb,currentColor 60%,transparent) 4px 6px);pointer-events:none}
 .clip-loop-ghost{--loop-color:var(--clip-color);--loop-text:var(--text-primary);--loop-preview:color-mix(in srgb,var(--clip-color) 25%,var(--text-primary));position:absolute;top:7px;height:calc(var(--row-h) - 15px);border-radius:4px;box-sizing:border-box;overflow:hidden;background:color-mix(in srgb,var(--loop-color) 12%,var(--surface-canvas));border:1px dashed color-mix(in srgb,var(--loop-color) 38%,transparent);color:var(--loop-text);cursor:grab;user-select:none;touch-action:none;opacity:var(--loop-opacity,.8);background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--loop-color) 7%,transparent) 6px 7px)}
 .clip-loop-ghost:hover{opacity:1}

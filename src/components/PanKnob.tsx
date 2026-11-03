@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { formatParam, type ParamDef } from '../core/devices'
+import { useHistoryGesture } from '../core/historyGesture'
 import './TrackHeader.css'
 
 const PAN: ParamDef = { id: 'pan', label: '팬', min: -1, max: 1, default: 0, unit: 'pan' }
@@ -14,7 +15,9 @@ export function PanKnob({ value, onChange, size = 20, ariaLabel = '팬' }: { val
   const latest = useRef({ value, onChange })
   latest.current = { value, onChange }
   const cancelDrag = useRef<(() => void) | null>(null)
-  const set = (next: number, final: boolean) => { const l = latest.current; const v = Math.min(1, Math.max(-1, Math.round(next * 100) / 100)); if (v !== l.value || final) l.onChange(v, final) }
+  const gesture = useHistoryGesture('팬 조절')
+  const gestureRef = useRef(gesture); gestureRef.current = gesture
+  const set = (next: number, final: boolean) => { const l = latest.current; const v = Math.min(1, Math.max(-1, Math.round(next * 100) / 100)); if (v !== l.value || final) { l.value = v; l.onChange(v, final) } }
   const step = (direction: number, amount: number, final: boolean) => set(latest.current.value + direction * amount * 2, final)
 
   useEffect(() => {
@@ -30,7 +33,8 @@ export function PanKnob({ value, onChange, size = 20, ariaLabel = '팬' }: { val
     e.preventDefault(); cancelDrag.current?.()
     const el = e.currentTarget, pointerId = e.pointerId, startValue = latest.current.value
     el.focus({ preventScroll: true })
-    if (e.altKey) { set(0, true); return }
+    gestureRef.current.begin()
+    if (e.altKey) { set(0, true); gestureRef.current.end(); return }
     let v = startValue, lastY = e.clientY, lastX = e.clientX, active = true
     el.dataset.dawGesture = 'knob'
     const move = (event: PointerEvent) => {
@@ -46,7 +50,9 @@ export function PanKnob({ value, onChange, size = 20, ariaLabel = '팬' }: { val
       window.removeEventListener('keydown', key, true); window.removeEventListener('blur', blur)
       el.removeEventListener('lostpointercapture', lost); delete el.dataset.dawGesture
       if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId)
+      const cancelled = restore || Math.abs(latest.current.value - startValue) < 1e-9
       set(restore ? startValue : latest.current.value, true)
+      if (cancelled) gestureRef.current.cancel(); else gestureRef.current.end()
     }
     const up = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(false) }
     const lost = () => finish(false)
@@ -60,6 +66,9 @@ export function PanKnob({ value, onChange, size = 20, ariaLabel = '팬' }: { val
   }
 
   function keyDown(e: React.KeyboardEvent) {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.nativeEvent.isComposing) return
+    if (!['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft', 'PageUp', 'PageDown', 'Home', 'End', '0'].includes(e.key)) return
+    gestureRef.current.begin()
     const fine = e.shiftKey
     switch (e.key) {
       case 'ArrowUp': case 'ArrowRight': step(1, fine ? .1 : .01, false); break
@@ -74,14 +83,14 @@ export function PanKnob({ value, onChange, size = 20, ariaLabel = '팬' }: { val
     e.preventDefault(); e.stopPropagation()
   }
   function keyUp(e: React.KeyboardEvent) {
-    if (['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft', 'PageUp', 'PageDown', 'Home', 'End', '0'].includes(e.key)) { e.stopPropagation(); set(latest.current.value, true) }
+    if (['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft', 'PageUp', 'PageDown', 'Home', 'End', '0'].includes(e.key)) { e.stopPropagation(); set(latest.current.value, true); gestureRef.current.end() }
   }
 
   const c = 20, r = 15, angle = (value + 1) / 2 * SWEEP * 2 - SWEEP
   const [px, py] = point(c, r - 3, angle), [ix, iy] = point(c, 7, angle)
   const text = formatPan(value)
   return <div ref={ref} className="pan-knob" role="slider" tabIndex={0} aria-label={ariaLabel} aria-valuemin={-1} aria-valuemax={1} aria-valuenow={value} aria-valuetext={text}
-    title={`${ariaLabel} · ${text} (⌥클릭·더블 클릭: 중앙)`} onPointerDown={startDrag} onKeyDown={keyDown} onKeyUp={keyUp} onDoubleClick={e => { e.stopPropagation(); set(0, true) }} style={{ width: size, height: size }}>
+    title={`${ariaLabel} · ${text} (⌥클릭·더블 클릭: 중앙)`} onPointerDown={startDrag} onKeyDown={keyDown} onKeyUp={keyUp} onBlur={() => { if (!cancelDrag.current) gestureRef.current.end() }} onDoubleClick={e => { e.stopPropagation(); gestureRef.current.begin(); set(0, true); gestureRef.current.end() }} style={{ width: size, height: size }}>
     <svg width={size} height={size} viewBox="0 0 40 40" aria-hidden="true"><circle cx={c} cy={c} r={12} className="pan-cap"/><path d={arc(c, r, -SWEEP, SWEEP)} className="pan-track"/><path d={arc(c, r, 0, angle)} className="pan-value"/><line x1={ix} y1={iy} x2={px} y2={py} className="pan-pointer"/></svg>
   </div>
 }
