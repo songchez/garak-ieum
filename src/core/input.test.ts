@@ -118,18 +118,19 @@ describe('editing keyboard ownership', () => {
     expect(resolveProjectShortcut(key({ key: 'Delete', shiftKey: true }), 'timeline')).toBeNull()
   })
 
-  it('does not reprocess a handled event and keeps region shortcuts inside the timeline', () => {
-    expect(resolveProjectShortcut(key({ defaultPrevented: true }), 'timeline')).toBeNull()
+  it.each(['mac', 'windows', 'linux', 'other'] as const)('does not reprocess a handled event and keeps region shortcuts inside the timeline on %s', platform => {
+    const modifier = platform === 'mac' ? { metaKey: true } : { ctrlKey: true }
+    expect(resolveProjectShortcut(key({ defaultPrevented: true }), 'timeline', false, platform)).toBeNull()
     for (const [letter, command] of [['t', 'split'], ['r', 'repeat'], ['j', 'join']] as const) {
-      const event = key({ key: letter, code: `Key${letter.toUpperCase()}`, ctrlKey: true })
-      expect(resolveProjectShortcut(event, 'timeline')).toBe(command)
-      for (const scope of ['piano', 'workspace', 'text'] as ShortcutScope[]) expect(resolveProjectShortcut(event, scope)).toBeNull()
+      const event = key({ key: letter, code: `Key${letter.toUpperCase()}`, ...modifier })
+      expect(resolveProjectShortcut(event, 'timeline', false, platform)).toBe(command)
+      for (const scope of ['piano', 'workspace', 'text'] as ShortcutScope[]) expect(resolveProjectShortcut(event, scope, false, platform)).toBeNull()
     }
     // ⌘D is the Logic track duplicate; region duplicate is ⌘R / the context menu only.
-    const modD = key({ key: 'd', code: 'KeyD', ctrlKey: true })
-    expect(resolveProjectShortcut(modD, 'timeline')).toBe('duplicateTrack')
-    expect(resolveProjectShortcut(modD, 'workspace')).toBe('duplicateTrack')
-    expect(resolveProjectShortcut(modD, 'piano')).toBeNull()
+    const modD = key({ key: 'd', code: 'KeyD', ...modifier })
+    expect(resolveProjectShortcut(modD, 'timeline', false, platform)).toBe('duplicateTrack')
+    expect(resolveProjectShortcut(modD, 'workspace', false, platform)).toBe('duplicateTrack')
+    expect(resolveProjectShortcut(modD, 'piano', false, platform)).toBeNull()
   })
 })
 
@@ -369,13 +370,14 @@ describe('per-area zoom keys', () => {
     for (const scope of ['text', 'control', 'dialog', 'outside'] as ShortcutScope[]) expect(resolveProjectShortcut(k('ArrowDown', 'ArrowDown', MOD), scope)).toBeNull()
   })
 
-  it('keeps note and clip editing out of the mixer and device rack', () => {
+  it.each(['mac', 'windows', 'linux', 'other'] as const)('keeps note and clip editing out of the mixer and device rack on %s', platform => {
+    const modifier = platform === 'mac' ? CMD : MOD
     for (const scope of ['mixer', 'devices'] as ShortcutScope[]) {
-      expect(resolveProjectShortcut(k('Delete', 'Delete'), scope)).toBeNull()
-      expect(resolveProjectShortcut(L('C', MOD), scope)).toBeNull()
-      expect(resolveProjectShortcut(L('Q'), scope)).toBeNull()
-      expect(resolveProjectShortcut(k(' ', 'Space'), scope)).toBe('playback')
-      expect(resolveProjectShortcut(L('Z', MOD), scope)).toBe('undo')
+      expect(resolveProjectShortcut(k('Delete', 'Delete'), scope, false, platform)).toBeNull()
+      expect(resolveProjectShortcut(L('C', modifier), scope, false, platform)).toBeNull()
+      expect(resolveProjectShortcut(L('Q'), scope, false, platform)).toBeNull()
+      expect(resolveProjectShortcut(k(' ', 'Space'), scope, false, platform)).toBe('playback')
+      expect(resolveProjectShortcut(L('Z', modifier), scope, false, platform)).toBe('undo')
     }
   })
 
