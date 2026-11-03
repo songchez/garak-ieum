@@ -152,6 +152,7 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('moveToPlayhead', punct('Semicolon', ';'), '', T),
   bind('selectPrev', LEFT, '', T), bind('selectNext', RIGHT, '', T),
   bind('nudgeLeft', LEFT, 'alt', TP), bind('nudgeRight', RIGHT, 'alt', TP),
+  bind('nudgeLeft', LEFT, '', P), bind('nudgeRight', RIGHT, '', P),
   bind('trimEndLeft', LEFT, 'altShift', TP), bind('trimEndRight', RIGHT, 'altShift', TP),
   bind('trimStartToPlayhead', punct('BracketLeft', '['), 'mod', T), bind('trimEndToPlayhead', punct('BracketRight', ']'), 'mod', T),
   bind('muteTrack', letter('M'), '', TW), bind('soloTrack', letter('S'), '', TW),
@@ -168,6 +169,7 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('deleteNotes', DEL, '', P), bind('deleteNotes', BACK, '', P),
   bind('quantize', letter('Q'), '', P),
   bind('transposeUp', UP, 'alt', TP), bind('transposeDown', DOWN, 'alt', TP),
+  bind('transposeUp', UP, '', P), bind('transposeDown', DOWN, '', P),
   bind('transposeOctaveUp', UP, 'altShift', TP), bind('transposeOctaveDown', DOWN, 'altShift', TP),
 ]
 
@@ -300,8 +302,14 @@ const META: Record<ProjectShortcut, { label: string; logic: string }> = {
 
 export interface ShortcutRow { command: ProjectShortcut; label: string; mac: string; win: string; scopes: readonly ShortcutEditScope[]; logic: string }
 
-const formatAll = (command: ProjectShortcut, platform: ShortcutPlatform) =>
-  SHORTCUT_BINDINGS.filter(b => b.command === command && onPlatform(b, platform)).map(b => formatBinding(b, platform)).join(' / ')
+const SCOPE_LABELS: Record<ShortcutEditScope, string> = { timeline: '타임라인', piano: '피아노롤', mixer: '믹서', devices: '디바이스', workspace: '작업 공간' }
+const formatAll = (command: ProjectShortcut, platform: ShortcutPlatform) => {
+  const bindings = SHORTCUT_BINDINGS.filter(b => b.command === command && onPlatform(b, platform))
+  const scopes = new Set(bindings.flatMap(binding => binding.scopes))
+  // A row can combine aliases with different owners. Label narrower aliases
+  // so a piano-only arrow is never advertised as an arrangement edit key.
+  return bindings.map(binding => `${formatBinding(binding, platform)}${binding.scopes.length < scopes.size ? ` (${binding.scopes.map(scope => SCOPE_LABELS[scope]).join('·')})` : ''}`).join(' / ')
+}
 
 /** Zoom commands act on the area with key focus: timeline, piano roll, mixer or device rack. */
 export const ZOOM_COMMANDS: readonly ProjectShortcut[] = ['zoomIn', 'zoomOut', 'zoomInV', 'zoomOutV', 'zoomToFit']

@@ -8,6 +8,7 @@ import { contrastTextColor } from '../core/colors'
 import { applyMidiNoteEdits, midiEditorClip } from '../core/midiRegions'
 import { musicalGrid, musicalGridStyle, musicalRulerMarks, musicalSpan } from '../core/musicalGrid'
 import { snapToEdges } from '../core/edgeSnap'
+import { editNoteTiming, noteTimingBounds, pianoNoteStart, MIN_PIANO_NOTE_LENGTH as MIN_LENGTH } from '../core/pianoEditing'
 import { ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from '../core/zoom'
 import ContextMenu from './ContextMenu'
 import type { ContextMenuItem } from './ContextMenu'
@@ -25,7 +26,7 @@ interface PianoRollProps {
   onPreview: (pitch: number) => void
   /** Absolute project beat of the transport. The playhead is hidden when undefined. */
   playheadBeat?: number
-  /** Grid in beats (0 = off). Internal state (default 1/16) is used when omitted. */
+  /** Optional mouse snap in beats. Omitted/0 means free placement; arrows use the visible grid. */
   snap?: number
   onSnapChange?: (snap: number) => void
   /** Horizontal ppb (null = fit the clip) and row height. Internal state is used when omitted. */
@@ -45,14 +46,13 @@ type VelocityGesture = Press & { kind: 'velocity'; anchorId: string; originals: 
 type Gesture = NoteGesture | MarqueeGesture | VelocityGesture
 type MenuState = { x: number; y: number; kind: 'note' | 'grid'; beat?: number }
 
-const SNAP_OPTIONS: [string, number][] = [['1/4', 1], ['1/8', 0.5], ['1/16', 0.25], ['1/32', 0.125], ['1/64', 0.0625], ['1/4T', 2 / 3], ['1/8T', 1 / 3], ['1/16T', 1 / 6], ['끔', 0]]
+const SNAP_OPTIONS: [string, number][] = [['자유 이동', 0], ['1/4', 1], ['1/8', 0.5], ['1/16', 0.25], ['1/32', 0.125], ['1/64', 0.0625], ['1/4T', 2 / 3], ['1/8T', 1 / 3], ['1/16T', 1 / 6]]
 const ROW_HEIGHT = 19
 const COMPACT_ROW = 13
 const RULER_HEIGHT = 24
 const KEY_WIDTH = 70
 const LANE_HEIGHT = 52
 const LANE_RANGE = LANE_HEIGHT - 12
-const MIN_LENGTH = 1 / 64
 const MIN_VELOCITY = 1 / 127
 
 // Shared between clips so notes can be copied from one region to another.
@@ -88,7 +88,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   const [hoveredPitch, setHoveredPitch] = useState<number | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [showVelocity, setShowVelocity] = useState(true)
-  const [snapState, setSnapState] = useState(0.25)
+  const [snapState, setSnapState] = useState(0)
   const snap = snapProp ?? snapState
   const previousSnap = useRef(.25)
   if (snap > 0) previousSnap.current = snap
@@ -107,6 +107,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   const clipBeats = Math.max(0.25, clip.lengthBeats)
   const fitPpb = fitScale(clipBeats, Math.max(120, viewportWidth - KEY_WIDTH - 1), ZOOM_LIMITS.pianoX)
   const beatWidth = zoom.ppb === null ? fitPpb : clampZoom(zoom.ppb, ZOOM_LIMITS.pianoX)
+  const grid = musicalGrid(beatWidth, { snap })
   const gridWidth = clipBeats * beatWidth
   const notes = draft ?? clip.notes
   const clipNotesById = useMemo(() => new Map(clip.notes.map(note => [note.id, note])), [clip.notes])
@@ -362,9 +363,8 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
     const rowDelta = gesture.mode === 'move' ? clamp(Math.round(dy / ROW), -Math.min(...rows), pitches.length - 1 - Math.max(...rows)) : 0
     const targetPitches = new Set(rows.map(row => pitches[row + rowDelta]))
     const originalIds = new Set(originals.map(note => note.id))
-    const minLengthFor = (note: MidiNote) => Math.min(note.duration, Math.max(step, MIN_LENGTH))
-    const minDelta = gesture.mode === 'resize' ? Math.max(...originals.map(note => minLengthFor(note) - note.duration)) : -Math.min(...originals.map(note => note.start))
-    const maxDelta = gesture.mode === 'resize-left' ? Math.min(...originals.map(note => note.duration - minLengthFor(note))) : Math.max(0, Math.min(...originals.map(note => clip.lengthBeats - note.start - note.duration)))
+    const minimumLength = Math.max(step, MIN_LENGTH)
+    const { minDelta, maxDelta } = noteTimingBounds(originals, clip.lengthBeats, gesture.mode, minimumLength)
     const snapped = snapToEdges({
       rawDelta: dx / beatWidth, gridDelta: delta,
       movingEdges: originals.flatMap(note => gesture.mode === 'move' ? [note.start, note.start + note.duration] : [note.start + (gesture.mode === 'resize' ? note.duration : 0)]),
@@ -373,20 +373,9 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
     })
     delta = snapped.delta
     setAlignmentBeat(snapped.guide)
-    let moved: MidiNote[]
+    let moved = editNoteTiming(originals, delta, clip.lengthBeats, gesture.mode, minimumLength)
     if (gesture.mode === 'move') {
-      const minStart = Math.min(...originals.map(note => note.start))
-      const maxRight = Math.max(0, Math.min(...originals.map(note => clip.lengthBeats - note.start - note.duration)))
-      const timeDelta = clamp(delta, -minStart, maxRight)
-      moved = originals.map((note, index) => ({ ...note, id: gesture.copyIds?.[index] ?? note.id, start: note.start + timeDelta, pitch: pitches[rows[index] + rowDelta] }))
-    } else {
-      moved = originals.map(note => {
-        const minLength = Math.min(note.duration, Math.max(step, MIN_LENGTH))
-        if (gesture.mode === 'resize') return { ...note, duration: clamp(note.duration + delta, minLength, Math.max(minLength, clip.lengthBeats - note.start)) }
-        const end = note.start + note.duration
-        const start = clamp(note.start + delta, 0, end - minLength)
-        return { ...note, start, duration: end - start }
-      })
+      moved = moved.map((note, index) => ({ ...note, id: gesture.copyIds?.[index] ?? note.id, pitch: pitches[rows[index] + rowDelta] }))
     }
     gesture.moved = moved
     const anchorIndex = originals.findIndex(note => note.id === gesture.anchorId)
@@ -469,9 +458,8 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   }
 
   function addNoteAt(x: number, y: number) {
-    const beat = snap > 0 ? Math.floor(x / beatWidth / snap) * snap : x / beatWidth
     const row = clamp(Math.floor(y / ROW), 0, pitches.length - 1)
-    const start = clamp(beat, 0, Math.max(0, clip.lengthBeats - (snap || MIN_LENGTH)))
+    const start = pianoNoteStart(x / beatWidth, clip.lengthBeats, snap)
     const length = lastRef.current[drumMode ? 'drum' : 'chromatic']
     const note: MidiNote = { id: newId(), pitch: pitches[row], start, duration: Math.min(length, clip.lengthBeats - start), velocity: lastRef.current.velocity }
     commit([...clip.notes, note])
@@ -641,28 +629,14 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   function nudgeSelected(direction: 1 | -1, length: boolean) {
     const selected = selectedFromClip()
     if (!selected.length) return
-    const step = (snap || 1 / 16) * direction
+    const moved = editNoteTiming(selected, grid.stepBeats * direction, clip.lengthBeats, length ? 'resize' : 'move', Math.max(MIN_LENGTH, grid.stepBeats))
+    if (moved === selected) return
+    const byId = new Map(moved.map(note => [note.id, note]))
+    commit(clip.notes.map(note => byId.get(note.id) ?? note))
     if (length) {
-      let changed = false
-      const next = clip.notes.map(note => {
-        if (!selectedIds.has(note.id)) return note
-        const minLength = Math.min(note.duration, Math.abs(step))
-        const duration = clamp(note.duration + step, minLength, Math.max(minLength, clip.lengthBeats - note.start))
-        if (duration === note.duration) return note
-        changed = true
-        return { ...note, duration }
-      })
-      if (!changed) return
-      commit(next)
-      const anchor = next.find(note => note.id === anchorNote()?.id)
+      const anchor = byId.get(anchorNote()?.id ?? '')
       if (anchor) rememberLength(anchor.duration)
-      return
     }
-    const minStart = Math.min(...selected.map(note => note.start))
-    const maxRight = Math.max(0, Math.min(...selected.map(note => clip.lengthBeats - note.start - note.duration)))
-    const delta = clamp(step, -minStart, maxRight)
-    if (!delta) return
-    commit(clip.notes.map(note => selectedIds.has(note.id) ? { ...note, start: note.start + delta } : note))
   }
 
   function setSelectionVelocity(value: number) {
@@ -770,8 +744,11 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
       else transposeSelected(direction, event.shiftKey && !drumMode)
     } else if (isUnmodified(native, true)) {
       handled()
-      if (horizontal) selectAdjacent(direction, event.shiftKey)
-      else selectVertical(direction > 0, event.shiftKey)
+      if (event.shiftKey) {
+        if (horizontal) selectAdjacent(direction, true)
+        else selectVertical(direction > 0, true)
+      } else if (horizontal) nudgeSelected(direction, false)
+      else transposeSelected(direction, false)
     }
   }
 
@@ -813,7 +790,6 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
     { label: '모두 선택', icon: 'select-all', shortcut: `${modLabel}A`, disabled: !clip.notes.length, onSelect: selectAll },
   ]
 
-  const grid = musicalGrid(beatWidth, { snap })
   const gridStyle = musicalGridStyle(grid)
   const rulerMarks = musicalRulerMarks(grid, Math.max(0, viewport.left / beatWidth - 4), Math.min(clipBeats, (viewport.left + Math.max(0, viewport.width - KEY_WIDTH)) / beatWidth + 4))
   const style = {
@@ -842,9 +818,9 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
             : selectedNotes.length > 1 && <span className="piano-selection-label">{selectedNotes.length}<span>개 선택</span></span>}
           <ZoomControls area={drumMode ? '드럼 에디터' : '피아노롤'} onZoom={zoomCommand} />
           <button type="button" className={`piano-lane-toggle${showVelocity ? ' active' : ''}`} aria-pressed={showVelocity} onClick={() => setShowVelocity(value => !value)} title="벨로시티 레인 보이기/숨기기">VEL</button>
-          <label className="piano-snap" title={`격자 단위 · 드래그 중 ${mac ? '⌃' : 'Ctrl'}: 세밀하게 · ${mac ? '⌃⇧' : 'Ctrl+Shift'}: 격자 무시 · Shift: 축 고정`}>
+          <label className="piano-snap" title={`마우스는 기본 자유 이동 · 필요할 때 격자 선택 · ${modLabel}G: 스냅 켬/끔 · 드래그 중 ${mac ? '⌃' : 'Ctrl'}: 세밀하게 · ${mac ? '⌃⇧' : 'Ctrl+Shift'}: 격자 무시 · Shift: 축 고정 · 방향키: 표시 격자 한 칸`}>
             <span aria-hidden="true">▦</span>
-            <select value={String(snap)} onChange={event => setSnap(Number(event.currentTarget.value))} aria-label="스냅 격자">
+            <select value={String(snap)} onChange={event => setSnap(Number(event.currentTarget.value))} aria-label="마우스 스냅 격자">
               {SNAP_OPTIONS.map(([label, value]) => <option key={label} value={String(value)}>{label}</option>)}
             </select>
           </label>
@@ -887,7 +863,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
                 const beat = canvasPoint(event).x / beatWidth
                 openMenu(event, 'grid', snap > 0 ? Math.floor(beat / snap) * snap : beat)
               }}
-              aria-label="빈칸을 클릭해 음표 추가, 드래그해 여러 음표 선택. 음표를 드래그해 이동하고 양 끝을 드래그해 길이를 변경합니다. 우클릭으로 메뉴를 엽니다."
+              aria-label="빈칸을 클릭해 음표 추가, 드래그해 여러 음표 선택. 기본 마우스 이동과 길이 편집은 자유롭게, 선택한 음표는 좌우 방향키로 표시 격자 한 칸, 위아래 방향키로 음높이 한 칸씩 이동합니다. Shift 방향키는 선택을 확장합니다."
             >
               <div className="piano-grid-rows" aria-hidden="true">
                 {pitches.map(pitch => <div key={pitch} className={`piano-grid-row${!drumMode && isBlackKey(pitch) ? ' piano-grid-row--black' : ''}${pitch % 12 === 0 ? ' piano-grid-row--octave' : ''}`} style={{ height: ROW }} />)}
@@ -916,7 +892,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
                   }}
                   aria-label={`${labelForPitch(note.pitch)}, ${Number((note.start + 1).toFixed(3))}박 위치, 길이 ${Number(note.duration.toFixed(3))}박, 세기 ${Math.round(noteVelocity * 127)}`}
                   aria-pressed={selected}
-                  title={`${labelForPitch(note.pitch)} · 드래그 이동 · ${altLabel.replace('+', '')} 드래그 복사 · 양 끝으로 길이 조절 · 우클릭 메뉴`}
+                  title={`${labelForPitch(note.pitch)} · ${snap > 0 ? '격자에 맞춰' : '자유롭게'} 드래그 이동 · ←→ 표시 격자 한 칸 · ↑↓ ${drumMode ? '한 행' : '반음'} · ⇧방향키 선택 확장 · ${altLabel.replace('+', '')} 드래그 복사 · 양 끝으로 길이 조절`}
                 >
                   {width > 34 && ROW >= COMPACT_ROW && <span className="piano-note-label">{drumMode ? DRUM_NAMES[note.pitch]?.replace('CLOSED HAT', 'CH').replace('OPEN HAT', 'OH') ?? pitchName(note.pitch) : pitchName(note.pitch)}</span>}
                   <span className="piano-note-velocity" aria-hidden="true" />
@@ -964,7 +940,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
           />
           <output>{hasSelection ? velocityValue : '—'}</output>
         </label>
-        <span className="piano-help">클릭 추가 <span>·</span> 드래그 선택 <span>·</span> {altLabel.replace('+', '')} 드래그 복사 <span>·</span> 우클릭 메뉴</span>
+        <span className="piano-help">마우스 {snap > 0 ? '격자 맞춤' : '자유 이동'} <span>·</span> ←→ 한 칸 <span>·</span> ↑↓ {drumMode ? '한 행' : '반음'} <span>·</span> ⇧방향키 선택 확장</span>
         <span className="piano-note-count">{clip.notes.length}<span> NOTES</span></span>
       </footer>
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} label="음표 메뉴" />}
