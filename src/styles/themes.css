@@ -13,6 +13,77 @@
   --on-record: #fff;
   --on-brass: var(--text-inverse);
   --on-track-color: #202821;
+  --control-border: var(--border-default);
+  --hanji-surface: var(--surface-panel);
+  --paper-edge: color-mix(in srgb, var(--surface-panel) 35%, white);
+  --hanok-frame: var(--border-default);
 }
 :root[data-theme-mode="light"] { color-scheme: light; }
 :root[data-theme-mode="dark"] { color-scheme: dark; }
+
+/* Paper lives on the stationary shell. Editing canvases stay clean so fibers
+   never compete with MIDI notes, pitch curves, waveforms or the beat grid. */
+:root[data-theme-mode="light"] {
+  --hanji-fibers: repeating-linear-gradient(12deg,
+    transparent 0 5px,
+    color-mix(in srgb, var(--hanok-frame) 3%, transparent) 5px 6px,
+    transparent 6px 13px);
+}
+:root[data-theme-mode="light"] :is(.app-header, .pl-topbar) {
+  background-color: var(--hanji-surface);
+  background-image: var(--hanji-fibers), linear-gradient(var(--surface-raised), var(--surface-panel));
+}
+:root[data-theme-mode="light"] :is(.library, .inspector, .pl-sidebar) {
+  border-right-color: var(--hanok-frame);
+  background-image: var(--hanji-fibers);
+  box-shadow: inset -2px 0 0 var(--paper-edge);
+}
+:root[data-theme-mode="light"] :is(.file-browser, .pe-inspector) {
+  border-left-color: var(--hanok-frame);
+  background-image: var(--hanji-fibers);
+  box-shadow: inset 2px 0 0 var(--paper-edge);
+}
+:root[data-theme-mode="light"] :is(.arrangement-title, .editor-toolbar, .library-head, .pl-browser-header) {
+  border-bottom-color: var(--hanok-frame);
+  background-image: var(--hanji-fibers);
+  box-shadow: inset 0 -2px 0 var(--paper-edge);
+}
+:root[data-theme-mode="light"] :is(.bottom-panel, .status-bar, .pl-actions) {
+  border-top-color: var(--hanok-frame);
+  box-shadow: inset 0 2px 0 var(--paper-edge);
+}
+:root[data-theme-mode="light"] :is(.track-ruler-label, .track-header[data-track-id]) {
+  border-right-color: var(--hanok-frame);
+}
+:root[data-theme-mode="light"] .insp-section-head {
+  background: var(--hanji-fibers), linear-gradient(var(--surface-raised), var(--surface-panel-soft));
+  box-shadow: inset 0 -1px 0 var(--border-default), inset 0 1px 0 var(--paper-edge);
+}
+:root[data-theme-mode="light"] .pl-chooser {
+  border-color: var(--hanok-frame);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--hanok-frame) 12%, transparent), 0 0 0 3px var(--paper-edge);
+}
+:root[data-theme-mode="light"] :is(.modal, .context-menu-list) {
+  border-color: var(--hanok-frame);
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--text-primary) 20%, transparent), inset 0 1px 0 var(--paper-edge);
+}
+
+/* Distinguish actual controls from the softer dividers between sections. */
+:root[data-theme-mode="light"] :is(.browser-search, .library-search, .pl-search, .zoom-group) {
+  border-color: var(--control-border);
+}
+:root[data-theme-mode="light"] .mcp-field input {
+  border: 1px solid var(--control-border);
+}
+:root[data-theme-mode="light"] :is(.browser-search, .library-search, .pl-search):focus-within {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+:root[data-theme-mode="light"] .piano-grid-row--black {
+  background: var(--surface-canvas-alt);
+}
+:root[data-theme-mode="light"] ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 1px solid var(--surface-canvas);
+}
+:root[data-theme-mode="light"] ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }

@@ -103,6 +103,19 @@
 .piano-help > span { color:var(--text-primary); padding: 0 4px; }
 .piano-note-count { flex-shrink: 0; font-size: 10px; font-variant-numeric: tabular-nums; color:var(--text-secondary); }
 .piano-note-count > span { margin-left: 2px; color:var(--text-muted); font-size: 8px; letter-spacing: .07em; }
+
+/* Hue identifies the track; an opaque ink outline identifies the editable note. */
+:root[data-theme-mode="light"] .piano-note{border-color:var(--control-border)}
+:root[data-theme-mode="light"] .piano-note--selected{border-color:var(--text-primary)}
+:root[data-theme-mode="light"] .piano-note:hover{border-color:var(--focus)}
+/* Height already encodes velocity. Keep even quiet notes' drag caps visible. */
+:root[data-theme-mode="light"] .piano-velocity-bar::before,
+:root[data-theme-mode="light"] .piano-velocity-bar::after{opacity:1;box-shadow:0 0 0 1px var(--control-border)}
+:root[data-theme-mode="light"] .piano-velocity-bar:hover::before,
+:root[data-theme-mode="light"] .piano-velocity-bar:hover::after{filter:none;box-shadow:0 0 0 1px var(--focus)}
+:root[data-theme-mode="light"] .piano-velocity-bar--selected::after{background:var(--text-primary);box-shadow:0 0 0 1px var(--text-primary)}
+:root[data-theme-mode="light"] .piano-velocity-control input{background:var(--control-border)}
+:root[data-theme-mode="light"] .piano-velocity-control input:focus-visible{outline-color:var(--focus)}
 @media (max-width: 760px) {
   .piano-help { display: none; }
   .piano-clip-name { max-width: 170px; }

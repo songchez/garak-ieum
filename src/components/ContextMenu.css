@@ -8,7 +8,7 @@
 .context-menu-item:hover:not(:disabled), .context-menu-item:focus-visible, .context-menu-item:focus:not(:disabled), .context-menu-item[aria-expanded="true"] { background: var(--surface-selected); color: var(--text-primary); }
 .context-menu-item:focus-visible { box-shadow: inset 0 0 0 1px var(--focus); }
 .context-menu-item:disabled { color: var(--text-disabled); }
-.context-menu-item--danger:not(:disabled) { color: var(--seokganju-66); }
+.context-menu-item--danger:not(:disabled) { color: var(--danger); }
 .context-menu-label { min-width: 0; white-space: nowrap; }
 .context-menu-item--checked .context-menu-label::before { content: '✓'; position: absolute; left: 7px; top: 0; bottom: 0; display: grid; place-items: center; width: 11px; color: var(--accent); }
 .context-menu-list--icons > .context-menu-entry > .context-menu-item { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; }

@@ -527,7 +527,12 @@ export function PitchEditor({ clip, sourceAsset, projectId, bpm, projectClipIds,
                 {width > 29 && <span>{pitchName(Math.round(note.midi + shift / 100))}</span>}{width > 70 && shift !== 0 && <small>{centsLabel(shift)}</small>}{formantShift !== 0 && width > 40 && <small className="pe-formant-mark" aria-hidden="true">F</small>}{uncertain && width > 18 && <i aria-hidden="true">?</i>}
               </button>
             })}
-            <svg className="pe-curves" width={gridWidth} height={height} style={{ left: KEY_WIDTH }} aria-hidden="true"><path className="pe-original-curve" d={rawCurve}/><path className="pe-edited-curve" d={editedCurve}/></svg>
+            <svg className="pe-curves" width={gridWidth} height={height} style={{ left: KEY_WIDTH }} aria-hidden="true">
+              <path className="pe-curve-halo pe-original-halo" d={rawCurve}/>
+              <path className="pe-original-curve" d={rawCurve}/>
+              <path className="pe-curve-halo" d={editedCurve}/>
+              <path className="pe-edited-curve" d={editedCurve}/>
+            </svg>
           </div>
           {!visibleNotes.length && <div className="pe-no-notes">이 리전에서 편집할 음표를 찾지 못했습니다.</div>}
         </div> : <div className="pe-empty"><Icon name="wave" size={28}/><strong>녹음한 소리를 음표처럼 편집</strong><p>음표 분석 후 위아래로 움직이거나 센트 값을 입력하세요.</p><small>보컬·독주용 · 원본 60초 이내 · 모노/스테레오</small></div>}

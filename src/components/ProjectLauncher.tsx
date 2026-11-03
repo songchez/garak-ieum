@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import type { ProjectTemplate } from '../core/projectTemplates'
 import type { ProjectSummary } from '../core/storage'
 import { Brand } from './Brand'
+import { GiwaEave } from './GiwaEave'
 import { Icon } from './Icon'
 import './ProjectLauncher.css'
 
@@ -114,7 +115,7 @@ export function ProjectLauncher({ projects, templates, loading, busy, error, not
   }
 
   return <div className="project-launcher">
-    <header className="pl-topbar"><div className="pl-topbar-inner"><div className="pl-brand"><Brand/><span className="pl-nav-label">프로젝트</span></div><span className="pl-local-badge"><Icon name="folder" size={13}/>이 브라우저의 작업실</span></div></header>
+    <header className="pl-topbar"><GiwaEave/><div className="pl-topbar-inner"><div className="pl-brand"><Brand/><span className="pl-nav-label">프로젝트</span></div><span className="pl-local-badge"><Icon name="folder" size={13}/>이 브라우저의 작업실</span></div></header>
     <main className="pl-main" aria-labelledby="pl-title">
       <section className="pl-chooser" aria-label="프로젝트 선택">
         <aside className="pl-sidebar">

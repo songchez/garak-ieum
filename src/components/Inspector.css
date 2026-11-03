@@ -32,6 +32,20 @@
 .insp-swatch{width:24px;height:18px;border:1px solid var(--border-default);border-radius:3px;padding:0}
 .insp-swatch:hover{border-color:var(--border-strong)}
 
+/* Separate editable fields from the paper panel without changing disabled states. */
+:root[data-theme-mode="light"] .value-field:not(.editing):not([data-daw-gesture]),
+:root[data-theme-mode="light"] .insp-text:not(:focus){border-color:var(--control-border)!important}
+:root[data-theme-mode="light"] .value-field:not(.editing):not([data-daw-gesture]):hover{border-color:var(--focus)!important}
+:root[data-theme-mode="light"] .insp-select,
+:root[data-theme-mode="light"] .insp-icon-button,
+:root[data-theme-mode="light"] .insp-swatch,
+:root[data-theme-mode="light"] .cstrip-slot{border-color:var(--control-border)}
+:root[data-theme-mode="light"] .cstrip-slot-caret{border-left-color:var(--control-border)}
+:root[data-theme-mode="light"] .cstrip-icon{color:color-mix(in srgb,var(--track-color,var(--text-secondary)) 25%,var(--text-primary))}
+:root[data-theme-mode="light"] .volume-slider .volume-track{border:1px solid var(--control-border)}
+:root[data-theme-mode="light"] .volume-slider--vertical .volume-thumb{border:1px solid var(--control-border);background:var(--surface-raised)}
+:root[data-theme-mode="light"] .volume-unity{background:var(--text-secondary)}
+
 /* Channel strips: focused track on the left, Stereo Out on the right. */
 .strips{display:flex;gap:6px;justify-content:center}
 .cstrip{--slot-h:18px;width:96px;min-width:96px;display:flex;flex-direction:column;gap:2px;padding:4px 4px 0;border:1px solid var(--border-subtle);border-radius:4px;background:var(--surface-canvas-alt);position:relative;min-height:330px}

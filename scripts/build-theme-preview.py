@@ -151,7 +151,7 @@ def daw(theme: dict, x: float, y: float, w: float, h: float) -> None:
         clip_w=[205,267,148][row]
         fill=mix(track_colors[row], '#ffffff', .2) if row == 0 else mix(c['panel'],track_colors[row],.24)
         foreground=ink_for(fill) if row == 0 else c['text']
-        rect(clip_x,row_y+5,clip_w,29,fill,3,track_colors[row],1.5 if row == 0 else 1)
+        rect(clip_x,row_y+5,clip_w,29,fill,3,theme['tokens']['--control-border'] if theme['mode']=='light' else track_colors[row],1.5 if row == 0 else 1)
         text(['주제 · 8마디','저음 패턴','장단'][row],clip_x+7,row_y+16,8,foreground)
         for note in range(8):
             rect(clip_x+7+note*(clip_w-18)/8,row_y+22-(note%3),max(6,(clip_w-28)/10),2,foreground,1,opacity=.72)
@@ -185,7 +185,7 @@ rect(0,0,W,H,'#eae6dc')
 text('가락이음 · 한국의 빛, 여섯 작업실',48,69,40,'#26322b')
 text('로고 > 설정 > 화면 테마에서 선택 · 기존 새벽 한옥과 다섯 가지 전통색 팔레트',49,106,18,'#586459')
 text('실제 앱 스크린샷이 아닌 색 배치 설계 자료',49,138,17,'#6b695e')
-text('2026.11.02',1472,67,15,'#586459','end')
+text('2026.11.03',1472,67,15,'#586459','end')
 
 for index,theme in enumerate(themes):
     x=48+(index%2)*726

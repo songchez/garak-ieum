@@ -1,6 +1,7 @@
 .project-launcher { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; background: var(--surface-base); color: var(--text-primary); -webkit-user-select: none; user-select: none; }
 .project-launcher input, .project-launcher [data-selectable-text], .project-launcher [data-selectable-text] * { -webkit-user-select: text; user-select: text; }
-.pl-topbar { flex-shrink: 0; height: 54px; border-top: 6px solid var(--giwa); border-bottom: 1px solid var(--border-default); background: var(--surface-panel); box-shadow: inset 0 1px var(--giwa-edge); }
+.pl-topbar { position: relative; flex-shrink: 0; height: 54px; padding-bottom: 12px; background: var(--surface-panel); }
+.pl-topbar > .giwa-eave { position: absolute; right: 0; bottom: 0; left: 0; }
 .pl-topbar-inner { width: min(1120px, calc(100% - 48px)); height: 100%; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .pl-brand { display: flex; align-items: center; gap: 17px; }
 .pl-nav-label { padding-left: 17px; border-left: 1px solid var(--border-default); color: var(--text-secondary); font-size: 11px; }

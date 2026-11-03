@@ -87,3 +87,19 @@
 .pan-value{fill:none;stroke:var(--ink-72);stroke-width:4;stroke-linecap:round}
 .pan-pointer{stroke:var(--ink-93);stroke-width:2.4;stroke-linecap:round}
 .pan-knob:hover .pan-cap,.pan-knob[data-daw-gesture] .pan-cap{fill:var(--ink-19);stroke:var(--ink-36)}
+
+/* Opaque outlines and darker state inks keep compact controls legible on hanji. */
+:root[data-theme-mode="light"] .track-header[data-track-id],
+:root[data-theme-mode="light"] .track-buttons{--track-mute:#245b89;--track-arm:var(--record)}
+:root[data-theme-mode="light"] .track-button{border-color:var(--control-border)}
+:root[data-theme-mode="light"] .track-button:hover{border-color:var(--focus)}
+:root[data-theme-mode="light"] .track-button--enabled.off{color:var(--text-secondary)}
+:root[data-theme-mode="light"] .track-button--enabled.off::after{background:currentColor}
+:root[data-theme-mode="light"] .track-button--mute.implicit{animation-name:track-implicit-mute-light}
+:root[data-theme-mode="light"] .track-button--arm.on:not(.recording){animation-name:track-arm-blink-light}
+@keyframes track-implicit-mute-light{0%,100%{background:var(--surface-selected)}50%{background:var(--surface-raised)}}
+@keyframes track-arm-blink-light{0%,100%{background:var(--track-arm);color:var(--on-record)}50%{background:var(--surface-raised);color:var(--track-arm)}}
+:root[data-theme-mode="light"] .track-header[data-track-id]:not(.track-off):not(.track-hidden) .track-icon{color:color-mix(in srgb,var(--track-color) 25%,var(--text-primary));opacity:1}
+:root[data-theme-mode="light"] .pan-cap{fill:var(--surface-raised);stroke:var(--control-border)}
+:root[data-theme-mode="light"] .pan-track{stroke:var(--control-border);stroke-width:6}
+:root[data-theme-mode="light"] .pan-value{stroke:var(--accent)}
