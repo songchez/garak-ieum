@@ -1,6 +1,7 @@
 import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
 import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
+import { midiEditorClip, midiSourceOffset } from './midiRegions'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
 import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
 
@@ -68,7 +69,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -198,7 +199,7 @@ export function duplicateClip(clip: Clip, startBeat = clip.startBeat + clip.leng
     : { ...clip, id: base.id, startBeat, ...(clip.pitch ? { pitch: copyPitchDocument(clip.pitch) } : {}) }
 }
 
-/** `beat` is an absolute project beat; MIDI note starts remain clip-relative. */
+/** `beat` is an absolute project beat. Each MIDI half keeps an independent, recoverable source. */
 export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
   if (!Number.isFinite(beat)) throw new Error('Split position must be a finite number.')
   if (!Number.isFinite(bpm) || bpm <= 0) throw new Error('Tempo must be greater than zero.')
@@ -207,6 +208,7 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
 
   const cut = beat - clip.startBeat
   const rightLength = clip.lengthBeats - cut
+  const rightLoop = clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: clip.loopLengthBeats - cut }
   if (clip.kind === 'audio') {
     const leftSeconds = cut * 60 / bpm
     const rightSeconds = rightLength * 60 / bpm
@@ -217,6 +219,7 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
         id: uid(),
         startBeat: beat,
         lengthBeats: rightLength,
+        ...rightLoop,
         offsetSeconds: clip.offsetSeconds + leftSeconds,
         fadeIn: 0,
         fadeOut: Math.min(clip.fadeOut, rightSeconds),
@@ -225,22 +228,10 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
     ]
   }
 
-  const leftNotes: MidiNote[] = []
-  const rightNotes: MidiNote[] = []
-  for (const value of clip.notes) {
-    const start = Math.max(0, value.start)
-    const end = Math.min(clip.lengthBeats, value.start + value.duration)
-    if (start < cut && end > start) {
-      leftNotes.push({ ...value, start, duration: Math.min(cut, end) - start })
-    }
-    if (end > cut && end > start) {
-      const rightStart = Math.max(cut, start)
-      rightNotes.push({ ...value, id: uid(), start: rightStart - cut, duration: end - rightStart })
-    }
-  }
   return [
-    { ...clip, lengthBeats: cut, notes: leftNotes },
-    { ...clip, id: uid(), startBeat: beat, lengthBeats: rightLength, notes: rightNotes },
+    { ...clip, lengthBeats: cut },
+    { ...clip, id: uid(), startBeat: beat, lengthBeats: rightLength, ...rightLoop,
+      sourceOffsetBeats: midiSourceOffset(clip) + cut, notes: clip.notes.map(value => ({ ...value, id: uid() })) },
   ]
 }
 
@@ -248,21 +239,15 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
 export const MIN_CLIP_BEATS = 0.0625
 const EPSILON = 1e-9
 
-/** Drops notes outside the clip window and crops the rest to [0, lengthBeats]. */
+/** Explicitly materializes the visible note window (used when joining regions). */
 export function cropNotesToClip(clip: MidiClip): MidiClip {
-  const notes: MidiNote[] = []
-  for (const value of clip.notes) {
-    const start = Math.max(0, value.start)
-    const end = Math.min(clip.lengthBeats, value.start + value.duration)
-    if (end - start > EPSILON) notes.push(start === value.start && end === value.start + value.duration ? value : { ...value, start, duration: end - start })
-  }
-  return { ...clip, notes }
+  return midiEditorClip(clip)
 }
 
 /**
- * Moves the left edge to `newStartBeat` and keeps the content in place. MIDI notes
- * shift by the trim amount (notes ending before the new start are dropped, crossing
- * notes are cropped); audio advances its source offset, which can never go below 0.
+ * Moves the left edge while keeping source content and the right edge in place. MIDI notes
+ * survive outside the visible window. Extending before the MIDI source inserts leading
+ * silence by rebasing all source notes; audio can never read before the original file.
  */
 export function trimClipStart(clip: Clip, newStartBeat: number, bpm: number): Clip {
   if (!Number.isFinite(newStartBeat)) throw new Error('Trim position must be a finite number.')
@@ -273,29 +258,41 @@ export function trimClipStart(clip: Clip, newStartBeat: number, bpm: number): Cl
   const delta = start - clip.startBeat
   if (Math.abs(delta) < EPSILON) return clip
   const lengthBeats = end - start
+  const loop = clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(lengthBeats, clip.loopLengthBeats - delta) }
   if (clip.kind === 'audio') {
     const seconds = lengthBeats * 60 / bpm
     return {
       ...clip, startBeat: start, lengthBeats,
+      ...loop,
       offsetSeconds: Math.max(0, clip.offsetSeconds + delta * 60 / bpm),
       fadeIn: Math.min(clip.fadeIn, seconds), fadeOut: Math.min(clip.fadeOut, seconds),
     }
   }
-  const notes: MidiNote[] = []
-  for (const value of clip.notes) {
-    const shifted = value.start - delta
-    const noteEnd = shifted + value.duration
-    if (noteEnd <= EPSILON) continue
-    notes.push(shifted >= 0 ? { ...value, start: shifted } : { ...value, start: 0, duration: noteEnd })
-  }
-  return { ...clip, startBeat: start, lengthBeats, notes }
+  const offset = midiSourceOffset(clip) + delta
+  const { sourceOffsetBeats: _offset, ...source } = clip
+  return { ...source, startBeat: start, lengthBeats, ...loop,
+    ...(offset > 0 ? { sourceOffsetBeats: offset } : {}),
+    notes: offset < 0 ? clip.notes.map(value => ({ ...value, start: value.start - offset })) : clip.notes }
 }
 
 /** Moves the right edge. `maxLengthBeats` lets callers clamp audio to the source length. */
 export function trimClipEnd(clip: Clip, newEndBeat: number, maxLengthBeats = Infinity): Clip {
   if (!Number.isFinite(newEndBeat)) throw new Error('Trim position must be a finite number.')
   const lengthBeats = Math.max(MIN_CLIP_BEATS, Math.min(maxLengthBeats, newEndBeat - clip.startBeat))
-  return Math.abs(lengthBeats - clip.lengthBeats) < EPSILON ? clip : { ...clip, lengthBeats }
+  return Math.abs(lengthBeats - clip.lengthBeats) < EPSILON ? clip : { ...clip, lengthBeats,
+    ...(clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(lengthBeats, clip.loopLengthBeats) }) }
+}
+
+/** Set a manual repeat endpoint in absolute project beats. Dragging back to the source end turns looping off. */
+export function setClipLoopEnd(clip: Clip, endBeat: number): Clip {
+  if (!Number.isFinite(endBeat)) throw new Error('Loop end must be a finite number.')
+  const span = endBeat - clip.startBeat
+  if (span <= clip.lengthBeats + EPSILON) {
+    const { loopLengthBeats: _span, ...base } = clip
+    return { ...base, loop: false }
+  }
+  if (span > 10_000_000) throw new Error('Loop length exceeds the project position limit.')
+  return clip.loop && clip.loopLengthBeats === span ? clip : { ...clip, loop: true, loopLengthBeats: span }
 }
 
 export function moveClipToPlayhead(clip: Clip, beat: number): Clip {
@@ -324,7 +321,9 @@ export function joinClips(clips: Clip[], bpm: number): Clip | null {
   const endBeat = Math.max(...sorted.map(clip => clip.startBeat + clip.lengthBeats))
   if (first.kind === 'midi') {
     const notes = (sorted as MidiClip[]).flatMap(clip => cropNotesToClip(clip).notes.map(value => ({ ...value, start: value.start + clip.startBeat - startBeat })))
-    return { ...first, startBeat, lengthBeats: endBeat - startBeat, notes }
+    const { sourceOffsetBeats: _offset, ...base } = first
+    return { ...base, startBeat, lengthBeats: endBeat - startBeat, notes,
+      ...(first.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(endBeat - startBeat, first.loopLengthBeats) }) }
   }
   const audio = sorted as Extract<Clip, { kind: 'audio' }>[]
   let reach = first.startBeat + first.lengthBeats
@@ -336,7 +335,8 @@ export function joinClips(clips: Clip[], bpm: number): Clip | null {
     reach = Math.max(reach, clip.startBeat + clip.lengthBeats)
   }
   const last = audio.reduce((a, b) => (b.startBeat + b.lengthBeats >= a.startBeat + a.lengthBeats ? b : a))
-  return { ...first, lengthBeats: endBeat - startBeat, fadeOut: last.fadeOut }
+  return { ...first, lengthBeats: endBeat - startBeat, fadeOut: last.fadeOut,
+    ...(first.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(endBeat - startBeat, first.loopLengthBeats) }) }
 }
 
 /** A deep copy with new track, clip, note and device IDs; audio assets stay shared. */
@@ -366,9 +366,9 @@ export function duplicateTrackSettings(track: Track): Track {
   }
 }
 
-/** Grows the project to the bar after the last clip end; never shrinks it. */
+/** Grows to the last source/manual-loop end; continuous loops never grow the project. */
 export function fitProjectLength(project: Project): Project {
-  const end = Math.max(0, ...project.tracks.flatMap(track => track.clips.map(clip => clip.startBeat + clip.lengthBeats)))
+  const end = Math.max(0, ...project.tracks.flatMap(track => track.clips.map(clip => clip.startBeat + (clip.loop ? clip.loopLengthBeats ?? clip.lengthBeats : clip.lengthBeats))))
   const lengthBeats = Math.max(project.lengthBeats, Math.ceil(end / project.beatsPerBar) * project.beatsPerBar)
   return lengthBeats === project.lengthBeats ? project : { ...project, lengthBeats }
 }
@@ -593,7 +593,7 @@ function params(value: unknown, defs: readonly ParamDef[], path: string): Record
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3) throw new Error('This project version is not supported. Expected schema version 1, 2 or 3.')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new Error('This project version is not supported. Expected schema version 1, 2, 3 or 4.')
   if (source.beatsPerBar !== 4) throw new Error('This version supports projects in 4/4 time.')
   const seen = new Set<string>()
   const id = (value: unknown, path: string): string => {
@@ -656,6 +656,9 @@ export function validateProject(input: unknown): Project {
       if (clipCount > 100_000) throw new Error('The project contains too many clips.')
       const clipPath = `${path}, clip ${clipIndex + 1}`
       const clip = object(clipInput, clipPath)
+      if (version !== 4 && (clip.loopLengthBeats !== undefined || (clip.kind === 'midi' && clip.sourceOffsetBeats !== undefined))) {
+        throw new Error('Recoverable MIDI sources and bounded region loops require project schema version 4.')
+      }
       const startBeat = number(clip.startBeat, `${clipPath} start`, 0, 10_000_000)
       const clipLength = number(clip.lengthBeats, `${clipPath} length`, 0.000001, 10_000_000)
       const base = {
@@ -666,10 +669,11 @@ export function validateProject(input: unknown): Project {
         gain: number(clip.gain, `${clipPath} gain`, 0, 2),
         ...(clip.mute === undefined ? {} : { mute: flag(clip.mute, `${clipPath} mute`) }),
         ...(clip.loop === undefined ? {} : { loop: flag(clip.loop, `${clipPath} loop`) }),
+        ...(clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: number(clip.loopLengthBeats, `${clipPath} loop length`, clipLength, 10_000_000) }),
         ...(clip.delayTicks === undefined ? {} : { delayTicks: integer(clip.delayTicks, `${clipPath} delay`, -1920, 1920) }),
       }
       if (clip.kind === 'audio') {
-        if (clip.pitch !== undefined && version !== 3) throw new Error('Pitch editing requires project schema version 3.')
+        if (clip.pitch !== undefined && version !== 3 && version !== 4) throw new Error('Pitch editing requires project schema version 3 or later.')
         const pitch = clip.pitch === undefined ? undefined : validatePitchDocument(clip.pitch)
         const changed = pitch && hasPitchAudioEdits(pitch)
         if (pitch && changed && clip.assetId === pitch.sourceAssetId) throw new Error(`${clipPath} is missing its pitch render.`)
@@ -688,6 +692,7 @@ export function validateProject(input: unknown): Project {
       return {
         ...base,
         kind: 'midi',
+        ...(clip.sourceOffsetBeats === undefined ? {} : { sourceOffsetBeats: number(clip.sourceOffsetBeats, `${clipPath} MIDI source offset`, 0, 10_000_000) }),
         ...(clip.quantize === undefined ? {} : { quantize: quantize(clip.quantize, `${clipPath} quantize`) }),
         ...(clip.swing === undefined ? {} : { swing: number(clip.swing, `${clipPath} swing`, 0, 100) }),
         ...(clip.transpose === undefined ? {} : { transpose: integer(clip.transpose, `${clipPath} transpose`, -96, 96) }),
@@ -745,7 +750,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

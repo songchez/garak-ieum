@@ -27,7 +27,8 @@ export interface DawHostOptions {
 
 const units = {
   pitch: 'MIDI integer 0..127; displayed middle C is C3=60',
-  position: 'clip startBeat is absolute, note start is relative to its clip; zero-based quarter-note beats',
+  position: 'Zero-based quarter-note beats. clip startBeat is absolute; stored note start is source-relative. Region-local note start = note.start - (clip.sourceOffsetBeats ?? 0); new MIDI clips use offset 0.',
+  regionLoop: 'loop=true repeats the visible source window; loopLengthBeats optionally bounds the total span from startBeat. The next region or project end can stop repeats sooner. Missing loopLengthBeats means continuous.',
   meter: '4/4 only; user bar 1 starts at beat 0',
   noteVelocity: '0..1 normalized; distinct from MIDI-unit region/track velocity offsets',
   volume: 'track volume is linear gain 0..2; volumeDb uses 20*log10(gain), null means silence',

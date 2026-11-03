@@ -17,9 +17,9 @@ export interface SessionChange {
   revision: number
   operationId?: string
 }
-export interface ProjectSessionSnapshot { history: ProjectHistory; revision: number; lastChange?: SessionChange }
+export interface ProjectSessionSnapshot { history: ProjectHistory; revision: number; undoLabel: string | null; redoLabel: string | null; lastChange?: SessionChange }
 export type SessionAction =
-  | { type: 'edit'; edit: (project: Project) => Project; merge: boolean }
+  | { type: 'edit'; edit: (project: Project) => Project; merge: boolean; label?: string }
   | { type: 'live'; edit: (project: Project) => Project }
   | { type: 'undo' }
   | { type: 'redo' }
@@ -295,42 +295,82 @@ export class ProjectSession {
   private readonly listeners = new Set<() => void>()
   private readonly operations = new Map<string, CachedResponse>()
   private lastEdit = { key: '', time: 0 }
+  private pastLabels: string[] = []
+  private futureLabels: string[] = []
+  private gesture: { id: string; label?: string; changed: boolean; base: ProjectHistory; pastLabels: string[]; futureLabels: string[] } | null = null
 
   constructor(project: Project) {
-    this.snapshot = { history: { past: [], present: validateProject(project), future: [] }, revision: 0 }
+    this.snapshot = { history: { past: [], present: validateProject(project), future: [] }, revision: 0, undoLabel: null, redoLabel: null }
   }
   readonly getSnapshot = (): ProjectSessionSnapshot => this.snapshot
   readonly subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
-  readonly breakMerge = (): void => { this.lastEdit = { key: '', time: 0 } }
+  readonly breakMerge = (): void => { this.lastEdit = { key: '', time: 0 }; this.gesture = null }
+  /** A pointer drag or held adjustment key is one edit, even when it pauses. */
+  readonly beginGesture = (id: string, label?: string): void => {
+    if (this.gesture?.id === id) return
+    this.breakMerge()
+    this.gesture = { id, label, changed: false, base: this.snapshot.history, pastLabels: this.pastLabels, futureLabels: this.futureLabels }
+  }
+  readonly endGesture = (id: string): void => { if (this.gesture?.id === id) this.breakMerge() }
+  /** Cancel only this gesture; external edits terminate it before they publish. */
+  readonly cancelGesture = (id: string): void => {
+    const gesture = this.gesture
+    if (!gesture || gesture.id !== id) return
+    this.breakMerge()
+    if (!gesture.changed) return
+    this.pastLabels = gesture.pastLabels; this.futureLabels = gesture.futureLabels
+    const present = carryLiveState(this.snapshot.history.present, gesture.base.present)
+    this.publish({ ...gesture.base, present }, { source: 'ui', label: `${gesture.label ?? '편집'} 취소`, summary: '진행 중인 조절을 취소했습니다.' })
+  }
+  readonly isGestureActive = (): boolean => this.gesture !== null
 
   private publish(history: ProjectHistory, change: Omit<SessionChange, 'revision'>): void {
     const revision = this.snapshot.revision + 1
-    this.snapshot = { history, revision, lastChange: { ...change, revision } }
+    this.snapshot = { history, revision, undoLabel: this.pastLabels.at(-1) ?? null, redoLabel: this.futureLabels[0] ?? null, lastChange: { ...change, revision } }
     for (const listener of [...this.listeners]) listener()
   }
-  private edited(next: Project, merge: boolean): ProjectHistory {
+  private edited(next: Project, merge: boolean, label: string): ProjectHistory {
     const { history } = this.snapshot
+    merge = merge && history.past.length > 0
+    if (!merge) this.pastLabels = [...this.pastLabels.slice(-49), label]
+    this.futureLabels = []
     return { past: merge ? history.past : [...history.past.slice(-49), history.present], present: next, future: [] }
   }
-  readonly edit = (edit: (project: Project) => Project, key = ''): void => {
+  private historyTransition(action: 'undo' | 'redo'): ProjectHistory {
+    const history = transition(this.snapshot.history, action)
+    if (history === this.snapshot.history) return history
+    if (action === 'undo') {
+      this.futureLabels = [this.pastLabels.at(-1) ?? '프로젝트 편집', ...this.futureLabels]
+      this.pastLabels = this.pastLabels.slice(0, -1)
+    } else {
+      this.pastLabels = [...this.pastLabels.slice(-49), this.futureLabels[0] ?? '프로젝트 편집']
+      this.futureLabels = this.futureLabels.slice(1)
+    }
+    return history
+  }
+  readonly edit = (edit: (project: Project) => Project, key = '', label = '프로젝트 편집'): void => {
     const current = this.snapshot.history.present
     const next = edit(current)
+    if (next === current) return
     const now = performance.now()
-    const merge = !!key && this.lastEdit.key === key && now - this.lastEdit.time < 450
+    const merge = this.gesture ? this.gesture.changed : !!key && this.lastEdit.key === key && now - this.lastEdit.time < 450
+    label = this.gesture?.label ?? label
+    if (this.gesture) this.gesture.changed = true
     this.lastEdit = { key, time: now }
-    if (next !== current) this.publish(this.edited(next, merge), { source: 'ui', label: '화면 편집', summary: '화면에서 프로젝트를 수정했습니다.' })
+    this.publish(this.edited(next, merge, label), { source: 'ui', label, summary: `${label}을(를) 적용했습니다.` })
   }
   readonly dispatch = (action: SessionAction): void => {
     const { history } = this.snapshot
     if (action.type === 'reset') {
       const project = validateProject(action.project)
       this.operations.clear(); this.breakMerge()
+      this.pastLabels = []; this.futureLabels = []
       this.publish({ past: [], present: carryLiveState(history.present, project), future: [] }, { source: 'reset', label: '프로젝트 열기', summary: '프로젝트를 열었습니다.' })
       return
     }
     if (action.type === 'undo' || action.type === 'redo') {
       this.breakMerge()
-      const next = transition(history, action.type)
+      const next = this.historyTransition(action.type)
       if (next !== history) this.publish(next, { source: 'history', label: action.type === 'undo' ? '실행 취소' : '다시 실행', summary: action.type === 'undo' ? '프로젝트 편집을 실행 취소했습니다.' : '프로젝트 편집을 다시 실행했습니다.' })
       return
     }
@@ -338,9 +378,16 @@ export class ProjectSession {
     if (next === history.present) return
     if (action.type === 'live') {
       // Do not add an undo item, but a live change invalidates outstanding external edits.
-      this.breakMerge()
+      // A held control still owns its gesture; cancellation carries these live
+      // arm/monitor flags onto the restored project instead of rolling them back.
+      this.lastEdit = { key: '', time: 0 }
       this.publish({ ...history, present: next }, { source: 'ui', label: '라이브 상태', summary: '녹음 대기 또는 모니터링 상태를 변경했습니다.' })
-    } else this.publish(this.edited(next, action.merge), { source: 'ui', label: '화면 편집', summary: '화면에서 프로젝트를 수정했습니다.' })
+    } else {
+      const label = this.gesture?.label ?? action.label ?? '프로젝트 편집'
+      const merge = this.gesture ? this.gesture.changed : action.merge
+      if (this.gesture) this.gesture.changed = true
+      this.publish(this.edited(next, merge, label), { source: 'ui', label, summary: `${label}을(를) 적용했습니다.` })
+    }
   }
 
   private assertProject(request: RequestIdentity): void {
@@ -384,7 +431,7 @@ export class ProjectSession {
     this.breakMerge()
     // Remember before notifying subscribers, so an immediate retry cannot apply twice.
     this.remember(request.operationId, fingerprint, result)
-    if (changed) this.publish(this.edited(planned.project, false), { source: 'mcp', label: planned.changes.label, summary, operationId: request.operationId })
+    if (changed) this.publish(this.edited(planned.project, false, planned.changes.label), { source: 'mcp', label: planned.changes.label, summary, operationId: request.operationId })
     return result
   }
   readonly history = (input: unknown): HistoryResponse => {
@@ -392,7 +439,7 @@ export class ProjectSession {
     const cached = this.cached(request, fingerprint)
     if (cached) return cached as HistoryResponse
     this.assertRevision(request)
-    const history = transition(this.snapshot.history, request.action), changed = history !== this.snapshot.history
+    const history = this.historyTransition(request.action), changed = history !== this.snapshot.history
     const label = request.action === 'undo' ? '실행 취소' : '다시 실행'
     const summary = changed ? `${label}를 완료했습니다.` : `${label}할 편집 이력이 없습니다.`
     const result: HistoryResponse = { projectId: request.projectId, revision: this.snapshot.revision + (changed ? 1 : 0), operationId: request.operationId, action: request.action, changed, summary }

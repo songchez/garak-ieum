@@ -67,7 +67,7 @@ flowchart TD
 | [`src/components/PianoRoll.tsx`](../src/components/PianoRoll.tsx) | 음표·세기 편집, 음표 단위 단축키, 미리듣기 요청 |
 | [`src/components/Mixer.tsx`](../src/components/Mixer.tsx) | 트랙·마스터 믹서 조작 |
 | [`src/components/DeviceChain.tsx`](../src/components/DeviceChain.tsx) | 공통 디바이스 카드·노브, 악기 선택, 이펙트 추가·삭제·순서·바이패스 조작 |
-| [`src/components/Waveform.tsx`](../src/components/Waveform.tsx) | 미리 계산한 피크를 이용하는 파형 표시 |
+| [`src/components/Waveform.tsx`](../src/components/Waveform.tsx), [`src/core/waveform.ts`](../src/core/waveform.ts) | 원본 구간에 맞춘 파형 표시. 확대 수준과 처리량에 따라 캐시 피크 또는 실제 PCM 사용 |
 | [`src/components/AudioSettingsDialog.tsx`](../src/components/AudioSettingsDialog.tsx), [`src/components/useAudioDevices.ts`](../src/components/useAudioDevices.ts) | 장치·녹음·프로젝트·진단 설정 초안, 적용/취소 UI, 수동 권한·장치 목록·테스트 연결 |
 
 ## 3. 프로젝트 모델과 편집
@@ -79,7 +79,9 @@ flowchart TD
 | `Project.sampleRate` | 실시간 엔진·WAV 출력 처리율(Hz). 44100/48000/88200/96000/176400/192000, 새 프로젝트·누락된 구버전 필드의 기본값은 48000 |
 | `Clip.startBeat` | 프로젝트 시작을 기준으로 한 박 위치 |
 | `Clip.lengthBeats` | 클립의 박 단위 길이 |
-| `MidiNote.start` | 해당 클립 시작을 기준으로 한 박 위치 |
+| `MidiNote.start` | MIDI 원본 소스 안의 박 위치. 리전 안의 표시 위치는 `start - (sourceOffsetBeats ?? 0)` |
+| `MidiClip.sourceOffsetBeats` | MIDI 원본 소스에서 표시·재생을 시작하는 박 위치; 생략 시 0 |
+| `ClipBase.loopLengthBeats` | 리전 시작부터 수동 반복 끝까지의 전체 박 길이; 생략 시 연속 반복 |
 | `MidiNote.duration` | 박 단위 음표 길이 |
 | `MidiNote.pitch` | MIDI 음높이 번호 |
 | `MidiNote.velocity` | 0~1 범위의 세기; 피아노롤은 1~127 값으로 표시 |
@@ -93,13 +95,15 @@ flowchart TD
 | `Device.type`, `enabled` | 내장 이펙트 종류와 활성/바이패스 상태 |
 | `Device.params` | `EFFECT_DEFS`에 정의한 파라미터의 원래 단위 값; Hz·dB·초·밀리초·배율 등 |
 
-오디오 클립 분할은 원본 파일을 수정하지 않고 새 클립의 시작 위치·길이·원본 오프셋을 계산합니다. MIDI 클립 분할은 클립 경계를 가로지르는 노트를 나누고 오른쪽 노트의 시작 위치를 새 클립 기준으로 다시 계산합니다.
+오디오 클립 분할은 원본 파일을 수정하지 않고 새 클립의 시작 위치·길이·원본 오프셋을 계산합니다. MIDI 리전은 원본 음표를 유지하고 `sourceOffsetBeats`와 `lengthBeats`로 표시·재생 범위를 정합니다. 분할한 오른쪽은 독립된 음표 ID와 소스 오프셋을 가지며 양쪽 모두 다시 늘릴 수 있습니다. 피아노롤은 `midiEditorClip`의 보이는 구간을 편집한 뒤 `applyMidiNoteEdits`로 원본에 병합하므로 숨은 음표와 변경하지 않은 앞뒤 길이를 보존합니다. 합치기는 보이는 구간을 새 소스로 만듭니다.
 
-현재 프로젝트 스키마는 **3**입니다. 스키마 2의 `Track.devices`와 함께 선택적인 `AudioClip.pitch`를 저장합니다. 스키마 1·2는 3으로 정규화하며, 1의 `track.effects.filter/reverb/delay`는 디바이스 배열로 변환합니다. `.garak` 바깥 번들 버전은 기존 1을 유지합니다.
+현재 프로젝트 스키마는 **4**입니다. 기존 디바이스·피치 문서와 함께 `MidiClip.sourceOffsetBeats`, `ClipBase.loopLengthBeats`를 저장합니다. 스키마 1·2·3은 4로 정규화하며, 1의 `track.effects.filter/reverb/delay`는 디바이스 배열로 변환합니다. `.garak` 바깥 번들 버전은 기존 1을 유지합니다. 새 필드를 모르는 구버전 앱은 스키마 검사에서 거절하므로 리전 소스 위치를 조용히 잘못 해석하지 않습니다.
+
+`loopLengthBeats`는 리전 시작부터의 전체 반복 범위이며 이동·복제 시 함께 이동합니다. 값이 없으면 기존 연속 루프입니다. 재생·고스트 표시·미리보기는 수동 끝/다음 리전/프로젝트 끝 중 가장 이른 위치를 공유하고, 마지막 일부 반복도 같은 규칙으로 자릅니다. 원본 리전 자체는 반복 경계보다 짧게 자르지 않습니다. 파형은 오디오 소스의 `offsetSeconds`·길이를 사용하며, 가까운 확대에서는 읽기 비용 한도 안에서 실제 샘플을 표시합니다.
 
 포먼트 확장은 프로젝트 스키마를 올리지 않고 **내부 피치 문서 버전 2**로 구분합니다. `preserveFormants: boolean`과 음표 ID별 `formantShifts` 맵을 필수로 저장하며, `analysis.version`은 1입니다. v1 문서는 보존 꺼짐·빈 포먼트 맵으로 이전하고 기존 `rendererId`, 피치 이동값, 원본과 렌더 자산을 유지합니다. 이 마이그레이션은 오디오를 다시 만들지 않습니다. v1이라고 선언하면서 새 포먼트 필드를 담은 문서는 거부합니다. v2를 모르는 구버전 앱은 내부 문서 버전 검사에서 거부하므로 새 편집을 조용히 버리지 않습니다.
 
-Undo/Redo는 `ProjectSession`의 프로젝트 스냅숏 이력으로 처리합니다. 일반 편집 시 과거 스냅숏을 최대 50개 유지하고, 같은 조절기의 연속 입력은 450ms 안에서 합칩니다. 피아노롤과 타임라인의 포인터 이동은 임시 화면 상태로 표시한 뒤 드래그 종료 시 프로젝트에 반영합니다. 이력은 현재 앱 세션의 메모리에 있으며 `.garak`이나 IndexedDB에 함께 저장하지 않습니다.
+Undo/Redo는 `ProjectSession`의 프로젝트 스냅숏 이력으로 처리합니다. 일반 편집 시 과거 스냅숏을 최대 50개 유지하고 각 단계의 작업명으로 `undoLabel`/`redoLabel`을 제공합니다. 페이더·팬·노브·네이티브 슬라이더는 명시적인 제스처 시작/끝으로 묶어 드래그 중 멈춰도 한 Undo이며, 별도 드래그는 빠르게 이어도 구분합니다. 제스처를 취소하거나 시작 값으로 되돌아오면 이전 Undo/Redo와 작업명을 복원합니다. 제스처가 없는 연속 입력만 기존 450ms 병합을 사용합니다. 피아노롤과 타임라인의 포인터 이동은 임시 화면 상태로 표시한 뒤 드래그 종료 시 프로젝트에 반영합니다. 이력은 현재 앱 세션의 메모리에 있으며 `.garak`이나 IndexedDB에 함께 저장하지 않습니다.
 
 MCP 편집은 `projectId`·`expectedRevision`·`operationId`와 명시적인 명령 배열을 받습니다. 모든 명령을 검증한 뒤 Undo 하나로 적용하고, UI 입력과 병합하지 않습니다. 성공 요청은 최근 256개를 세션 안에서 기억하며 동일 요청 재시도는 원래 결과를 반환합니다. 프로젝트를 다시 열면 캐시를 비우고 revision을 증가시킵니다. 조회 결과의 revision과 원래 요청 결과의 revision을 구분하고, 저장 완료는 별도 `persistence`로 확인합니다. 자세한 수명·범위는 [MCP 연결 안내](MCP.md)에 있습니다.
 
@@ -109,7 +113,7 @@ MCP 편집은 `projectId`·`expectedRevision`·`operationId`와 명시적인 명
 
 일반 편집 명령은 `input.ts`의 포커스 범위와 수정키 규칙을 따릅니다. Space 재생 명령은 `transportShortcuts.ts`가 `window`의 capture 단계에서 먼저 처리합니다. 일반 화면의 버튼·드롭다운·체크박스·라디오·숫자 입력·슬라이더/노브·팝오버/메뉴·body에서도 Space는 재생/일시 정지, Shift+Space는 선택 리전부터 재생입니다. 편집 가능한 텍스트 입력·textarea·contenteditable·IME 조합과 열린 모달은 기존 입력을 우선합니다.
 
-재생 명령이 소유한 Space는 누름 상태를 React 렌더 사이에도 유지하여 길게 누른 반복과 대응하는 keyup을 소비합니다. 이로써 기본 스크롤이나 버튼의 keyup 활성화가 함께 발생하지 않게 합니다. 일반 버튼과 메뉴는 Enter를 사용하고, 일반 화면의 네이티브 체크박스·라디오에는 Enter 활성화를 제공합니다. 다른 편집 단축키나 방향키의 포커스 범위는 넓히지 않습니다. 상세 키맵과 검증 범위는 [단축키](SHORTCUTS.md)를 따릅니다.
+재생 명령이 소유한 Space는 누름 상태를 React 렌더 사이에도 유지하여 길게 누른 반복과 대응하는 keyup을 소비합니다. 이로써 기본 스크롤이나 버튼의 keyup 활성화가 함께 발생하지 않게 합니다. 일반 버튼과 메뉴는 Enter를 사용하고, 일반 화면의 네이티브 체크박스·라디오에는 Enter 활성화를 제공합니다. 일반 컨트롤의 Enter·방향키 등은 유지하고, 나머지 앱 명령은 마지막 활성 편집기로 전달합니다. 접힌 편집기는 타임라인으로 돌아갑니다. 피아노롤 스냅은 피아노롤 명령 핸들로 전달합니다. 상세 키맵과 검증 범위는 [단축키](SHORTCUTS.md)를 따릅니다.
 
 ## 4. 오디오 엔진의 실제 범위
 
@@ -228,7 +232,7 @@ Dry/wet 분기는 **각 이펙트 내부**에 있습니다. 드라이브는 원�
 {
   "format": "noct-studio",
   "schemaVersion": 1,
-  "project": { "schemaVersion": 3, "sampleRate": 48000 },
+  "project": { "schemaVersion": 4, "sampleRate": 48000 },
   "assets": [
     {
       "id": "asset-id",

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { formatParam, fromNormalized, toNormalized, type ParamDef } from '../core/devices'
+import { useHistoryGesture } from '../core/historyGesture'
 
 const SWEEP=135
 const point=(c:number,r:number,deg:number)=>{const a=deg*Math.PI/180;return [c+r*Math.sin(a),c-r*Math.cos(a)]}
@@ -11,7 +12,9 @@ export function Knob({def,value,onChange,color='var(--accent)',size=38}:{def:Par
   const latest=useRef({def,value,onChange})
   latest.current={def,value,onChange}
   const cancelDrag=useRef<(()=>void)|null>(null)
-  const set=(next:number)=>{const l=latest.current;const v=Math.min(l.def.max,Math.max(l.def.min,next));if(v!==l.value)l.onChange(v)}
+  const gesture=useHistoryGesture(`${def.label} 조절`)
+  const gestureRef=useRef(gesture);gestureRef.current=gesture
+  const set=(next:number)=>{const l=latest.current;const v=Math.min(l.def.max,Math.max(l.def.min,next));if(v!==l.value){l.value=v;l.onChange(v)}}
   const step=(direction:number,amount:number)=>{const {def:d,value:v}=latest.current;if(d.options){const index=Math.max(0,d.options.findIndex(o=>o.value===v));set(d.options[Math.max(0,Math.min(d.options.length-1,index+direction))].value)}else set(fromNormalized(d,toNormalized(d,v)+direction*amount))}
   useEffect(()=>{
     const el=ref.current;if(!el)return
@@ -23,7 +26,8 @@ export function Knob({def,value,onChange,color='var(--accent)',size=38}:{def:Par
   function startDrag(e:React.PointerEvent<HTMLDivElement>){
     if(e.button!==0)return
     e.preventDefault();cancelDrag.current?.()
-    if(e.altKey){set(latest.current.def.default);return}
+    gestureRef.current.begin()
+    if(e.altKey){set(latest.current.def.default);gestureRef.current.end();return}
     const el=e.currentTarget,pointerId=e.pointerId,startValue=latest.current.value
     el.focus({preventScroll:true})
     let normalized=toNormalized(latest.current.def,startValue),lastY=e.clientY,active=true
@@ -36,7 +40,9 @@ export function Knob({def,value,onChange,color='var(--accent)',size=38}:{def:Par
       window.removeEventListener('keydown',key,true);window.removeEventListener('blur',blur)
       el.removeEventListener('lostpointercapture',lost);delete el.dataset.dawGesture
       if(el.hasPointerCapture(pointerId))el.releasePointerCapture(pointerId)
+      const cancelled=restore||Math.abs(latest.current.value-startValue)<1e-9
       if(restore)set(startValue)
+      if(cancelled)gestureRef.current.cancel();else gestureRef.current.end()
     }
     const up=(event:PointerEvent)=>{if(event.pointerId===pointerId)finish(false)}
     const cancelPointer=(event:PointerEvent)=>{if(event.pointerId===pointerId)finish(false)}
@@ -50,6 +56,9 @@ export function Knob({def,value,onChange,color='var(--accent)',size=38}:{def:Par
     try{el.setPointerCapture(pointerId)}catch{/* window listeners still finish the drag */}
   }
   function keyDown(e:React.KeyboardEvent){
+    if(e.ctrlKey||e.metaKey||e.altKey||e.nativeEvent.isComposing)return
+    if(!['ArrowUp','ArrowRight','ArrowDown','ArrowLeft','PageUp','PageDown','Home','End'].includes(e.key))return
+    gestureRef.current.begin()
     const fine=e.shiftKey
     switch(e.key){
       case 'ArrowUp':case 'ArrowRight':step(1,fine?.1:.01);break
@@ -62,11 +71,12 @@ export function Knob({def,value,onChange,color='var(--accent)',size=38}:{def:Par
     }
     e.preventDefault();e.stopPropagation()
   }
+  function keyUp(e:React.KeyboardEvent){if(['ArrowUp','ArrowRight','ArrowDown','ArrowLeft','PageUp','PageDown','Home','End'].includes(e.key)){e.stopPropagation();gestureRef.current.end()}}
   const c=20,r=15,n=toNormalized(def,value),angle=angleOf(n)
   const origin=def.min<0&&def.max>0&&!def.options?angleOf(toNormalized(def,0)):-SWEEP
   const [px,py]=point(c,r-3,angle),[ix,iy]=point(c,6,angle)
   const text=formatParam(def,value)
-  return <div ref={ref} className="knob" role="slider" tabIndex={0} aria-label={def.label} aria-valuemin={def.min} aria-valuemax={def.max} aria-valuenow={value} aria-valuetext={text} title={`${def.label} · ${text} (더블 클릭·⌥클릭: 기본값)`} onPointerDown={startDrag} onKeyDown={keyDown} onDoubleClick={()=>set(def.default)} style={{'--knob-size':`${size}px`} as React.CSSProperties}>
+  return <div ref={ref} className="knob" role="slider" tabIndex={0} aria-label={def.label} aria-valuemin={def.min} aria-valuemax={def.max} aria-valuenow={value} aria-valuetext={text} title={`${def.label} · ${text} (더블 클릭·⌥클릭: 기본값)`} onPointerDown={startDrag} onKeyDown={keyDown} onKeyUp={keyUp} onBlur={()=>{if(!cancelDrag.current)gestureRef.current.end()}} onDoubleClick={()=>{gestureRef.current.begin();set(def.default);gestureRef.current.end()}} style={{'--knob-size':`${size}px`} as React.CSSProperties}>
     <svg width={size} height={size} viewBox="0 0 40 40" aria-hidden="true"><circle cx={c} cy={c} r={11} className="knob-cap"/><path d={arc(c,r,-SWEEP,SWEEP)} className="knob-track"/><path d={arc(c,r,origin,angle)} className="knob-value" style={{stroke:color}}/><line x1={ix} y1={iy} x2={px} y2={py} className="knob-pointer"/></svg>
     <span className="knob-readout">{text}</span>
     <span className="knob-label">{def.label}</span>

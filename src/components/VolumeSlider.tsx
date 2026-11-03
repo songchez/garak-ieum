@@ -1,6 +1,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react'
 import type { AudioEngine } from '../core/types'
 import { getThemeSnapshot, subscribeTheme } from '../core/theme'
+import { useHistoryGesture } from '../core/historyGesture'
 import './TrackHeader.css'
 
 export const VOLUME_MAX = 1.5
@@ -23,11 +24,13 @@ export function VolumeSlider({ value, onChange, orientation, meter, ariaLabel = 
   latest.current = { value, onChange, disabled }
   const cancelDrag = useRef<(() => void) | null>(null)
   const vertical = orientation === 'vertical'
+  const gesture = useHistoryGesture('볼륨 조절')
+  const gestureRef = useRef(gesture); gestureRef.current = gesture
 
   const set = (next: number, final: boolean) => {
     const l = latest.current
     const v = Math.min(VOLUME_MAX, Math.max(0, next))
-    if (v !== l.value || final) l.onChange(v, final)
+    if (v !== l.value || final) { l.value = v; l.onChange(v, final) }
   }
   const step = (direction: number, amount: number, final: boolean) => set(posToGain(gainToPos(latest.current.value) + direction * amount), final)
 
@@ -70,7 +73,8 @@ export function VolumeSlider({ value, onChange, orientation, meter, ariaLabel = 
     e.preventDefault(); cancelDrag.current?.()
     const el = e.currentTarget, pointerId = e.pointerId, startValue = latest.current.value
     el.focus({ preventScroll: true })
-    if (e.altKey) { set(1, true); return }
+    gestureRef.current.begin()
+    if (e.altKey) { set(1, true); gestureRef.current.end(); return }
     const rect = el.getBoundingClientRect(), span = Math.max(24, vertical ? rect.height : rect.width)
     let pos = gainToPos(startValue), lastX = e.clientX, lastY = e.clientY, active = true
     el.dataset.dawGesture = 'fader'
@@ -88,7 +92,9 @@ export function VolumeSlider({ value, onChange, orientation, meter, ariaLabel = 
       window.removeEventListener('keydown', key, true); window.removeEventListener('blur', blur)
       el.removeEventListener('lostpointercapture', lost); delete el.dataset.dawGesture
       if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId)
+      const cancelled = restore || Math.abs(latest.current.value - startValue) < 1e-9
       set(restore ? startValue : latest.current.value, true)
+      if (cancelled) gestureRef.current.cancel(); else gestureRef.current.end()
     }
     const up = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(false) }
     const cancelPointer = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(false) }
@@ -104,6 +110,9 @@ export function VolumeSlider({ value, onChange, orientation, meter, ariaLabel = 
 
   function keyDown(e: React.KeyboardEvent) {
     if (latest.current.disabled) return
+    if (e.ctrlKey || e.metaKey || e.altKey || e.nativeEvent.isComposing) return
+    if (!['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft', 'PageUp', 'PageDown', 'Home', 'End', '0'].includes(e.key)) return
+    gestureRef.current.begin()
     const fine = e.shiftKey
     switch (e.key) {
       case 'ArrowUp': case 'ArrowRight': step(1, fine ? .1 : .01, false); break
@@ -118,12 +127,12 @@ export function VolumeSlider({ value, onChange, orientation, meter, ariaLabel = 
     e.preventDefault(); e.stopPropagation()
   }
   function keyUp(e: React.KeyboardEvent) {
-    if (['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft', 'PageUp', 'PageDown', 'Home', 'End', '0'].includes(e.key)) { e.stopPropagation(); set(latest.current.value, true) }
+    if (['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft', 'PageUp', 'PageDown', 'Home', 'End', '0'].includes(e.key)) { e.stopPropagation(); set(latest.current.value, true); gestureRef.current.end() }
   }
 
   const pos = gainToPos(value) * 100, text = `${gainToDb(value)} dB`
   return <div ref={ref} className={`volume-slider volume-slider--${orientation}${disabled ? ' disabled' : ''}`} role="slider" tabIndex={disabled ? -1 : 0} aria-label={ariaLabel} aria-valuemin={0} aria-valuemax={VOLUME_MAX} aria-valuenow={value} aria-valuetext={text} aria-disabled={disabled || undefined}
-    title={`${ariaLabel} · ${text} (⌥클릭: 0 dB · ⇧드래그: 미세 조절)`} onPointerDown={startDrag} onKeyDown={keyDown} onKeyUp={keyUp} onDoubleClick={e => e.stopPropagation()}>
+    title={`${ariaLabel} · ${text} (⌥클릭: 0 dB · ⇧드래그: 미세 조절)`} onPointerDown={startDrag} onKeyDown={keyDown} onKeyUp={keyUp} onBlur={() => { if (!cancelDrag.current) gestureRef.current.end() }} onDoubleClick={e => e.stopPropagation()}>
     <div className="volume-track"><canvas ref={canvas} className="volume-meter" aria-hidden="true"/><i className="volume-unity" style={{ [vertical ? 'bottom' : 'left']: `${UNITY * 100}%` }}/><i className="volume-thumb" style={{ [vertical ? 'bottom' : 'left']: `${pos}%` }}/></div>
     <span className="volume-readout">{gainToDb(value)}</span>
   </div>

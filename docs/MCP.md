@@ -154,7 +154,7 @@ AI 연결 창의 **닫기**는 창만 닫습니다. 접속을 끝내려면 **연
 
 다음 offset이 `null`이면 마지막 페이지입니다. `trackId`와 `clipId`를 동시에 지정할 수 없고, 해당 범위와 맞지 않는 페이지 인자도 거절합니다. 오디오 리전에는 음표 페이지가 없습니다. `projectId`를 조회 인자로 주면 현재 열린 프로젝트와 일치하는지도 검사합니다.
 
-각 `get_state` 응답에는 `projectId`, `revision`, 프로젝트 요약, 선택, 재생 상태, 이력, `persistence`, `editAccess`가 포함됩니다. 페이지를 넘기는 사이 revision이 바뀌면 여러 시점의 데이터를 섞지 않도록 다시 조회합니다. 음표 응답의 `noteView: "source"`는 원본 음표를 뜻합니다. 리전의 이조·퀀타이즈·루프를 반영한 실제 재생 이벤트 조회는 아직 없습니다.
+각 `get_state` 응답에는 `projectId`, `revision`, 프로젝트 요약, 선택, 재생 상태, 이력, `persistence`, `editAccess`가 포함됩니다. 페이지를 넘기는 사이 revision이 바뀌면 여러 시점의 데이터를 섞지 않도록 다시 조회합니다. 음표 응답의 `noteView: "source"`는 원본 음표이며, 비파괴 트림으로 숨겨진 음표도 포함합니다. `sourceOffsetBeats`가 있는 MIDI 리전의 표시상 시작은 `note.start - (clip.sourceOffsetBeats ?? 0)`이고, 보이는 범위는 `[0, clip.lengthBeats]`입니다. 리전의 이조·퀀타이즈·루프를 반영한 실제 재생 이벤트 조회는 아직 없습니다.
 
 `get_catalog`의 `kind`는 `all`(기본), `instruments`, `effects`입니다. 악기와 이펙트 ID·파라미터를 추측하지 말고 먼저 이 목록을 읽습니다. `get_capabilities`의 `protocol: 1`은 가락이음 브리지 버전이며 MCP 규격 날짜와 별개입니다.
 
@@ -164,7 +164,7 @@ AI 연결 창의 **닫기**는 창만 닫습니다. 접속을 끝내려면 **연
 |---|---|
 | `pitch` | MIDI 정수 0~127. 가락이음 표시 기준은 **60=C3** |
 | `startBeat` | 프로젝트 시작부터의 절대 위치. **0부터 시작하는 4분음표 beat** |
-| 음표 `start` | 해당 리전 시작부터의 상대 beat |
+| 음표 `start` | 신규 리전 입력은 리전 상대 beat(소스 오프셋 0). 원본 음표 조회는 소스 beat이며 `sourceOffsetBeats`를 빼면 표시 리전 상대 위치 |
 | `lengthBeats`, `duration` | beat 단위 길이. 현재 4/4이므로 **8마디=32 beat**, 화면의 1마디 시작은 beat 0 |
 | 음표 `velocity` | 정규화된 **0~1**. MIDI 1~127 값이나 리전의 벨로시티 오프셋과 다름 |
 | 트랙 `volume` | 선형 gain 0~2. 1은 0dB, 2는 약 +6.0206dB |

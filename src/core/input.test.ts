@@ -1,8 +1,69 @@
 import { describe, expect, it } from 'vitest'
-import { SHORTCUT_BINDINGS, SHORTCUT_TABLE, ZOOM_COMMANDS, crossedDragThreshold, dragModifiers, isShortcutSuppressed, resolveProjectShortcut, shortcutLabel, shortcutPlatform, snapDragDelta } from './input'
+import { SHORTCUT_BINDINGS, SHORTCUT_TABLE, ZOOM_COMMANDS, crossedDragThreshold, dragModifiers, isShortcutSuppressed, resolveProjectShortcut, resolveRoutedShortcut, shortcutLabel, shortcutPlatform, snapDragDelta } from './input'
 import type { ProjectShortcut, ShortcutEvent, ShortcutPlatform, ShortcutScope } from './input'
 
 const key = (patch: Partial<ShortcutEvent> = {}): ShortcutEvent => ({ key: 'Delete', code: 'Delete', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...patch })
+
+describe('toolbar focus and active editor routing', () => {
+  it('keeps app commands available after clicking a toolbar or selector', () => {
+    for (const [patch, command] of [
+      [{ key: 'z', code: 'KeyZ', ctrlKey: true }, 'undo'],
+      [{ key: 'z', code: 'KeyZ', ctrlKey: true, shiftKey: true }, 'redo'],
+      [{ key: 's', code: 'KeyS', ctrlKey: true }, 'save'],
+      [{ key: 'r', code: 'KeyR' }, 'record'],
+      [{ key: 'c', code: 'KeyC' }, 'cycle'],
+    ] as const) {
+      expect(resolveRoutedShortcut(key(patch), 'control', 'piano', false, 'windows')).toEqual({ command, scope: 'piano' })
+    }
+  })
+
+  it('uses the last editor for local commands instead of falling back to arrangement edits', () => {
+    expect(resolveRoutedShortcut(key(), 'control', 'piano')).toEqual({ command: 'deleteNotes', scope: 'piano' })
+    expect(resolveRoutedShortcut(key(), 'workspace', 'timeline')).toEqual({ command: 'deleteClip', scope: 'timeline' })
+    expect(resolveRoutedShortcut(key(), 'control', 'mixer')).toBeNull()
+    expect(resolveRoutedShortcut(key({ key: 'g', code: 'KeyG', ctrlKey: true }), 'control', 'piano')).toEqual({ command: 'snapToggle', scope: 'piano' })
+    expect(resolveRoutedShortcut(key({ key: 'z', code: 'KeyZ' }), 'control', 'devices')).toEqual({ command: 'zoomToFit', scope: 'devices' })
+    expect(resolveRoutedShortcut(key(), 'timeline', 'piano')).toEqual({ command: 'deleteClip', scope: 'timeline' })
+  })
+
+  it('preserves text editing, modal ownership, native control navigation and handled events', () => {
+    for (const scope of ['text', 'dialog', 'outside'] as const) {
+      for (const patch of [{ key: 'z', code: 'KeyZ', ctrlKey: true }, { key: 'r', code: 'KeyR' }, {}]) {
+        expect(resolveRoutedShortcut(key(patch), scope, 'timeline')).toBeNull()
+      }
+    }
+    for (const name of ['Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Tab']) {
+      expect(resolveRoutedShortcut(key({ key: name, code: name }), 'control', 'timeline')).toBeNull()
+    }
+    for (const patch of [{ isComposing: true }, { keyCode: 229 }, { defaultPrevented: true }, { repeat: true }]) {
+      expect(resolveRoutedShortcut(key({ key: 'z', code: 'KeyZ', ctrlKey: true, ...patch }), 'control', 'piano')).toBeNull()
+    }
+    expect(resolveRoutedShortcut(key({ key: 'ArrowRight', code: 'ArrowRight', ctrlKey: true }), 'control', 'piano')).toEqual({ command: 'zoomIn', scope: 'piano' })
+  })
+
+  it('routes a maximize-button command to the visible editor instead of the hidden timeline', () => {
+    const piano = { editors: ['piano'] as const, preferred: 'piano' as const }
+    const selectAll = key({ key: 'a', code: 'KeyA', ctrlKey: true })
+    expect(resolveRoutedShortcut(selectAll, 'control', 'timeline', false, 'windows', piano)).toEqual({ command: 'selectAll', scope: 'piano' })
+    expect(resolveRoutedShortcut(key(), 'control', 'timeline', false, 'windows', piano)).toEqual({ command: 'deleteNotes', scope: 'piano' })
+    // Even a stale focused element in the hidden arrangement cannot bypass visibility.
+    expect(resolveRoutedShortcut(key(), 'timeline', 'timeline', false, 'windows', piano)).toEqual({ command: 'deleteNotes', scope: 'piano' })
+    for (const editor of ['mixer', 'devices'] as const) {
+      expect(resolveRoutedShortcut(key(), 'control', 'timeline', false, 'windows', { editors: [editor], preferred: editor })).toBeNull()
+    }
+    // Folding the editor brings the visible arrangement back into command ownership.
+    expect(resolveRoutedShortcut(key(), 'control', 'piano', false, 'windows', { editors: ['timeline'], preferred: 'piano' })).toEqual({ command: 'deleteClip', scope: 'timeline' })
+  })
+
+  it('keeps global commands but never edits hidden regions in a maximized audio or pitch editor', () => {
+    for (const event of [key(), key({ key: 'a', code: 'KeyA', ctrlKey: true }), key({ key: 'd', code: 'KeyD', ctrlKey: true }), key({ key: 'm', code: 'KeyM' })]) {
+      expect(resolveRoutedShortcut(event, 'control', 'timeline', false, 'windows', { editors: [] })).toBeNull()
+    }
+    for (const [patch, command] of [[{ key: 'z', code: 'KeyZ', ctrlKey: true }, 'undo'], [{ key: 's', code: 'KeyS', ctrlKey: true }, 'save'], [{ key: 'r', code: 'KeyR' }, 'record'], [{ key: ' ', code: 'Space' }, 'playback']] as const) {
+      expect(resolveRoutedShortcut(key(patch), 'control', 'timeline', false, 'windows', { editors: [] })).toEqual({ command, scope: 'workspace' })
+    }
+  })
+})
 
 describe('editing keyboard ownership', () => {
   it('never routes a note-area or native-control Delete to a region or track', () => {

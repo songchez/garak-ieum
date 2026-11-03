@@ -57,14 +57,21 @@ export function shortcutScope(target: EventTarget | null): ShortcutScope {
   if (!(target instanceof Element)) return 'outside'
   if (target.closest('[role="dialog"],dialog,[aria-modal="true"]')) return 'dialog'
   if ((target instanceof HTMLElement && target.isContentEditable)
-    || target.closest('input,textarea,select,[data-selectable-text],[role="textbox"],[role="searchbox"],[role="combobox"],[role="spinbutton"],[role="slider"]')) return 'text'
-  const area = target.closest<HTMLElement>('[data-keyboard-scope]')?.dataset.keyboardScope
-  // Note buttons are editing objects. Ordinary controls keep their native
-  // editing keys; global Space transport is handled separately in capture.
-  if (target.closest('button,a[href],[role="checkbox"],[role="switch"]') && !target.closest('.piano-note')) return 'control'
-  if (area === 'piano' || area === 'timeline' || area === 'mixer' || area === 'devices') return area
+    || target.closest('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),textarea,[data-selectable-text],[role="textbox"],[role="searchbox"],[role="spinbutton"]')) return 'text'
+  // Controls keep native activation/navigation. Other commands can use their
+  // owning editor through resolveRoutedShortcut; note buttons are edit objects.
+  if (target.closest('button,a[href],select,input,[role="checkbox"],[role="switch"],[role="slider"],[role="combobox"]') && !target.closest('.piano-note')) return 'control'
+  const area = shortcutEditorScope(target)
+  if (area) return area
   if (target.closest('.studio-app') || target === document.body) return 'workspace'
   return 'outside'
+}
+
+/** Keep editor ownership when a toolbar control takes DOM focus. */
+export function shortcutEditorScope(target: EventTarget | null): ShortcutEditScope | null {
+  if (!(target instanceof Element)) return null
+  const area = target.closest<HTMLElement>('[data-keyboard-scope]')?.dataset.keyboardScope
+  return area === 'piano' || area === 'timeline' || area === 'mixer' || area === 'devices' ? area : null
 }
 
 /**
@@ -178,6 +185,25 @@ export function resolveProjectShortcut(event: ShortcutEvent, scope: ShortcutScop
   if (isShortcutSuppressed(event, includeRepeat, platform) || !EDIT_SCOPES.includes(scope)) return null
   const editScope = scope as ShortcutEditScope
   return SHORTCUT_BINDINGS.find(b => inScope(b, editScope) && onPlatform(b, platform) && MODS[b.mods](event) && keyMatches(event, b.key))?.command ?? null
+}
+
+const GLOBAL_ONLY_COMMANDS = new Set<ProjectShortcut>(['playback', 'playFromSelection', 'undo', 'redo', 'save', 'home', 'rewind', 'forward', 'help', 'openSettings', 'cycle', 'record', 'metronome', 'toggleInspector', 'toggleLibrary', 'toggleMixer', 'toggleBrowser'])
+export interface ShortcutVisibility { editors: readonly ShortcutEditScope[]; preferred?: ShortcutEditScope }
+
+/** Resolve app/editor keys without stealing typing, modal keys, or control navigation. */
+export function resolveRoutedShortcut(event: ShortcutEvent, targetScope: ShortcutScope, activeEditor: ShortcutEditScope, includeRepeat = false, platform: ShortcutPlatform = shortcutPlatform(), visibility?: ShortcutVisibility): { command: ProjectShortcut; scope: ShortcutEditScope } | null {
+  if (targetScope === 'text' || targetScope === 'dialog' || targetScope === 'outside') return null
+  if (targetScope === 'control' && !event.ctrlKey && !event.metaKey && !event.altKey
+    && ['Enter', 'Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) return null
+  let scope: ShortcutEditScope | null = targetScope === 'control' || targetScope === 'workspace' ? activeEditor : targetScope
+  if (visibility && !visibility.editors.includes(scope)) {
+    scope = [visibility.preferred, activeEditor, 'timeline' as const, ...visibility.editors]
+      .find((candidate): candidate is ShortcutEditScope => !!candidate && visibility.editors.includes(candidate)) ?? null
+  }
+  const command = resolveProjectShortcut(event, scope ?? 'workspace', includeRepeat, platform)
+  // A maximized audio/pitch editor owns its local edits. Do not send a toolbar
+  // Delete, Select All, or track command into an invisible arrangement.
+  return command && (scope !== null || GLOBAL_ONLY_COMMANDS.has(command)) ? { command, scope: scope ?? 'workspace' } : null
 }
 
 const formatBinding = (b: ShortcutBinding, platform: ShortcutPlatform) =>

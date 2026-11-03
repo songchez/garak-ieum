@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ProjectSession } from '../core/ProjectSession'
-import { createDevice, createEmptyProject, createTrack } from '../core/project'
+import { createDevice, createEmptyProject, createTrack, setClipLoopEnd, trimClipStart } from '../core/project'
 import type { MidiClip, Project } from '../core/types'
 import { createDawRequestHandler, type DawRuntime } from './host'
 import type { BridgeParams, DawMethod } from './protocol'
@@ -68,6 +68,21 @@ describe('DAW host bounded reads', () => {
     expect(response).not.toHaveProperty('notes')
     expect(response).not.toHaveProperty('assets')
     expect(() => handler('get_state', { clipId: 'voice', noteLimit: 1 })).toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+  })
+
+  it('keeps source note pages explicit after trimming and exposes the source/loop coordinate metadata', () => {
+    const { handler, session } = setup()
+    session.edit(project => ({ ...project, tracks: project.tracks.map(track => track.id === 'keys'
+      ? { ...track, clips: track.clips.map(clip => clip.id === 'phrase' ? setClipLoopEnd(trimClipStart(clip, 8, project.bpm), 180) : clip) } : track) }))
+    expect(handler('get_state', { clipId: 'phrase', noteLimit: 1 })).toMatchObject({
+      noteView: 'source', clip: { startBeat: 8, lengthBeats: 156, sourceOffsetBeats: 4, loop: true, loopLengthBeats: 172 },
+      notes: [{ id: 'note-0', start: 0 }], noteCount: 513,
+    })
+    expect(handler('get_state', { trackId: 'keys', clipLimit: 1 })).toMatchObject({ clips: [{ sourceOffsetBeats: 4, loopLengthBeats: 172 }] })
+    expect(handler('get_capabilities', {})).toMatchObject({ units: {
+      position: expect.stringContaining('note.start - (clip.sourceOffsetBeats ?? 0)'),
+      regionLoop: expect.stringContaining('loopLengthBeats'),
+    } })
   })
 
   it.each([

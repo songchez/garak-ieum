@@ -1,4 +1,5 @@
 import type { AudioClip, Clip, MidiClip, Track } from './types'
+import { midiSourceOffset } from './midiRegions'
 
 /** Ticks per beat for Track.delayTicks and ClipBase.delayTicks. */
 export const PPQ = 960
@@ -49,13 +50,13 @@ export function audibleTrackIds(tracks: readonly Track[]): Set<string> {
 const trackDelay = (track: Track, clip: Clip): number => (num(clip.delayTicks) + num(track.delayTicks)) / PPQ
 
 /**
- * Where playback of a clip stops. A looping clip repeats until the next clip on the track
- * (muted clips count) or the project end; a clip that overlaps the next one still plays fully.
+ * A loop stops at its manual endpoint, the next clip (including muted clips), or the project
+ * end, whichever comes first. None of those boundaries truncate the original source region.
  */
 export function loopEnd(track: Track, clip: Clip, projectEnd: number): number {
   const clipEnd = clip.startBeat + clip.lengthBeats
   if (!clip.loop) return clipEnd
-  let end = projectEnd
+  let end = clip.loopLengthBeats === undefined ? projectEnd : Math.min(projectEnd, clip.startBeat + clip.loopLengthBeats)
   for (const other of track.clips) {
     if (other.id === clip.id || other.startBeat <= clip.startBeat) continue
     end = Math.min(end, other.startBeat)
@@ -103,9 +104,13 @@ export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence): Pl
   const gain = clamp(clip.gain, 0, 2)
   const window = occ.end - occ.start
   const origin = occ.start + delay
+  const sourceOffset = midiSourceOffset(clip)
   const notes: PlaybackNote[] = []
   for (const note of clip.notes) {
-    let local = Math.max(0, note.start)
+    const sourceStart = Math.max(0, note.start) - sourceOffset
+    let local = Math.max(0, sourceStart)
+    const duration = note.duration + Math.min(0, sourceStart)
+    if (duration <= EPSILON) continue
     if (grid > 0) {
       const step = Math.round(local / grid)
       local = clamp(step * grid + (step % 2 ? (swing - 50) / 50 * grid : 0), 0, clip.lengthBeats)
@@ -115,7 +120,7 @@ export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence): Pl
     const velocity = clamp(Math.round(clamp(note.velocity, 0, 1) * 127) + velocityOffset, 1, 127)
     if (pitch < keyLow || pitch > keyHigh || velocity < velocityLow || velocity > velocityHigh) continue
     if (local >= window - EPSILON) continue
-    const end = Math.min(local + Math.max(0, note.duration), window)
+    const end = Math.min(local + duration, window)
     if (end <= local) continue
     notes.push({ pitch, start: origin + local, end: origin + end, velocity: velocity / 127 * gain, limit: origin + window })
   }
