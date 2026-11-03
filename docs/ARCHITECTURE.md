@@ -60,6 +60,8 @@ flowchart TD
 | [`src/core/storage.ts`](../src/core/storage.ts) | ID별 프로젝트 번들·요약 목록, 기존 latest 이전, IndexedDB 원자적 저장·순서 보장, 원본 Blob 검증, `.garak` 가져오기·내보내기 |
 | [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 오디오 컨텍스트 수명 주기, 재생 위치·루프·예약, 파일 디코딩, 오프라인 출력, UI에 제공하는 스냅숏과 레벨 |
 | [`src/audio/InputCapture.ts`](../src/audio/InputCapture.ts) | 녹음·모니터링 입력 공유, 입력 변경의 준비·확정·복구, 지연된 권한 응답과 장치 종료 처리 |
+| [`src/audio/AudioRecording.ts`](../src/audio/AudioRecording.ts), [`src/audio/recordingTransport.ts`](../src/audio/recordingTransport.ts) | 한 번의 녹음과 마지막 데이터 이벤트의 수명, 녹음을 함께 종료하는 재생·정지·자동 종료 연결 |
+| [`src/core/recording.ts`](../src/core/recording.ts), [`src/components/RecordingRegion.tsx`](../src/components/RecordingRegion.tsx) | 녹음 시작 위치·임시 리전·최종 추가의 공통 계약, 실제 경과 시간 표시 |
 | [`src/audio/AudioDeviceProbe.ts`](../src/audio/AudioDeviceProbe.ts), [`src/audio/OutputTest.ts`](../src/audio/OutputTest.ts) | 설정 창의 임시 입력 권한·레벨 테스트, 취소 가능한 적용 출력 테스트와 각 자원의 정리 |
 | [`src/audio/graph.ts`](../src/audio/graph.ts) | 기본 악기, 트랙·마스터 오디오 연결, 효과, 음성 수명 주기, 범위별 음표·오디오 클립 예약 |
 | [`src/audio/math.ts`](../src/audio/math.ts) | 박자·시간 변환, 루프 위치, 페이드 계산, 16-bit PCM WAV 인코딩 |
@@ -202,9 +204,13 @@ Dry/wet 분기는 **각 이펙트 내부**에 있습니다. 드라이브는 원�
 
 편집기의 **오디오 파일 가져오기**는 `decodeAudioData()`로 전체 디코딩합니다. `AudioAsset`에는 원본 `Blob`, 재생용 `AudioBuffer`, 파형 표시용 피크가 함께 존재합니다. 원본은 그대로 보관하고, 피크는 채널을 살펴 최대 320개 지점으로 요약합니다. 확대 수준별 파형 캐시나 부분 디코딩은 없습니다. **프로젝트 번들 가져오기**는 별도로 `projectLibrary.ts`가 검증한 Project와 원본 Blob을 먼저 저장하며, 목록 화면에서 오디오를 디코딩하지 않습니다. 저장 후 편집기를 열 때 해당 프로젝트의 샘플레이트로 원본을 디코딩합니다.
 
-마이크 입력은 `InputCapture`가 녹음·모니터링의 사용 요구와 `getUserMedia()` 스트림을 관리하고, `App`이 `MediaRecorder`로 녹음합니다. 특정 입력 ID는 `exact`로 고정하며 채널 수·샘플레이트·AEC/NS/AGC는 독립적인 요청으로 전달합니다. 모노/스테레오 채널 수 요청은 인터페이스의 물리 포트 선택이 아닙니다. 현재 입력 값은 트랙의 `getSettings()`에서 읽습니다.
+마이크 입력은 `InputCapture`가 녹음·모니터링의 사용 요구와 `getUserMedia()` 스트림을 관리하고, `App`이 `AudioRecording`을 통해 `MediaRecorder`를 소유합니다. 특정 입력 ID는 `exact`로 고정하며 채널 수·샘플레이트·AEC/NS/AGC는 독립적인 요청으로 전달합니다. 모노/스테레오 채널 수 요청은 인터페이스의 물리 포트 선택이 아닙니다. 현재 입력 값은 트랙의 `getSettings()`에서 읽습니다.
 
 사용 가능한 MIME 형식(WebM/Opus, MP4, Ogg/Opus 등) 중 하나를 선택하고 받은 청크를 하나의 Blob으로 합칩니다. 녹음을 끝내면 같은 디코딩 경로를 거쳐 오디오 클립으로 추가합니다. 프로젝트 레이트 선택이 녹음 원본의 코덱이나 비트 깊이 선택을 제공하지는 않습니다. 24-bit·32-bit float PCM 원본 녹음·다중 입력 녹음은 지원하지 않습니다.
+
+녹음 시작점은 실제 재생 시작 위치를 정규화한 뒤 고정하고, 입력 권한 대기 후의 최신 BPM·위치 보정값·대상 트랙을 사용합니다. `RecordingDraft`는 프로젝트와 별도로 보관합니다. Timeline은 약 100ms마다 실제 경과 시간을 읽어 임시 리전을 늘리며, 사이클에서 되돌아가는 재생 커서로 녹음 길이를 계산하지 않습니다. 숨긴 대상과 예약된 새 트랙도 화면에 표시합니다. 임시 표시에는 아직 실제 파형이 없으며 녹음 상태와 시간을 보여 줍니다.
+
+Space·재생 일시정지·정지·R 재클릭 및 재생의 true→false 전이는 녹음을 함께 종료합니다. 준비 중 취소는 늦은 입력 권한 응답을 무효화합니다. 종료를 요청해도 마지막 `dataavailable`·`onstop`·디코딩까지 take 소유권을 유지하며, 처리 중 임시 리전의 길이는 고정합니다. 최종 오디오 자산과 같은 ID의 리전을 한 번 반영하고 임시 표시를 제거합니다. 예약 새 트랙은 이때 리전과 함께 Undo 한 단계로 추가합니다. 빈 데이터·디코딩 실패·전체가 음수 시간으로 잘린 보정은 안내하고 초안을 정리합니다. 이 과정은 MIDI 입력 녹음과 별개이며, MIDI 녹음은 아직 지원하지 않습니다.
 
 클립 위치는 녹음 시작 시 transport 위치와 그때 적용된 `recordingOffsetMs`(-1000~1000ms 정수)를 사용합니다. 양수는 뒤로, 음수는 앞으로 배치합니다. 0 이전 구간은 원본을 재작성하지 않고 소스 오프셋으로 제외하며, 전체가 0 이전이면 리전을 만들지 않고 알립니다. 입력 장치·녹음 인코더·재생 시작 지연을 자동 측정하여 보상하는 단계는 아직 없습니다. 이 수동 정렬은 샘플 단위로 정렬된 다중 트랙 레코더의 보상을 뜻하지 않습니다.
 
