@@ -4,6 +4,7 @@ import type { ProjectSummary } from '../core/storage'
 import { Brand } from './Brand'
 import { GiwaEave } from './GiwaEave'
 import { Icon } from './Icon'
+import { isDesktopApp } from '../platform/desktop'
 import './ProjectLauncher.css'
 
 export interface ProjectLauncherProps {
@@ -76,6 +77,7 @@ function ProjectTile({ item, selected, disabled, onSelect, onOpen }: {
 }
 
 export function ProjectLauncher({ projects, templates, loading, busy, error, notice, onOpen, onTemplate, onNew, onImport, onRetry }: ProjectLauncherProps) {
+  const desktop = isDesktopApp()
   const [category, setCategory] = useState<Category>('projects')
   const [search, setSearch] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -117,7 +119,7 @@ export function ProjectLauncher({ projects, templates, loading, busy, error, not
   }
 
   return <div className="project-launcher">
-    <header className="pl-topbar"><GiwaEave/><div className="pl-topbar-inner"><div className="pl-brand"><Brand/><span className="pl-nav-label">프로젝트</span></div><span className="pl-local-badge"><Icon name="folder" size={13}/>이 브라우저의 작업실</span></div></header>
+    <header className="pl-topbar"><GiwaEave/><div className="pl-topbar-inner"><div className="pl-brand"><Brand/><span className="pl-nav-label">프로젝트</span></div><span className="pl-local-badge"><Icon name="folder" size={13}/>{desktop ? '이 컴퓨터의 작업실' : '이 브라우저의 작업실'}</span></div></header>
     <main className="pl-main" aria-labelledby="pl-title">
       <section className="pl-chooser" aria-label="프로젝트 선택">
         <aside className="pl-sidebar">
@@ -137,7 +139,7 @@ export function ProjectLauncher({ projects, templates, loading, busy, error, not
             {busy && <div className="pl-notice" role="status"><span className="pl-spinner" aria-hidden="true"/><span>프로젝트를 준비하고 있습니다.</span></div>}
             {notice && <div className="pl-notice" role="status"><Icon name="info" size={15}/><p data-selectable-text="">{notice}</p></div>}
             {error && <div className="pl-error" role="alert"><Icon name="info" size={16}/><div><strong>작업을 완료하지 못했습니다</strong><p data-selectable-text="" tabIndex={0}>{error}</p><small>저장된 작업을 보존한 상태로 다시 확인할 수 있습니다.</small></div><button type="button" className="pl-button" onClick={onRetry} disabled={locked}><Icon name="refresh" size={13}/>다시 시도</button></div>}
-            {category === 'projects' && loading && !projects.length ? <div className="pl-empty" role="status"><span className="pl-spinner" aria-hidden="true"/><strong>저장한 프로젝트를 불러오고 있습니다</strong><p>이 브라우저에 보관된 작업을 확인합니다.</p></div>
+            {category === 'projects' && loading && !projects.length ? <div className="pl-empty" role="status"><span className="pl-spinner" aria-hidden="true"/><strong>저장한 프로젝트를 불러오고 있습니다</strong><p>{desktop ? '이 컴퓨터에 보관된 작업을 확인합니다.' : '이 브라우저에 보관된 작업을 확인합니다.'}</p></div>
               : category === 'projects' && error && !projects.length ? <div className="pl-empty"><Icon name="folder" size={26}/><strong>프로젝트 목록을 확인할 수 없습니다</strong><p>위의 안내를 확인한 뒤 다시 시도해 주세요.</p></div>
               : !items.length ? <div className="pl-empty"><Icon name={category === 'projects' ? 'file-plus' : 'library'} size={28}/><strong>{category === 'projects' ? '저장한 프로젝트가 없습니다' : '준비된 샘플이 없습니다'}</strong><p>{category === 'projects' ? '샘플 편곡이나 빈 프로젝트로 첫 곡을 시작해 보세요.' : '빈 프로젝트에서 새로운 곡을 시작해 보세요.'}</p>{category === 'projects' && templates.length > 0 && <button type="button" className="pl-button" disabled={busy} onClick={() => changeCategory('templates')}>샘플 프로젝트 보기<Icon name="right" size={14}/></button>}</div>
               : !filtered.length ? <div className="pl-empty"><Icon name="search" size={25}/><strong>찾는 프로젝트가 없습니다</strong><p>다른 이름으로 검색해 보세요.</p><button type="button" className="pl-button" onClick={() => changeSearch('')} disabled={busy}>전체 {categoryName} 보기</button></div>
@@ -157,7 +159,7 @@ export function ProjectLauncher({ projects, templates, loading, busy, error, not
         </div>
         <footer className="pl-actions"><div className="pl-secondary-actions"><button type="button" className="pl-button" disabled={locked} onClick={onImport}><Icon name="folder" size={15}/><span>.garak 불러오기</span></button><button type="button" className="pl-button" disabled={locked} onClick={onNew}><Icon name="plus" size={16}/><span>새 빈 프로젝트</span></button></div><button type="button" className="pl-button pl-button--primary pl-open-button" disabled={locked || !selected} onClick={() => openItem(selected)} aria-label={selected ? `${selected.name}, ${selected.kind === 'template' ? '새 프로젝트로 열기' : '열기'}` : '선택한 프로젝트 열기'}>{selected?.kind === 'template' ? '새 프로젝트로 열기' : '열기'}<Icon name="right" size={15}/></button></footer>
       </section>
-      <p className="pl-local-note"><Icon name="info" size={12}/><span>프로젝트 주소는 이 브라우저에 저장된 작업을 엽니다. 다른 기기로 옮길 때는 .garak 파일을 사용하세요.</span></p>
+      <p className="pl-local-note"><Icon name="info" size={12}/><span>{desktop ? '프로젝트와 원본 음원은 이 컴퓨터에 저장됩니다. 다른 기기로 옮길 때는 .garak 파일을 사용하세요.' : '프로젝트 주소는 이 브라우저에 저장된 작업을 엽니다. 다른 기기로 옮길 때는 .garak 파일을 사용하세요.'}</span></p>
     </main>
   </div>
 }

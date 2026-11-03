@@ -1,4 +1,7 @@
-# Native build tools used by Wrangler; all other dependency scripts keep pnpm defaults.
+# Explicit install-script policy for the desktop and web build tools.
 allowBuilds:
+  electron: true
+  # Squirrel is a transitive dependency; this app builds full NSIS installers instead.
+  electron-winstaller: false
   esbuild: true
   workerd: true

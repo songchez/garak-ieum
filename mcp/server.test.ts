@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
@@ -14,6 +14,7 @@ const cwd = fileURLToPath(new URL('../', import.meta.url))
 const TOKEN = 'integration_pairing_0123456789abcdefghijk'
 let client: Client | undefined
 let socket: WebSocket | undefined
+const lifecycleChildren = new Set<ChildProcess>()
 
 beforeAll(() => {
   // The integration exercises the emitted Node entry point, not a mocked MCP handler.
@@ -24,6 +25,11 @@ afterEach(async () => {
   socket = undefined
   await client?.close()
   client = undefined
+  for (const child of lifecycleChildren) {
+    child.stdin?.destroy()
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  }
+  lifecycleChildren.clear()
 })
 
 async function availablePort(): Promise<number> {
@@ -55,6 +61,91 @@ async function connectDaw(port: number, instanceId: string, handle: ReturnType<t
   })
   return connected
 }
+
+describe('MCP process lifecycle for Node and a desktop host', () => {
+  it('keeps imports inert and preserves the standalone token and server commands', () => {
+    const imported = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      await import('./dist-mcp/mcp/server.js');
+      await import('./dist-mcp/mcp/token.js');
+      process.stdout.write('imports-inert\\n');
+    `], { cwd, env: { ...process.env, GARAK_MCP_TOKEN: '' }, encoding: 'utf8', timeout: 5000 })
+    expect(imported.error).toBeUndefined()
+    expect(imported.status).toBe(0)
+    expect(imported.stdout).toBe('imports-inert\n')
+    expect(imported.stderr).toBe('')
+
+    const token = spawnSync(process.execPath, ['dist-mcp/mcp/token.js'], { cwd, encoding: 'utf8', timeout: 5000 })
+    expect(token.status).toBe(0)
+    expect(token.stdout).toMatch(/^[A-Za-z0-9_-]{43}\n$/)
+    expect(token.stderr).toBe('')
+
+    const invalid = spawnSync(process.execPath, ['dist-mcp/mcp/server.js'], {
+      cwd, env: { ...process.env, GARAK_MCP_TOKEN: '' }, encoding: 'utf8', timeout: 5000,
+    })
+    expect(invalid.status).toBe(1)
+    expect(invalid.stdout).toBe('')
+    expect(invalid.stderr).toContain('GARAK_MCP_TOKEN')
+  })
+
+  it('lets the desktop host close its imported server more than once and await full release', async () => {
+    const port = await availablePort()
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { createServer } from 'node:net';
+      import { startMcpServer } from './dist-mcp/mcp/server.js';
+      const server = await startMcpServer();
+      await Promise.all([server.close(), server.close(), server.closed]);
+      const probe = createServer();
+      await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(server.port, '127.0.0.1', resolve); });
+      await new Promise(resolve => probe.close(resolve));
+      process.stdout.write('lifecycle-closed\\n');
+    `], { cwd, env: { ...process.env, GARAK_MCP_TOKEN: TOKEN, GARAK_MCP_PORT: String(port) }, encoding: 'utf8', timeout: 5000 })
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('lifecycle-closed\n')
+    expect(result.stderr).toContain('MCP 준비 완료')
+    expect(result.stderr).not.toContain(TOKEN)
+  })
+
+  // Windows host termination is tested through stdin EOF; POSIX signals are not portable to Windows children.
+  it.each(process.platform === 'win32' ? ['stdin EOF'] as const : ['stdin EOF', 'SIGINT', 'SIGTERM'] as const)(
+    'settles the imported lifecycle and releases the bridge after %s', async reason => {
+      const port = await availablePort()
+      const child = spawn(process.execPath, ['--input-type=module', '-e', `
+        import { createServer } from 'node:net';
+        import { startMcpServer } from './dist-mcp/mcp/server.js';
+        const server = await startMcpServer();
+        await server.closed;
+        const probe = createServer();
+        await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(server.port, '127.0.0.1', resolve); });
+        await new Promise(resolve => probe.close(resolve));
+        process.stdout.write('lifecycle-closed\\n');
+      `], { cwd, env: { ...process.env, GARAK_MCP_TOKEN: TOKEN, GARAK_MCP_PORT: String(port) }, stdio: ['pipe', 'pipe', 'pipe'] })
+      lifecycleChildren.add(child)
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', chunk => { stdout += String(chunk) })
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        child.once('error', reject)
+        // close follows exit after the stdout/stderr pipes have drained.
+        child.once('close', (code, signal) => resolve({ code, signal }))
+      })
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`MCP readiness timeout: ${stderr}`)), 3000)
+        child.stderr.on('data', chunk => {
+          stderr += String(chunk)
+          if (stderr.includes('MCP 준비 완료')) { clearTimeout(timer); resolve() }
+        })
+        child.once('error', error => { clearTimeout(timer); reject(error) })
+        child.once('exit', () => { clearTimeout(timer); reject(new Error(`MCP exited before readiness: ${stderr}`)) })
+      })
+      if (reason === 'stdin EOF') child.stdin.end()
+      else child.kill(reason)
+      await expect(exited).resolves.toEqual({ code: 0, signal: null })
+      expect(stdout).toBe('lifecycle-closed\n')
+      expect(stderr).not.toContain(TOKEN)
+    },
+  )
+})
 
 describe('MCP stdio → loopback → DAW integration', () => {
   it('discovers real schemas and applies, deduplicates, previews and undoes a real ProjectSession edit', async () => {
