@@ -15,9 +15,12 @@ const artifacts = path.join(repository, 'release', 'desktop-smoke')
 const executable = process.env.GARAK_ELECTRON_EXECUTABLE
   ? path.resolve(process.env.GARAK_ELECTRON_EXECUTABLE)
   : path.join(repository, 'release', 'win-unpacked', '가락이음.exe')
+// Windows MCP must use the installed console launcher, not the GUI subsystem's
+// stdout/stdin handles. The launcher alone configures its child Node runtime.
+const mcpExecutable = process.platform === 'win32' ? path.join(path.dirname(executable), 'garak-mcp.exe') : executable
 const closeTimeout = 30_000 // Main waits 12 seconds before its recovery dialog.
 const dialogMarker = 'GARAK_SMOKE_UNEXPECTED_NATIVE_DIALOG'
-const report = { status: 'running', startedAt: new Date().toISOString(), executable, checks: [], artifacts: [], launches: [], cli: [] }
+const report = { status: 'running', startedAt: new Date().toISOString(), executable, mcpExecutable, checks: [], artifacts: [], launches: [], cli: [] }
 let profile, session, phase = 'setup'
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
@@ -39,6 +42,17 @@ async function eventually(description, predicate, timeout = 10_000) {
 }
 async function valueIs(locator, expected) {
   await eventually(`input value ${JSON.stringify(expected)}`, async () => await locator.inputValue() === expected)
+}
+function readRpcResponses(output) {
+  const lines = output.split('\n'), remainder = lines.pop()
+  const responses = lines.map(line => {
+    let message
+    try { message = JSON.parse(line) }
+    catch { throw new Error('MCP stdout contained a blank or non-JSON protocol line') }
+    assert.ok(message && !Array.isArray(message) && message.jsonrpc === '2.0' && Number.isInteger(message.id), 'Invalid JSON-RPC response envelope')
+    return message
+  })
+  return { responses, remainder }
 }
 async function checked(name, action) {
   phase = name
@@ -76,15 +90,22 @@ async function freeLoopbackPort() {
   return port
 }
 async function runCli(label, args, environment = {}, readyText, whileRunning) {
+  return runProcess(mcpExecutable, label, args, environment, readyText, whileRunning)
+}
+async function runProcess(executablePath, label, args, environment = {}, readyText, whileRunning) {
   const began = Date.now()
-  const child = spawn(executable, args, { cwd: repository, env: launchEnvironment(environment), stdio: 'pipe', windowsHide: true })
+  const child = spawn(executablePath, args, { cwd: repository, env: launchEnvironment(environment), stdio: 'pipe', windowsHide: true })
+  const entry = { label, executable: executablePath, args, spawned: false, parentClosedStdin: false }
+  report.cli.push(entry)
+  child.once('spawn', () => { entry.spawned = true; entry.pid = child.pid })
   let stdout = '', stderr = '', outputBytes = 0, overflow = false, ready
   const started = new Promise(resolve => { ready = resolve })
   const closed = new Promise((resolve, reject) => {
-    child.once('error', reject)
-    child.once('close', (code, signal) => resolve({ code, signal }))
+    child.once('error', error => { entry.processErrorCode = error.code ?? error.name; reject(error) })
+    child.once('close', (code, signal) => { Object.assign(entry, { code, signal }); resolve({ code, signal }) })
   })
-  child.stdin.on('error', () => {}) // An early configuration failure may close stdin first.
+  // An early configuration failure may close stdin first; retain safe diagnostics.
+  child.stdin.on('error', error => { entry.stdinErrorCode = error.code ?? error.name })
   child.stdout.setEncoding('utf8').on('data', data => {
     outputBytes += Buffer.byteLength(data)
     if (outputBytes <= 65_536) stdout += data
@@ -96,22 +117,27 @@ async function runCli(label, args, environment = {}, readyText, whileRunning) {
     else { overflow = true; child.kill() }
     if (readyText && stderr.includes(readyText)) ready()
   })
-  const entry = { label, args }
-  report.cli.push(entry)
   try {
     if (readyText) {
       await within(Promise.race([started, closed.then(() => { throw new Error(`${label} exited before MCP became ready`) })]), 15_000, `${label} startup`)
     }
     if (whileRunning) {
-      await within(Promise.race([whileRunning(), closed.then(() => { throw new Error(`${label} exited during the GUI connection check`) })]), 30_000, `${label} GUI connection`)
+      const io = {
+        stdout: () => stdout,
+        sendJson: message => new Promise((resolve, reject) => {
+          child.stdin.write(`${JSON.stringify(message)}\n`, error => error ? reject(error) : resolve())
+        }),
+      }
+      await within(Promise.race([whileRunning(io), closed.then(() => { throw new Error(`${label} exited during its smoke interaction`) })]), 30_000, `${label} interaction`)
     }
+    entry.parentClosedStdin = true
     child.stdin.end()
     const result = await within(closed, 15_000, `${label} exit`)
     Object.assign(entry, result)
     assert.equal(overflow, false, `${label} exceeded the output limit`)
     return { ...result, stdout, stderr }
   } finally {
-    if (child.exitCode === null && child.signalCode === null) {
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
       child.kill()
       await within(closed.catch(() => {}), 5000, `${label} cleanup`).catch(() => {})
       entry.cleanupTerminatedTestProcess = true
@@ -257,6 +283,40 @@ try {
     const result = await runCli('stdio EOF shutdown', ['--mcp'], { GARAK_MCP_TOKEN: token, GARAK_MCP_PORT: String(port) }, `loopback bridge 127.0.0.1:${port}`)
     assert.equal(result.code, 0, 'MCP failed to shut down after stdin EOF')
     assert.ok(result.stdout === '', 'MCP emitted non-protocol stdout without a request')
+    assert.ok(!result.stderr.includes(token), 'MCP diagnostics echoed the test token')
+  })
+  await independentChecked('packaged MCP initialize and tools/list stdio roundtrip', async () => {
+    const port = await freeLoopbackPort()
+    const token = 'Garak_Desktop_Smoke_Test_Only_000000000000000'
+    const roundtrip = { initialized: false, requestCount: 0, responseCount: 0, toolCount: 0 }
+    report.mcpStdio = roundtrip
+    const result = await runCli('stdio JSON-RPC roundtrip', ['--mcp'], { GARAK_MCP_TOKEN: token, GARAK_MCP_PORT: String(port) }, `loopback bridge 127.0.0.1:${port}`, async io => {
+      const request = async (id, method, params) => {
+        roundtrip.requestCount++
+        await io.sendJson({ jsonrpc: '2.0', id, method, params })
+        let response
+        await eventually(`${method} JSON-RPC response`, async () => {
+          response = readRpcResponses(io.stdout()).responses.find(message => message.id === id)
+          return Boolean(response)
+        })
+        assert.ok(!Object.hasOwn(response, 'error') && Object.hasOwn(response, 'result'), `${method} returned a JSON-RPC error or omitted its result`)
+        roundtrip.responseCount++
+        return response.result
+      }
+      // This server deliberately supports the SDK's legacy initialize protocol.
+      const initialized = await request(1, 'initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'garak-desktop-smoke', version: '1.0.0' } })
+      assert.ok(initialized?.protocolVersion === '2025-11-25' && initialized.serverInfo?.name === 'garak-ieum' && initialized.capabilities?.tools, 'MCP initialization did not return the expected server and tool capability')
+      roundtrip.initialized = true
+      await io.sendJson({ jsonrpc: '2.0', method: 'notifications/initialized' })
+      const listed = await request(2, 'tools/list', {})
+      assert.ok(Array.isArray(listed?.tools), 'tools/list omitted its tools array')
+      const names = listed.tools.map(tool => tool.name)
+      assert.ok(['list_instances', 'get_state', 'apply_edits'].every(name => names.includes(name)), 'tools/list omitted expected Garak Ieum tools')
+      roundtrip.toolCount = names.length
+    })
+    assert.equal(result.code, 0, 'MCP failed to exit cleanly after the stdio roundtrip')
+    const output = readRpcResponses(result.stdout)
+    assert.ok(output.remainder === '' && output.responses.length === 2 && output.responses[0].id === 1 && output.responses[1].id === 2, 'MCP stdout included incomplete or unsolicited data')
     assert.ok(!result.stderr.includes(token), 'MCP diagnostics echoed the test token')
   })
 
@@ -425,7 +485,7 @@ try {
     const page = session.page, previous = page.url()
     // The same isolated profile must hit the installed app's single-instance
     // path, as the quoted file-association command does when the app is open.
-    const result = await runCli('single-instance project file open', [projectFile])
+    const result = await runProcess(executable, 'single-instance project file open', [projectFile])
     assert.equal(result.code, 0, 'The second app process did not hand off the project cleanly')
     assert.equal(page.isClosed(), false, 'The original app window was closed during file handoff')
     await eventually('second-instance imported project route', async () => page.url() !== previous)

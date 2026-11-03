@@ -6,19 +6,21 @@
 
 ## 설치형 앱에서 연결
 
-설치형 앱에는 MCP 실행에 필요한 런타임과 서버가 포함됩니다. 이 방식에는 별도의 Node.js·pnpm·소스 설치가 필요하지 않습니다. 먼저 설치한 실행 파일에 `--mcp-token`을 전달해 연결 키를 만듭니다.
+Windows 설치 폴더에는 편집기를 여는 **`가락이음.exe`**와 MCP 전용 콘솔 실행 파일 **`garak-mcp.exe`**가 함께 들어 있습니다. MCP 설정에는 `garak-mcp.exe`를 사용합니다. 필요한 런타임과 서버가 설치물에 포함되므로 별도의 Node.js·pnpm·소스 설치는 필요하지 않습니다.
+
+먼저 MCP 실행 파일에 `--mcp-token`을 전달해 연결 키를 만듭니다.
 
 ```powershell
-& "C:\실제\설치경로\가락이음.exe" --mcp-token
+& "C:\실제\설치경로\garak-mcp.exe" --mcp-token
 ```
 
-위 경로와 파일명은 예시입니다. **설치된 실행 파일의 실제 절대 경로**로 바꾸세요. 생성된 연결 키는 아래 `GARAK_MCP_TOKEN`에 넣습니다.
+위 폴더는 예시입니다. **설치된 `garak-mcp.exe`의 실제 절대 경로**로 바꾸세요. 실행 파일만 다른 폴더로 옮기지 말고 함께 설치된 `가락이음.exe`와 `resources` 폴더를 유지합니다. 생성된 연결 키는 아래 `GARAK_MCP_TOKEN`에 넣습니다.
 
 ```json
 {
   "mcpServers": {
     "garak-ieum": {
-      "command": "C:\\실제\\설치경로\\가락이음.exe",
+      "command": "C:\\실제\\설치경로\\garak-mcp.exe",
       "args": ["--mcp"],
       "env": {
         "GARAK_MCP_TOKEN": "PASTE_THE_GENERATED_CONNECTION_KEY_HERE"
@@ -28,7 +30,11 @@
 }
 ```
 
-`--mcp`는 편집 창을 만들지 않고 stdio MCP 서버만 실행합니다. AI 호스트가 이 프로세스를 시작하고 종료하므로 터미널에서 같은 서버를 추가로 실행하지 않습니다. 가락이음은 일반 실행으로 열고 **로고 메뉴 → AI 연결**에서 기본 브리지 주소와 같은 연결 키를 입력합니다. 일반 앱 실행은 MCP 서버를 자동으로 중복 실행하지 않습니다. `--mcp-token`은 키를 출력한 뒤 끝나는 명령이며 MCP 서버 명령으로 등록하지 않습니다.
+`garak-mcp.exe --mcp`는 편집 창을 만들지 않고 stdio MCP 서버를 실행합니다. 인수를 생략해도 서버 모드지만, 위 예시는 역할을 명확히 하기 위해 `--mcp`를 지정합니다. AI 호스트가 이 프로세스를 시작하고 종료하므로 터미널에서 같은 서버를 추가로 실행하지 않습니다. `--mcp-token`은 키를 출력한 뒤 끝나는 명령이며 MCP 서버 명령으로 등록하지 않습니다.
+
+편집기는 시작 메뉴의 **가락이음** 또는 `가락이음.exe`로 열고, 프로젝트에서 **로고 메뉴 → AI 연결**을 선택해 기본 브리지 주소와 같은 연결 키를 입력합니다. 편집기를 여는 것만으로 MCP 서버가 자동 시작되지는 않습니다. 이전 MCP 설정의 `command`가 `가락이음.exe`라면 위 `garak-mcp.exe` 경로로 바꾼 뒤 AI 호스트의 MCP 서버를 재시작합니다.
+
+콘솔 실행 파일이 설치된 Electron 런타임을 Node 모드로 실행하도록 필요한 자식 환경을 준비합니다. 사용자가 `ELECTRON_RUN_AS_NODE`를 시스템 환경 변수나 MCP 설정에 추가할 필요는 없습니다. MCP 서버는 프로젝트 저장소를 직접 열지 않고, 연결된 편집기의 로컬 브리지를 통해 현재 프로젝트에 접근합니다.
 
 앱 내부 주소 `garak://app`만 추가로 허용하며, `null` origin·임의의 `garak://` 주소·공개 HTTPS 사이트는 허용하지 않습니다. 키와 **AI 편집 허용**, 각 도구의 조회·편집 범위는 웹 방식과 같습니다. 설치·빌드 안내는 [설치형 앱](DESKTOP.md)을 참고하세요.
 
@@ -407,7 +413,10 @@ CLI 서버의 기본 응답 대기 시간은 **10초**이며, 브리지 구현�
 |---|---|
 | `pnpm`을 찾을 수 없음·PowerShell 실행 제한 | Windows 설치 명령의 `npx.cmd --yes pnpm@11.25.0` 사용 |
 | `lucide-react` 등 패키지를 찾지 못함 | 올바른 저장소에서 고정된 잠금 파일로 설치를 완료했는지 확인 |
-| `dist-mcp/mcp/server.js`를 찾지 못함 | `mcp:build` 실행과 호스트 설정의 절대 경로 확인 |
+| 설치형 `garak-mcp.exe`를 찾지 못함 | 이 실행 파일이 포함된 설치 버전을 사용하고 MCP 설정에 설치 폴더의 실제 절대 경로를 지정 |
+| 설치형 서버가 바로 종료되거나 편집 창이 열림 | MCP `command`가 `garak-mcp.exe`인지 확인. 편집기 실행 파일에 `--mcp`를 전달하는 이전 설정은 교체 |
+| 설치형 MCP 런타임·서버 파일을 찾지 못함 | `garak-mcp.exe`, `가락이음.exe`, `resources`가 같은 설치 구조에 있는지 확인하고 설치 파일로 복구 |
+| 소스 실행에서 `dist-mcp/mcp/server.js`를 찾지 못함 | `mcp:build` 실행과 호스트 설정의 절대 경로 확인 |
 | 서버 시작 실패·포트 충돌 | 같은 포트를 쓰는 수동 서버나 두 번째 AI 호스트를 종료하고 하나만 시작 |
 | 연결 실패·`AUTH_FAILED` | 호스트와 앱의 연결 키, 앱 origin, 브리지 포트 확인. 키 자체를 오류 보고에 첨부하지 않음 |
 | `DAW_NOT_CONNECTED`, `INSTANCE_NOT_FOUND` | 앱의 연결 상태와 `list_instances` 결과를 다시 확인 |
@@ -444,6 +453,8 @@ UI 편집과 MCP 편집은 같은 `ProjectSession`을 사용하지만, **기존 
 
 설치형 연결을 위해 정확한 `garak://app` origin의 인증·요청 전달과 유사 주소·`null`·잘못된 Host 거절을 검사합니다. 빌드된 MCP 모듈은 가져오기만 해서는 서버나 키 출력을 시작하지 않으며, 호출자가 수명 주기를 관리합니다. 별도 Node 프로세스에서 명시적 종료의 중복 호출, stdin EOF, POSIX SIGINT/SIGTERM 뒤 listener 해제와 종료 완료를 검증하고, 연결 키 출력이 실제 write 완료를 기다리는지도 검사합니다. Windows의 종료 경로는 stdin EOF를 사용하며 POSIX 신호 검증과 구분합니다.
 
+Windows 설치물의 검증 대상은 `garak-mcp.exe`를 통한 키 생성, 토큰 오류 안내, stdio 프로토콜과 stdin 종료, 실제 편집기와의 loopback 연결입니다. 일반 Node 테스트나 GUI 실행 파일의 시작 성공만으로 이 경로가 검증되었다고 판단하지 않습니다. 해당 설치 버전의 Windows CI 실행 결과와 진단 자료를 확인합니다. [데스크톱 검증 범위](DESKTOP.md#5-windows-ci의-검증-범위)
+
 **실제 브라우저 UI 조작, 특정 외부 AI 제품의 설정 화면과 연결, 오디오 장치를 연결한 청음은 아직 검증하지 않았습니다.** 이 문서의 테스트 통과를 그 환경의 동작 확인으로 해석하지 않습니다. 전체 실행 결과는 [구현 상태](IMPLEMENTATION_STATUS.md)를 따릅니다.
 
 ## 구현 위치와 공식 참고 자료
@@ -454,3 +465,5 @@ UI 편집과 MCP 편집은 같은 `ProjectSession`을 사용하지만, **기존 
 - [공식 TypeScript SDK의 stdio 서버](https://ts.sdk.modelcontextprotocol.io/v2/serving/stdio)
 - [공식 TypeScript SDK의 패키지 구조](https://ts.sdk.modelcontextprotocol.io/v2/get-started/packages)
 - [MCP 도구와 구조화 결과](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
+- [Electron Node 모드와 ASAR 환경 변수](https://www.electronjs.org/docs/latest/api/environment-variables)
+- [Electron RunAsNode fuse](https://www.electronjs.org/docs/latest/tutorial/fuses)

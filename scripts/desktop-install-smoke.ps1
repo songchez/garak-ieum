@@ -63,6 +63,9 @@ try {
     } finally { $desktopProcess.Dispose() }
 
     if (-not (Test-Path -LiteralPath $desktopExecutable -PathType Leaf)) { throw 'The installer did not create the branded application executable.' }
+    $desktopMcpExecutable = Join-Path $desktopInstallDirectory 'garak-mcp.exe'
+    if (-not (Test-Path -LiteralPath $desktopMcpExecutable -PathType Leaf)) { throw 'The installer did not include the MCP console launcher.' }
+    $desktopReport['mcpExecutable'] = $desktopMcpExecutable
     $desktopRegisteredProgId = Read-DefaultRegistryValue 'Software\Classes\.garak'
     if ($desktopRegisteredProgId -cne $desktopProgId) { throw 'The .garak extension does not resolve to the expected project ProgID.' }
     $desktopIcon = Read-DefaultRegistryValue "Software\Classes\$desktopProgId\DefaultIcon"
