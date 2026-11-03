@@ -1,5 +1,6 @@
 import { validateProject } from './project'
-import type { AudioAsset, Project } from './types'
+import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
+import type { AudioAsset, Project, TimeSignature } from './types'
 
 export interface StoredAudioAsset {
   id: string
@@ -17,6 +18,9 @@ export interface ProjectSummary {
   id: string
   name: string
   bpm: number
+  /** Absent in summaries saved before schema 5; readers treat them as 4/4. */
+  timeSignature?: TimeSignature
+  beatsPerBar?: number
   trackCount: number
   lengthBeats: number
   createdAt: number
@@ -124,7 +128,7 @@ function validateAssets(project: Project, inputs: unknown[]): StoredAudioAsset[]
 }
 
 function projectSummary(project: Project, createdAt: number, updatedAt: number): ProjectSummary {
-  return { id: project.id, name: project.name, bpm: project.bpm, trackCount: project.tracks.length, lengthBeats: project.lengthBeats, createdAt, updatedAt }
+  return { id: project.id, name: project.name, bpm: project.bpm, timeSignature: { ...project.timeSignature }, beatsPerBar: project.beatsPerBar, trackCount: project.tracks.length, lengthBeats: project.lengthBeats, createdAt, updatedAt }
 }
 
 function validateSummary(input: unknown): ProjectSummary {
@@ -142,7 +146,10 @@ function validateSummary(input: unknown): ProjectSummary {
   }
   const createdAt = numeric('createdAt', 0, Number.MAX_SAFE_INTEGER, true)
   const updatedAt = numeric('updatedAt', createdAt, Number.MAX_SAFE_INTEGER, true)
-  return { id: text('id', 200), name: text('name', 512), bpm: numeric('bpm', 30, 300), trackCount: numeric('trackCount', 0, 10_000, true), lengthBeats: numeric('lengthBeats', 0.001, 10_000_000), createdAt, updatedAt }
+  const timeSignature = value.timeSignature === undefined ? { ...DEFAULT_TIME_SIGNATURE } : validateTimeSignature(value.timeSignature)
+  const beatsPerBar = quarterNotesPerBar(timeSignature)
+  if (value.beatsPerBar !== undefined && value.beatsPerBar !== beatsPerBar) throw new Error('프로젝트 목록의 박자표와 마디 길이가 일치하지 않습니다.')
+  return { id: text('id', 200), name: text('name', 512), bpm: numeric('bpm', 30, 300), timeSignature, beatsPerBar, trackCount: numeric('trackCount', 0, 10_000, true), lengthBeats: numeric('lengthBeats', 0.001, 10_000_000), createdAt, updatedAt }
 }
 
 function validateStoredProject(input: unknown, expectedId?: string): StoredProject {

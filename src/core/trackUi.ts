@@ -80,20 +80,24 @@ export const TICK = 1 / 960
 
 /**
  * Grid in beats for the current snap setting; 0 = no snap.
- * Smart picks the finest of [division, 1, 4, 16] whose on-screen size is at least SNAP_MIN_PX, never finer than division.
+ * Smart picks a division, denominator beat, bar or four bars at least SNAP_MIN_PX wide.
+ * All durations are quarter-note units, including bars such as 6/8 (= 3 quarters).
  */
-export function resolveSnap(snap: { on: boolean; mode: SnapMode }, ppb: number, division = .25): number {
+export function resolveSnap(snap: { on: boolean; mode: SnapMode }, ppb: number, division = .25, beatsPerBar = 4, beatUnit = 1): number {
   if (!snap.on) return 0
+  beatsPerBar = Number.isFinite(beatsPerBar) && beatsPerBar > 0 ? beatsPerBar : 4
+  beatUnit = Number.isFinite(beatUnit) && beatUnit > 0 ? beatUnit : 1
   switch (snap.mode) {
     case 'off': return 0
-    case 'bar': return 4
-    case 'beat': return 1
+    case 'bar': return beatsPerBar
+    case 'beat': return beatUnit
     case 'division': return division
     case 'ticks': return TICK
     default: {
       const px = Number.isFinite(ppb) && ppb > 0 ? ppb : 0
-      for (const v of [division, 1, 4, 16]) if (v * px >= SNAP_MIN_PX) return v
-      return 16
+      const steps = [division, beatUnit, beatsPerBar, beatsPerBar * 4].filter(v => v >= division).sort((a, b) => a - b)
+      for (const v of steps) if (v * px >= SNAP_MIN_PX) return v
+      return steps.at(-1)!
     }
   }
 }

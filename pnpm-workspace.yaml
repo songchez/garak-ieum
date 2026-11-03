@@ -1,0 +1,4 @@
+# Native build tools used by Wrangler; all other dependency scripts keep pnpm defaults.
+allowBuilds:
+  esbuild: true
+  workerd: true

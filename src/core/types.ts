@@ -108,14 +108,21 @@ export interface Marker {
   name: string
   startBeat: number
 }
+export type TimeSignatureDenominator = 2 | 4 | 8 | 16
+export interface TimeSignature {
+  numerator: number
+  denominator: TimeSignatureDenominator
+}
 export interface Project {
-  schemaVersion: 4
+  schemaVersion: 5
   id: string
   name: string
   bpm: number
   /** Project rendering rate; device preferences are stored separately in this browser. */
   sampleRate: SampleRate
-  beatsPerBar: 4
+  timeSignature: TimeSignature
+  /** Derived quarter-note beats per bar, not the numerator: 6/8 has 3. */
+  beatsPerBar: number
   lengthBeats: number
   masterVolume: number
   loop: { enabled: boolean; startBeat: number; endBeat: number }

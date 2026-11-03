@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
 import { createEmptyProject, createTrack, uid } from './project'
+import { setProjectTimeSignature } from './meter'
 import { listProjects, loadProject, saveProject, saveStoredProject, type StoredProject } from './storage'
 import type { AudioAsset, AudioClip } from './types'
 
@@ -67,6 +68,26 @@ beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()) })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('project library persistence', () => {
+  it('keeps meter in autosaves and summaries and defaults pre-meter summaries to 4/4', async () => {
+    const compound = setProjectTimeSignature(createEmptyProject(), 6, 8)
+    const legacy = createEmptyProject()
+    await saveProject(compound, new Map())
+    await saveProject(legacy, new Map())
+    expect((await loadProject(compound.id))?.project).toEqual(compound)
+    expect((await listProjects()).find(row => row.id === compound.id)).toMatchObject({ timeSignature: { numerator: 6, denominator: 8 }, beatsPerBar: 3 })
+
+    const oldSummary = await rawRecord(SUMMARIES, legacy.id) as Record<string, unknown>
+    delete oldSummary.timeSignature
+    delete oldSummary.beatsPerBar
+    const database = await opened()
+    const transaction = database.transaction(SUMMARIES, 'readwrite')
+    const done = completed(transaction)
+    transaction.objectStore(SUMMARIES).put(oldSummary)
+    await done
+    database.close()
+    expect((await listProjects()).find(row => row.id === legacy.id)).toMatchObject({ timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4 })
+  })
+
   it('starts empty and an explicit missing URL never opens the latest project', async () => {
     expect(await listProjects()).toEqual([])
     expect(await loadProject()).toBeNull()
@@ -103,8 +124,8 @@ describe('project library persistence', () => {
     const renamed = { ...a, name: '이름을 바꾼 작업', bpm: 112, lengthBeats: 128, tracks: [createTrack('instrument', 'gayageum')] }
     await saveProject(renamed, new Map())
     expect(await listProjects()).toEqual([
-      { id: a.id, name: renamed.name, bpm: 112, trackCount: 1, lengthBeats: 128, createdAt: 1000, updatedAt: 1002 },
-      { id: b.id, name: b.name, bpm: b.bpm, trackCount: 0, lengthBeats: b.lengthBeats, createdAt: 1001, updatedAt: 1001 },
+      { id: a.id, name: renamed.name, bpm: 112, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4, trackCount: 1, lengthBeats: 128, createdAt: 1000, updatedAt: 1002 },
+      { id: b.id, name: b.name, bpm: b.bpm, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4, trackCount: 0, lengthBeats: b.lengthBeats, createdAt: 1001, updatedAt: 1001 },
     ])
     expect((await loadProject())?.project).toEqual(renamed)
   })

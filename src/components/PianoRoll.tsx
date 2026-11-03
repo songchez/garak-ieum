@@ -26,6 +26,9 @@ interface PianoRollProps {
   onPreview: (pitch: number) => void
   /** Absolute project beat of the transport. The playhead is hidden when undefined. */
   playheadBeat?: number
+  /** Meter durations in the project's quarter-note beat coordinates. */
+  beatsPerBar?: number
+  beatUnit?: number
   /** Optional mouse snap in beats. Omitted/0 means free placement; arrows use the visible grid. */
   snap?: number
   onSnapChange?: (snap: number) => void
@@ -64,7 +67,7 @@ const byTime = (a: MidiNote, b: MidiNote) => a.start - b.start || a.pitch - b.pi
 const sameNote = (a: MidiNote, b: MidiNote) => a.start === b.start && a.pitch === b.pitch && a.duration === b.duration && a.velocity === b.velocity
 const newId = () => `note-${typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
 
-export default function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, playheadBeat, snap: snapProp, onSnapChange, zoom: zoomProp, onZoomChange, zoomRef, commandRef }: PianoRollProps) {
+export default function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, playheadBeat, beatsPerBar = 4, beatUnit = 1, snap: snapProp, onSnapChange, zoom: zoomProp, onZoomChange, zoomRef, commandRef }: PianoRollProps) {
   const clip = useMemo(() => midiEditorClip(sourceClip), [sourceClip])
   const scrollRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -107,7 +110,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   const clipBeats = Math.max(0.25, clip.lengthBeats)
   const fitPpb = fitScale(clipBeats, Math.max(120, viewportWidth - KEY_WIDTH - 1), ZOOM_LIMITS.pianoX)
   const beatWidth = zoom.ppb === null ? fitPpb : clampZoom(zoom.ppb, ZOOM_LIMITS.pianoX)
-  const grid = musicalGrid(beatWidth, { snap })
+  const grid = musicalGrid(beatWidth, { snap, beatsPerBar, beatUnit })
   const gridWidth = clipBeats * beatWidth
   const notes = draft ?? clip.notes
   const clipNotesById = useMemo(() => new Map(clip.notes.map(note => [note.id, note])), [clip.notes])
@@ -791,15 +794,15 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   ]
 
   const gridStyle = musicalGridStyle(grid)
-  const rulerMarks = musicalRulerMarks(grid, Math.max(0, viewport.left / beatWidth - 4), Math.min(clipBeats, (viewport.left + Math.max(0, viewport.width - KEY_WIDTH)) / beatWidth + 4))
+  const rulerMarks = musicalRulerMarks(grid, Math.max(0, viewport.left / beatWidth - beatsPerBar), Math.min(clipBeats, (viewport.left + Math.max(0, viewport.width - KEY_WIDTH)) / beatWidth + beatsPerBar))
   const style = {
     '--piano-color': color,
     '--piano-note-text': contrastTextColor(color),
     '--piano-note-selected-text': contrastTextColor(color, .2),
     '--piano-row': `${ROW}px`,
     '--piano-step': `${beatWidth * grid.stepBeats}px`,
-    '--piano-beat': `${beatWidth}px`,
-    '--piano-bar': `${beatWidth * 4}px`,
+    '--piano-beat': `${beatWidth * beatUnit}px`,
+    '--piano-bar': `${beatWidth * beatsPerBar}px`,
   } as CSSProperties
   const gridHeight = pitches.length * ROW
 
@@ -814,7 +817,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
           <span className="piano-clip-name" title={clip.name}>{clip.name}</span>
         </div>
         <div className="piano-header-right">
-          {primaryNote ? <span className="piano-selection-label">{labelForPitch(primaryNote.pitch)} <span>· {Number(primaryNote.duration.toFixed(3))}박</span></span>
+          {primaryNote ? <span className="piano-selection-label">{labelForPitch(primaryNote.pitch)} <span>· {Number((primaryNote.duration / beatUnit).toFixed(3))}박</span></span>
             : selectedNotes.length > 1 && <span className="piano-selection-label">{selectedNotes.length}<span>개 선택</span></span>}
           <ZoomControls area={drumMode ? '드럼 에디터' : '피아노롤'} onZoom={zoomCommand} />
           <button type="button" className={`piano-lane-toggle${showVelocity ? ' active' : ''}`} aria-pressed={showVelocity} onClick={() => setShowVelocity(value => !value)} title="벨로시티 레인 보이기/숨기기">VEL</button>
@@ -890,7 +893,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
                     if (!selectedIds.has(note.id)) { setSelectedIds(new Set([note.id])); anchorRef.current = note.id }
                     openMenu(event, 'note')
                   }}
-                  aria-label={`${labelForPitch(note.pitch)}, ${Number((note.start + 1).toFixed(3))}박 위치, 길이 ${Number(note.duration.toFixed(3))}박, 세기 ${Math.round(noteVelocity * 127)}`}
+                  aria-label={`${labelForPitch(note.pitch)}, ${Number((note.start / beatUnit + 1).toFixed(3))}박 위치, 길이 ${Number((note.duration / beatUnit).toFixed(3))}박, 세기 ${Math.round(noteVelocity * 127)}`}
                   aria-pressed={selected}
                   title={`${labelForPitch(note.pitch)} · ${snap > 0 ? '격자에 맞춰' : '자유롭게'} 드래그 이동 · ←→ 표시 격자 한 칸 · ↑↓ ${drumMode ? '한 행' : '반음'} · ⇧방향키 선택 확장 · ${altLabel.replace('+', '')} 드래그 복사 · 양 끝으로 길이 조절`}
                 >

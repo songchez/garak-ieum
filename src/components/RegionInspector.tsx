@@ -113,6 +113,7 @@ function Check({ label, values, onChange }: { label: string; values: boolean[]; 
 interface Props {
   selection: ClipEntry[]
   bpm: number
+  beatsPerBar?: number
   /** Applies fn to every selected clip; key merges consecutive edits into one history step. */
   onClipsEdit: (fn: (clip: Clip) => Clip, key?: string) => void
 }
@@ -129,7 +130,7 @@ const FIELDS = {
   fadeOut: { get: (c: Clip) => c.kind === 'audio' ? c.fadeOut : 0, set: (c: Clip, v: number): Clip => c.kind === 'audio' ? { ...c, fadeOut: v } : c, min: 0, max: 30 },
 } satisfies Record<string, NumField>
 
-export function RegionInspector({ selection, bpm, onClipsEdit }: Props) {
+export function RegionInspector({ selection, bpm, beatsPerBar = 4, onClipsEdit }: Props) {
   const [more, setMore] = useState(false)
   const clips = selection.map(e => e.clip)
   const anchor = clips[0]
@@ -163,7 +164,7 @@ export function RegionInspector({ selection, bpm, onClipsEdit }: Props) {
     {more && <>
       {num('delay', '딜레이', { format: v => `${signed(v)} 틱`, after: ms })}
       {allMidi && num('gain', '게인', { step: .1, pxPerStep: 2, format: formatDb })}
-      {allMidi && <div className="insp-row"><span className="insp-label">클립 길이</span><b className="insp-readonly">{(anchor.lengthBeats / 4).toFixed(2)}{mixedOf(c => c.lengthBeats) ? '*' : ''} 마디</b></div>}
+      {allMidi && <div className="insp-row"><span className="insp-label">클립 길이</span><b className="insp-readonly">{(anchor.lengthBeats / beatsPerBar).toFixed(2)}{mixedOf(c => c.lengthBeats) ? '*' : ''} 마디</b></div>}
       {allAudio && num('fadeIn', '페이드 인', { step: .01, pxPerStep: 1, format: v => `${v.toFixed(2)} s` })}
       {allAudio && num('fadeOut', '페이드 아웃', { step: .01, pxPerStep: 1, format: v => `${v.toFixed(2)} s` })}
     </>}

@@ -10,7 +10,7 @@ const track = (id: string, patch: Partial<Track> = {}): Track => ({
 })
 
 const project = (...tracks: Track[]): Project => ({
-  schemaVersion: 4, id: 'p', name: 'p', bpm: 120, sampleRate: 48000, beatsPerBar: 4, lengthBeats: 64, masterVolume: 1,
+  schemaVersion: 5, id: 'p', name: 'p', bpm: 120, sampleRate: 48000, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4, lengthBeats: 64, masterVolume: 1,
   loop: { enabled: false, startBeat: 0, endBeat: 4 }, tracks, markers: [],
 })
 
