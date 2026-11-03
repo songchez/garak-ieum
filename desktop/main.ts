@@ -172,7 +172,9 @@ function buildMenu(): void {
       { id: 'project-open', label: '프로젝트 가져오기…', accelerator: 'CmdOrCtrl+O', click: () => { void showOpenProject().then(file => { if (file && rendererReady) window?.webContents.send('garak:project-opened', file) }).catch(reportFileError) } },
       { id: 'project-save', label: '프로젝트 파일 저장…', accelerator: 'CmdOrCtrl+S', click: () => send('garak:save-project') },
       { type: 'separator' },
-      { label: '종료', accelerator: 'Alt+F4', click: () => window?.close() },
+      process.platform === 'darwin'
+        ? { role: 'close', label: '창 닫기' }
+        : { label: '종료', accelerator: 'Alt+F4', click: () => window?.close() },
     ] },
     { label: '보기', submenu: [{ role: 'resetZoom', label: '화면 배율 초기화' }, { role: 'zoomIn', label: '화면 확대' }, { role: 'zoomOut', label: '화면 축소' }, { type: 'separator' }, { role: 'togglefullscreen', label: '전체 화면' }] },
   ]

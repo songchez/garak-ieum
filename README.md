@@ -203,6 +203,7 @@ npx.cmd --yes pnpm@11.25.0 dev
 | 테마와 디자인 | [여섯 테마](docs/THEMES.md) · [브랜드](docs/BRAND.md) |
 | 코드와 배포 | [아키텍처](docs/ARCHITECTURE.md) · [배포 안내](docs/DEPLOYMENT.md) |
 | Windows 앱 설치·빌드 | [데스크톱 안내](docs/DESKTOP.md) · [네이티브 오디오 계획](docs/NATIVE_AUDIO.md) |
+| macOS 앱 설치·빌드 | [Apple Silicon DMG 안내](docs/MACOS.md) |
 | 라이선스·대응 소스·재배포 | [GPL 배포 안내](docs/LICENSING.md) · [제3자 자산 안내](THIRD_PARTY_NOTICES.md) |
 | 현재 구현과 남은 작업 | [구현 상태](docs/IMPLEMENTATION_STATUS.md) · [상호작용 명세](docs/INTERACTION_SPEC.md) |
 

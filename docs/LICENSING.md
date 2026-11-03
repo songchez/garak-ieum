@@ -20,19 +20,20 @@
 
 GPL은 유료 배포를 허용합니다. 배포하지 않고 개인적으로 사용하는 수정본을 공개해야 하는 것도 아닙니다. 다만 다른 사람에게 실행 파일을 전달할 때에는 해당 실행 파일에 대응하는 소스와 GPL의 고지를 제공해야 합니다. 공개 GitHub 저장소가 있다는 사실만으로 설치 파일 버전과의 대응 관계가 설명되지는 않습니다. [GNU 배포 FAQ](https://www.gnu.org/licenses/gpl-faq.html#DistributeExtendedBinary) · [GPL v3 제1·5·6조](https://www.gnu.org/licenses/gpl-3.0.html)
 
-Windows CI는 깨끗한 Git 체크아웃에서 다음 파일을 같은 Artifact에 묶습니다.
+Windows·macOS CI는 깨끗한 Git 체크아웃에서 다음 파일을 플랫폼별 같은 Artifact에 묶습니다.
 
 | 파일 | 목적 |
 |---|---|
 | `Garak-Ieum-Setup-<버전>-x64.exe` | 사용자가 실행하는 Windows 설치 파일 |
+| `Garak-Ieum-Setup-<버전>-arm64.dmg` | Apple Silicon Mac 설치 파일 |
 | `Garak-Ieum-Source-<버전>-<커밋 앞 12자리>.zip` | 해당 커밋의 프로젝트 소스 전체, 자산, 잠금 파일, 빌드·설치 스크립트 |
 | `SOURCE.txt` | 빌드 버전·전체 커밋·소스 위치와 빌드 안내 |
 | `LICENSE.txt`, `THIRD_PARTY_NOTICES.txt` | GPL 전문과 외부 의존성·자산 고지 |
-| `SHA256SUMS.txt` | 설치 파일과 소스 묶음의 SHA-256 |
+| `SHA256SUMS.txt` 또는 `SHA256SUMS-macos-arm64.txt` | 해당 플랫폼 설치 파일과 소스 묶음의 SHA-256 |
 
-소스 ZIP에는 `.git`, `node_modules`, 비밀 설정, 빌드 캐시를 넣지 않습니다. 이 ZIP은 개발·수정용이며 설치에는 `.exe`만 필요합니다. 소스를 다운로드한 사람도 빌드할 수 있도록 `SOURCE_VERSION.json`을 넣습니다. `pnpm install --frozen-lockfile` 이후 [데스크톱 빌드 절차](DESKTOP.md#4-소스에서-실행하고-빌드하기)를 따릅니다. 설치된 일반 Windows PC에서 수정본을 빌드·설치하는 데 프로젝트 전용 서명 키나 라이선스 키는 필요하지 않습니다.
+소스 ZIP에는 `.git`, `node_modules`, 비밀 설정, 빌드 캐시를 넣지 않습니다. 이 ZIP은 개발·수정용이며 설치에는 Windows `.exe` 또는 Apple Silicon Mac `.dmg`를 사용합니다. 소스를 다운로드한 사람도 빌드할 수 있도록 `SOURCE_VERSION.json`을 넣습니다. `pnpm install --frozen-lockfile` 이후 [Windows 빌드 절차](DESKTOP.md#4-소스에서-실행하고-빌드하기) 또는 [macOS 빌드 절차](MACOS.md#소스에서-빌드하기)를 따릅니다. 설치된 일반 Windows PC에서 수정본을 빌드·설치하는 데 프로젝트 전용 서명 키나 라이선스 키는 필요하지 않습니다. Mac의 로컬 개발 프리뷰는 ad-hoc 서명으로 빌드하며, Apple Developer ID 배포 서명·공증과 구분합니다.
 
-직접 만든 설치 파일을 배포할 때에는 소스 변경을 먼저 커밋하고 같은 체크아웃에서 `pnpm desktop:build`, 검증, `pnpm desktop:source`를 차례로 실행합니다. 소스 생성 명령은 변경 중인 체크아웃이나 다른 커밋에서 만든 `dist`를 거부합니다. 소스 묶음에는 빌드에 쓴 전체 커밋을 기록하고, 설치된 앱의 **정보 → 배포본 소스 안내**에서도 확인할 수 있습니다.
+직접 만든 설치 파일을 배포할 때에는 소스 변경을 먼저 커밋하고 같은 체크아웃에서 `pnpm desktop:build`(Windows) 또는 `pnpm desktop:build:mac`(macOS), 검증, `pnpm desktop:source`를 차례로 실행합니다. 소스 생성 명령은 변경 중인 체크아웃이나 다른 커밋에서 만든 `dist`를 거부합니다. 소스 묶음에는 빌드에 쓴 전체 커밋을 기록하고, 설치된 앱의 **정보 → 배포본 소스 안내**에서도 확인할 수 있습니다.
 
 이 프로젝트 소스 묶음은 의존성 전체의 소스 보관을 대신하지 않습니다. `pnpm-lock.yaml`의 의존성 버전, 기존 Signalsmith WASM의 [원본 커밋과 추출 안내](../src/devices/pitch-editor/vendor/README.md), 사용한 런타임의 소스 제공 경로도 해당 배포 버전에 맞춰 유지해야 합니다. 네이티브 엔진과 ASIO SDK를 추가할 때에는 실제로 결합한 SDK·라이브러리의 소스, 패치, 인터페이스 정의, 빌드·설치 스크립트와 고지를 대응 소스에 포함해야 합니다. 잠금 파일이나 상위 저장소 링크만으로 필요한 소스가 모두 제공되었다고 간주하지 않습니다.
 

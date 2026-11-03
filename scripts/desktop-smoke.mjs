@@ -12,9 +12,12 @@ import { _electron } from 'playwright'
 // the product contains no automation-only IPC or filesystem access.
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const artifacts = path.join(repository, 'release', 'desktop-smoke')
+const defaultExecutable = process.platform === 'darwin'
+  ? path.join(repository, 'release', 'mac-arm64', '가락이음.app', 'Contents', 'MacOS', '가락이음')
+  : path.join(repository, 'release', 'win-unpacked', '가락이음.exe')
 const executable = process.env.GARAK_ELECTRON_EXECUTABLE
   ? path.resolve(process.env.GARAK_ELECTRON_EXECUTABLE)
-  : path.join(repository, 'release', 'win-unpacked', '가락이음.exe')
+  : defaultExecutable
 // Windows MCP must use the installed console launcher, not the GUI subsystem's
 // stdout/stdin handles. The launcher alone configures its child Node runtime.
 const mcpExecutable = process.platform === 'win32' ? path.join(path.dirname(executable), 'garak-mcp.exe') : executable
@@ -254,7 +257,7 @@ async function closeNormally() {
 try {
   await mkdir(artifacts, { recursive: true })
   await access(executable)
-  if (process.platform !== 'win32' && !process.env.GARAK_ELECTRON_EXECUTABLE) throw new Error('Run the packaged Windows smoke on Windows, or set GARAK_ELECTRON_EXECUTABLE to a compatible packaged app.')
+  if (!['win32', 'darwin'].includes(process.platform) && !process.env.GARAK_ELECTRON_EXECUTABLE) throw new Error('Run the packaged smoke on Windows or macOS, or set GARAK_ELECTRON_EXECUTABLE to a compatible packaged app.')
   if (process.env.ELECTRON_DISABLE_SANDBOX) throw new Error('Remove ELECTRON_DISABLE_SANDBOX before testing the packaged app.')
   profile = await mkdtemp(path.join(tmpdir(), 'garak-desktop-smoke-'))
   report.profile = profile
@@ -562,6 +565,28 @@ try {
     report.reopenURL = reopenURL
     report.secondInstanceOpen = { fileName: path.basename(projectFile), exitCode: result.code, route: reopenURL }
   })
+
+  if (process.platform === 'darwin' && process.env.GARAK_MAC_APP_BUNDLE) {
+    await checked('macOS Launch Services opens a .garak file in the existing app', async () => {
+      const application = path.resolve(process.env.GARAK_MAC_APP_BUNDLE)
+      assert.equal(executable, path.join(application, 'Contents', 'MacOS', '가락이음'), 'Launch Services must target the same isolated test app.')
+      const page = session.page, previous = page.url()
+      // Explicitly select the installed temporary app. No default-app changes,
+      // additional user profile, or Finder automation permissions are required.
+      const result = await runProcess('/usr/bin/open', 'Launch Services project file open', ['-a', application, '--', projectFile])
+      assert.equal(result.code, 0, 'Launch Services rejected the project file.')
+      await eventually('Launch Services imported project route', async () => page.url() !== previous)
+      await valueIs(page.getByRole('textbox', { name: '프로젝트 이름', exact: true }), projectName)
+      await valueIs(page.getByRole('spinbutton', { name: '템포 BPM', exact: true }), '137')
+      await valueIs(page.getByLabel('박자표 분자', { exact: true }), '6')
+      await valueIs(page.getByLabel('박자표 분모', { exact: true }), '8')
+      await page.locator('.save-indicator.saved').waitFor()
+      assert.equal(await session.application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1)
+      reopenURL = page.url()
+      report.reopenURL = reopenURL
+      report.launchServicesOpen = { fileName: path.basename(projectFile), route: reopenURL }
+    })
+  }
 
   await checked('normal close commits active BPM input and flushes autosave', async () => {
     const bpm = session.page.getByRole('spinbutton', { name: '템포 BPM', exact: true })
