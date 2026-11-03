@@ -45,7 +45,8 @@ try {
   checked('bundle identity and version', () => {
     assert.equal(info.CFBundleIdentifier, 'com.garakieum.desktop')
     assert.equal(info.CFBundleShortVersionString, version)
-    assert.equal(info.CFBundleExecutable, '가락이음')
+    // macOS filesystems/package tooling can represent Hangul in decomposed NFD.
+    assert.equal(info.CFBundleExecutable.normalize('NFC'), '가락이음')
     assert.equal(info.CFBundlePackageType, 'APPL')
     assert.ok(info.NSMicrophoneUsageDescription?.includes('녹음'), 'A microphone recording purpose must be provided.')
   })
