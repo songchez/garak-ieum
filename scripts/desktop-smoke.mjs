@@ -84,7 +84,7 @@ function launchEnvironment(overrides = {}) {
   // Never inherit a developer's real bridge token into the smoke processes.
   const excluded = new Set(['ELECTRON_RUN_AS_NODE', 'GARAK_MCP_TOKEN', 'GARAK_MCP_PORT', 'GARAK_DESKTOP_TEST_PROFILE'])
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => !excluded.has(key.toUpperCase()) && typeof value === 'string'))
-  return { ...environment, GARAK_DESKTOP_TEST_PROFILE: profile, ...overrides }
+  return { ...environment, ...(process.platform === 'darwin' ? { ELECTRON_ENABLE_LOGGING: '1' } : {}), GARAK_DESKTOP_TEST_PROFILE: profile, ...overrides }
 }
 async function freeLoopbackPort() {
   const server = createServer()
