@@ -60,6 +60,23 @@ describe('resolveSnap', () => {
     expect(resolveSnap({ on: true, mode: 'smart' }, 200, .125)).toBe(.125)
     expect(resolveSnap({ on: true, mode: 'smart' }, 200, 1)).toBe(1)
   })
+  it('snaps bars and denominator beats for 3/4, 6/8 and 7/8', () => {
+    expect(resolveSnap({ on: true, mode: 'bar' }, 30, .25, 3, 1)).toBe(3)
+    expect(resolveSnap({ on: true, mode: 'bar' }, 30, .25, 3, .5)).toBe(3)
+    expect(resolveSnap({ on: true, mode: 'beat' }, 30, .25, 3, .5)).toBe(.5)
+    expect(resolveSnap({ on: true, mode: 'bar' }, 30, .25, 3.5, .5)).toBe(3.5)
+    expect(resolveSnap({ on: true, mode: 'beat' }, 30, .25, 4, 2)).toBe(2)
+    expect(resolveSnap({ on: true, mode: 'division' }, 30, .25, 3, .5)).toBe(.25)
+    expect(resolveSnap({ on: true, mode: 'ticks' }, 30, .25, 3, .5)).toBe(TICK)
+  })
+  it('uses a denominator beat or whole bars for smart snapping as meter and zoom change', () => {
+    expect(resolveSnap({ on: true, mode: 'smart' }, 30, .25, 3, 1)).toBe(1)
+    expect(resolveSnap({ on: true, mode: 'smart' }, 30, .25, 3, .5)).toBe(.5)
+    expect(resolveSnap({ on: true, mode: 'smart' }, 12, .25, 3, .5)).toBe(3)
+    expect(resolveSnap({ on: true, mode: 'smart' }, 3, .25, 3, .5)).toBe(12)
+    expect(resolveSnap({ on: true, mode: 'smart' }, 200, 1, 3, .5)).toBe(1)
+    expect(resolveSnap({ on: false, mode: 'bar' }, 30, .25, 3, .5)).toBe(0)
+  })
 })
 
 describe('sanitize', () => {

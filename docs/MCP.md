@@ -165,7 +165,8 @@ AI 연결 창의 **닫기**는 창만 닫습니다. 접속을 끝내려면 **연
 | `pitch` | MIDI 정수 0~127. 가락이음 표시 기준은 **60=C3** |
 | `startBeat` | 프로젝트 시작부터의 절대 위치. **0부터 시작하는 4분음표 beat** |
 | 음표 `start` | 신규 리전 입력은 리전 상대 beat(소스 오프셋 0). 원본 음표 조회는 소스 beat이며 `sourceOffsetBeats`를 빼면 표시 리전 상대 위치 |
-| `lengthBeats`, `duration` | beat 단위 길이. 현재 4/4이므로 **8마디=32 beat**, 화면의 1마디 시작은 beat 0 |
+| `lengthBeats`, `duration` | 4분음표 beat 단위 길이. 4/4의 8마디=32 beat, 6/8의 8마디=24 beat. 화면의 1마디 시작은 beat 0 |
+| `timeSignature`, `beatsPerBar` | 프로젝트 분자/분모와 4분음표 단위 마디 길이. 분자 1–32, 분모 2·4·8·16, `beatsPerBar = numerator * 4 / denominator`. `bpm`은 4분음표/분 |
 | 음표 `velocity` | 정규화된 **0~1**. MIDI 1~127 값이나 리전의 벨로시티 오프셋과 다름 |
 | 트랙 `volume` | 선형 gain 0~2. 1은 0dB, 2는 약 +6.0206dB |
 | `volumeDb` | 절대 페이더 값. -120~약 +6.0206dB, **`null`은 gain 0인 무음**. 뮤트 플래그와 별도 |
@@ -401,7 +402,7 @@ UI 편집과 MCP 편집은 같은 `ProjectSession`을 사용하지만, **기존 
 - 오디오 파일 전송, 구간 청음·렌더 job, 오디오 분석·음악 이해
 - UI에 추가된 피치 편집기의 분석·음표 이동·재합성 명령
 - 재생 변환을 적용한 음표 조회, 피아노롤의 세부 음표 선택·기존 개별 음표 수정
-- 오토메이션, 템포 맵, 4/4 외 박자, send/return·sidechain
+- 오토메이션, 템포 맵, MCP를 통한 박자표 변경, send/return·sidechain. UI에서 설정한 박자표는 조회와 beat 좌표 계산에 반영됩니다.
 - 외부 VST/AU/CLAP 실행, MIDI 파일 입출력
 - 작곡 언어·임의 JavaScript 실행, 코드 원본과 GUI의 왕복 편집
 - 특정 과거 AI 작업만 선택해 되돌리기, 원격 HTTP MCP 서비스

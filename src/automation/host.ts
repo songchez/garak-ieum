@@ -29,7 +29,7 @@ const units = {
   pitch: 'MIDI integer 0..127; displayed middle C is C3=60',
   position: 'Zero-based quarter-note beats. clip startBeat is absolute; stored note start is source-relative. Region-local note start = note.start - (clip.sourceOffsetBeats ?? 0); new MIDI clips use offset 0.',
   regionLoop: 'loop=true repeats the visible source window; loopLengthBeats optionally bounds the total span from startBeat. The next region or project end can stop repeats sooner. Missing loopLengthBeats means continuous.',
-  meter: '4/4 only; user bar 1 starts at beat 0',
+  meter: 'project.timeSignature is numerator/denominator (numerator 1..32; denominator 2, 4, 8 or 16). beatsPerBar is quarter-note length = numerator * 4 / denominator; user bar 1 starts at beat 0. BPM remains quarter notes per minute.',
   noteVelocity: '0..1 normalized; distinct from MIDI-unit region/track velocity offsets',
   volume: 'track volume is linear gain 0..2; volumeDb uses 20*log10(gain), null means silence',
   pan: '-1=left, 0=center, 1=right',
@@ -38,7 +38,7 @@ const units = {
 const unsupported = [
   'audio capture and device changes', 'transport control', 'audio asset transfer',
   'effective playback-note queries', 'piano-roll note selection', 'automation', 'tempo maps',
-  'meters other than 4/4', 'send/return and sidechain', 'external VST/AU/CLAP',
+  'time-signature changes through MCP', 'send/return and sidechain', 'external VST/AU/CLAP',
   'audio analysis and audition/render jobs', 'composition-language execution',
   'selective undo of a non-latest transaction',
 ]
@@ -86,7 +86,7 @@ export function createDawRequestHandler(options: DawHostOptions) {
     if (!runtime.ready) throw new DomainError('DAW_NOT_READY', '프로젝트 불러오기가 끝난 뒤 다시 요청해주세요.')
     const context = {
       projectId: project.id, revision: snapshot.revision,
-      project: { id: project.id, name: project.name, bpm: project.bpm, beatsPerBar: project.beatsPerBar, lengthBeats: project.lengthBeats, sampleRate: project.sampleRate, masterVolume: project.masterVolume, loop: { ...project.loop }, markerCount: project.markers.length },
+      project: { id: project.id, name: project.name, bpm: project.bpm, timeSignature: { ...project.timeSignature }, beatsPerBar: project.beatsPerBar, lengthBeats: project.lengthBeats, sampleRate: project.sampleRate, masterVolume: project.masterVolume, loop: { ...project.loop }, markerCount: project.markers.length },
       selection: selection(project, options.getSelection()), transport: { ...options.getTransport() },
       history: { canUndo: snapshot.history.past.length > 0, canRedo: snapshot.history.future.length > 0, lastChange: snapshot.lastChange ?? null },
       persistence: runtime.persistence,

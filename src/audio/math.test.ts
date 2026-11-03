@@ -3,7 +3,7 @@ import type { Project } from '../core/types'
 import { clipEnvelope, encodePcm16Wav, normalizedStart, positionAfter } from './math'
 
 const project: Project = {
-  schemaVersion: 4, id: 'test', name: 'Test', bpm: 120, sampleRate: 48000, beatsPerBar: 4,
+  schemaVersion: 5, id: 'test', name: 'Test', bpm: 120, sampleRate: 48000, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4,
   lengthBeats: 32, masterVolume: 0.8,
   loop: { enabled: true, startBeat: 8, endBeat: 16 }, tracks: [], markers: [],
 }

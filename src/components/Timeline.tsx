@@ -5,6 +5,7 @@ import { audibleTracks, effectiveArm, type TrackButtonKind } from '../core/track
 import { isTrackEnabled, loopEnd } from '../core/playback'
 import { previewRegionTracks, type RegionPlacement } from '../core/regionDisplay'
 import { musicalGrid, musicalGridStyle, musicalRulerMarks, musicalSpan } from '../core/musicalGrid'
+import { quarterNotesPerBeat } from '../core/meter'
 import { snapToEdges } from '../core/edgeSnap'
 import { recordingDraftPlacement, type RecordingDraft } from '../core/recording'
 import { DEFAULT_HEADER_WIDTH, DRAG_MODES, DRAG_MODE_LABELS, HEADER_WIDTH_LIMITS, SNAP_MODE_LABELS, TRACK_ZOOM_LIMITS, resolveSnap, type DragMode, type SnapMode, type TrackHeaderConfig } from '../core/trackUi'
@@ -139,6 +140,7 @@ const plainMods:ClickMods={range:false,toggle:false,trackOnly:false}
 
 export function Timeline(props:TimelineProps){
   const {project,assets,engine,focusedTrackId,selectedTrackIds,selectedClipIds,ui}=props
+  const beatsPerBar=project.beatsPerBar,beatUnit=quarterNotesPerBeat(project.timeSignature)
   const ppb=props.zoom.ppb,rowHeight=Math.round(props.zoom.rowHeight),headerWidth=ui.headerWidth
   const scrollRef=useRef<HTMLDivElement>(null)
   const sheetRef=useRef<HTMLDivElement>(null)
@@ -183,7 +185,7 @@ export function Timeline(props:TimelineProps){
     return()=>window.clearInterval(timer)
   },[recordingDraft?.id,recordingDraft?.status])
   const recordingView=recordingDraft?recordingDraftPlacement(recordingDraft,recordingNow):null
-  const snapBeats=resolveSnap(ui.snap,ppb)
+  const snapBeats=resolveSnap(ui.snap,ppb,.25,beatsPerBar,beatUnit)
   const projectTrackIds=new Set(project.tracks.map(t=>t.id))
   const rows=recordingDraft?project.tracks.filter(t=>ui.hideView||!t.hidden||t.id===recordingDraft.trackId):visibleTracks(project,ui.hideView)
   // A reserved track is only a display row until capture has been decoded.
@@ -194,7 +196,7 @@ export function Timeline(props:TimelineProps){
   const clipTrack=new Map(rows.flatMap(t=>t.clips.map(c=>[c.id,t] as const)))
   const audible=audibleTracks(project)
   const contentEnd=Math.max(project.lengthBeats,recordingView?recordingView.startBeat+recordingView.lengthBeats:0,...project.tracks.flatMap(t=>t.clips.map(c=>c.startBeat+Math.max(c.lengthBeats,c.loopLengthBeats??0))),...project.markers.map(m=>m.startBeat))
-  const width=(contentEnd+8)*ppb
+  const width=(contentEnd+beatsPerBar*2)*ppb
   const heightOf=(track:Track)=>{let f=ui.trackZoom[track.id]??1;if(ui.zoomFocused&&track.id===focusedTrackId)f=Math.max(f,FOCUS_ZOOM);return Math.round(clamp(rowHeight*f,ROW_LIMITS.min,ROW_LIMITS.max))}
   const sheetPoint=(clientX:number,clientY:number)=>{const r=sheetRef.current!.getBoundingClientRect();return{x:clientX-r.left,y:clientY-r.top}}
   const rowEls=()=>Array.from(sheetRef.current?.querySelectorAll<HTMLElement>(':scope > .track-row')??[])
@@ -312,7 +314,7 @@ export function Timeline(props:TimelineProps){
     ],'트랙 메뉴')
   }
   function laneMenu(e:React.MouseEvent,track:Track){
-    const bar=Math.floor(laneBeat(e.currentTarget,e.clientX)/4)*4
+    const bar=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar
     if(!selectedTrackIds.has(track.id))props.onTrackClick(track.id,{...plainMods,trackOnly:true})
     openMenu(e,[cmd('붙여넣기','paste',{},{trackIds:[track.id]}),SEP,track.kind==='audio'?{label:'오디오 가져오기…',icon:'upload',onSelect:()=>latest.current.onAddClip(track.id,bar)}:{label:'MIDI 클립 만들기',icon:'region',onSelect:()=>latest.current.onAddClip(track.id,bar)},SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:track.id})}],'레인 메뉴')
   }
@@ -592,7 +594,7 @@ export function Timeline(props:TimelineProps){
       const dx=ev.clientX-startX
       if(!started&&!crossedDragThreshold(dx))return
       started=true
-      const unit=ev.shiftKey?1:4
+      const unit=ev.shiftKey?beatUnit:beatsPerBar
       beat=Math.max(0,Math.round((marker.startBeat+dx/ppb)/unit)*unit)
       setMarkerDrag({id:marker.id,beat})
     },end:commit=>{
@@ -619,10 +621,10 @@ export function Timeline(props:TimelineProps){
   const clipActions:ClipActions={beginClipGesture,clipMenu,loopHandle,select:(trackId,clipId)=>props.onSelectClips([clipId],clipId,trackId),open:(trackId,clipId)=>{if(!selectedClipIds.has(clipId))props.onSelectClips([clipId],clipId,trackId);props.onClipOpen?.(trackId,clipId)},renameDone:(clipId,name)=>props.onClipRename?.(clipId,name)}
   const actions=useRef(clipActions);actions.current=clipActions
   const loopView=loopDraft?{startBeat:loopDraft.start,endBeat:loopDraft.end}:project.loop
-  const grid=musicalGrid(ppb,{snap:snapBeats,beatsPerBar:project.beatsPerBar})
+  const grid=musicalGrid(ppb,{snap:snapBeats,beatsPerBar,beatUnit})
   const gridStyle=musicalGridStyle(grid)
   const laneGrid=ui.gridLines?gridStyle:{backgroundImage:'none'}
-  const rulerMarks=musicalRulerMarks(grid,Math.max(0,rulerViewport.left/ppb-4),(rulerViewport.left+Math.max(0,rulerViewport.width-headerWidth))/ppb+4)
+  const rulerMarks=musicalRulerMarks(grid,Math.max(0,rulerViewport.left/ppb-beatsPerBar),(rulerViewport.left+Math.max(0,rulerViewport.width-headerWidth))/ppb+beatsPerBar)
   const anyHidden=project.tracks.some(t=>t.hidden),anySolo=project.tracks.some(t=>t.solo)
   const focused=project.tracks.find(t=>t.id===focusedTrackId)
   const multi=selectedTrackIds.size>1
@@ -669,9 +671,9 @@ export function Timeline(props:TimelineProps){
         </div>
         {ui.globalTracks&&<div className="timeline-global-row">
           <div className="global-header"><span className="global-name">마커</span><button type="button" className="corner-button" title={`재생 위치에 마커 추가 (${shortcutLabel('createMarker')})`} aria-label="마커 추가" onClick={e=>{addMarkerAt(Math.round(engine.getSnapshot().beat*16)/16);if(e.detail)e.currentTarget.blur()}}><Icon name="plus" size={11}/></button></div>
-          <div className="global-lane marker-lane" style={{width,...laneGrid}} onDoubleClick={e=>{if(e.target!==e.currentTarget)return;addMarkerAt(Math.floor(laneBeat(e.currentTarget,e.clientX)/4)*4)}} onPointerDown={e=>{if(e.target===e.currentTarget&&e.button===0)setMarkerState({selected:null,renaming:null})}}>
-            {markers.map((m,i)=>{const b=markerBeat(m),next=markers[i+1];const end=next?Math.max(b+.5,next.startBeat):Math.max(b+4,contentEnd);const sel=markerState.selected===m.id
-              return <div key={m.id} className={`marker ${sel?'selected':''} ${markerDrag?.id===m.id?'dragging':''}`} tabIndex={0} role="button" aria-label={`마커 ${m.name}, ${Math.floor(b/4)+1} 마디`} aria-pressed={sel} style={{left:b*ppb,width:Math.max(12,(end-b)*ppb-1)}} onPointerDown={e=>beginMarker(e,m)} onDoubleClick={e=>{e.stopPropagation();setMarkerState({selected:m.id,renaming:m.id})}} onContextMenu={e=>markerMenu(e,m)} onFocus={()=>{if(markerState.selected!==m.id)setMarkerState(s=>({...s,selected:m.id}))}} onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if((e.key==='Delete'||e.key==='Backspace')&&isUnmodified(e.nativeEvent)){e.preventDefault();e.stopPropagation();latest.current.onMarker('delete',{id:m.id})}else if(e.key==='Enter'&&isUnmodified(e.nativeEvent)){e.preventDefault();e.stopPropagation();setMarkerState({selected:m.id,renaming:m.id})}}}>
+          <div className="global-lane marker-lane" style={{width,...laneGrid}} onDoubleClick={e=>{if(e.target!==e.currentTarget)return;addMarkerAt(Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar)}} onPointerDown={e=>{if(e.target===e.currentTarget&&e.button===0)setMarkerState({selected:null,renaming:null})}}>
+            {markers.map((m,i)=>{const b=markerBeat(m),next=markers[i+1];const end=next?Math.max(b+.5,next.startBeat):Math.max(b+beatsPerBar,contentEnd);const sel=markerState.selected===m.id
+              return <div key={m.id} className={`marker ${sel?'selected':''} ${markerDrag?.id===m.id?'dragging':''}`} tabIndex={0} role="button" aria-label={`마커 ${m.name}, ${Math.floor(b/beatsPerBar)+1} 마디`} aria-pressed={sel} style={{left:b*ppb,width:Math.max(12,(end-b)*ppb-1)}} onPointerDown={e=>beginMarker(e,m)} onDoubleClick={e=>{e.stopPropagation();setMarkerState({selected:m.id,renaming:m.id})}} onContextMenu={e=>markerMenu(e,m)} onFocus={()=>{if(markerState.selected!==m.id)setMarkerState(s=>({...s,selected:m.id}))}} onKeyDown={e=>{if(e.nativeEvent.isComposing)return;if((e.key==='Delete'||e.key==='Backspace')&&isUnmodified(e.nativeEvent)){e.preventDefault();e.stopPropagation();latest.current.onMarker('delete',{id:m.id})}else if(e.key==='Enter'&&isUnmodified(e.nativeEvent)){e.preventDefault();e.stopPropagation();setMarkerState({selected:m.id,renaming:m.id})}}}>
                 <i className="marker-flag"/>{markerState.renaming===m.id?<InlineName value={m.name} label="마커 이름" onDone={name=>{setMarkerState({selected:m.id,renaming:null});if(name!==null)latest.current.onMarker('rename',{id:m.id,name})}}/>:<span className="marker-name">{m.name}</span>}
               </div>})}
             {!markers.length&&<span className="marker-hint">더블 클릭하여 마커 추가</span>}
@@ -695,11 +697,11 @@ export function Timeline(props:TimelineProps){
           <div className={`track-lane ${ui.gridLines?'':'no-grid'}`} style={{width,...laneGrid}}
             onPointerDown={e=>{if(!recordingTarget&&!temporary)beginMarquee(e,track)}}
             onContextMenu={e=>{if(e.target!==e.currentTarget)return;if(recordingTarget||temporary){e.preventDefault();return}laneMenu(e,track)}}
-            onDoubleClick={e=>{if(e.target!==e.currentTarget||recordingTarget||temporary)return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/4)*4)}}
+            onDoubleClick={e=>{if(e.target!==e.currentTarget||recordingTarget||temporary)return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/beatsPerBar)*beatsPerBar)}}
             onDragOver={e=>{if(e.dataTransfer.files||e.dataTransfer.types.includes('Files')){e.preventDefault();if(temporary){e.stopPropagation();e.dataTransfer.dropEffect='none'}}}}
-            onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);if(temporary)return;const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/4)*4;props.onAudioDrop(e.dataTransfer.files,track.kind==='audio'?track.id:undefined,Math.max(0,beat))}}}>
+            onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);if(temporary)return;const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar;props.onAudioDrop(e.dataTransfer.files,track.kind==='audio'?track.id:undefined,Math.max(0,beat))}}}>
             {drag?.copy&&track.clips.filter(c=>drag.ids.has(c.id)).map(c=><div key={`ghost-${c.id}`} className="clip-ghost" style={musicalSpan(c.startBeat,c.lengthBeats,ppb)}/>)}
-            {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
+            {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} beatsPerBar={beatsPerBar} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
             {recordingTarget&&recordingDraft&&recordingView&&<RecordingRegion key={recordingDraft.id} draft={recordingDraft} placement={recordingView} ppb={ppb}/>}
             {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'더블 클릭하여 MIDI 클립 만들기'}</span>}
           </div>

@@ -2,6 +2,7 @@ import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
 import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { midiEditorClip, midiSourceOffset } from './midiRegions'
+import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
 import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
 
@@ -69,11 +70,12 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
     sampleRate: DEFAULT_SAMPLE_RATE,
+    timeSignature: { ...DEFAULT_TIME_SIGNATURE },
     beatsPerBar: 4,
     lengthBeats: 64,
     masterVolume: 0.8,
@@ -593,8 +595,10 @@ function params(value: unknown, defs: readonly ParamDef[], path: string): Record
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new Error('This project version is not supported. Expected schema version 1, 2, 3 or 4.')
-  if (source.beatsPerBar !== 4) throw new Error('This version supports projects in 4/4 time.')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) throw new Error('This project version is not supported. Expected schema version 1, 2, 3, 4 or 5.')
+  const timeSignature = version === 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
+  const beatsPerBar = quarterNotesPerBar(timeSignature)
+  if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
   const seen = new Set<string>()
   const id = (value: unknown, path: string): string => {
     const result = text(value, path, 200)
@@ -656,8 +660,8 @@ export function validateProject(input: unknown): Project {
       if (clipCount > 100_000) throw new Error('The project contains too many clips.')
       const clipPath = `${path}, clip ${clipIndex + 1}`
       const clip = object(clipInput, clipPath)
-      if (version !== 4 && (clip.loopLengthBeats !== undefined || (clip.kind === 'midi' && clip.sourceOffsetBeats !== undefined))) {
-        throw new Error('Recoverable MIDI sources and bounded region loops require project schema version 4.')
+      if (version < 4 && (clip.loopLengthBeats !== undefined || (clip.kind === 'midi' && clip.sourceOffsetBeats !== undefined))) {
+        throw new Error('Recoverable MIDI sources and bounded region loops require project schema version 4 or later.')
       }
       const startBeat = number(clip.startBeat, `${clipPath} start`, 0, 10_000_000)
       const clipLength = number(clip.lengthBeats, `${clipPath} length`, 0.000001, 10_000_000)
@@ -673,7 +677,7 @@ export function validateProject(input: unknown): Project {
         ...(clip.delayTicks === undefined ? {} : { delayTicks: integer(clip.delayTicks, `${clipPath} delay`, -1920, 1920) }),
       }
       if (clip.kind === 'audio') {
-        if (clip.pitch !== undefined && version !== 3 && version !== 4) throw new Error('Pitch editing requires project schema version 3 or later.')
+        if (clip.pitch !== undefined && version < 3) throw new Error('Pitch editing requires project schema version 3 or later.')
         const pitch = clip.pitch === undefined ? undefined : validatePitchDocument(clip.pitch)
         const changed = pitch && hasPitchAudioEdits(pitch)
         if (pitch && changed && clip.assetId === pitch.sourceAssetId) throw new Error(`${clipPath} is missing its pitch render.`)
@@ -750,12 +754,13 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),
     sampleRate: projectSampleRate(source.sampleRate),
-    beatsPerBar: 4,
+    timeSignature,
+    beatsPerBar,
     lengthBeats,
     masterVolume: number(source.masterVolume, 'Master volume', 0, 2),
     loop: { enabled: flag(loop.enabled, 'Loop enabled'), startBeat: loopStart, endBeat: loopEnd },

@@ -96,15 +96,20 @@
 .time-display > span { font-size: 10px; line-height: 1; color:var(--text-muted); letter-spacing: 1px; }
 .tempo-box { border-left: 1px solid var(--border-subtle); padding-left: 10px; display: flex; flex-direction: column; align-items: center; gap: 2px; flex-shrink: 0; }
 .tempo-box input { width: 44px; height: 24px; background: transparent; text-align: center; font-family: Consolas, monospace; font-size: 16px; padding: 0; color:var(--text-primary); }
+.tempo-box input:focus { background: var(--surface-input); border-radius: 3px; }
 .tempo-box > span, .time-signature > span, .loop-length label { font-size: 8px; line-height: 1; color:var(--text-muted); letter-spacing: 1px; }
-.time-signature { display: flex; flex-direction: column; gap: 3px; align-items: center; min-width: 55px; flex-shrink: 0; }
-.time-signature strong { font-size: 13px; font-family: Consolas, monospace; font-weight: 400; }
+.time-signature { display: flex; flex-direction: column; gap: 3px; align-items: center; min-width: 76px; flex-shrink: 0; }
+.signature-controls { display: flex; align-items: center; gap: 2px; height: 24px; font-family: Consolas, monospace; }
+.signature-controls select { width: 34px; height: 24px; padding: 0 2px; border: 0; border-radius: 3px; background: transparent; color: var(--text-primary); font-family: inherit; font-size: 13px; text-align: center; cursor: pointer; }
+.signature-controls select:hover, .signature-controls select:focus { background: var(--surface-input); }
+.signature-controls select:disabled { opacity: .5; cursor: default; }
+.signature-controls > span { color: var(--text-muted); font-size: 13px; }
 .loop-length { border-left: 1px solid var(--border-subtle); padding-left: 10px; flex-shrink: 0; }
 .loop-length label { display: flex; align-items: center; gap: 6px; }
 .loop-length select { font-size: 10px; background: transparent; border: 0; padding: 0; width: 70px; height: 28px; letter-spacing: 0; }
 
 @media (max-width: 1250px) {
-  .time-signature, .loop-length { display: none; }
+  .loop-length { display: none; }
   .header-text > span, .export-button > span { display: none; }
   .header-text, .export-button { width: 28px; padding: 0; }
 }

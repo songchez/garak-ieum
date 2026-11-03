@@ -1,20 +1,78 @@
-# 가락이음 배포 준비 안내
+# 가락이음 Cloudflare 배포 안내
 
-2026-11-02 · Cloudflare Pages의 GitHub 연동을 사용하는 정적 Vite 배포
+2026-11-03 · Cloudflare Workers Static Assets 및 Pages의 정적 Vite 배포
 
 ## 현재 상태
 
-이 문서는 배포에 사용할 설정을 정리한 것입니다. **GitHub 저장소와 `main` 브랜치는 확인했으며, Cloudflare 연결과 공개 배포 성공은 아직 검증하지 않았습니다.** 배포 주소와 Pages 설정은 확인 전 계획값입니다.
+2026-11-03에 제공된 첫 배포 로그에서는 Wrangler가 Vite 프로젝트를 자동 설정하면서 의존성을 추가했고, pnpm이 `esbuild`와 `workerd`의 미승인 설치 스크립트를 차단했습니다. 이후 PR 빌드는 `npx wrangler preview`를 실행하면서 필수 `previews` 블록이 없어 실패했습니다. 아래 설정은 두 오류에 대응합니다. **실제 Worker 이름은 `garak-ieum`으로 확인했으며, 커밋별 원격 배포 결과와 발급 URL은 PR의 Cloudflare 검사에서 확인합니다.**
 
-| 항목 | 계획 또는 확인 상태 |
+| 항목 | 설정 또는 확인 상태 |
 |---|---|
 | 제품 이름 | 가락이음 — 사용자 확정 |
-| GitHub 소유자 / 저장소 | `songchez/garak-ieum` — 저장소 확인, Cloudflare 연결 미검증 |
+| GitHub 소유자 / 저장소 | `songchez/garak-ieum` |
 | 저장소 URL | [songchez/garak-ieum](https://github.com/songchez/garak-ieum) |
 | 프로덕션 브랜치 | `main` |
-| 배포 대상 | Cloudflare Pages, Git integration |
-| Pages 프로젝트 이름 | `garak-ieum` 예정 — 생성·사용 가능 여부 검증 전 |
-| 실제 배포 URL | 미정; Cloudflare가 발급한 주소를 검증한 뒤 기록 |
+| 확인한 배포 흐름 | Workers 프로덕션 배포 및 PR Preview 빌드 |
+| Cloudflare Worker 이름 | `garak-ieum` — GitHub Cloudflare 검사와 대시보드 대상에서 확인 |
+| 실제 배포 URL | 미확인; 성공한 배포에서 발급된 주소를 기록 |
+
+## Workers 빌드·배포 설정
+
+이미 연결한 Cloudflare Worker의 **Settings → Build**에서 빌드와 배포 명령을 구분합니다. `pnpm run build`는 정적 파일을 생성하고, Wrangler는 생성된 `dist`를 배포합니다.
+
+| Workers 설정 | 입력할 값 |
+|---|---|
+| Repository | `songchez/garak-ieum` |
+| Production branch | `main` |
+| Root directory | 저장소 루트 |
+| Build command | `pnpm test && pnpm run build` |
+| Deploy command | `npx --yes wrangler@4.156.2 deploy --config wrangler.jsonc` |
+| Preview command | `npx --yes wrangler@4.156.2 preview --config wrangler.jsonc` |
+| `NODE_VERSION` | `24` |
+| `PNPM_VERSION` | `11.25.0` |
+| 정적 자산 디렉터리 | `wrangler.jsonc`의 `assets.directory: "./dist"` |
+
+Wrangler는 최신 제공 로그에 나온 `4.156.2`로 두 명령에서 고정합니다. 이 명령의 `npx`는 배포 CLI를 실행하는 용도이며, 앱 의존성 설치와 빌드는 기존 pnpm 및 `pnpm-lock.yaml`을 사용합니다. Workers Builds의 인증은 연결한 Cloudflare 프로젝트 설정을 사용합니다.
+
+프로덕션 브랜치는 Deploy command를, 다른 브랜치의 미리보기 빌드는 별도의 Preview command를 사용합니다. 대시보드의 Deploy command만 변경해도 Preview command가 같이 바뀌지는 않습니다. 위 표는 적용할 설정이며 저장소 파일 수정만으로 대시보드의 명령 문자열이 변경되는 것은 아닙니다. [Workers Builds 설정](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
+
+**`wrangler.jsonc`의 `name`은 실제 Cloudflare Worker 이름과 같아야 합니다.** 현재 값 `garak-ieum`은 확인된 대상과 일치합니다. 다른 Worker에 배포한다면 해당 이름으로 바꿉니다. 이름이 다르면 Workers Builds가 배포를 거절할 수 있습니다. [Worker 이름 문제 해결](https://developers.cloudflare.com/workers/ci-cd/builds/troubleshoot/)
+
+저장소의 `wrangler.jsonc`는 `dist`를 정적 자산으로 지정하고, `not_found_handling: "single-page-application"`으로 앱 경로를 처리합니다. 이 웹앱에는 Worker 서버 진입 파일이나 Cloudflare Vite 플러그인이 필요하지 않습니다. 명시적 설정 파일을 사용하므로 배포 중 프레임워크 자동 설정에 의존하지 않습니다. [Static Assets](https://developers.cloudflare.com/workers/static-assets/) · [SPA 설정](https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/) · [Wrangler 자동 설정](https://developers.cloudflare.com/workers/framework-guides/automatic-configuration/)
+
+### `ERR_PNPM_IGNORED_BUILDS` 해결
+
+프로젝트 루트의 `pnpm-workspace.yaml`에 필요한 패키지의 설치 스크립트 허용 여부를 기록합니다.
+
+```yaml
+allowBuilds:
+  esbuild: true
+  workerd: true
+```
+
+pnpm 11은 `strictDepBuilds`가 기본으로 켜져 있어 결정되지 않은 의존성 설치 스크립트를 만나면 실패합니다. pnpm 11의 설정은 `allowBuilds`이며, 이전 `onlyBuiltDependencies` 설정을 사용하지 않습니다. 위 정책은 프로젝트 내 `pnpm install` 또는 자동 설정의 `pnpm add`에 적용됩니다. 전체 의존성 스크립트를 허용하거나 검사를 끄지 않습니다. [pnpm 11 변경 사항](https://pnpm.io/blog/releases/11.0) · [설치 스크립트 승인](https://pnpm.io/cli/approve-builds)
+
+CI에서 대화형 `pnpm approve-builds` 실행을 기다리게 하지 않고 이 파일을 커밋합니다. `pnpm dlx`는 별도 설치 환경을 사용하므로 위 프로젝트 정책을 그대로 읽는다고 가정하지 않습니다. 배포 명령은 표에 있는 명시적 설정과 고정된 Wrangler 명령을 사용합니다.
+
+`Lockfile passes supply-chain policies`는 성공 메시지입니다. 이번 로그의 실패 지점은 뒤에 나온 `ERR_PNPM_IGNORED_BUILDS`입니다.
+
+로컬 검증에서는 pnpm 11.25.0이 위 두 패키지의 정책을 읽었고, `pnpm install --frozen-lockfile`, 웹앱·MCP 빌드와 `npx --yes wrangler@4.156.1 deploy --config wrangler.jsonc --dry-run`이 성공했습니다. dry-run은 정적 자산을 읽고 종료하며 Cloudflare에 업로드하지 않습니다. 실제 계정 권한·Worker 이름·공개 사이트 동작은 성공한 원격 배포에서 확인합니다.
+
+수정 커밋이 배포 대상 브랜치에 반영된 후 새 빌드를 실행합니다. 실패한 과거 커밋만 재시도하면 새 설정 파일은 반영되지 않습니다. 성공 로그에서 배포된 커밋과 HTTPS URL을 확인한 다음 프로젝트 열기·새로고침·악기 샘플·녹음을 확인합니다.
+
+### `wrangler preview`의 필수 설정
+
+`wrangler preview`에는 최상위 `previews` 블록이 필요합니다. 이 앱은 미리보기 전용 서버 바인딩이나 환경 변수가 없으므로 빈 객체로 충분합니다.
+
+```json
+{
+  "previews": {}
+}
+```
+
+위 항목을 기존 `wrangler.jsonc`에 추가하며 `name`, `compatibility_date`, `assets`는 기존 최상위 위치에 유지합니다. 특히 `assets.directory`를 `previews` 안으로 옮기지 않습니다. [Previews 설정](https://developers.cloudflare.com/workers/previews/configuration/#wrangler-configuration-file)
+
+Wrangler 4.156.2의 `preview`에는 `--dry-run` 옵션이 없습니다. 로컬에서는 실제 Wrangler 설정 파서로 빈 `previews` 블록과 최상위 자산 설정을 읽는 것을 확인했고, 같은 버전의 `deploy --dry-run`도 통과했습니다. 프로덕션용 사전 검사만으로 Preview 업로드 성공을 판단하지 않으며, 실제 성공은 해당 커밋의 Cloudflare 검사와 Preview URL로 확인합니다.
 
 ## Pages 빌드 설정
 
@@ -37,7 +95,7 @@ Cloudflare Pages 공식 빌드 이미지 문서는 `NODE_VERSION` 및 `.node-ver
 
 Pages의 기본 의존성 설치 단계는 유지하고 `pnpm-lock.yaml`을 커밋합니다. 빌드 명령은 테스트가 성공한 경우에만 TypeScript 검사와 Vite 빌드로 진행합니다. 테스트 또는 빌드가 실패하면 명령이 실패 상태로 종료되어야 합니다. Cloudflare는 명령의 종료 코드로 빌드 성공을 판정하며, Vite의 정적 출력 디렉터리는 `dist`입니다. [빌드 설정](https://developers.cloudflare.com/pages/configuration/build-configuration/)
 
-## GitHub 연결과 자동 배포
+## Pages GitHub 연결과 자동 배포
 
 1. 배포할 변경을 검토해 GitHub 저장소 `songchez/garak-ieum`의 `main`에 반영합니다.
 2. Cloudflare의 **Workers & Pages**에서 Pages 프로젝트를 만들고 Git 저장소 가져오기를 선택합니다.
@@ -60,7 +118,7 @@ Git 연동이 완료되고 자동 배포가 활성화되면 `main`에 새 커밋
 /projects/* /index.html 200
 ```
 
-Cloudflare Pages의 같은 사이트 내 200 프록시 규칙을 사용해 주소를 유지한 채 앱 진입 파일을 제공합니다. Pages는 루트 `404.html`이 없을 때 정적 파일이 없는 경로를 SPA로 처리하지만, 프로젝트 경로는 별도 규칙으로 명시합니다. `/assets/`, `/samples/`, 글꼴 경로는 이 규칙 대상이 아닙니다. 다른 호스팅을 쓰면 `/projects/*` 요청을 `index.html`로 처리하는 동등한 설정이 필요합니다. [리다이렉트와 200 프록시](https://developers.cloudflare.com/pages/configuration/redirects/#proxying) · [SPA 경로 처리](https://developers.cloudflare.com/pages/configuration/serving-pages/#single-page-application-spa-rendering)
+Cloudflare Pages와 Workers Static Assets가 지원하는 같은 사이트 내 200 프록시 규칙을 사용해 주소를 유지한 채 앱 진입 파일을 제공합니다. Workers에서는 `wrangler.jsonc`의 SPA fallback도 적용됩니다. [Workers 리다이렉트](https://developers.cloudflare.com/workers/static-assets/redirects/) Pages는 루트 `404.html`이 없을 때 정적 파일이 없는 경로를 SPA로 처리하지만, 프로젝트 경로는 별도 규칙으로 명시합니다. `/assets/`, `/samples/`, 글꼴 경로는 이 규칙 대상이 아닙니다. 다른 호스팅을 쓰면 `/projects/*` 요청을 `index.html`로 처리하는 동등한 설정이 필요합니다. [리다이렉트와 200 프록시](https://developers.cloudflare.com/pages/configuration/redirects/#proxying) · [SPA 경로 처리](https://developers.cloudflare.com/pages/configuration/serving-pages/#single-page-application-spa-rendering)
 
 배포 확인에는 기본 주소에서 목록 열기, 샘플 만들기, 생성된 프로젝트 주소로 새로고침, 뒤로/앞으로 이동, 존재하지 않는 ID로 접속, 악기 샘플 파일 로딩을 포함합니다. 프로젝트 URL은 서버 공유 링크가 아니므로 같은 URL을 다른 기기에서 열면 그 기기의 저장소에서 찾습니다. 기기를 옮길 때는 `.garak` 파일을 사용합니다.
 
@@ -73,6 +131,8 @@ Cloudflare Pages의 같은 사이트 내 200 프록시 규칙을 사용해 주�
 의존성·빌드 결과(`node_modules/`, `dist/`), 기존 Sites 설정(`.openai/`, `.sites-runtime/`), Cloudflare 로컬 상태(`.wrangler/`), 로컬 환경·비밀 파일(`.env*`, `.dev.vars*`)은 `.gitignore`로 제외합니다. 인증 토큰과 계정 비밀값을 소스나 배포 문서에 넣지 않습니다.
 
 ## 배포 완료 후 갱신할 기록
+
+아래 기존 Pages 검증 기록과 별도로, 이번 Workers 배포는 실제 Worker 이름·빌드 커밋·배포 URL·수정 후 배포 성공 여부를 확인한 뒤 기록합니다.
 
 | 검증 항목 | 현재 상태 |
 |---|---|

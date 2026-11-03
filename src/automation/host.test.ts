@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ProjectSession } from '../core/ProjectSession'
 import { createDevice, createEmptyProject, createTrack, setClipLoopEnd, trimClipStart } from '../core/project'
+import { setProjectTimeSignature } from '../core/meter'
 import type { MidiClip, Project } from '../core/types'
 import { createDawRequestHandler, type DawRuntime } from './host'
 import type { BridgeParams, DawMethod } from './protocol'
@@ -33,6 +34,19 @@ function setup() {
 }
 
 describe('DAW host bounded reads', () => {
+  it('reports the selected meter and quarter-note units without exposing mutable project state', () => {
+    const { handler, session } = setup()
+    session.edit(project => setProjectTimeSignature(project, 6, 8))
+    const response = handler('get_state', {}) as { project: { timeSignature: { numerator: number; denominator: number } } }
+    expect(response).toMatchObject({ project: { timeSignature: { numerator: 6, denominator: 8 }, beatsPerBar: 3 } })
+    response.project.timeSignature.numerator = 9
+    expect(session.getSnapshot().history.present.timeSignature.numerator).toBe(6)
+    expect(handler('get_capabilities', {})).toMatchObject({
+      units: { meter: expect.stringContaining('quarter-note length = numerator * 4 / denominator') },
+      unsupported: expect.arrayContaining(['time-signature changes through MCP']),
+    })
+  })
+
   it('pages track summaries and removes stale or duplicate selection IDs', () => {
     const { handler } = setup()
     const first = handler('get_state', { trackLimit: 1 })

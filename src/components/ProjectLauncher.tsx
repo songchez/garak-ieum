@@ -27,13 +27,14 @@ type ChooserItem = {
   bpm: number
   trackCount: number
   lengthBeats: number
+  beatsPerBar: number
 } & ({ kind: 'project'; project: ProjectSummary } | { kind: 'template'; template: ProjectTemplate })
 
 const normalizeSearch = (value: string) => value.normalize('NFKC').toLocaleLowerCase('ko-KR').trim()
 const compactDate = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
 const fullDate = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'long', timeStyle: 'short' })
 const barCount = new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 })
-const barsText = (beats: number) => `${barCount.format(beats / 4)}마디`
+const barsText = (beats: number, beatsPerBar: number) => `${barCount.format(beats / beatsPerBar)}마디`
 
 function durationText(beats: number, bpm: number): string {
   const seconds = Math.max(0, Math.round(beats * 60 / Math.max(1, bpm)))
@@ -56,7 +57,7 @@ function ProjectTile({ item, selected, disabled, onSelect, onOpen }: {
 }) {
   return <li className="pl-project-cell">
     <button type="button" className={`pl-project-tile${selected ? ' is-selected' : ''}`} disabled={disabled}
-      aria-pressed={selected} aria-label={`${item.name}, ${item.bpm} BPM, ${item.trackCount}트랙, ${barsText(item.lengthBeats)}, ${durationText(item.lengthBeats, item.bpm)}`}
+      aria-pressed={selected} aria-label={`${item.name}, ${item.bpm} BPM, ${item.trackCount}트랙, ${barsText(item.lengthBeats, item.beatsPerBar)}, ${durationText(item.lengthBeats, item.bpm)}`}
       title={`${item.name} — 더블 클릭하거나 Enter를 눌러 열기`}
       onFocus={() => onSelect(item.key)} onClick={() => onSelect(item.key)} onDoubleClick={() => onOpen(item)}
       onKeyDown={event => {
@@ -69,7 +70,7 @@ function ProjectTile({ item, selected, disabled, onSelect, onOpen }: {
       <strong className="pl-tile-name">{item.name}</strong>
       <span className="pl-tile-subtitle">{item.kind === 'template' ? item.template.genre : <><ProjectTime value={item.project.updatedAt}/> 수정</>}</span>
       <span className="pl-tile-meta"><span>{item.bpm} <small>BPM</small></span><span>{item.trackCount}트랙</span></span>
-      <span className="pl-tile-meta pl-tile-length"><span>{barsText(item.lengthBeats)}</span><span>{durationText(item.lengthBeats, item.bpm)}</span></span>
+      <span className="pl-tile-meta pl-tile-length"><span>{barsText(item.lengthBeats, item.beatsPerBar)}</span><span>{durationText(item.lengthBeats, item.bpm)}</span></span>
     </button>
   </li>
 }
@@ -82,13 +83,14 @@ export function ProjectLauncher({ projects, templates, loading, busy, error, not
   const locked = loading || busy
   const projectItems = useMemo<ChooserItem[]>(() => [...projects].sort((a, b) => b.updatedAt - a.updatedAt).map(project => ({
     key: `project:${project.id}`, kind: 'project', name: project.name, bpm: project.bpm,
-    trackCount: project.trackCount, lengthBeats: project.lengthBeats, project,
+    trackCount: project.trackCount, lengthBeats: project.lengthBeats, beatsPerBar: project.beatsPerBar ?? 4, project,
   })), [projects])
-  const templateItems = useMemo<ChooserItem[]>(() => templates.map(template => ({
-    key: `template:${template.id}`, kind: 'template', name: template.name, bpm: template.bpm,
+  const templateItems = useMemo<ChooserItem[]>(() => templates.map(template => {
     // Factories only build MIDI data. Opening still creates its own fresh project.
-    trackCount: template.create().tracks.length, lengthBeats: template.bars * 4, template,
-  })), [templates])
+    const project = template.create()
+    return { key: `template:${template.id}`, kind: 'template', name: template.name, bpm: template.bpm,
+      trackCount: project.tracks.length, lengthBeats: project.lengthBeats, beatsPerBar: project.beatsPerBar, template }
+  }), [templates])
   const items = category === 'projects' ? projectItems : templateItems
   const query = normalizeSearch(search)
   const filtered = useMemo(() => items.filter(item => !query || normalizeSearch(item.name).includes(query)), [items, query])
@@ -147,7 +149,7 @@ export function ProjectLauncher({ projects, templates, loading, busy, error, not
               <button type="button" className="pl-details-toggle" aria-expanded={Boolean(selected && detailsOpen)} aria-controls="pl-selection-details" disabled={!selected || busy} onClick={() => setDetailsOpen(value => !value)}>상세 정보<Icon name="chevron" size={14}/></button>
             </div>
             <div id="pl-selection-details" className="pl-selection-details" hidden={!selected || !detailsOpen} data-selectable-text="" tabIndex={selected && detailsOpen ? 0 : -1}>
-              {selected && <><dl className="pl-detail-values"><div><dt>템포</dt><dd>{selected.bpm} BPM</dd></div><div><dt>트랙</dt><dd>{selected.trackCount}트랙</dd></div><div><dt>마디</dt><dd>{barsText(selected.lengthBeats)}</dd></div><div><dt>길이</dt><dd>{durationText(selected.lengthBeats, selected.bpm)}</dd></div></dl>
+              {selected && <><dl className="pl-detail-values"><div><dt>템포</dt><dd>{selected.bpm} BPM</dd></div><div><dt>트랙</dt><dd>{selected.trackCount}트랙</dd></div><div><dt>마디</dt><dd>{barsText(selected.lengthBeats, selected.beatsPerBar)}</dd></div><div><dt>길이</dt><dd>{durationText(selected.lengthBeats, selected.bpm)}</dd></div></dl>
                 {selected.kind === 'template' ? <><p className="pl-detail-description">{selected.template.description}</p><dl className="pl-detail-notes"><div><dt>조성</dt><dd>{selected.template.keyLabel}</dd></div><div><dt>주요 악기</dt><dd>{selected.template.instruments.join(' · ')}</dd></div></dl></> : <dl className="pl-detail-notes"><div><dt>만든 날짜</dt><dd><ProjectTime value={selected.project.createdAt} full/></dd></div><div><dt>최근 수정</dt><dd><ProjectTime value={selected.project.updatedAt} full/></dd></div></dl>}
               </>}
             </div>
