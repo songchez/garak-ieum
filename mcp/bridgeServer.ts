@@ -104,15 +104,30 @@ export async function startDawBridge(options: BridgeOptions): Promise<DawBridge>
   wsServer.on('connection', (socket: WebSocket) => {
     sockets.add(socket)
     let instanceId: string | undefined
+    let errorCloseTimer: ReturnType<typeof setTimeout> | undefined
     const timer = setTimeout(() => refuse(socket, 'AUTH_TIMEOUT', '브리지 인증 시간이 초과됐습니다.'), authTimeout)
-    socket.on('error', () => { failSocket(socket); socket.terminate() })
-    socket.on('close', () => {
+    const forgetConnection = () => {
       clearTimeout(timer)
-      sockets.delete(socket)
       if (instanceId && instances.get(instanceId)?.socket === socket) instances.delete(instanceId)
       failSocket(socket)
+    }
+    socket.on('error', () => {
+      forgetConnection()
+      // ws queues the protocol close (e.g. 1009 for maxPayload) before emitting an error.
+      // Immediate terminate() can discard that frame, particularly on Windows. Let it drain,
+      // but bound an uncooperative peer's time in the connection pool to one second.
+      if (socket.readyState === WebSocket.CLOSING) {
+        errorCloseTimer ??= setTimeout(() => socket.terminate(), 1000)
+        errorCloseTimer.unref()
+      } else if (socket.readyState !== WebSocket.CLOSED) socket.terminate()
+    })
+    socket.on('close', () => {
+      clearTimeout(errorCloseTimer)
+      sockets.delete(socket)
+      forgetConnection()
     })
     socket.on('message', (raw: RawData, binary: boolean) => {
+      if (socket.readyState !== WebSocket.OPEN) return
       if (binary) { refuse(socket, 'INVALID_MESSAGE', '텍스트 JSON 메시지만 허용합니다.'); return }
       let message: unknown
       try { message = JSON.parse(bytes(raw).toString('utf8')) }
