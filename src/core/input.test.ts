@@ -138,6 +138,54 @@ const k = (name: string, code: string, patch: Partial<ShortcutEvent> = {}) => ke
 const L = (c: string, patch: Partial<ShortcutEvent> = {}) => k(c.toLowerCase(), `Key${c}`, patch)
 const MOD = { ctrlKey: true }, CMD = { metaKey: true }, ALT = { altKey: true }, SHIFT = { shiftKey: true }
 
+describe('piano arrows edit selected notes', () => {
+  const arrows = [
+    { key: 'ArrowLeft', edit: 'nudgeLeft', timeline: 'selectPrev', extended: 'trimEndLeft', zoom: 'zoomOut' },
+    { key: 'ArrowRight', edit: 'nudgeRight', timeline: 'selectNext', extended: 'trimEndRight', zoom: 'zoomIn' },
+    { key: 'ArrowUp', edit: 'transposeUp', timeline: 'trackUp', extended: 'transposeOctaveUp', zoom: 'zoomOutV' },
+    { key: 'ArrowDown', edit: 'transposeDown', timeline: 'trackDown', extended: 'transposeOctaveDown', zoom: 'zoomInV' },
+  ] as const
+
+  it.each(arrows)('$key moves notes only in the piano roll and retains timeline selection', ({ key: name, edit, timeline }) => {
+    for (const platform of ['mac', 'windows', 'linux', 'other'] as const) {
+      for (const scope of ALL) {
+        const trackNavigation = (name === 'ArrowUp' || name === 'ArrowDown') && ['workspace', 'mixer', 'devices'].includes(scope)
+        const expected = scope === 'piano' ? edit : scope === 'timeline' || trackNavigation ? timeline : null
+        expect(resolveProjectShortcut(k(name, name), scope, false, platform), `${platform}: ${name} in ${scope}`).toBe(expected)
+      }
+    }
+  })
+
+  it('retains Alt aliases, Alt+Shift length/octave, Shift selection and command-arrow zoom ownership', () => {
+    for (const { key: name, edit, extended, zoom } of arrows) {
+      for (const platform of ['mac', 'windows'] as const) {
+        expect(resolveProjectShortcut(k(name, name, ALT), 'piano', false, platform)).toBe(edit)
+        expect(resolveProjectShortcut(k(name, name, { ...ALT, ...SHIFT }), 'piano', false, platform)).toBe(extended)
+        // Shift arrows are handled by the piano roll's additive selection handler.
+        expect(resolveProjectShortcut(k(name, name, SHIFT), 'piano', false, platform)).toBeNull()
+        expect(resolveProjectShortcut(k(name, name, MOD), 'piano', false, platform)).toBe(zoom)
+        expect(resolveProjectShortcut(k(name, name, CMD), 'piano', false, platform)).toBe(zoom)
+        expect(resolveProjectShortcut(k(name, name, { ...MOD, ...CMD }), 'piano', false, platform)).toBeNull()
+        expect(resolveProjectShortcut(k(name, name, { ...MOD, ...ALT }), 'piano', false, platform)).toBeNull()
+      }
+    }
+  })
+
+  it('does not steal native control arrows or edits during IME, handled events and suppressed repeats', () => {
+    for (const { key: name, edit } of arrows) {
+      const event = k(name, name)
+      for (const scope of ['text', 'control', 'dialog', 'outside'] as const) {
+        expect(resolveRoutedShortcut(event, scope, 'piano')).toBeNull()
+      }
+      for (const patch of [{ isComposing: true }, { keyCode: 229 }, { key: 'Process' }, { key: 'Dead' }, { defaultPrevented: true }, { getModifierState: () => true }]) {
+        expect(resolveProjectShortcut({ ...event, ...patch }, 'piano')).toBeNull()
+      }
+      expect(resolveProjectShortcut({ ...event, repeat: true }, 'piano')).toBeNull()
+      expect(resolveProjectShortcut({ ...event, repeat: true }, 'piano', true)).toBe(edit)
+    }
+  })
+})
+
 /** Resolves only in the listed scopes and nowhere else. The mixer and device rack inherit workspace keys. */
 function expectScopes(event: ShortcutEvent, command: ProjectShortcut, scopes: ShortcutScope[], platform: ShortcutPlatform = 'windows') {
   const expected = scopes.includes('workspace') ? [...scopes, 'mixer', 'devices'] : scopes
@@ -165,8 +213,6 @@ describe('Logic-style key commands', () => {
     [k('ArrowLeft', 'ArrowLeft', { ...ALT, ...SHIFT }), 'trimEndLeft', ['timeline', 'piano']], [k('ArrowRight', 'ArrowRight', { ...ALT, ...SHIFT }), 'trimEndRight', ['timeline', 'piano']],
     [k('[', 'BracketLeft', MOD), 'trimStartToPlayhead', ['timeline']], [k(']', 'BracketRight', CMD), 'trimEndToPlayhead', ['timeline']],
     [k(';', 'Semicolon'), 'moveToPlayhead', ['timeline']],
-    [k('ArrowLeft', 'ArrowLeft'), 'selectPrev', ['timeline']], [k('ArrowRight', 'ArrowRight'), 'selectNext', ['timeline']],
-    [k('ArrowUp', 'ArrowUp'), 'trackUp', ['timeline', 'workspace']], [k('ArrowDown', 'ArrowDown'), 'trackDown', ['timeline', 'workspace']],
     [k('Backspace', 'Backspace', MOD), 'deleteTrack', ['timeline', 'workspace']], [k('Delete', 'Delete', CMD), 'deleteTrack', ['timeline', 'workspace']],
     [L('N', { ...MOD, ...ALT }), 'newTracksDialog', ['timeline', 'workspace']], [L('N', { ...CMD, ...ALT }), 'newTracksDialog', ['timeline', 'workspace']],
     [k('N', 'KeyN', SHIFT), 'renameClip', ['timeline']], [k('Enter', 'Enter', SHIFT), 'renameTrack', ['timeline', 'workspace']],
@@ -386,6 +432,13 @@ describe('shortcut labels and table', () => {
     expect(row('muteClip')).toMatchObject({ mac: '⌃M', win: 'Alt+Shift+M', scopes: ['timeline'] })
     expect(row('zoomFocusedTrack')).toMatchObject({ mac: '⌃Z', win: '', scopes: ['timeline', 'workspace'] })
     expect(row('home').scopes).toEqual(['timeline', 'piano', 'workspace'])
+    expect(row('nudgeLeft')).toMatchObject({ mac: '⌥← / ← (피아노롤)', win: 'Alt+← / ← (피아노롤)', scopes: ['timeline', 'piano'] })
+    expect(row('nudgeRight')).toMatchObject({ mac: '⌥→ / → (피아노롤)', win: 'Alt+→ / → (피아노롤)' })
+    expect(row('transposeUp')).toMatchObject({ mac: '⌥↑ / ↑ (피아노롤)', win: 'Alt+↑ / ↑ (피아노롤)' })
+    expect(row('transposeDown')).toMatchObject({ mac: '⌥↓ / ↓ (피아노롤)', win: 'Alt+↓ / ↓ (피아노롤)' })
+    // Unscoped menu labels keep a valid shortcut in both editors.
+    expect(shortcutLabel('nudgeLeft', 'windows')).toBe('Alt+←')
+    expect(shortcutLabel('transposeUp', 'mac')).toBe('⌥↑')
     const macOnly = (command: ProjectShortcut) => SHORTCUT_BINDINGS.filter(b => b.command === command).every(b => b.platforms?.every(p => p === 'mac'))
     for (const r of SHORTCUT_TABLE) {
       expect(r.label && r.mac && r.logic, r.command).toBeTruthy()
