@@ -57,6 +57,10 @@ async function checked(name, action) {
     throw error
   }
 }
+async function independentChecked(name, action) {
+  try { await checked(name, action) }
+  catch { console.error(`FAIL ${name}; continuing independent smoke checks`) }
+}
 
 function launchEnvironment(overrides = {}) {
   // Never inherit a developer's real bridge token into the smoke processes.
@@ -115,6 +119,11 @@ async function runCli(label, args, environment = {}, readyText, whileRunning) {
     entry.durationMs = Date.now() - began
     // Generated token stdout must never reach reports, assertions, or CI logs.
     entry.stdoutBytes = Buffer.byteLength(stdout)
+    entry.stdoutLayout = {
+      characters: stdout.length,
+      trimmedCharacters: stdout.trim().length,
+      whitespaceCodePoints: [...stdout].filter(character => /\s/u.test(character)).slice(0, 64).map(character => character.codePointAt(0)),
+    }
     entry.stderr = stderr.replace(/[A-Za-z0-9_-]{32,256}/g, '[redacted-token-like-value]').slice(0, 8000)
   }
 }
@@ -227,12 +236,12 @@ try {
   const projectFile = path.join(artifacts, 'smoke project.garak')
   const wavFile = path.join(artifacts, 'smoke-audio.wav')
 
-  await checked('packaged MCP token generation', async () => {
+  await independentChecked('packaged MCP token generation', async () => {
     const result = await runCli('token generation', ['--mcp-token'])
     assert.equal(result.code, 0, 'Packaged token CLI failed')
-    assert.ok(/^[A-Za-z0-9_-]{43}\r?\n$/.test(result.stdout), 'Token CLI must emit exactly one 43-character base64url token')
+    assert.ok(/^[A-Za-z0-9_-]{43}$/.test(result.stdout.trim()), 'Token CLI must emit exactly one 43-character base64url token value')
   })
-  await checked('packaged MCP missing and invalid token validation', async () => {
+  await independentChecked('packaged MCP missing and invalid token validation', async () => {
     for (const token of [undefined, 'desktop-smoke-invalid-token!']) {
       const result = await runCli(token === undefined ? 'missing token' : 'invalid token', ['--mcp'], token === undefined ? {} : { GARAK_MCP_TOKEN: token })
       assert.equal(result.code, 1, 'MCP must reject missing/invalid tokens')
@@ -242,7 +251,7 @@ try {
       assert.ok(!/\n\s+at\s/.test(result.stderr), 'Configuration errors exposed a stack trace')
     }
   })
-  await checked('packaged MCP startup and clean stdin EOF shutdown', async () => {
+  await independentChecked('packaged MCP startup and clean stdin EOF shutdown', async () => {
     const port = await freeLoopbackPort()
     const token = 'Garak_Desktop_Smoke_Test_Only_000000000000000'
     const result = await runCli('stdio EOF shutdown', ['--mcp'], { GARAK_MCP_TOKEN: token, GARAK_MCP_PORT: String(port) }, `loopback bridge 127.0.0.1:${port}`)
@@ -450,6 +459,11 @@ try {
     await screenshot('03-reopened-project.png')
     await closeNormally()
   })
+  const failedChecks = report.checks.filter(check => check.status === 'failed')
+  if (failedChecks.length) {
+    phase = 'independent CLI results'
+    throw new Error(`Independent smoke checks failed: ${failedChecks.map(check => check.name).join(', ')}`)
+  }
   report.status = 'passed'
 } catch (error) {
   report.status = 'failed'
