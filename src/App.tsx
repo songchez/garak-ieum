@@ -46,6 +46,7 @@ import { ProjectSession } from './core/ProjectSession'
 import { HistoryGestureContext } from './core/historyGesture'
 import { createDawRequestHandler } from './automation/host'
 import { DawBridgeClient, type DawBridgeHandler } from './automation/bridgeClient'
+import { isDesktopApp, saveExport } from './platform/desktop'
 
 // An application-session service, independent of React's render/effect lifecycle.
 const initialAudioSettings = loadAudioSettings()
@@ -55,7 +56,6 @@ const subscribeTransport = (cb:()=>void)=>engine.subscribe(cb)
 const readTransport = ()=>engine.getSnapshot()
 if(import.meta.hot)import.meta.hot.dispose(()=>engine.dispose())
 
-function downloadBlob(blob:Blob,name:string){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000)}
 const safeFilename=(name:string)=>name.replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').trim()||'Untitled'
 const db=(n:number)=>n<=0?'−∞':(20*Math.log10(n)).toFixed(1)
 type ClipEntry={clip:Clip;track:Track;row:number}
@@ -83,11 +83,13 @@ export interface StudioAppProps {
   navigationError?:string
   onHome():void
   onNew():void
-  onImport(file:File):void
+  onOpenProject():void
   registerNavigationGuard(guard:()=>Promise<boolean>):()=>void
+  registerProjectSave(save:()=>Promise<void>):()=>void
 }
 
-export default function App({projectId,navigating,navigationError,onHome,onNew,onImport,registerNavigationGuard}:StudioAppProps){
+export default function App({projectId,navigating,navigationError,onHome,onNew,onOpenProject,registerNavigationGuard,registerProjectSave}:StudioAppProps){
+  const desktop=isDesktopApp()
   const [commandSession]=useState(()=>new ProjectSession({...createEmptyProject(),id:projectId}))
   const commandState=useSyncExternalStore(commandSession.subscribe,commandSession.getSnapshot,commandSession.getSnapshot)
   const history=commandState.history,dispatch=commandSession.dispatch
@@ -143,6 +145,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const [appMenu,setAppMenu]=useState<{x:number;y:number;trigger:HTMLElement}|null>(null)
   const projectSession=useRef(0)
   const importing=useRef(false)
+  const exporting=useRef(false)
+  const projectSaveAction=useRef<()=>Promise<void>>(async()=>{})
   const [saveStatus,setSaveStatus]=useState<'loading'|'saving'|'saved'|'error'>('loading')
   const [notice,setNotice]=useState('')
   const [busy,setBusy]=useState('')
@@ -186,7 +190,6 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const recordPreparingRef=useRef(false)
   const recordAttempt=useRef(0)
   const audioInput=useRef<HTMLInputElement>(null)
-  const projectInput=useRef<HTMLInputElement>(null)
   const recordRef=useRef<{capture:AudioRecording;stream:MediaStream;draft:RecordingDraft}|null>(null)
   const importTarget=useRef<{trackId?:string;beat?:number}>({})
   const [inputCapture]=useState(()=>new InputCapture(()=>navigator.mediaDevices.getUserMedia(inputConstraints(audioSettingsRef.current,projectRef.current.sampleRate))))
@@ -365,7 +368,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     void(async()=>{try{
       const saved=await loadProject(projectId)
       if(cancelled)return
-      if(!saved)throw new Error('이 브라우저에 해당 프로젝트가 없습니다. 프로젝트 목록에서 선택하거나 .garak 파일을 가져와 주세요.')
+      if(!saved)throw new Error(`${desktop?'이 컴퓨터':'이 브라우저'}에 해당 프로젝트가 없습니다. 프로젝트 목록에서 선택하거나 .garak 파일을 가져와 주세요.`)
       // Decoding must use this project's rate, including persisted pitch sources.
       engine.setProject(saved.project)
       const decoded=await Promise.all(saved.assets.map(a=>engine.decodeAsset(a.blob,a.name,a.id)))
@@ -387,7 +390,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     if(!loaded)return
     if(persistedProject.current===project&&persistedAssets.current===assets&&persistedRevision.current===commandState.revision)return
     const revision=++saveRevision.current;setSaveStatus('saving')
-    const timer=window.setTimeout(()=>{saveTimer.current=null;saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{await saveProject(project,assets);if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=commandState.revision;persistedAssets.current=assets;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일을 내려받아 보관해주세요.`)}}})},650)
+    const timer=window.setTimeout(()=>{saveTimer.current=null;saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{await saveProject(project,assets);if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=commandState.revision;persistedAssets.current=assets;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일로 내보내 보관해주세요.`)}}})},650)
     saveTimer.current=timer
     return()=>{window.clearTimeout(timer);if(saveTimer.current===timer)saveTimer.current=null}
   },[project,assets,commandState.revision,loaded,notify])
@@ -397,8 +400,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     // may become dirty on blur, so check their draft guard afterwards.
     if(document.activeElement instanceof HTMLElement)document.activeElement.blur()
     if(pitchPending())return false
-    if(recordRef.current||recordPreparingRef.current||busy||importing.current||audioApplyingRef.current||pitchBusyRef.current||activeControlEdits.current.size||commandSession.isGestureActive()||document.querySelector('[data-daw-gesture]')){
-      notify('녹음·파일 처리·드래그가 끝난 뒤 프로젝트를 이동해 주세요.');return false
+    if(recordRef.current||recordPreparingRef.current||busy||importing.current||exporting.current||audioApplyingRef.current||pitchBusyRef.current||activeControlEdits.current.size||commandSession.isGestureActive()||document.querySelector('[data-daw-gesture]')){
+      notify(desktop?'녹음·파일 처리·드래그가 끝난 뒤 프로젝트를 이동하거나 앱을 닫아 주세요.':'녹음·파일 처리·드래그가 끝난 뒤 프로젝트를 이동해 주세요.');return false
     }
     if(saveTimer.current!==null){window.clearTimeout(saveTimer.current);saveTimer.current=null}
     const snapshot=commandSession.getSnapshot(),originals=assetsRef.current,revision=++saveRevision.current
@@ -416,6 +419,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     }catch(error){setSaveStatus('error');notify(`프로젝트를 저장하지 못해 이동을 멈췄습니다: ${error instanceof Error?error.message:'저장소 오류'}. 현재 작업을 .garak 파일로 보관할 수 있습니다.`);return false}
   }
   useEffect(()=>registerNavigationGuard(()=>navigationGuard.current()),[registerNavigationGuard])
+  projectSaveAction.current=saveBundle
+  useEffect(()=>registerProjectSave(()=>projectSaveAction.current()),[registerProjectSave])
   useEffect(()=>{if(navigationError)notify(navigationError)},[navigationError,notify])
   useEffect(()=>{if(!notice)return;const id=window.setTimeout(()=>setNotice(''),7000);return()=>clearTimeout(id)},[notice])
   useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{
@@ -458,7 +463,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     engine.setInputMonitor(null,[])
     inputCapture.setNeeded('monitor',monitorIds.length>0)
     if(!monitorIds.length)return
-    if(!navigator.mediaDevices?.getUserMedia){inputCapture.setNeeded('monitor',false);notify('이 브라우저에서는 입력 모니터링을 사용할 수 없습니다.');clearMonitorFlags();return}
+    if(!navigator.mediaDevices?.getUserMedia){inputCapture.setNeeded('monitor',false);notify(desktop?'이 컴퓨터에서는 입력 모니터링을 사용할 수 없습니다.':'이 브라우저에서는 입력 모니터링을 사용할 수 없습니다.');clearMonitorFlags();return}
     let cancelled=false
     void(async()=>{try{await engine.resume();if(cancelled||audioApplyingRef.current)return;const stream=await inputCapture.acquire();if(cancelled||audioApplyingRef.current)return;engine.setInputMonitor(stream,monitorIds);if(!monitorWarned.current&&projectRef.current.tracks.some(t=>t.monitor)){monitorWarned.current=true;notify('피드백을 막으려면 헤드폰을 사용하세요')}}catch(e){if(cancelled||audioApplyingRef.current)return;inputCapture.setNeeded('monitor',false);notify(`입력 모니터링을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`);clearMonitorFlags()}})()
     return()=>{cancelled=true}
@@ -814,14 +819,34 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     }catch(error){notify(`파일을 가져오지 못했습니다: ${error instanceof Error?error.message:'지원되는 오디오 파일인지 확인해주세요'}`)}finally{importing.current=false;setBusy('');if(audioInput.current)audioInput.current.value=''}
   }
   function addStoredAsset(asset:AudioAsset){const clip:AudioClip={id:uid(),kind:'audio',assetId:asset.id,name:asset.name.replace(/\.[^.]+$/,''),startBeat:Math.floor(engine.getSnapshot().beat/project.beatsPerBar)*project.beatsPerBar,lengthBeats:asset.buffer.duration*project.bpm/60,offsetSeconds:0,gain:1,fadeIn:.005,fadeOut:.01};let target=focusedTrack?.kind==='audio'?focusedTrack:createTrack('audio');target={...target,clips:[...target.clips,clip]};const targetId=target.id;commit(p=>withDragMode({...p,lengthBeats:Math.max(p.lengthBeats,Math.ceil((clip.startBeat+clip.lengthBeats)/p.beatsPerBar)*p.beatsPerBar),tracks:p.tracks.some(t=>t.id===targetId)?p.tracks.map(t=>t.id===targetId?target:t):[...p.tracks,target]},[{trackId:targetId,clip}]));selectClips([clip.id],clip.id,targetId)}
-  async function saveBundle(){if(pitchPending())return;setBusy('프로젝트를 묶는 중…');try{downloadBlob(await exportProjectBundle(project,assets),`${safeFilename(project.name)}.garak`);notify('프로젝트와 원본 음원을 함께 내려받았습니다.')}catch(e){notify(`프로젝트 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
-  function openBundle(file:File){if(projectInput.current)projectInput.current.value='';onImport(file)}
-  async function exportWav(){if(pitchPending())return;setModal(null);setBusy('오디오를 렌더링하는 중…');try{const blob=await engine.exportWav(project);downloadBlob(blob,`${safeFilename(project.name)}.wav`);notify('스테레오 WAV 파일을 내보냈습니다.')}catch(e){notify(`오디오 내보내기 실패: ${e instanceof Error?e.message:''}`)}finally{setBusy('')}}
+  function prepareExport(){
+    if(!loaded||navigating||busy||importing.current||exporting.current||audioApplyingRef.current){notify('프로젝트와 파일 작업이 준비된 뒤 저장해 주세요.');return null}
+    if(document.activeElement instanceof HTMLElement)document.activeElement.blur()
+    if(pitchPending())return null
+    if(recordRef.current||recordPreparingRef.current||activeControlEdits.current.size||commandSession.isGestureActive()||document.querySelector('[data-daw-gesture]')){notify('녹음·편집을 마친 뒤 파일로 저장해 주세요.');return null}
+    return{project:commandSession.getSnapshot().history.present,assets:assetsRef.current}
+  }
+  async function saveBundle(){
+    const snapshot=prepareExport();if(!snapshot)return
+    exporting.current=true;setBusy('프로젝트를 묶는 중…')
+    try{
+      const result=await saveExport(await exportProjectBundle(snapshot.project,snapshot.assets),`${safeFilename(snapshot.project.name)}.garak`,'project')
+      notify(result.status==='canceled'?'프로젝트 파일 저장을 취소했습니다.':result.status==='saved'?'프로젝트와 원본 음원을 파일로 저장했습니다.':'프로젝트와 원본 음원의 다운로드를 시작했습니다.')
+    }catch(e){notify(`프로젝트 내보내기 실패: ${e instanceof Error?e.message:'파일을 저장하지 못했습니다.'}`)}finally{exporting.current=false;setBusy('')}
+  }
+  async function exportWav(){
+    const snapshot=prepareExport();if(!snapshot)return
+    exporting.current=true;setModal(null);setBusy('오디오를 렌더링하는 중…')
+    try{
+      const result=await saveExport(await engine.exportWav(snapshot.project),`${safeFilename(snapshot.project.name)}.wav`,'audio')
+      notify(result.status==='canceled'?'WAV 파일 저장을 취소했습니다.':result.status==='saved'?'스테레오 WAV 파일을 저장했습니다.':'스테레오 WAV 파일의 다운로드를 시작했습니다.')
+    }catch(e){notify(`오디오 내보내기 실패: ${e instanceof Error?e.message:'파일을 저장하지 못했습니다.'}`)}finally{exporting.current=false;setBusy('')}
+  }
   /** Records onto the topmost armed audio track, else the focused audio track, else a new audio track (§2.5). */
   async function toggleRecord(){
     if(recordRef.current||recordPreparingRef.current){pausePlaybackWithRecording(engine,{cancelPreparation:cancelRecordPreparation,finishRecording});return}
     if(pitchBusyRef.current){notify('피치 분석·렌더가 끝나거나 취소된 뒤 녹음을 시작해 주세요.');return}
-    if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){notify('이 브라우저에서는 마이크 녹음을 사용할 수 없습니다.');return}
+    if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){notify(desktop?'이 컴퓨터에서는 마이크 녹음을 사용할 수 없습니다.':'이 브라우저에서는 마이크 녹음을 사용할 수 없습니다.');return}
     if(busy||audioApplyingRef.current){notify('파일 처리나 오디오 설정 적용이 끝난 뒤 녹음을 시작해주세요.');return}
     const target=recordTarget(projectRef.current,focusedTrackId)
     if(target.reason==='focusedInstrument'){notify('MIDI 녹음은 아직 지원하지 않습니다');return}
@@ -972,7 +997,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
         <span className="header-divider"/>
         <div className="project-identity">
           <NameInput aria-label="프로젝트 이름" title={project.name} value={project.name} onCommit={name=>commit(p=>({...p,name}),'project-name','프로젝트 이름 변경')}/>
-          <span className={`save-indicator ${saveStatus}`} title={saveStatus==='saved'?'이 브라우저에 자동 저장됨':saveStatus==='error'?'저장 오류':saveStatus==='loading'?'불러오는 중':'저장 중'}><i/>{saveStatus==='saved'?'저장됨':saveStatus==='error'?'저장 실패':saveStatus==='loading'?'불러오는 중':'저장 중…'}</span>
+          <span className={`save-indicator ${saveStatus}`} title={saveStatus==='saved'?(desktop?'이 컴퓨터에 자동 저장됨':'이 브라우저에 자동 저장됨'):saveStatus==='error'?'저장 오류':saveStatus==='loading'?'불러오는 중':'저장 중'}><i/>{saveStatus==='saved'?'저장됨':saveStatus==='error'?'저장 실패':saveStatus==='loading'?'불러오는 중':'저장 중…'}</span>
         </div>
       </div>
       <Transport project={project} onChange={commit} onPlay={()=>void playTransport()} onStop={stop} onRecord={()=>void toggleRecord()} recording={recording} recordPreparing={recordPreparing} recordProcessing={recordingDraft?.status==='processing'} canUndo={history.past.length>0} canRedo={history.future.length>0} undoLabel={commandState.undoLabel} redoLabel={commandState.redoLabel} onUndo={()=>changeHistory('undo')} onRedo={()=>changeHistory('redo')}/>
@@ -1002,8 +1027,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     <footer className="status-bar"><div><button className={view.libraryOpen?'active':''} aria-pressed={view.libraryOpen} onClick={()=>patchView({libraryOpen:!view.libraryOpen})} aria-label="라이브러리 패널 전환" title={`라이브러리 · ${shortcutText('toggleLibrary')}`}><Icon name="library" size={14}/></button><button className={view.inspectorOpen?'active':''} aria-pressed={view.inspectorOpen} onClick={()=>patchView({inspectorOpen:!view.inspectorOpen})} aria-label="인스펙터 패널 전환" title={`인스펙터 · ${shortcutText('toggleInspector')}`}><Icon name="inspector" size={15}/></button><button className={view.browserOpen?'active':''} aria-pressed={view.browserOpen} onClick={()=>patchView({browserOpen:!view.browserOpen})} aria-label="브라우저 패널 전환" title={`브라우저 · ${shortcutText('toggleBrowser')}`}><Icon name="folder" size={14}/></button><span className={`status-dot ${saveStatus==='error'?'error':''}`}/><span>{saveStatus==='error'?'저장 공간을 확인해주세요':'로컬 작업 공간'}</span><span className="status-divider"/><span className="footer-caption">소리는 여기에서 시작됩니다.</span></div><div><AudioStatus onOpen={openAudioSettings}/><span className="status-divider"/><button onClick={()=>setModal('help')} title="단축키" aria-label="단축키 도움말"><Icon name="keyboard" size={15}/></button><span className="version-tag">{BRAND.version} DEV</span></div></footer>
 
     <input ref={audioInput} type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aiff" multiple hidden onChange={e=>{if(e.target.files?.length)void addAudioFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0)}}/>
-    <input ref={projectInput} type="file" accept=".garak,.noct,.json,application/json" hidden onChange={e=>{if(e.target.files?.[0])void openBundle(e.target.files[0])}}/>
-    {appMenu&&<ContextMenu {...appMenu} label={`${BRAND.name} 메뉴`} onClose={()=>setAppMenu(null)} items={[{label:'설정…',icon:'settings',shortcut:shortcutText('openSettings'),onSelect:openAudioSettings},{label:bridgeState.status==='connected'?'AI 연결 · 연결됨':'AI 연결…',icon:'plug',onSelect:()=>setModal('mcp')},{type:'separator'},{label:'프로젝트 목록',icon:'folder',onSelect:onHome},{label:'새 프로젝트…',icon:'file-plus',onSelect:()=>setModal('new')},{label:'프로젝트 파일 가져오기…',icon:'upload',onSelect:()=>projectInput.current?.click()},{label:'단축키 도움말',icon:'keyboard',onSelect:()=>setModal('help')},{label:`${BRAND.name} 정보`,icon:'info',onSelect:()=>setModal('about')}]}/>}
+    {appMenu&&<ContextMenu {...appMenu} label={`${BRAND.name} 메뉴`} onClose={()=>setAppMenu(null)} items={[{label:'설정…',icon:'settings',shortcut:shortcutText('openSettings'),onSelect:openAudioSettings},{label:bridgeState.status==='connected'?'AI 연결 · 연결됨':'AI 연결…',icon:'plug',onSelect:()=>setModal('mcp')},{type:'separator'},{label:'프로젝트 목록',icon:'folder',onSelect:onHome},{label:'새 프로젝트…',icon:'file-plus',onSelect:()=>setModal('new')},{label:'프로젝트 파일 가져오기…',icon:'upload',onSelect:onOpenProject},{label:'단축키 도움말',icon:'keyboard',onSelect:()=>setModal('help')},{label:`${BRAND.name} 정보`,icon:'info',onSelect:()=>setModal('about')}]}/>}
     {modal==='mcp'&&<McpConnectionDialog client={bridgeClient} instanceId={instanceId} projectName={project.name} editsAllowed={aiEditsAllowed} onEditsAllowed={value=>{aiEditsAllowedRef.current=value;setAiEditsAllowed(value)}} onClose={()=>setModal(null)}/> }
     {modal==='settings'&&<AudioSettingsDialog engine={engine} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}
     {palette&&<ColorPalette x={palette.x} y={palette.y} value={project.tracks.find(t=>t.id===palette.ids[0])?.color??''} onPick={hex=>changeTracks(palette.ids.map(id=>({id,patch:{color:hex}})),`${palette.ids.join()}:color`)} onClose={()=>setPalette(null)}/>}
@@ -1014,7 +1038,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     {busy&&<div className="busy-indicator" role="status"><span className="spinner"/>{busy}</div>}
     {modal==='newTracks'&&<NewTracksDialog focusedKind={focusedTrack?.kind} focusedInstrument={focusedTrack?.kind==='instrument'?focusedTrack.instrument:undefined} onCreate={createTracks} onClose={()=>setModal(null)}/>}
     {modal&&modal!=='newTracks'&&modal!=='settings'&&modal!=='mcp'&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className={`modal ${modal==='help'?'modal-help':''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" onClick={()=>setModal(null)} aria-label="창 닫기"><Icon name="close"/></button>
-      {modal==='new'?<><span className="modal-symbol"><Icon name="plus" size={27}/></span><h2 id="modal-title">다음 아이디어를 시작할까요?</h2><p>현재 작업을 저장한 뒤 새 프로젝트를 만듭니다. 기존 작업은 프로젝트 목록에서 다시 열 수 있습니다.</p><button className="modal-save" onClick={()=>void saveBundle()}><Icon name="save" size={16}/> 현재 프로젝트 내려받기</button><div className="modal-buttons"><button onClick={()=>newProject(true)}>샘플 프로젝트 고르기</button><button className="primary" onClick={()=>newProject()}>빈 프로젝트 만들기</button></div></>:modal==='export'?<><span className="modal-symbol"><Icon name="download" size={26}/></span><h2 id="modal-title">음악을 밖으로</h2><p>모든 트랙과 현재 믹서 설정을 하나의 스테레오 파일로 만듭니다.</p><div className="export-summary"><span>파일 이름<b>{project.name||'Untitled'}.wav</b></span><span>범위<b>{+(project.lengthBeats/project.beatsPerBar).toFixed(2)} 마디 · {(project.lengthBeats*60/project.bpm).toFixed(1)}초</b></span><span>프로젝트<b>{project.tracks.length} tracks · {project.bpm} BPM</b></span><span>형식<b>Stereo PCM 16-bit WAV · {project.sampleRate/1000} kHz</b></span></div><button className="primary modal-wide" onClick={()=>void exportWav()}><Icon name="download" size={16}/> WAV 내보내기</button><button className="text-link" onClick={()=>{setModal(null);void saveBundle()}}>편집 가능한 프로젝트(.garak)로 보관하기</button></>:modal==='help'?<><span className="modal-symbol"><Icon name="keyboard" size={27}/></span><h2 id="modal-title">손끝에서 이어지는 작업</h2><div className="shortcut-groups" data-selectable-text="" tabIndex={0}>{SCOPE_GROUPS.map(([key,title])=>{const rows=SHORTCUT_TABLE.filter(r=>r.scopes.join(',')===key&&!ZOOM_COMMANDS.includes(r.command));return rows.length?<section key={key} className="shortcut-list"><h3>{title}</h3>{rows.map(r=><div key={r.command}><span>{r.label}</span><kbd>{(shortcutPlatform()==='mac'?r.mac:r.win)||'—'}</kbd></div>)}</section>:null})}<section className="shortcut-list"><h3>확대/축소 · 키 포커스가 있는 영역에 적용</h3>{SHORTCUT_TABLE.filter(r=>ZOOM_COMMANDS.includes(r.command)).map(r=><div key={r.command}><span>{r.label}</span><kbd>{shortcutPlatform()==='mac'?r.mac:r.win}</kbd></div>)}<div><span>가로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⌘':'Ctrl+'}휠 · 핀치</kbd></div><div><span>세로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⇧⌘':'Ctrl+Shift+'}휠 / {shortcutPlatform()==='mac'?'⌥':'Alt+'}휠</kbd></div></section></div><p className="modal-note">클릭은 선택, Shift/{shortcutPlatform()==='mac'?'⌘':'Ctrl'}+클릭은 선택 추가, 빈 곳 드래그는 범위 선택입니다. 드래그 중 {shortcutPlatform()==='mac'?'⌥':'Alt'} = 복사, Ctrl = 세밀하게, Ctrl+Shift = 스냅 무시, Shift = 축 고정. 클립을 더블 클릭하면 편집기가 열립니다.</p></>:<><Brand size="large"/><h2 id="modal-title">음악을 위한 나만의 공간.</h2><p>React와 Web Audio로 만드는 오픈소스 DAW입니다. 프로젝트와 음원은 브라우저에 로컬로 저장합니다.</p><div className="about-roadmap"><span><b>1.0</b> 웹 편집기 + 오디오 엔진 <small>개발 중</small></span><span><b>2.0</b> 로컬 호스트 + VST 연결 <small>예정</small></span></div><div className="about-meta" data-selectable-text="" tabIndex={0}>React 19.3.1 · TypeScript · 코드 MIT License</div><div className="about-meta" data-selectable-text="" tabIndex={0}><a href="https://lucide.dev" target="_blank" rel="noreferrer">Lucide Icons</a> · <a href="/licenses/lucide-LICENSE.txt" target="_blank" rel="noreferrer">ISC / MIT 라이선스</a></div><div className="sample-credits" data-selectable-text="" tabIndex={0}><strong>샘플 악기 출처</strong>{SAMPLE_CREDITS.map(c=><span key={c.title}>{c.url?<a href={c.url} target="_blank" rel="noreferrer">{c.title}</a>:c.title} — {c.author}, {c.license} <small>{c.instruments}</small></span>)}</div>{SOURCE_REPOSITORY_URL&&<a className="modal-save" href={SOURCE_REPOSITORY_URL} target="_blank" rel="noreferrer"><Icon name="external" size={16}/> GitHub 소스 코드</a>}<div className="font-credit" data-selectable-text="" tabIndex={0}>이름 글꼴: <a href={BRAND.fontSource} target="_blank" rel="noreferrer">{BRAND.fontName}</a><br/>국립한글박물관 · ㈜윤디자인그룹<br/><a href={BRAND.fontLicense} target="_blank" rel="noreferrer">공공누리 제3유형 · 글꼴 이용 조건</a></div></>}
+      {modal==='new'?<><span className="modal-symbol"><Icon name="plus" size={27}/></span><h2 id="modal-title">다음 아이디어를 시작할까요?</h2><p>현재 작업을 저장한 뒤 새 프로젝트를 만듭니다. 기존 작업은 프로젝트 목록에서 다시 열 수 있습니다.</p><button className="modal-save" onClick={()=>void saveBundle()}><Icon name="save" size={16}/> {desktop?'현재 프로젝트 파일로 저장':'현재 프로젝트 내려받기'}</button><div className="modal-buttons"><button onClick={()=>newProject(true)}>샘플 프로젝트 고르기</button><button className="primary" onClick={()=>newProject()}>빈 프로젝트 만들기</button></div></>:modal==='export'?<><span className="modal-symbol"><Icon name="download" size={26}/></span><h2 id="modal-title">음악을 밖으로</h2><p>모든 트랙과 현재 믹서 설정을 하나의 스테레오 파일로 만듭니다.</p><div className="export-summary"><span>파일 이름<b>{project.name||'Untitled'}.wav</b></span><span>범위<b>{+(project.lengthBeats/project.beatsPerBar).toFixed(2)} 마디 · {(project.lengthBeats*60/project.bpm).toFixed(1)}초</b></span><span>프로젝트<b>{project.tracks.length} tracks · {project.bpm} BPM</b></span><span>형식<b>Stereo PCM 16-bit WAV · {project.sampleRate/1000} kHz</b></span></div><button className="primary modal-wide" onClick={()=>void exportWav()}><Icon name="download" size={16}/> WAV 내보내기</button><button className="text-link" onClick={()=>{setModal(null);void saveBundle()}}>편집 가능한 프로젝트(.garak)로 보관하기</button></>:modal==='help'?<><span className="modal-symbol"><Icon name="keyboard" size={27}/></span><h2 id="modal-title">손끝에서 이어지는 작업</h2><div className="shortcut-groups" data-selectable-text="" tabIndex={0}>{SCOPE_GROUPS.map(([key,title])=>{const rows=SHORTCUT_TABLE.filter(r=>r.scopes.join(',')===key&&!ZOOM_COMMANDS.includes(r.command));return rows.length?<section key={key} className="shortcut-list"><h3>{title}</h3>{rows.map(r=><div key={r.command}><span>{r.label}</span><kbd>{(shortcutPlatform()==='mac'?r.mac:r.win)||'—'}</kbd></div>)}</section>:null})}<section className="shortcut-list"><h3>확대/축소 · 키 포커스가 있는 영역에 적용</h3>{SHORTCUT_TABLE.filter(r=>ZOOM_COMMANDS.includes(r.command)).map(r=><div key={r.command}><span>{r.label}</span><kbd>{shortcutPlatform()==='mac'?r.mac:r.win}</kbd></div>)}<div><span>가로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⌘':'Ctrl+'}휠 · 핀치</kbd></div><div><span>세로 확대/축소 (포인터 기준)</span><kbd>{shortcutPlatform()==='mac'?'⇧⌘':'Ctrl+Shift+'}휠 / {shortcutPlatform()==='mac'?'⌥':'Alt+'}휠</kbd></div></section></div><p className="modal-note">클릭은 선택, Shift/{shortcutPlatform()==='mac'?'⌘':'Ctrl'}+클릭은 선택 추가, 빈 곳 드래그는 범위 선택입니다. 드래그 중 {shortcutPlatform()==='mac'?'⌥':'Alt'} = 복사, Ctrl = 세밀하게, Ctrl+Shift = 스냅 무시, Shift = 축 고정. 클립을 더블 클릭하면 편집기가 열립니다.</p></>:<><Brand size="large"/><h2 id="modal-title">음악을 위한 나만의 공간.</h2><p>{desktop?'React와 Web Audio로 만드는 데스크톱 DAW입니다. 프로젝트와 음원은 이 컴퓨터에 저장합니다.':'React와 Web Audio로 만드는 오픈소스 DAW입니다. 프로젝트와 음원은 브라우저에 로컬로 저장합니다.'}</p><div className="about-roadmap"><span><b>1.0</b> 웹 편집기 + 오디오 엔진 <small>개발 중</small></span><span><b>2.0</b> 로컬 호스트 + VST 연결 <small>예정</small></span></div><div className="about-meta" data-selectable-text="" tabIndex={0}>React 19.3.1 · TypeScript · 코드 MIT License</div><div className="about-meta" data-selectable-text="" tabIndex={0}><a href="https://lucide.dev" target="_blank" rel="noreferrer">Lucide Icons</a> · <a href="/licenses/lucide-LICENSE.txt" target="_blank" rel="noreferrer">ISC / MIT 라이선스</a></div><div className="sample-credits" data-selectable-text="" tabIndex={0}><strong>샘플 악기 출처</strong>{SAMPLE_CREDITS.map(c=><span key={c.title}>{c.url?<a href={c.url} target="_blank" rel="noreferrer">{c.title}</a>:c.title} — {c.author}, {c.license} <small>{c.instruments}</small></span>)}</div>{SOURCE_REPOSITORY_URL&&<a className="modal-save" href={SOURCE_REPOSITORY_URL} target="_blank" rel="noreferrer"><Icon name="external" size={16}/> GitHub 소스 코드</a>}<div className="font-credit" data-selectable-text="" tabIndex={0}>이름 글꼴: <a href={BRAND.fontSource} target="_blank" rel="noreferrer">{BRAND.fontName}</a><br/>국립한글박물관 · ㈜윤디자인그룹<br/><a href={BRAND.fontLicense} target="_blank" rel="noreferrer">공공누리 제3유형 · 글꼴 이용 조건</a></div></>}
     </section></div>}
   </div></HistoryGestureContext.Provider>
 }

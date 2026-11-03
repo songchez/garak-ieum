@@ -11,6 +11,8 @@ import {
 export const ALLOWED_APP_ORIGINS = new Set([
   'http://127.0.0.1:5173', 'http://localhost:5173',
   'http://127.0.0.1:4173', 'http://localhost:4173',
+  // The installed app registers this exact, non-opaque origin. Never accept null or a scheme wildcard.
+  'garak://app',
 ])
 interface Instance { instanceId: string; connectedAt: string; socket: WebSocket }
 interface Pending {

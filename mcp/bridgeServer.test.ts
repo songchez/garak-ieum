@@ -22,14 +22,14 @@ function message(socket: WebSocket): Promise<Record<string, any>> {
     socket.once('error', fail)
   })
 }
-async function open(value: DawBridge) {
-  const socket = new WebSocket(`ws://127.0.0.1:${value.port}/bridge`, { origin: ORIGIN })
+async function open(value: DawBridge, origin = ORIGIN) {
+  const socket = new WebSocket(`ws://127.0.0.1:${value.port}/bridge`, { origin })
   socket.on('error', () => {})
   await new Promise<void>((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject) })
   return socket
 }
-async function pair(value: DawBridge, instanceId = 'tab-one', token = TOKEN) {
-  const socket = await open(value)
+async function pair(value: DawBridge, instanceId = 'tab-one', token = TOKEN, origin = ORIGIN) {
+  const socket = await open(value, origin)
   const ready = message(socket)
   socket.send(JSON.stringify({ type: 'auth', protocol: 1, token, instanceId }))
   return { socket, reply: await ready }
@@ -45,7 +45,15 @@ describe('loopback DAW bridge', () => {
   it.each([
     { origin: 'https://evil.example', host: undefined },
     { origin: undefined, host: undefined },
+    { origin: 'null', host: undefined },
+    { origin: 'file://', host: undefined },
+    { origin: 'garak://app.evil.example', host: undefined },
+    { origin: 'garak://evil@app', host: undefined },
+    { origin: 'garak://app:5173', host: undefined },
+    { origin: 'garak://app/', host: undefined },
+    { origin: 'https://app', host: undefined },
     { origin: ORIGIN, host: 'evil.example' },
+    { origin: 'garak://app', host: 'evil.example' },
   ])('rejects an untrusted Origin or Host before WebSocket authentication: %j', async ({ origin, host }) => {
     const value = await bridge()
     const status = await new Promise<number>((resolve, reject) => {
@@ -56,6 +64,22 @@ describe('loopback DAW bridge', () => {
     })
     expect(status).toBe(403)
     expect(value.listInstances()).toEqual([])
+  })
+
+  it('requires authentication for the exact desktop origin and routes acknowledged requests', async () => {
+    const value = await bridge()
+    const bad = await pair(value, 'bad-desktop', 'incorrect_token_0123456789abcdefghijk', 'garak://app')
+    expect(bad.reply).toMatchObject({ type: 'error', error: { code: 'AUTH_FAILED' } })
+    expect(value.listInstances()).toEqual([])
+
+    const { socket, reply } = await pair(value, 'desktop-window', TOKEN, 'garak://app')
+    expect(reply).toEqual({ type: 'ready', protocol: 1 })
+    const incoming = message(socket)
+    const result = value.request('get_state', { projectId: 'desktop-project' }, 'desktop-window')
+    const packet = await incoming
+    expect(packet).toMatchObject({ type: 'request', method: 'get_state', params: { projectId: 'desktop-project' } })
+    socket.send(JSON.stringify({ type: 'response', id: packet.id, result: { projectId: 'desktop-project', revision: 4 } }))
+    await expect(result).resolves.toEqual({ projectId: 'desktop-project', revision: 4 })
   })
 
   it('refuses a wrong token and duplicate instance without evicting the legitimate tab', async () => {

@@ -1,0 +1,39 @@
+appId: com.garakieum.desktop
+productName: 가락이음
+directories:
+  output: release
+files:
+  - dist/**
+  - dist-desktop/**
+  - dist-mcp/**
+  - package.json
+  - LICENSE
+  - THIRD_PARTY_NOTICES.md
+  - from: src/devices/pitch-editor/vendor
+    to: dist/licenses
+    filter:
+      - LICENSE.signalsmith.txt
+asar: true
+npmRebuild: false
+compression: normal
+fileAssociations:
+  - ext: garak
+    name: GarakIeum.Project
+    description: 가락이음 음악 프로젝트
+    role: Editor
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: public/brand/garak-ieum-mark.png
+  executableName: 가락이음
+  artifactName: Garak-Ieum-Setup-${version}-${arch}.${ext}
+nsis:
+  include: build/installer.nsh
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false

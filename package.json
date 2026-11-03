@@ -1,6 +1,9 @@
 {
   "name": "garak-ieum",
   "version": "0.1.0",
+  "description": "가락이음 — 로컬 음악 작업실",
+  "author": "songchez",
+  "main": "dist-desktop/main.js",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -12,6 +15,12 @@
     "mcp:build": "tsc -p tsconfig.mcp.json",
     "mcp:start": "node dist-mcp/mcp/server.js",
     "mcp:token": "node dist-mcp/mcp/token.js",
+    "desktop:compile": "tsc -p tsconfig.desktop.json",
+    "desktop:prepare": "pnpm run build && pnpm run mcp:build && pnpm run desktop:compile",
+    "desktop:dev": "pnpm run desktop:prepare && install-electron && electron .",
+    "desktop:pack": "pnpm run desktop:prepare && electron-builder --dir --publish never",
+    "desktop:build": "pnpm run desktop:prepare && electron-builder --win nsis --x64 --publish never",
+    "desktop:test": "node scripts/desktop-smoke.mjs",
     "test": "vitest run"
   },
   "dependencies": {
@@ -28,7 +37,10 @@
     "@types/react-dom": "^19.2.2",
     "@types/ws": "8.18.2",
     "@vitejs/plugin-react": "6.1.2",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
     "fake-indexeddb": "6.2.7",
+    "playwright": "1.64.1",
     "typescript": "7.0.2",
     "vite": "8.3.5",
     "vitest": "5.0.5"

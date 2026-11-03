@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "rootDir": "desktop",
+    "outDir": "dist-desktop",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["desktop/**/*.ts", "desktop/**/*.cts"],
+  "exclude": ["desktop/**/*.test.ts"]
+}

@@ -202,6 +202,7 @@ npx.cmd --yes pnpm@11.25.0 dev
 | 녹음 장치와 샘플레이트 | [오디오 설정](docs/GETTING_STARTED.md#4-마이크와-오디오-인터페이스-설정하기) |
 | 테마와 디자인 | [여섯 테마](docs/THEMES.md) · [브랜드](docs/BRAND.md) |
 | 코드와 배포 | [아키텍처](docs/ARCHITECTURE.md) · [배포 안내](docs/DEPLOYMENT.md) |
+| Windows 앱 설치·빌드 | [데스크톱 안내](docs/DESKTOP.md) · [네이티브 오디오 계획](docs/NATIVE_AUDIO.md) |
 | 현재 구현과 남은 작업 | [구현 상태](docs/IMPLEMENTATION_STATUS.md) · [상호작용 명세](docs/INTERACTION_SPEC.md) |
 
 <a id="development"></a>
