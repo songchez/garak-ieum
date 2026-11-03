@@ -44,7 +44,7 @@ pnpm desktop:test
 pnpm desktop:source
 ```
 
-`desktop:build:mac`은 웹 에셋·MCP·Electron 코드를 빌드한 뒤 arm64 DMG를 생성합니다. `--arm64` 인수는 생략할 수 있으며 다른 아키텍처는 허용하지 않습니다. 기본 모드는 ad-hoc 서명입니다. `desktop:source`는 빌드와 소스가 같은 **깨끗한 Git 커밋**일 때만 소스 ZIP을 생성합니다.
+`desktop:build:mac`은 웹 에셋·MCP·Electron 코드를 빌드한 뒤 arm64 DMG를 생성합니다. `--arm64` 인수는 생략할 수 있으며 다른 아키텍처는 허용하지 않습니다. 기본 모드는 ad-hoc 서명입니다. 이 모드에서는 서명·공증 자격 증명 환경 변수를 자식 빌드에 전달하지 않고, 인증서가 필요 없는 ad-hoc 서명을 PR에서도 수행한 다음 실제 번들 서명을 검증합니다. `desktop:source`는 빌드와 소스가 같은 **깨끗한 Git 커밋**일 때만 소스 ZIP을 생성합니다.
 
 `desktop:install:mac:test`는 일회성 **GitHub-hosted macOS runner에서만** 실행됩니다. DMG를 읽기 전용으로 연결하고, 공백이 있는 임시 경로로 앱을 복사한 뒤 이미지를 해제합니다. 실제 `/Applications`와 사용자 프로젝트는 수정하지 않습니다. 번들 ID·버전·아이콘·UTI·CPU·서명·entitlement를 검증하고 설치한 실행 파일을 후속 스모크 검사에 전달합니다.
 

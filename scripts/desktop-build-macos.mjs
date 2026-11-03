@@ -36,22 +36,31 @@ if (signed) {
   assert.notEqual(process.env.CSC_NAME, '-', 'An ad-hoc identity cannot produce a signed distribution.')
 }
 
-function run(command, commandArgs, extraEnvironment = {}) {
-  execFileSync(command, commandArgs, { cwd: repository, stdio: 'inherit', env: { ...process.env, ...extraEnvironment } })
+function run(command, commandArgs, environment = process.env) {
+  execFileSync(command, commandArgs, { cwd: repository, stdio: 'inherit', env: environment })
 }
 run('pnpm', ['run', 'desktop:prepare'])
 const signingOptions = signed
   ? ['--config.forceCodeSigning=true', '--config.mac.notarize=true']
   : ['--config.mac.identity=-', '--config.mac.notarize=false']
-run('pnpm', ['exec', 'electron-builder', '--mac', 'dmg', `--${arch}`, '--publish', 'never', ...signingOptions], signed ? {} : { CSC_IDENTITY_AUTO_DISCOVERY: 'false' })
+// v26 otherwise skips all signing in PR builds, including certificate-free
+// ad-hoc signing. Do not forward any signing/notarization credentials to this
+// preview path; the production path never enables PR signing automatically.
+const previewEnvironment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(?:CSC_|WIN_CSC_|APPLE_)/i.test(name)))
+Object.assign(previewEnvironment, { CSC_IDENTITY_AUTO_DISCOVERY: 'false', CSC_FOR_PULL_REQUEST: 'true' })
+run('pnpm', ['exec', 'electron-builder', '--mac', 'dmg', `--${arch}`, '--publish', 'never', ...signingOptions], signed ? process.env : previewEnvironment)
+
+const application = path.join(repository, 'release', 'mac-arm64', '가락이음.app')
+await access(application)
+run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', application])
 
 if (signed) {
-  const application = path.join(repository, 'release', 'mac-arm64', '가락이음.app')
-  await access(application)
-  run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', application])
   run('/usr/bin/xcrun', ['stapler', 'validate', application])
   run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=2', application])
   console.log(`Verified Developer ID/notarized application in the ${arch} DMG. Nothing has been published.`)
 } else {
+  const signature = spawnSync('/usr/bin/codesign', ['--display', '--verbose=4', application], { encoding: 'utf8' })
+  assert.equal(signature.status, 0, 'Could not inspect the preview signature.')
+  assert.match(signature.stderr, /Signature=adhoc/, 'The preview must have a complete ad-hoc bundle signature.')
   console.log(`Built ${arch} DMG for development testing with ad-hoc signing. It is not Developer ID signed or notarized.`)
 }
