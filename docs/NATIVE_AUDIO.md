@@ -6,7 +6,9 @@
 
 ## 1. 구현 방향
 
-자체 **MIT C++ 엔진과 MIT VST3 SDK**를 사용하고, Windows 기본 장치 backend는 **miniaudio의 WASAPI**로 준비합니다. JUCE는 필수 의존성으로 추가하지 않습니다. ASIO는 라이선스 선택 뒤 연결할 수 있도록 별도 adapter와 빌드 경계를 둡니다.
+자체 **GPL-3.0-only C++ 엔진과 MIT VST3 SDK**를 사용하고, Windows 기본 장치 backend는 **miniaudio의 WASAPI**로 준비합니다. JUCE는 도입하지 않습니다. **ASIO SDK의 GPLv3 경로는 선택을 완료했으며**, 장치별 처리를 분리하는 adapter와 빌드 경계를 구현할 계획입니다.
+
+**ASIO는 Windows 제품의 필수 지원 목표**입니다. 사용자는 보유한 장치와 드라이버에 맞춰 WASAPI 또는 ASIO를 선택할 수 있도록 합니다. 일반 Windows 오디오 장치의 기본 경로는 WASAPI로 두며, ASIO 기능의 실제 제공 시점은 엔진 구현과 장치 검증이 완료된 뒤로 구분합니다.
 
 Electron은 편집 화면, 프로젝트 명령, 파일 대화상자와 저장을 담당합니다. 네이티브 엔진은 오디오 시계, 장치 입출력, 내장 음원, 플러그인, 믹서와 녹음 처리를 담당합니다. 엔진을 별도 프로세스로 두어 플러그인 오류가 편집 화면과 저장된 프로젝트에 미치는 영향을 줄입니다. 이 분리는 장애 격리와 실행 구조를 위한 결정이며 라이선스 의무를 자동 면제하는 근거로 사용하지 않습니다.
 
@@ -30,7 +32,7 @@ Web Audio의 최종 출력을 별도로 재생하면서 VST3만 ASIO로 내보�
 | --- | --- | --- |
 | Steinberg VST3 SDK | `v3.8.1_build_84` · `3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96` | MIT; Windows x64 VST3 악기·이펙트 호스트 |
 | miniaudio | `0.11.26` · `877ea4a7c2601c7b0f2a44e83dfac42e6470fea6` | Public Domain 또는 MIT No Attribution 중 **MIT No Attribution(MIT-0)** 선택; WASAPI 장치 입출력 |
-| Steinberg ASIO SDK | 기본 빌드에서 제외; 버전·도입은 라이선스 선택 뒤 확정 | GPLv3 또는 별도 proprietary 계약; 선택적 ASIO adapter |
+| Steinberg ASIO SDK | GPLv3 경로 선택 완료; SDK 버전·commit은 도입 시 고정. 현재 빌드에는 미포함 | GPLv3; ASIO 장치 adapter |
 
 VST3 SDK는 필요한 submodule도 상위 commit이 가리키는 revision으로 고정하고, 함께 사용하는 소스의 라이선스 고지를 설치물에 포함합니다. SDK 3.8.1의 공식 발표와 원문은 [발표](https://forums.steinberg.net/t/vst-3-8-1-sdk-released/1038865), [tag](https://github.com/steinbergmedia/vst3sdk/tree/v3.8.1_build_84), [해당 commit의 MIT 라이선스](https://github.com/steinbergmedia/vst3sdk/blob/3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96/LICENSE.txt)에서 확인할 수 있습니다. VST3의 MIT 전환은 VST2 지원이나 기존 VST2 계약까지 포함하지 않습니다. [VST3 공식 라이선스 안내](https://forums.steinberg.net/t/vst-3-sdk-license/201637)
 
@@ -82,24 +84,22 @@ miniaudio의 [0.11.26 release](https://github.com/mackron/miniaudio/releases/tag
 
 라이브 입력의 지연은 보상 버퍼로 제거할 수 있다고 설명하지 않습니다. 실시간 모니터링은 전체 경로 지연을 표시하고, 지연이 큰 플러그인을 사용하는 경우 그 영향을 확인할 수 있게 합니다.
 
-## 6. ASIO 라이선스 결정
+## 6. GPL-3.0-only 전환과 ASIO 선택
 
-저장소 자체 코드의 **MIT 라이선스는 유지**합니다. 현재 ASIO SDK를 내려받거나 proprietary 계약을 수락하지 않았으며, ASIO를 포함한 바이너리를 배포하지 않습니다. 기본 빌드는 ASIO를 끄고, 추후 명시적인 빌드 옵션과 사용자가 제공하는 SDK 경로로 활성화하도록 설계합니다. CI가 SDK를 자동 다운로드하거나 계약에 동의하는 흐름을 만들지 않습니다.
+2026-11-03 사용자 결정에 따라 앱 코드의 배포 라이선스를 **GPL-3.0-only**로 전환하고 **ASIO SDK의 GPLv3 경로를 선택**했습니다. Steinberg가 제공하는 두 라이선스 중 GPLv3 조건을 따르는 것이므로, 이 경로에서 별도의 proprietary 계약이나 Steinberg의 서명을 받을 필요는 없습니다. [ASIO 라이선스 원문](https://github.com/audiosdk/asio/blob/main/LICENSE.txt) · [Steinberg 공식 FAQ](https://forums.steinberg.net/t/asio-sdk-proprietary-licensing-faq/1044024)
 
-Steinberg는 ASIO를 **GPLv3 또는 proprietary 계약**으로 제공합니다. VST3의 MIT 라이선스와 다른 조건입니다. [공식 dual-license 발표](https://ocl-steinberg-live.steinberg.net/_storage/asset/808575/storage/master/Press%20Release%20-%202025-10-15%20-%20OBS%20Partnership-%20EN.pdf)
+현재 변경은 라이선스·고지·소스 배포 정책을 정리하는 단계입니다. ASIO SDK와 네이티브 엔진은 아직 설치물에 포함되지 않으며, 실제 SDK 버전 고정·빌드·장치 연결은 후속 구현에서 진행합니다. 라이선스 선택을 기다릴 필요는 없지만, ASIO·VST3 지원 완료를 선언하려면 아래 기능·장치 검증을 통과해야 합니다.
 
-| 선택 | 외부 배포에 필요한 조치 | 기존 MIT 코드와의 관계 |
-| --- | --- | --- |
-| GPLv3 | ASIO SDK가 포함된 결합 프로그램을 GPLv3 조건에 맞게 배포하고 해당 소스와 라이선스 의무 이행 | 자체 파일의 MIT 고지를 유지할 수 있지만 결합 바이너리 전체를 MIT만으로 설명할 수 없음 |
-| Steinberg proprietary 계약 | 실제 배포 주체가 계약을 체결하고 사용·고지·상표 지침 준수 | 자체 코드의 MIT 유지 가능; SDK와 배포물에는 별도 계약 조건 적용 |
+배포 시 다음 조건을 지킵니다.
 
-2026-10-21 공식 FAQ에 따르면 proprietary 계약은 로열티 무료이며 개인도 계약할 수 있습니다. 양측 서명이 완료된 뒤 효력이 생기므로 무료 공개 베타를 포함한 외부 배포 전에 절차를 마쳐야 합니다. 내부 개발·시험은 계약 처리 중 가능하다고 설명합니다. 기존 ASIO 드라이버에 연결하는 호스트와 third-party wrapper 사용도 확인 대상입니다. 따라서 permissive wrapper나 동적 로딩을 계약 면제 근거로 삼지 않습니다. 실제 Licensing Agreement와 Usage Guidelines가 FAQ보다 우선합니다. [Steinberg 공식 FAQ](https://forums.steinberg.net/t/asio-sdk-proprietary-licensing-faq/1044024)
+- **결합 프로그램의 GPL 배포:** ASIO SDK와 결합한 프로그램은 GPLv3 조건을 따릅니다. 기존 MIT 코드와 MIT VST3 SDK, MIT-0 miniaudio의 원래 저작권·허가 고지도 보존합니다.
+- **정확한 대응 소스:** 배포하는 실행 파일에 대응하는 소스, 변경 사항, 빌드·설치 스크립트와 필요한 고지를 제공합니다. 공개 GitHub 저장소가 있다는 사실만으로 대응 소스 제공 의무를 모두 이행했다고 보지 않습니다. 동일 빌드의 소스 ZIP과 설치 파일을 연결하고 재배포 때도 이 관계를 유지합니다.
+- **이전 MIT 권리 보존:** 이전에 MIT로 제공한 앱 코드의 [고지 원문](../public/licenses/garak-ieum-MIT-notice.txt)을 유지합니다. 기존 MIT 복사본을 받은 사람의 권리를 소급해 취소하지 않습니다.
+- **외부 자료의 조건 유지:** 샘플·글꼴·아이콘·외부 라이브러리의 원래 라이선스는 [제3자 자산 안내](../THIRD_PARTY_NOTICES.md)에 따라 유지합니다. 앱 라이선스 변경을 이유로 해당 원문을 바꾸지 않습니다.
 
-GNU의 설명도 호환 라이선스 코드를 결합한 프로그램과 독립적인 프로그램의 묶음을 구분합니다. 별도 프로세스라는 이유만으로 GPL 적용 여부를 단정하지 않습니다. [GNU 라이선스 FAQ](https://www.gnu.org/licenses/gpl-faq.en.html#WhatDoesCompatMean)
+상세한 소스 제공 방식과 재배포 조건은 [GPL 배포 안내](LICENSING.md)를 따릅니다. 근거는 [GPLv3의 대응 소스·결합물·바이너리 배포 조항](https://www.gnu.org/licenses/gpl-3.0.html)과 [GNU 라이선스 호환성 FAQ](https://www.gnu.org/licenses/gpl-faq.en.html#WhatDoesCompatMean)입니다. 별도 DLL이나 프로세스라는 이유만으로 GPL 적용을 피할 수 있다고 가정하지 않습니다.
 
-JUCE 9는 AGPLv3 또는 JUCE 상용 EULA를 따릅니다. 조건을 충족하는 무료 Starter 선택지가 있어도 별도 계약 모델이므로 이번 MIT 기본 구성에 추가하지 않습니다. [JUCE 라이선스](https://github.com/juce-framework/JUCE/blob/master/LICENSE.md) · [JUCE 9 EULA](https://juce.com/legal/juce-9-licence/)
-
-**ASIO를 포함한 설치물의 외부 배포 전에 사용자가 위 두 경로 중 하나를 결정해야 합니다.** 선택 전에도 WASAPI 엔진, VST3 호스트, 프로젝트 호환성과 ASIO adapter의 경계 설계는 진행할 수 있습니다.
+JUCE는 이번 구성에 도입하지 않습니다. 자체 엔진과 명시적으로 선택한 SDK·장치 라이브러리로 구현합니다.
 
 ## 7. 단계별 검증과 완료 판정
 
@@ -111,8 +111,8 @@ JUCE 9는 AGPLv3 또는 JUCE 상용 EULA를 따릅니다. 조건을 충족하는
 | WASAPI·내장 DSP | 무장치 오프라인 렌더, 샘플 존·게인·팬·효과 순서, 출력 길이와 피크 | 내장 샘플 프로젝트 청취, 장치 변경, 다양한 레이트·블록에서 underrun과 CPU 사용 |
 | VST3 | 자체 테스트용 gain·delay·instrument 플러그인의 오디오·이벤트·상태·지연 보상 | 사용자가 설치한 대표 플러그인의 창·재생·저장·복원·오류 격리 |
 | 녹음 | 정지·취소·파일 오류·큐 포화·자산 복구·녹음 offset | 인터페이스 입력 채널, 모니터링, 장시간 녹음, 물리 루프백의 실제 위치 오차 |
-| 선택한 ASIO | SDK를 제공한 환경의 빌드·포맷 변환·callback 경계 테스트 | 실제 ASIO 드라이버·장치에서 레이트·버퍼·입출력·분리·복구와 왕복 지연 |
-| 배포 | native executable·의존 DLL·고지 파일 포함, 프로젝트 저장·재실행·이전 파일 왕복 | 새 Windows 사용자 환경 설치, 오프라인 실행, 서명과 업데이트 검증 |
+| GPL ASIO | 고정한 SDK 버전으로 빌드·포맷 변환·callback 경계 테스트 | 실제 ASIO 드라이버·장치에서 레이트·버퍼·입출력·분리·복구와 왕복 지연 |
+| 배포 | native executable·의존 DLL·고지 파일과 대응 소스 포함, 프로젝트 저장·재실행·이전 파일 왕복 | 같은 소스로 재빌드, 새 Windows 사용자 환경 설치, 오프라인 실행, 서명과 업데이트 검증 |
 
 GitHub Windows runner의 빌드 성공이나 Electron smoke test만으로 ASIO 하드웨어·청감·낮은 지연이 검증되었다고 기록하지 않습니다. 실제 검증에는 Windows 버전, 인터페이스 모델, 드라이버 버전, 플러그인 버전, 레이트·버퍼 크기와 실패 조건을 남깁니다. 플러그인 지연 보상과 물리 왕복 지연은 각각 측정합니다.
 

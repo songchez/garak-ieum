@@ -1,6 +1,8 @@
 # 제3자 자산 안내
 
-애플리케이션 코드는 MIT로 제공합니다. 아래 아이콘, 글꼴과 샘플 음원은 각각의 라이선스를 따르며 애플리케이션의 MIT 라이선스로 다시 허가하지 않습니다.
+애플리케이션 코드의 배포 라이선스는 [GPL-3.0-only](LICENSE)입니다. 이전에 MIT로 제공한 앱 코드의 [저작권·허가 고지](public/licenses/garak-ieum-MIT-notice.txt)를 보존하며, 이미 MIT 조건으로 받은 복사본의 권리는 소급해 취소하지 않습니다. [라이선스와 대응 소스 안내](docs/LICENSING.md)
+
+아래 아이콘, 글꼴, 샘플 음원과 외부 라이브러리는 각각의 원래 라이선스와 저작권 고지를 유지합니다. 앱의 라이선스 변경으로 이 제3자 자료의 라이선스 원문을 바꾸지 않습니다.
 
 ## Lucide 아이콘
 
@@ -126,7 +128,7 @@ SOFTWARE.
 - 출처: <https://github.com/hydrogen-music/hydrogen/tree/main/data/drumkits/TR808EmulationKit>
 - 라이선스: GPL-3.0-or-later <https://www.gnu.org/licenses/gpl-3.0.html> — 전문은 `public/samples/kit-808/LICENSE.txt`
 - 변경 사항: 트리밍, Opus/AAC 변환
-- 이 샘플 파일은 MIT 코드와 별개로 함께 배포하는 GPL 데이터입니다. 코드가 GPL이 되는 것은 아닙니다.
+- 이 샘플 파일의 GPL-3.0-or-later 조건은 앱 코드의 GPL-3.0-only와 구분해 유지합니다. 샘플의 출처·변경 내역·라이선스 원문은 그대로 보존합니다.
 
 ## Signalsmith Stretch — 피치 편집 오프라인 DSP
 

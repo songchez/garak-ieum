@@ -342,6 +342,32 @@ try {
     await screenshot('01-launcher.png')
   })
 
+  await checked('packaged GPL notices and source identity', async () => {
+    const documents = await session.page.evaluate(async () => {
+      const files = ['GPL-3.0-only.txt', 'garak-ieum-MIT-notice.txt', 'THIRD_PARTY_NOTICES.txt', 'SOURCE.txt', 'SOURCE.json']
+      return Object.fromEntries(await Promise.all(files.map(async name => {
+        const response = await fetch(`/licenses/${name}`)
+        if (!response.ok) throw new Error(`Missing packaged notice: ${name}`)
+        return [name, await response.text()]
+      })))
+    })
+    assert.equal(documents['GPL-3.0-only.txt'], await readFile(path.join(repository, 'LICENSE'), 'utf8'))
+    assert.equal(documents['garak-ieum-MIT-notice.txt'], await readFile(path.join(repository, 'public', 'licenses', 'garak-ieum-MIT-notice.txt'), 'utf8'))
+    assert.match(documents['THIRD_PARTY_NOTICES.txt'], /react@/)
+    assert.match(documents['THIRD_PARTY_NOTICES.txt'], /@modelcontextprotocol\/server@/)
+    const source = JSON.parse(documents['SOURCE.json'])
+    const built = JSON.parse(await readFile(path.join(repository, 'dist', 'licenses', 'SOURCE.json'), 'utf8'))
+    assert.deepEqual(source, built, 'Installed app contains another build\'s source identity')
+    assert.equal(source.version, report.launches.at(-1).details.version)
+    assert.match(documents['SOURCE.txt'], /GPL-3\.0-only/)
+    if (process.env.GITHUB_SHA) {
+      assert.equal(source.commit, process.env.GITHUB_SHA)
+      assert.equal(source.dirty, false)
+      assert.ok(documents['SOURCE.txt'].includes(source.archive))
+    }
+    report.source = { version: source.version, commit: source.commit, dirty: source.dirty, archive: source.archive }
+  })
+
   await checked('project creation and numeric BPM editing', async () => {
     const page = session.page
     await page.getByRole('button', { name: '새 빈 프로젝트', exact: true }).click()
@@ -366,6 +392,42 @@ try {
     await bpm.fill('88'); await bpm.press('Escape'); await valueIs(bpm, '137')
     await bpm.focus(); await bpm.press('ArrowUp'); await valueIs(bpm, '138')
     await bpm.press('ArrowDown'); await valueIs(bpm, '137'); await bpm.press('Enter')
+  })
+
+  await checked('bundled license links switch isolated document windows', async () => {
+    const page = session.page
+    await page.getByRole('button', { name: '가락이음 메뉴', exact: true }).click()
+    await page.getByRole('menuitem', { name: '가락이음 정보', exact: true }).click()
+    for (const filename of ['GPL-3.0-only.txt', 'garak-ieum-MIT-notice.txt', 'THIRD_PARTY_NOTICES.txt', 'SOURCE.txt']) {
+      await page.bringToFront()
+      await page.locator(`a[href="/licenses/${filename}"]`).click()
+      let document
+      await eventually(`isolated license document ${filename}`, async () => {
+        document = await session.application.evaluate(({ BrowserWindow }, expected) => {
+          const windows = BrowserWindow.getAllWindows()
+          const child = windows.find(candidate => candidate.webContents.getURL() === `garak://app/licenses/${expected}`)
+          if (!child || !child.isVisible() || child.webContents.isLoading()) return null
+          const preferences = child.webContents.getLastWebPreferences()
+          return {
+            windows: windows.length, javascript: preferences.javascript, sandbox: preferences.sandbox,
+            nodeIntegration: preferences.nodeIntegration, contextIsolation: preferences.contextIsolation,
+            webSecurity: preferences.webSecurity, preload: Boolean(preferences.preload),
+          }
+        }, filename)
+        return document !== null
+      })
+      assert.deepEqual(document, {
+        windows: 2, javascript: false, sandbox: true, nodeIntegration: false,
+        contextIsolation: true, webSecurity: true, preload: false,
+      })
+    }
+    await session.application.evaluate(({ BrowserWindow }) => {
+      for (const child of BrowserWindow.getAllWindows()) {
+        if (child.webContents.getURL().startsWith('garak://app/licenses/')) child.close()
+      }
+    })
+    await page.bringToFront()
+    await page.getByRole('button', { name: '창 닫기', exact: true }).click()
   })
 
   await checked('time signature, undo and visible header controls', async () => {

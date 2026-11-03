@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="#development"><img src="https://img.shields.io/badge/version-0.1.0_Preview-DF5435?style=flat-square" alt="0.1.0 개발 프리뷰"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/code-MIT-3D7865?style=flat-square" alt="MIT 코드 라이선스"></a>
+  <a href="#development"><img src="https://img.shields.io/badge/version-0.1.1_Preview-DF5435?style=flat-square" alt="0.1.1 개발 프리뷰"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/code-GPL--3.0--only-3D7865?style=flat-square" alt="GPL-3.0-only 코드 라이선스"></a>
   <a href="#pitch-editor"><img src="https://img.shields.io/badge/audio-Pitch_Editor-285973?style=flat-square" alt="오디오 피치 편집기"></a>
   <a href="#ai"><img src="https://img.shields.io/badge/AI-MCP_Ready-783645?style=flat-square" alt="로컬 MCP 연결 지원"></a>
 </p>
@@ -203,13 +203,14 @@ npx.cmd --yes pnpm@11.25.0 dev
 | 테마와 디자인 | [여섯 테마](docs/THEMES.md) · [브랜드](docs/BRAND.md) |
 | 코드와 배포 | [아키텍처](docs/ARCHITECTURE.md) · [배포 안내](docs/DEPLOYMENT.md) |
 | Windows 앱 설치·빌드 | [데스크톱 안내](docs/DESKTOP.md) · [네이티브 오디오 계획](docs/NATIVE_AUDIO.md) |
+| 라이선스·대응 소스·재배포 | [GPL 배포 안내](docs/LICENSING.md) · [제3자 자산 안내](THIRD_PARTY_NOTICES.md) |
 | 현재 구현과 남은 작업 | [구현 상태](docs/IMPLEMENTATION_STATUS.md) · [상호작용 명세](docs/INTERACTION_SPEC.md) |
 
 <a id="development"></a>
 
 ## 함께 완성하는 음악 작업실
 
-가락이음은 **0.1.0 개발 프리뷰**입니다. 실제로 재생·편집할 수 있는 웹 DAW를 만들고 있으며, **1.0은 웹 편집기와 오디오 엔진**, **2.0은 로컬 네이티브 호스트를 통한 플러그인 연결**을 목표로 합니다.
+가락이음은 **0.1.1 개발 프리뷰**입니다. 실제로 재생·편집할 수 있는 웹 DAW를 만들고 있으며, **1.0은 웹 편집기와 오디오 엔진**, **2.0은 로컬 네이티브 호스트를 통한 플러그인 연결**을 목표로 합니다.
 
 <details>
 <summary><strong>현재 지원 범위와 앞으로의 방향</strong></summary>
@@ -237,7 +238,11 @@ pnpm mcp:build
 
 ## 라이선스와 크레딧
 
-앱 코드와 오리지널 MIDI 편곡 코드는 [MIT License](LICENSE)로 제공합니다. 아이콘·글꼴·샘플 음원·외부 라이브러리는 각각의 라이선스를 따릅니다.
+앱 코드와 오리지널 MIDI 편곡 코드는 [GNU GPL v3.0 only (`GPL-3.0-only`)](LICENSE)로 제공합니다. ASIO SDK도 GPLv3 경로를 선택했으므로 별도의 Steinberg proprietary 계약은 필요하지 않습니다. **ASIO·VST3 네이티브 엔진은 아직 구현되지 않았으며**, 현재 설치형 앱은 기존 Web Audio 엔진을 사용합니다. [네이티브 오디오 계획](docs/NATIVE_AUDIO.md)
+
+이전에 MIT로 제공한 코드의 [저작권·허가 고지](public/licenses/garak-ieum-MIT-notice.txt)를 보존합니다. 이미 MIT 조건으로 받은 복사본의 권리는 소급해 취소하지 않습니다. 아이콘·글꼴·샘플 음원·외부 라이브러리는 각각의 원래 라이선스와 고지를 유지합니다.
+
+Windows 설치에는 **`.exe` 설치 파일**을 사용합니다. 같은 빌드의 `Garak-Ieum-Source-<버전>-<커밋 앞 12자리>.zip`은 코드 확인·수정·재빌드를 위한 **대응 소스**이며 앱 설치용 파일이 아닙니다. 실행 파일을 재배포할 때는 그 버전에 해당하는 소스와 빌드 스크립트, 라이선스 고지도 함께 제공할 수 있어야 합니다. [설치 파일 받기](docs/DESKTOP.md#1-설치-파일-받기) · [GPL 배포 안내](docs/LICENSING.md)
 
 국립국악원의 국악 음원, Lucide 아이콘, 덕온공주체 워드마크, Signalsmith DSP와 함께 가락이음을 만듭니다. 전체 출처와 사용 조건은 [제3자 자산 안내](THIRD_PARTY_NOTICES.md)에 정리했습니다.
 

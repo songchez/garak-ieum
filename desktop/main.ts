@@ -242,9 +242,14 @@ function openBundledLicense(url: string): void {
   const parent = window
   if (!parent || parent.isDestroyed() || !isBundledLicenseUrl(url)) return
   if (licenseWindow && !licenseWindow.isDestroyed()) {
-    if (licenseWindow.isMinimized()) licenseWindow.restore()
-    licenseWindow.show(); licenseWindow.focus()
-    return
+    if (licenseWindow.webContents.getURL() === url) {
+      if (licenseWindow.isMinimized()) licenseWindow.restore()
+      licenseWindow.show(); licenseWindow.focus()
+      return
+    }
+    // Each read-only window pins its navigation to one notice. Recreate it
+    // when another allowed notice is requested, without widening that boundary.
+    licenseWindow.destroy()
   }
   // Create explicitly rather than inheriting window.open preferences or the app preload.
   const child = new BrowserWindow({
@@ -270,6 +275,7 @@ function openBundledLicense(url: string): void {
   child.webContents.on('will-attach-webview', event => event.preventDefault())
   child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   void child.loadURL(url).catch(() => {
+    if (child.isDestroyed()) return
     closeWithParent()
     if (!parent.isDestroyed()) void dialog.showMessageBox(parent, {
       type: 'error', title: '라이선스 문서를 열 수 없습니다',
