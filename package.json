@@ -18,8 +18,9 @@
     "desktop:compile": "tsc -p tsconfig.desktop.json",
     "desktop:prepare": "pnpm run build && pnpm run mcp:build && pnpm run desktop:compile",
     "desktop:dev": "pnpm run desktop:prepare && install-electron && electron .",
-    "desktop:pack": "pnpm run desktop:prepare && electron-builder --dir --publish never",
-    "desktop:build": "pnpm run desktop:prepare && electron-builder --win nsis --x64 --publish never",
+    "desktop:launcher": "node scripts/build-mcp-launcher.mjs",
+    "desktop:pack": "pnpm run desktop:launcher && pnpm run desktop:prepare && electron-builder --dir --publish never",
+    "desktop:build": "pnpm run desktop:launcher --require-windows && pnpm run desktop:prepare && electron-builder --win nsis --x64 --publish never",
     "desktop:test": "node scripts/desktop-smoke.mjs",
     "test": "vitest run"
   },

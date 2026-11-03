@@ -79,12 +79,15 @@ pnpm desktop:dev
 
 `desktop:dev`는 웹앱·MCP·Electron 코드를 빌드한 뒤 Electron 창을 엽니다. 실행 파일로 사용할 코드를 확인하는 흐름이며, 소스를 수정한 후 다시 실행해 반영합니다.
 
+Windows 설치물은 **Visual Studio 2022 또는 Build Tools 2022의 C++ 데스크톱 개발 도구와 Windows SDK**를 준비한 Windows에서 빌드합니다. 이 도구는 작은 MCP 콘솔 실행 파일을 컴파일하는 데 사용하며 ASIO·VST SDK를 내려받지 않습니다. 설치 파일을 받아 사용하는 사람에게는 이 개발 도구가 필요하지 않습니다.
+
 | 명령 | 역할 |
 |---|---|
 | `pnpm desktop:compile` | Electron main·preload TypeScript를 `dist-desktop`으로 빌드 |
+| `pnpm desktop:launcher` | Windows에서 MCP 콘솔 실행 파일 `garak-mcp.exe` 빌드; 다른 OS에서는 이 Windows 단계 건너뜀 |
 | `pnpm desktop:dev` | 웹앱·MCP·Electron 코드를 빌드하고 로컬 Electron 실행 |
-| `pnpm desktop:pack` | 현재 OS용 압축되지 않은 앱 디렉터리 생성; 공개 배포 안 함 |
-| `pnpm desktop:build` | Windows x64 NSIS 설치 파일 생성; 공개 배포 안 함 |
+| `pnpm desktop:pack` | 현재 OS용 압축되지 않은 앱 디렉터리 생성; Windows에서는 MCP 콘솔 실행 파일 포함 |
+| `pnpm desktop:build` | MCP 콘솔 실행 파일을 포함한 Windows x64 NSIS 설치 파일 생성; 공개 배포 안 함 |
 | `pnpm desktop:test` | 패키징된 앱을 Playwright로 실행해 기본 동작 확인 |
 
 Windows 설치 파일을 직접 만들 때는 다음 순서로 실행합니다.
@@ -95,7 +98,7 @@ pnpm desktop:build
 pnpm desktop:test
 ```
 
-Windows 빌드 결과는 `release/*.exe`이고, 압축되지 않은 앱은 `release/win-unpacked/가락이음.exe`입니다. 로컬 `desktop:test`는 기본적으로 이 앱을 검사합니다. 아래 Windows CI는 실제 설치 파일로 설치한 실행 파일을 검사하도록 경로를 지정합니다. `desktop:pack`은 실행 중인 OS에 맞게 출력하므로 Linux에서 실행한 결과를 Windows 설치 파일로 취급하지 않습니다.
+Windows 빌드 결과는 `release/*.exe`이고, 압축되지 않은 앱은 `release/win-unpacked/가락이음.exe`입니다. 같은 디렉터리에 MCP용 `garak-mcp.exe`가 들어갑니다. 로컬 `desktop:test`는 기본적으로 이 설치 전 앱 디렉터리를 검사합니다. 아래 Windows CI는 실제 설치 파일로 설치한 실행 파일을 검사하도록 경로를 지정합니다. `desktop:pack`은 실행 중인 OS에 맞게 출력하므로 Linux에서 실행한 결과를 Windows 설치 파일로 취급하지 않습니다.
 
 ## 5. Windows CI의 검증 범위
 
@@ -105,7 +108,7 @@ Windows 빌드 결과는 `release/*.exe`이고, 압축되지 않은 앱은 `rele
 2. `pnpm install --frozen-lockfile`로 잠긴 의존성을 설치합니다.
 3. `pnpm test`를 통과한 뒤 `pnpm desktop:build`로 설치 파일을 만듭니다.
 4. [desktop-install-smoke.ps1](../scripts/desktop-install-smoke.ps1)이 실제 NSIS 설치 파일을 공백이 포함된 임시 경로에 현재 사용자용으로 자동 설치합니다. 설치된 실행 파일, HKCU의 `.garak` 연결, 실행 파일 아이콘을 가리키는 `DefaultIcon`, 실행 파일과 프로젝트 경로를 모두 따옴표로 감싼 열기 명령을 확인합니다.
-5. `GARAK_ELECTRON_EXECUTABLE`로 설치된 실행 파일을 지정한 뒤 `pnpm desktop:test`가 앱 로딩, 프로젝트 생성, 저장과 재실행 후 복원을 확인합니다.
+5. `GARAK_ELECTRON_EXECUTABLE`로 설치된 편집기 실행 파일을 지정한 뒤 `pnpm desktop:test`가 앱 로딩, 프로젝트 생성, 저장과 재실행 후 복원을 확인합니다. MCP 검사는 같은 설치 폴더의 `garak-mcp.exe`를 통해 키 생성·stdio 종료·편집기와의 loopback 연결을 확인하는 별도 경로입니다.
 6. 성공한 설치 파일의 SHA-256 체크섬을 만들고 Artifact로 업로드합니다.
 
 실행 검사가 남긴 `release/desktop-smoke/` 자료는 별도 Artifact인 `garak-ieum-desktop-smoke-<커밋 SHA>`에 보관합니다. 이 업로드 단계는 앞선 단계의 성공 여부와 관계없이 실행되므로 실패 원인을 조사할 수 있습니다. 실행 검사에 도달하지 못했거나 자료가 만들어지지 않았다면 해당 Artifact는 없을 수 있습니다. 진단 자료가 업로드되었다는 사실은 설치 파일 검증 성공을 뜻하지 않으며, 설치 파일은 모든 앞선 단계가 성공해야 업로드합니다. 진단 자료의 보관 기간도 14일입니다.
@@ -118,6 +121,10 @@ Windows 빌드 결과는 `release/*.exe`이고, 압축되지 않은 앱은 `rele
 
 Electron main은 `dist-desktop/main.js`, preload는 `dist-desktop/preload.cjs`, 화면은 `dist`에서 실행됩니다. 화면에서 사용할 수 있는 데스크톱 기능은 프로젝트 열기·내보내기 등 좁은 API로 연결하며 일반 파일시스템 접근을 직접 노출하지 않습니다.
 
-MCP 코드는 `dist-mcp`에 함께 빌드됩니다. 데스크톱 실행 파일의 `--mcp` 모드는 외부 MCP 클라이언트가 실행하는 stdio 서버이고, `--mcp-token`은 연결 키를 만드는 용도입니다. GUI를 여는 것만으로 MCP 브리지가 자동 시작되지는 않습니다. 연결 키는 MCP 클라이언트의 `GARAK_MCP_TOKEN` 환경 변수로 전달합니다. [AI·MCP 연결 안내](MCP.md)
+MCP 코드는 `dist-mcp`에 함께 빌드됩니다. Windows 설치 폴더에는 **편집기 `가락이음.exe`**와 **MCP 콘솔 실행 파일 `garak-mcp.exe`**가 함께 들어 있습니다. AI 클라이언트의 MCP `command`에는 `garak-mcp.exe`의 절대 경로를 지정하고 `args`에 `["--mcp"]`를 넣습니다. `garak-mcp.exe --mcp-token`은 연결 키를 만드는 명령입니다. 연결 키는 MCP 클라이언트의 `GARAK_MCP_TOKEN` 환경 변수로 전달합니다. [설정 예제와 연결 순서](MCP.md#설치형-앱에서-연결)
+
+콘솔 실행 파일은 같은 폴더의 Electron 런타임을 Node 모드로 실행하고 `resources/app.asar/dist-mcp/mcp/server.js` 또는 `token.js`를 사용합니다. 표준 입출력은 AI 호스트와 서버 사이에 유지하고 안내는 stderr로 보냅니다. `ELECTRON_RUN_AS_NODE`는 자식 프로세스에만 적용하며 사용자가 전역 환경 변수로 설정할 필요는 없습니다. helper와 편집기 실행 파일·`resources` 폴더를 함께 유지합니다. 이 구성은 Electron의 [Node 모드와 ASAR 지원](https://www.electronjs.org/docs/latest/api/environment-variables)에 의존하므로 패키징에서 `RunAsNode` fuse를 유지해야 합니다. [Electron fuses](https://www.electronjs.org/docs/latest/tutorial/fuses)
+
+일반 편집기를 여는 것만으로 MCP 브리지가 자동 시작되지는 않습니다. MCP 서버는 GUI 프로필이나 IndexedDB를 직접 열지 않고, 사용자가 연결한 편집기의 로컬 브리지를 통해 현재 프로젝트에 접근합니다. 소스에서 MCP를 실행할 때는 기존 `node dist-mcp/mcp/server.js` 경로를 사용합니다.
 
 데스크톱 앱의 패키징·자동 저장과 AI 서버 연결은 각각의 실행 경로를 가집니다. 새 기능의 구현·검증 상태는 [구현 상태](IMPLEMENTATION_STATUS.md)에 기록합니다.

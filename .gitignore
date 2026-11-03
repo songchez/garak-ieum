@@ -4,6 +4,7 @@ dist-mcp/
 dist-desktop/
 release/
 desktop-test-results/
+build/native/
 .sites-runtime/
 .openai/
 .wrangler/

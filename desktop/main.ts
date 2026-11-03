@@ -312,6 +312,12 @@ async function createWindow(): Promise<void> {
 }
 
 async function runCli(): Promise<void> {
+  if (process.platform === 'win32') {
+    // A GUI-subsystem executable cannot reliably preserve the MCP host's pipes.
+    // garak-mcp.exe sets Node mode before Electron initializes and owns those handles.
+    process.stderr.write('Windows MCP 연결에는 같은 설치 폴더의 garak-mcp.exe --mcp 또는 --mcp-token을 사용해주세요.\n', () => app.exit(1))
+    return
+  }
   try {
     if (process.argv.includes('--mcp') && process.argv.includes('--mcp-token')) throw new Error('Choose one CLI mode.')
     if (cliMode === 'token') {
