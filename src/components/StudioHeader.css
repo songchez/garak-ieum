@@ -1,7 +1,7 @@
-/* One studio bar: project, transport, and file actions share the 40px above the roof. */
+/* One studio bar: project, transport, and file actions share the 36px above the roof. */
 .studio-app {
   --app-header-height: 48px;
-  --header-roof-height: 8px;
+  --header-roof-height: 12px;
 }
 
 .app-header {
@@ -19,23 +19,16 @@
   box-shadow: 0 1px 0 var(--ink-09);
 }
 
-/* The existing 16:14 tile artwork scales proportionally to the 8px roof strip. */
-.app-header::after {
-  content: "";
+/* The shared SVG keeps its tile spacing and remains inside the 48px header. */
+.app-header > .giwa-eave {
   position: absolute;
-  left: 0;
   right: 0;
   bottom: 0;
+  left: 0;
   height: var(--header-roof-height);
-  pointer-events: none;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='14'%3E%3Cdefs%3E%3ClinearGradient id='s' x1='0' x2='1'%3E%3Cstop offset='0' stop-color='%231e2124'/%3E%3Cstop offset='.28' stop-color='%234a5156'/%3E%3Cstop offset='.45' stop-color='%23687075'/%3E%3Cstop offset='.7' stop-color='%23454c51'/%3E%3Cstop offset='1' stop-color='%231e2124'/%3E%3C/linearGradient%3E%3ClinearGradient id='r' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%236b7378'/%3E%3Cstop offset='.5' stop-color='%23454b50'/%3E%3Cstop offset='1' stop-color='%232a2e31'/%3E%3C/linearGradient%3E%3CradialGradient id='e' cx='.42' cy='.38' r='.75'%3E%3Cstop offset='0' stop-color='%23596166'/%3E%3Cstop offset='1' stop-color='%232c3134'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect y='2.4' width='16' height='8' fill='%2317191b'/%3E%3Cellipse cx='0' cy='9.8' rx='3.6' ry='1.9' fill='%232b2f32'/%3E%3Cellipse cx='16' cy='9.8' rx='3.6' ry='1.9' fill='%232b2f32'/%3E%3Crect x='3.3' y='2.4' width='9.4' height='7' fill='url(%23s)'/%3E%3Ccircle cx='8' cy='9.3' r='4.4' fill='url(%23e)' stroke='%2316181a' stroke-width='.5'/%3E%3Ccircle cx='8' cy='9.3' r='2.6' fill='none' stroke='%236d7378' stroke-width='.45' stroke-opacity='.6'/%3E%3Crect width='16' height='2.6' fill='url(%23r)'/%3E%3Crect y='2.6' width='16' height='.5' fill='%23121415'/%3E%3C/svg%3E") repeat-x 0 0 / auto var(--header-roof-height);
 }
 
 .app-header .brand { height: 28px; }
-:root:not([data-theme="dawn-hanok"]) .app-header::after {
-  background-color: var(--giwa);
-  background-blend-mode: luminosity;
-}
 .header-project { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .header-divider { width: 1px; height: 18px; background: var(--ink-22); flex-shrink: 0; }
 .project-identity { display: flex; flex-direction: column; align-items: flex-start; flex: 1; min-width: 0; max-width: 240px; }

@@ -48,3 +48,17 @@
 .knob:hover .knob-cap,.knob[data-daw-gesture] .knob-cap{fill:var(--ink-19);stroke:var(--ink-33)}
 .knob-readout{font-family:Consolas,"SFMono-Regular",monospace;font-size:8px;color:var(--text-secondary);white-space:nowrap;line-height:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .knob-label{font-size:8px;color:var(--text-muted);white-space:nowrap;line-height:10px;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+
+/* A wider dark arc frames even pastel instrument values without changing their hue. */
+:root[data-theme-mode="light"] .knob-cap{fill:var(--surface-raised);stroke:var(--control-border)}
+:root[data-theme-mode="light"] .knob-track{stroke:var(--control-border);stroke-width:5}
+:root[data-theme-mode="light"] .dc-head select,
+:root[data-theme-mode="light"] .dc-preview,
+:root[data-theme-mode="light"] .dc-power,
+:root[data-theme-mode="light"] .dc-pitch-entry button,
+:root[data-theme-mode="light"] .dc-add-list button{border-color:var(--control-border)}
+:root[data-theme-mode="light"] .dc-preview:hover:not(:disabled),
+:root[data-theme-mode="light"] .dc-add-list button:hover:not(:disabled){border-color:var(--focus)}
+:root[data-theme-mode="light"] .dc-source .dc-icon,
+:root[data-theme-mode="light"] .dc-output .dc-icon,
+:root[data-theme-mode="light"] .dc-preview svg{color:color-mix(in srgb,var(--track-color) 25%,var(--text-primary))}

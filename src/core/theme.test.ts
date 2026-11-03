@@ -60,6 +60,20 @@ describe('browser appearance preferences',()=>{
     expect(styles.get('--meter-low')).toBe('#83bd9c')
     expect(root.dataset.themeMode).toBe('dark')
   })
+
+  it('clears light materials and grid colors when returning to dark themes',()=>{
+    setTheme('porcelain')
+    expect(styles.get('--control-border')).toBe(THEMES.find(theme=>theme.id==='porcelain')!.colors.borderStrong)
+    expect(styles.get('--grid-major')).toMatch(/^#[0-9a-f]{6}$/)
+    expect(styles.get('--hanji-surface')).toBe('#f8f6f0')
+    setTheme('earthy')
+    expect(styles.get('--grid-major')).toBe('color-mix(in srgb,var(--text-muted) 21%,transparent)')
+    expect(styles.get('--control-border')).toBe(THEMES.find(theme=>theme.id==='earthy')!.colors.border)
+    setTheme(DEFAULT_THEME)
+    for(const token of ['--grid-major','--grid-minor','--hanji-surface','--paper-edge','--hanok-frame','--control-border']){
+      expect(styles.has(token),`${token} must return to its CSS default`).toBe(false)
+    }
+  })
 })
 
 function luminance(hex:string):number {
@@ -91,5 +105,20 @@ describe('theme role contrast',()=>{
     for(const foreground of ['accent','accentHover','accentStrong','brand','brandHover','brass','play','playHover','success','danger','warning'] as const)for(const surface of ['canvas','panel','raised','overlay','hover','selected','input'] as const){
       expect(contrast(c[foreground],c[surface]),`${theme.id}: ${foreground} on ${surface}`).toBeGreaterThanOrEqual(4.5)
     }
+  })
+
+  it.each(THEMES.filter(theme=>theme.mode==='light'))('$id distinguishes control boundaries and selection in a bright workspace',theme=>{
+    const c=theme.colors
+    for(const surface of ['canvas','canvasAlt','panel','panelSoft','raised','overlay','hover','selected','input'] as const){
+      expect(contrast(theme.tokens['--control-border'],c[surface]),`${theme.id}: control on ${surface}`).toBeGreaterThanOrEqual(3)
+      expect(contrast(c.accentBorder,c[surface]),`${theme.id}: selection on ${surface}`).toBeGreaterThanOrEqual(3)
+      expect(contrast(c.muted,c[surface]),`${theme.id}: hint on ${surface}`).toBeGreaterThanOrEqual(4.5)
+    }
+    const major=contrast(theme.tokens['--grid-major'],c.canvas)
+    const minor=contrast(theme.tokens['--grid-minor'],c.canvas)
+    expect(major,'bar lines must remain distinguishable from subdivisions').toBeGreaterThanOrEqual(2)
+    expect(minor).toBeGreaterThanOrEqual(1.25)
+    expect(major).toBeGreaterThan(minor)
+    expect(contrast(c.onRecord,c.record)).toBeGreaterThanOrEqual(4.5)
   })
 })

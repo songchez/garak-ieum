@@ -12,6 +12,7 @@ import { clearRecallSolo, effectiveArm, implicitlyMuted, monitorTargets, pressTr
 import { TRACK_ICON_OPTIONS, TRACK_ZOOM_LIMITS, VIEW_STORAGE_KEY, loadTrackHeader, loadTrackZoom, loadView, pruneTrackZoom, resolveSnap, saveTrackHeader, saveTrackZoom, saveView, type TrackHeaderState, type TrackZoom, type ViewState } from './core/trackUi'
 import { Icon } from './components/Icon'
 import { Brand } from './components/Brand'
+import { GiwaEave } from './components/GiwaEave'
 import { BRAND, SOURCE_REPOSITORY_URL } from './brand'
 import { Timeline, type TimelineUi } from './components/Timeline'
 import PianoRoll from './components/PianoRoll'
@@ -866,6 +867,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const trackProps={project,engine,recording,onTrackChange:changeTrack,onTrackButton:trackButton,onTrackSweep:trackSweep,onInstrumentChange:changeInstrument,onAddDevice:addDevice,onToggleDevice:toggleDevice,onMoveDevice:(id:string,deviceId:string,offset:number)=>editTrack(id,t=>moveDevice(t,deviceId,offset)),onRemoveDevice:(id:string,deviceId:string)=>editTrack(id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)})),onOpenDevices:openDevices,onMasterChange:(value:number)=>commit(p=>({...p,masterVolume:value}),'master-volume'),onOpenColorPalette:paletteFor,onIconMenu:(id:string,e:React.MouseEvent)=>setIconMenu({id,...anchorAt(e.currentTarget)})}
   return <div className="studio-app">
     <header className="app-header">
+      <GiwaEave/>
       <div className="header-project">
         <button className="brand" onClick={event=>{
           // React clears currentTarget after dispatch; state updaters may run later.

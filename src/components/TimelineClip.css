@@ -27,7 +27,7 @@
 .timeline-clip:hover .clip-loop-handle{background:color-mix(in srgb,currentColor 18%,transparent);opacity:1}
 .timeline-clip.clip-looped .clip-loop-handle{opacity:1}
 .timeline-clip.clip-looped::after{content:"";position:absolute;right:-1px;top:0;bottom:0;width:3px;background:repeating-linear-gradient(to bottom,transparent 0 4px,color-mix(in srgb,currentColor 60%,transparent) 4px 6px);pointer-events:none}
-.clip-loop-ghost{--loop-color:var(--clip-color);--loop-text:var(--text-primary);--loop-preview:color-mix(in srgb,var(--clip-color) 25%,var(--text-primary));position:absolute;top:7px;height:calc(var(--row-h) - 15px);border-radius:4px;box-sizing:border-box;overflow:hidden;background:color-mix(in srgb,var(--loop-color) 12%,var(--surface-canvas));border:1px dashed color-mix(in srgb,var(--loop-color) 38%,transparent);color:var(--loop-text);cursor:grab;user-select:none;touch-action:none;opacity:.8;background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--loop-color) 7%,transparent) 6px 7px)}
+.clip-loop-ghost{--loop-color:var(--clip-color);--loop-text:var(--text-primary);--loop-preview:color-mix(in srgb,var(--clip-color) 25%,var(--text-primary));position:absolute;top:7px;height:calc(var(--row-h) - 15px);border-radius:4px;box-sizing:border-box;overflow:hidden;background:color-mix(in srgb,var(--loop-color) 12%,var(--surface-canvas));border:1px dashed color-mix(in srgb,var(--loop-color) 38%,transparent);color:var(--loop-text);cursor:grab;user-select:none;touch-action:none;opacity:var(--loop-opacity,.8);background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--loop-color) 7%,transparent) 6px 7px)}
 .clip-loop-ghost:hover{opacity:1}
 .clip-loop-ghost.clip-selected{background:color-mix(in srgb,var(--loop-color) 40%,var(--surface-canvas));border-color:color-mix(in srgb,var(--loop-color) 70%,transparent)}
 .clip-loop-ghost.clip-muted{--loop-color:#8d8d8d;--loop-text:var(--text-muted);--loop-preview:var(--text-muted)}
@@ -51,3 +51,14 @@
 .clip-fades{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;fill:#0007;stroke:color-mix(in srgb,currentColor 70%,#fff);stroke-width:1;vector-effect:non-scaling-stroke}
 .clip-fades polygon{vector-effect:non-scaling-stroke}
 .row-compact .clip-fades{display:none}
+
+/* Keep the saved track hue in the fill; ink edges identify regions on light paper. */
+:root[data-theme-mode="light"] .track-lane .timeline-clip:not(.clip-selected){border-color:var(--control-border)}
+:root[data-theme-mode="light"] .track-lane .timeline-clip.clip-selected{border-color:var(--text-primary);box-shadow:0 0 0 1px var(--focus),0 1px 3px #0003}
+:root[data-theme-mode="light"] .track-lane .timeline-clip.clip-selected .clip-preview{opacity:.9}
+:root[data-theme-mode="light"] .track-row:not(.track-off) .timeline-clip.clip-muted:not(.clip-selected){--clip-text:var(--text-secondary);--clip-preview-color:var(--text-secondary)}
+:root[data-theme-mode="light"] .track-lane .timeline-clip:hover{border-color:var(--focus)}
+/* Dashed edges and the lighter fill carry the repeat state without fading its label. */
+:root[data-theme-mode="light"] .clip-loop-ghost{--loop-opacity:1;border-color:var(--control-border)}
+:root[data-theme-mode="light"] .clip-loop-ghost.clip-selected{background-color:color-mix(in srgb,var(--loop-color) 24%,var(--surface-canvas));border-color:var(--focus)}
+:root[data-theme-mode="light"] .clip-loop-content .clip-preview{opacity:.85}
