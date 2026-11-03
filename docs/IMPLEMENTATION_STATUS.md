@@ -46,7 +46,7 @@ BPM을 지우면 즉시 이전 값으로 복구되던 입력을 별도 텍스트
 
 프로젝트 스키마는 **5**이고 이전 1–4는 4/4로 읽습니다. 바깥 `.garak` 번들은 **1**을 유지합니다. 새 파일은 구버전 앱이 박자표를 무시하지 않도록 버전 검사에서 거절합니다. MCP는 현재 박자표를 조회하며 박자 변경 명령은 추가하지 않았습니다.
 
-Cloudflare 오류 로그의 `ERR_PNPM_IGNORED_BUILDS`에 맞춰 pnpm 11의 `allowBuilds`에 esbuild/workerd만 허용했습니다. `wrangler.jsonc`는 `dist`와 SPA fallback을 명시하고 배포 중 자동 설정에 의존하지 않습니다. 실제 Worker 이름을 확인해 설정과 일치시켜야 하며 공개 배포 성공은 별도 확인 대상입니다. [배포 안내](DEPLOYMENT.md)
+Cloudflare 오류 로그의 `ERR_PNPM_IGNORED_BUILDS`에 맞춰 pnpm 11의 `allowBuilds`에 esbuild/workerd만 허용했습니다. `wrangler.jsonc`는 `dist`와 SPA fallback 및 필수 `previews` 블록을 명시하고 배포 중 자동 설정에 의존하지 않습니다. Worker 이름 `garak-ieum`도 실제 대상과 일치함을 확인했습니다. 업로드 검증에서 오류 `100324`를 낸 중복 `_redirects`는 제거하고 기본 SPA 처리로 프로젝트 주소를 제공합니다. 공개 배포 성공은 해당 커밋의 원격 검사에서 별도로 확인합니다. [배포 안내](DEPLOYMENT.md)
 
 검증: 전체 **51개 테스트 파일 / 839개 테스트**, `pnpm run build`, `pnpm run mcp:build`를 통과했습니다. 입력 초안·경계값·취소·방향키, 3/4·6/8·7/8 및 기존 4/4, 이전 프로젝트 가져오기·새 파일 왕복·IndexedDB·Undo·녹음 후 마디 정렬·MCP 단위를 확인했습니다. `wrangler@4.156.1 deploy --config wrangler.jsonc --dry-run`도 종료 코드 0으로 완료했고, `dist`의 진입 파일·SPA 규칙·9개 악기 샘플 manifest를 확인했습니다. 마지막 피아노롤 박 단위 표시 보완 후 격자/스냅 32개 테스트와 TypeScript 검사를 다시 통과했습니다. 브라우저 실행 파일 다운로드가 유효한 아카이브를 받지 못해 실제 포인터·키보드 조작과 스크린샷은 확인하지 못했습니다. Cloudflare 계정에 실제 업로드한 검증도 아닙니다. 기존 Vite 500 kB 청크 경고는 유지됩니다.
 
@@ -127,7 +127,7 @@ Apple 공식 [프로젝트 생성](https://support.apple.com/en-ae/guide/logicpr
 
 이번 구간의 최종 전체 검증은 **40개 파일 / 712개 테스트 통과**, `pnpm build`와 `pnpm mcp:build` 통과입니다. 새 범위에는 `core/projectNavigation.test.ts` **21개**, `core/projectTemplates.test.ts` **22개**, `core/projectLibrary.test.ts` **8개**, 프로젝트별 저장·이전·롤백 검사가 포함됩니다. 샘플 존과 실제 파일 존재, 조성·음역·리전 경계·섹션 변화, 새 ID·수정 격리, 같은 원본 ID의 번들 가져오기와 Blob 바이트 보존, 저장 실패 시 기존 목록 보존을 확인했습니다. 저장소 검사는 `fake-indexeddb`를 사용하며 실제 브라우저의 IndexedDB 실행과 구분합니다.
 
-Vite preview의 HTTP 확인에서는 `/`, `/projects/deep-link-check`, 한글 ID 주소가 같은 앱 HTML을 반환했고 JS·CSS·국악 샘플 매니페스트가 올바른 타입으로 응답했습니다. `dist/_redirects` 복사도 확인했습니다. 메인 JS는 688.83 kB(gzip 218.50 kB)로 기존 500 kB 경고가 남아 있습니다.
+Vite preview의 HTTP 확인에서는 `/`, `/projects/deep-link-check`, 한글 ID 주소가 같은 앱 HTML을 반환했고 JS·CSS·국악 샘플 매니페스트가 올바른 타입으로 응답했습니다. 당시 `dist/_redirects` 복사도 확인했으나, 이후 Workers 배포 API의 오류 `100324`에 대응해 해당 파일을 제거하고 SPA fallback을 사용하도록 변경했습니다. 메인 JS는 688.83 kB(gzip 218.50 kB)로 기존 500 kB 경고가 남아 있습니다.
 
 **실제 브라우저의 프로젝트 카드 클릭·URL 직접 열기·뒤로/앞으로·새로고침·저장 복원과 세 편곡의 청음·최종 믹스는 아직 미검증입니다.** 이번에도 원격 검증 브라우저의 로컬 서버 접속은 `ERR_CONNECTION_REFUSED`였습니다. 소스·단위 테스트·정적 미리보기 검사는 실제 화면 및 오디오 확인을 대신하지 않습니다. 아래 이전 패스의 빌드·테스트 총계는 해당 시점의 기록으로 유지합니다.
 
