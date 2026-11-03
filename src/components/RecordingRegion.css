@@ -1,0 +1,13 @@
+/* Live capture uses its own solid region, never a fabricated waveform. */
+.recording-region{position:absolute;top:7px;height:calc(var(--row-h) - 15px);min-width:6px;box-sizing:border-box;z-index:9;overflow:hidden;pointer-events:none;border:1px solid var(--danger);border-right-width:2px;border-radius:1px;background:color-mix(in srgb,var(--danger) 19%,var(--surface-canvas));color:var(--text-primary);box-shadow:inset 0 2px 0 color-mix(in srgb,var(--danger) 35%,transparent)}
+.recording-region-label{display:flex;align-items:center;gap:6px;height:22px;padding:0 7px;white-space:nowrap;font-size:9px;line-height:1;background:color-mix(in srgb,var(--danger) 9%,transparent);border-bottom:1px solid color-mix(in srgb,var(--danger) 25%,transparent)}
+.recording-region-label strong{font-size:9px;font-weight:600;flex-shrink:0}
+.recording-region-label>span{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--text-secondary)}
+.recording-region-label time{margin-left:auto;flex-shrink:0;font-variant-numeric:tabular-nums}
+.recording-indicator{display:inline-block;width:6px;height:6px;flex-shrink:0;border-radius:50%;background:var(--danger);animation:recording-indicator-pulse 1.2s ease-in-out infinite}
+.recording-region--processing{border-right-width:1px;border-style:dashed}
+.recording-region--processing .recording-indicator{animation:none;border-radius:1px}
+.row-compact .recording-region{top:4px;height:calc(var(--row-h) - 9px)}
+.row-compact .recording-region-label{height:100%;border-bottom:0}
+@keyframes recording-indicator-pulse{50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.recording-indicator{animation:none}}

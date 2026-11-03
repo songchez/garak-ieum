@@ -21,6 +21,9 @@
 .menubar-divider{width:1px;height:16px;background:var(--ink-22);margin:0 5px;flex-shrink:0}
 .tracks-menubar .arrangement-title-actions{gap:12px}
 .tracks-menubar .subtle-count{border-left:0;padding-left:0}
+.timeline-recording-status{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;font-size:9px;color:var(--text-primary)}
+.timeline-recording-status time{min-width:42px;font-variant-numeric:tabular-nums;color:var(--text-secondary)}
+.timeline-recording-status.is-processing .recording-indicator{animation:none;border-radius:1px}
 
 /* Ruler-row header cell: [+][⧉] … [H][S] … [G][≡] */
 .timeline-sheet .timeline-corner{position:sticky;left:0;z-index:22;width:var(--header-width);flex-shrink:0;display:flex;align-items:center;gap:3px;padding:0 6px 0 7px;box-sizing:border-box;background:var(--surface-panel);border-right:1px solid var(--border-default)}
@@ -72,6 +75,9 @@
 .track-row.focused .track-lane{background-color:var(--surface-panel-soft)}
 .track-row.track-hidden .track-lane{opacity:.6}
 .no-grid.track-lane,.track-lane.no-grid{background-image:none}
+/* Reserved tracks have no editable controls until their first take is ready. */
+.track-header[data-track-id].recording-track-header{background:color-mix(in srgb,var(--danger) 7%,var(--surface-panel))}
+.recording-track-caption{font-size:9px;line-height:13px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* Empty area below the last track: double-click = new track like the focused one */
 .tracks-empty-area{display:flex;flex:1;min-height:120px}

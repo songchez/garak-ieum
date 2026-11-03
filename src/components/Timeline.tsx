@@ -6,6 +6,7 @@ import { isTrackEnabled, loopEnd } from '../core/playback'
 import { previewRegionTracks, type RegionPlacement } from '../core/regionDisplay'
 import { musicalGrid, musicalGridStyle, musicalRulerMarks, musicalSpan } from '../core/musicalGrid'
 import { snapToEdges } from '../core/edgeSnap'
+import { recordingDraftPlacement, type RecordingDraft } from '../core/recording'
 import { DEFAULT_HEADER_WIDTH, DRAG_MODES, DRAG_MODE_LABELS, HEADER_WIDTH_LIMITS, SNAP_MODE_LABELS, TRACK_ZOOM_LIMITS, resolveSnap, type DragMode, type SnapMode, type TrackHeaderConfig } from '../core/trackUi'
 import { Icon } from './Icon'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
@@ -15,6 +16,7 @@ import { getThemeSnapshot, subscribeTheme } from '../core/theme'
 import { useZoomWheel } from './useZoomWheel'
 import { ZoomControls } from './ZoomControls'
 import { TrackHeader } from './TrackHeader'
+import { RecordingRegion, formatRecordingElapsed } from './RecordingRegion'
 import { InlineName, TimelineClip, pointerFocus, type ClipActions, type GestureMode, type Preview } from './TimelineClip'
 import './Timeline.css'
 
@@ -42,6 +44,7 @@ export interface TimelineUi {
 }
 export interface TimelineProps {
   project:Project; assets:Map<string,AudioAsset>; engine:AudioEngine
+  recordingDraft?:RecordingDraft|null
   focusedTrackId:string; selectedTrackIds:ReadonlySet<string>; selectedClipIds:ReadonlySet<string>; anchorClipId:string|null
   ui:TimelineUi
   zoom:{ppb:number;rowHeight:number}
@@ -148,6 +151,7 @@ export function Timeline(props:TimelineProps){
   const [clipLoopDraft,setClipLoopDraft]=useState<{id:string;end:number}|null>(null)
   const [alignmentBeat,setAlignmentBeat]=useState<number|null>(null)
   const [rulerViewport,setRulerViewport]=useState({left:0,width:1200})
+  const [recordingNow,setRecordingNow]=useState(()=>performance.now())
   const [trackDrop,setTrackDrop]=useState<{ids:Set<string>;index:number;y:number}|null>(null)
   const [markerDrag,setMarkerDrag]=useState<{id:string;beat:number}|null>(null)
   const [markerState,setMarkerState]=useState<{selected:string|null;renaming:string|null}>({selected:null,renaming:null})
@@ -159,6 +163,7 @@ export function Timeline(props:TimelineProps){
   const prevRow=useRef(rowHeight)
   const expectedScroll=useRef<number|null>(null)
   const lastScrollLeft=useRef(0)
+  const revealedRecording=useRef<string|null>(null)
   useEffect(()=>()=>cancelGesture.current?.(),[])
   useEffect(()=>{
     const scroll=scrollRef.current;if(!scroll)return
@@ -167,13 +172,28 @@ export function Timeline(props:TimelineProps){
     return()=>observer.disconnect()
   },[])
 
+  // A final region with the same ID replaces its preview even if the parent's
+  // project and draft updates arrive in separate renders.
+  const pendingTake=props.recordingDraft
+  const recordingDraft=pendingTake&&!project.tracks.some(t=>t.clips.some(c=>c.id===pendingTake.id))?pendingTake:null
+  useEffect(()=>{
+    if(recordingDraft?.status!=='recording')return
+    const tick=()=>setRecordingNow(performance.now())
+    tick();const timer=window.setInterval(tick,100)
+    return()=>window.clearInterval(timer)
+  },[recordingDraft?.id,recordingDraft?.status])
+  const recordingView=recordingDraft?recordingDraftPlacement(recordingDraft,recordingNow):null
   const snapBeats=resolveSnap(ui.snap,ppb)
-  const rows=visibleTracks(project,ui.hideView)
+  const projectTrackIds=new Set(project.tracks.map(t=>t.id))
+  const rows=recordingDraft?project.tracks.filter(t=>ui.hideView||!t.hidden||t.id===recordingDraft.trackId):visibleTracks(project,ui.hideView)
+  // A reserved track is only a display row until capture has been decoded.
+  // If its original was deleted mid-take, do not resurrect the old regions.
+  if(recordingDraft&&!projectTrackIds.has(recordingDraft.trackId))rows.push({...recordingDraft.track,id:recordingDraft.trackId,clips:[]})
   const rowIndex=new Map(rows.map((t,i)=>[t.id,i]))
   const trackNumber=new Map(project.tracks.map((t,i)=>[t.id,i+1]))
   const clipTrack=new Map(rows.flatMap(t=>t.clips.map(c=>[c.id,t] as const)))
   const audible=audibleTracks(project)
-  const contentEnd=Math.max(project.lengthBeats,...project.tracks.flatMap(t=>t.clips.map(c=>c.startBeat+Math.max(c.lengthBeats,c.loopLengthBeats??0))),...project.markers.map(m=>m.startBeat))
+  const contentEnd=Math.max(project.lengthBeats,recordingView?recordingView.startBeat+recordingView.lengthBeats:0,...project.tracks.flatMap(t=>t.clips.map(c=>c.startBeat+Math.max(c.lengthBeats,c.loopLengthBeats??0))),...project.markers.map(m=>m.startBeat))
   const width=(contentEnd+8)*ppb
   const heightOf=(track:Track)=>{let f=ui.trackZoom[track.id]??1;if(ui.zoomFocused&&track.id===focusedTrackId)f=Math.max(f,FOCUS_ZOOM);return Math.round(clamp(rowHeight*f,ROW_LIMITS.min,ROW_LIMITS.max))}
   const sheetPoint=(clientX:number,clientY:number)=>{const r=sheetRef.current!.getBoundingClientRect();return{x:clientX-r.left,y:clientY-r.top}}
@@ -221,6 +241,24 @@ export function Timeline(props:TimelineProps){
     if(!anchor){const beat=engine.getSnapshot().beat,px=beat*previous+hw-scroll.scrollLeft;anchor=px>=hw&&px<=scroll.clientWidth?{beat,px}:{beat:scroll.scrollLeft/previous,px:hw}}
     markScroll(scroll.scrollLeft=Math.max(0,anchor.beat*ppb+hw-anchor.px))
   },[ppb,engine])
+
+  // Reveal the armed/reserved row once when a take starts, without repeatedly
+  // pulling the view away from a user who scrolls during recording.
+  useLayoutEffect(()=>{
+    if(!recordingDraft||!recordingView){revealedRecording.current=null;return}
+    if(revealedRecording.current===recordingDraft.id)return
+    const scroll=scrollRef.current,row=rowEls().find(el=>el.dataset.trackRowId===recordingDraft.trackId)
+    if(!scroll||!row)return
+    revealedRecording.current=recordingDraft.id
+    cancelGesture.current?.();setMenu(null)
+    const stickyHeight=RULER_HEIGHT+(ui.globalTracks?GLOBAL_ROW_HEIGHT:0)
+    if(row.offsetTop<scroll.scrollTop+stickyHeight||row.offsetHeight>scroll.clientHeight-stickyHeight)scroll.scrollTop=Math.max(0,row.offsetTop-stickyHeight)
+    else if(row.offsetTop+row.offsetHeight>scroll.scrollTop+scroll.clientHeight)scroll.scrollTop=row.offsetTop+row.offsetHeight-scroll.clientHeight
+    const start=recordingView.startBeat*ppb,visible=scroll.clientWidth-headerWidth
+    if(visible>0&&(start<scroll.scrollLeft+8||start>scroll.scrollLeft+visible-40)){
+      scroll.scrollLeft=Math.max(0,start-24);markScroll(scroll.scrollLeft)
+    }
+  })
 
   /** A user horizontal scroll during playback turns Catch off (R-06); programmatic scrolls are marked first. */
   function onScroll(e:React.UIEvent<HTMLDivElement>){
@@ -324,7 +362,7 @@ export function Timeline(props:TimelineProps){
     const minStart=Math.min(...group.map(g=>g.clip.startBeat))
     const snapOrigin=mode==='trimEnd'?clip.startBeat+clip.lengthBeats:clip.startBeat
     let state:DragState={mode,ids,dBeat:0,dRow:0,copy:false,rowTops:tops},started=false,last:PointerEvent|null=null
-    const validRow=(d:number)=>group.every(g=>{const t=rows[g.row+d];return!!t&&t.kind===g.kind})
+    const validRow=(d:number)=>group.every(g=>{const t=rows[g.row+d];return!!t&&projectTrackIds.has(t.id)&&t.kind===g.kind})
     const compute=(event:PointerEvent)=>{
       last=event
       const dx=event.clientX-origin.x+scroll.scrollLeft-origin.left,dy=event.clientY-origin.y+scroll.scrollTop-origin.top
@@ -491,7 +529,7 @@ export function Timeline(props:TimelineProps){
 
   /** Track reorder from the header background (TrackHeader.onReorderStart). Moves the whole selection when the grabbed track is selected. */
   function beginReorder(e:React.PointerEvent,track:Track){
-    if(e.button!==0)return
+    if(e.button!==0||!projectTrackIds.has(track.id))return
     cancelGesture.current?.()
     const target=e.currentTarget as HTMLElement,tops=rowTops(),heights=rowHeights(),origin=e.clientY
     const from=rowIndex.get(track.id)??0
@@ -502,6 +540,7 @@ export function Timeline(props:TimelineProps){
       if(!started){started=true;const sel=latest.current.selectedTrackIds;if(sel.has(track.id))moving=new Set(sel)}
       const y=sheetPoint(event.clientX,event.clientY).y
       index=tops.findIndex((top,i)=>y<top+heights[i]/2);if(index<0)index=tops.length
+      index=Math.min(index,rows.filter(t=>projectTrackIds.has(t.id)).length)
       const last=tops.length-1
       setTrackDrop({ids:moving,index,y:index<tops.length?tops[index]:tops[last]+heights[last]})
     }
@@ -511,7 +550,7 @@ export function Timeline(props:TimelineProps){
       const all=latest.current.project.tracks
       const ids=all.filter(t=>moving.has(t.id)).map(t=>t.id)
       let afterId:string|null=null
-      for(let i=index-1;i>=0;i--){if(!moving.has(rows[i].id)){afterId=rows[i].id;break}}
+      for(let i=index-1;i>=0;i--){if(!moving.has(rows[i].id)&&all.some(t=>t.id===rows[i].id)){afterId=rows[i].id;break}}
       // Unchanged order: the first moved track already follows afterId.
       const firstMoved=all.findIndex(t=>moving.has(t.id)),prev=firstMoved>0?all[firstMoved-1].id:null
       if(prev===afterId&&ids.length===1)return
@@ -603,7 +642,10 @@ export function Timeline(props:TimelineProps){
         <button type="button" className={`menubar-button menubar-popup ${ui.snap.on?'':'off'}`} data-menu="snap" aria-haspopup="menu" aria-expanded={menu?.label==='스냅'} onClick={e=>barMenu(e,snapMenu(),'스냅')} title={`스냅 · ${ui.snap.on?SNAP_MODE_LABELS[ui.snap.mode]:'끔'} · ${ui.snap.relative?'상대값':'절대값'}`}><small>Snap:</small> {ui.snap.on?SNAP_MODE_LABELS[ui.snap.mode]:'끔'} <Icon name="chevron" size={10}/></button>
         <button type="button" className="menubar-button menubar-popup" data-menu="drag" aria-haspopup="menu" aria-expanded={menu?.label==='드래그'} onClick={e=>barMenu(e,dragMenu(),'드래그')} title="드래그 모드"><small>Drag:</small> {DRAG_MODE_LABELS[ui.dragMode]} <Icon name="chevron" size={10}/></button>
       </div>
-      <div className="arrangement-title-actions"><span className="subtle-count">{project.tracks.length} tracks{multi?` · 트랙 ${selectedTrackIds.size}개`:''}{selectedClipIds.size>1?` · 클립 ${selectedClipIds.size}개 선택`:''}</span><ZoomControls area="어레인지먼트" onZoom={command=>latest.current.onCommand(command)}/></div>
+      <div className="arrangement-title-actions">
+        {recordingDraft&&recordingView?<span className={`timeline-recording-status ${recordingDraft.status==='processing'?'is-processing':''}`} title={recordingDraft.name}><i className="recording-indicator" aria-hidden="true"/><span role="status">{recordingDraft.status==='processing'?'녹음 처리 중':'녹음 중'}</span><time aria-hidden="true">{formatRecordingElapsed(recordingView.elapsedSeconds)}</time></span>:<span className="subtle-count">{project.tracks.length} tracks{multi?` · 트랙 ${selectedTrackIds.size}개`:''}{selectedClipIds.size>1?` · 클립 ${selectedClipIds.size}개 선택`:''}</span>}
+        <ZoomControls area="어레인지먼트" onZoom={command=>latest.current.onCommand(command)}/>
+      </div>
     </div>
     <div className="timeline-body">
     <div className="timeline-scroll" ref={scrollRef} onScroll={onScroll}>
@@ -635,16 +677,31 @@ export function Timeline(props:TimelineProps){
             {!markers.length&&<span className="marker-hint">더블 클릭하여 마커 추가</span>}
           </div>
         </div>}
-        {rows.map(track=>{const h=heightOf(track),selected=selectedTrackIds.has(track.id),isFocused=track.id===focusedTrackId,enabled=isTrackEnabled(track),silent=!audible.has(track.id)&&enabled,hiddenNow=track.hidden&&ui.hideView
+        {rows.map(track=>{const temporary=!projectTrackIds.has(track.id),recordingTarget=track.id===recordingDraft?.trackId
+          const h=heightOf(track),selected=selectedTrackIds.has(track.id),isFocused=track.id===focusedTrackId,enabled=isTrackEnabled(track),silent=!temporary&&!audible.has(track.id)&&enabled,hiddenNow=track.hidden&&ui.hideView&&!recordingTarget
           const cls=['track-row',h<48?'row-compact':h>=110?'row-large':'']
           if(selected)cls.push('selected','selected-track');if(isFocused)cls.push('focused');if(silent)cls.push('track-silent');if(!enabled)cls.push('track-off');if(hiddenNow)cls.push('track-hidden');if(trackDrop?.ids.has(track.id))cls.push('track-dragging')
-          return <div className={cls.join(' ')} key={track.id} style={{'--track-color':track.color,'--row-h':`${h}px`,height:h} as React.CSSProperties}>
-          <TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine}
-            onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}/>
-          <div className={`track-lane ${ui.gridLines?'':'no-grid'}`} style={{width,...laneGrid}} onPointerDown={e=>beginMarquee(e,track)} onContextMenu={e=>{if(e.target===e.currentTarget)laneMenu(e,track)}} onDoubleClick={e=>{if(e.target!==e.currentTarget)return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/4)*4)}} onDragOver={e=>{if(e.dataTransfer.files||e.dataTransfer.types.includes('Files'))e.preventDefault()}} onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/4)*4;props.onAudioDrop(e.dataTransfer.files,track.kind==='audio'?track.id:undefined,Math.max(0,beat))}}}>
+          if(recordingTarget)cls.push('track-recording-target')
+          return <div className={cls.join(' ')} key={track.id} data-track-row-id={track.id} style={{'--track-color':track.color,'--row-h':`${h}px`,height:h} as React.CSSProperties}>
+          {temporary?<div className={`track-header recording-track-header ${ui.headerConfig.colorBar?'with-color-bar':''}`} data-track-id={track.id} title="녹음 완료 후 편집할 수 있습니다" onContextMenu={e=>e.preventDefault()}
+            onDragOver={e=>{if(e.dataTransfer.types.includes('Files')){e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='none'}}}
+            onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false)}}}>
+            {ui.headerConfig.colorBar&&<span className="track-color-bar"/>}
+            {ui.headerConfig.trackNumber&&<span className="track-number">{project.tracks.length+1}</span>}
+            {ui.headerConfig.icon&&<span className="track-icon"><Icon name="wave" size={16}/></span>}
+            <div className="track-main"><span className="track-name">{track.name}</span><span className="recording-track-caption">{recordingDraft?.status==='processing'?'녹음 처리 중':'새 트랙에 녹음 중'}</span></div>
+          </div>:<TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine}
+            onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}/>}
+          <div className={`track-lane ${ui.gridLines?'':'no-grid'}`} style={{width,...laneGrid}}
+            onPointerDown={e=>{if(!recordingTarget&&!temporary)beginMarquee(e,track)}}
+            onContextMenu={e=>{if(e.target!==e.currentTarget)return;if(recordingTarget||temporary){e.preventDefault();return}laneMenu(e,track)}}
+            onDoubleClick={e=>{if(e.target!==e.currentTarget||recordingTarget||temporary)return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/4)*4)}}
+            onDragOver={e=>{if(e.dataTransfer.files||e.dataTransfer.types.includes('Files')){e.preventDefault();if(temporary){e.stopPropagation();e.dataTransfer.dropEffect='none'}}}}
+            onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);if(temporary)return;const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/4)*4;props.onAudioDrop(e.dataTransfer.files,track.kind==='audio'?track.id:undefined,Math.max(0,beat))}}}>
             {drag?.copy&&track.clips.filter(c=>drag.ids.has(c.id)).map(c=><div key={`ghost-${c.id}`} className="clip-ghost" style={musicalSpan(c.startBeat,c.lengthBeats,ppb)}/>)}
             {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
-            {!track.clips.length&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'더블 클릭하여 MIDI 클립 만들기'}</span>}
+            {recordingTarget&&recordingDraft&&recordingView&&<RecordingRegion key={recordingDraft.id} draft={recordingDraft} placement={recordingView} ppb={ppb}/>}
+            {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'더블 클릭하여 MIDI 클립 만들기'}</span>}
           </div>
         </div>})}
         <div className="tracks-empty-area" title={`더블 클릭: ${focused?.kind==='audio'?'오디오':'소프트웨어 악기'} 트랙 추가 · 우클릭: 트랙 종류 선택`} onDoubleClick={e=>{if(!(e.target instanceof Element)||e.target.closest('button'))return;props.onNewTrack({sameAsFocused:true,afterId:null})}} onContextMenu={emptyAreaMenu}>

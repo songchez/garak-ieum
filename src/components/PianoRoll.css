@@ -37,7 +37,7 @@
 .piano-lane-toggle { height: 22px; padding: 0 7px; border: 1px solid var(--border-default); border-radius: 4px; background: transparent; color:var(--text-muted); font: inherit; font-size: 8px; font-weight: 650; letter-spacing: .1em; cursor: pointer; }
 .piano-lane-toggle.active { color: var(--accent); border-color: var(--accent-border); background: var(--accent-soft); }
 .piano-lane-toggle:focus-visible { outline: 1px solid var(--piano-color); outline-offset: 1px; }
-.piano-scroll { position: relative; flex: 1 1 auto; min-height: 100px; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--ink-29) var(--ink-11); }
+.piano-scroll { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--ink-29) var(--ink-11); }
 .piano-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
 .piano-scroll::-webkit-scrollbar-track { background: var(--surface-canvas-alt); }
 .piano-scroll::-webkit-scrollbar-thumb { border: 2px solid var(--ink-11); border-radius: 10px; background: var(--ink-29); }
