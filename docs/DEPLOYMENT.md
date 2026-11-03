@@ -4,7 +4,7 @@
 
 ## 현재 상태
 
-2026-11-03에 제공된 첫 배포 로그에서는 Wrangler가 Vite 프로젝트를 자동 설정하면서 의존성을 추가했고, pnpm이 `esbuild`와 `workerd`의 미승인 설치 스크립트를 차단했습니다. 이후 PR 빌드는 `npx wrangler preview`를 실행하면서 필수 `previews` 블록이 없어 실패했습니다. 아래 설정은 두 오류에 대응합니다. **실제 Worker 이름은 `garak-ieum`으로 확인했으며, 커밋별 원격 배포 결과와 발급 URL은 PR의 Cloudflare 검사에서 확인합니다.**
+2026-11-03에 제공된 첫 배포 로그에서는 Wrangler가 Vite 프로젝트를 자동 설정하면서 의존성을 추가했고, pnpm이 `esbuild`와 `workerd`의 미승인 설치 스크립트를 차단했습니다. 이후 PR 빌드는 `npx wrangler preview`를 실행하면서 필수 `previews` 블록이 없어 실패했습니다. 이어진 로그에서는 자산 업로드 후 `/projects/* /index.html 200` 규칙을 Cloudflare API가 무한 반복으로 판단해 거절했습니다(`100324`). 아래 설정은 설치 스크립트 허용, Preview 설정, 중복 `_redirects` 제거를 반영합니다. **실제 Worker 이름은 `garak-ieum`으로 확인했으며, 커밋별 원격 배포 결과와 발급 URL은 PR의 Cloudflare 검사에서 확인합니다.**
 
 | 항목 | 설정 또는 확인 상태 |
 |---|---|
@@ -112,13 +112,13 @@ Git 연동이 완료되고 자동 배포가 활성화되면 `main`에 새 커밋
 
 `/`는 프로젝트 선택 화면이고, `/projects/:id`는 현재 브라우저에 저장된 프로젝트 편집기입니다. 선택 화면에서 새 샘플·빈 프로젝트·가져온 파일을 저장한 후 고유 주소를 엽니다. 없는 ID는 자동으로 다른 프로젝트를 열지 않고 복구 안내와 목록 버튼을 표시합니다.
 
-`public/_redirects`의 다음 규칙은 Vite 빌드 때 `dist/_redirects`로 복사됩니다.
+Workers에서는 `wrangler.jsonc`의 `assets.not_found_handling: "single-page-application"`이 실제 파일과 일치하지 않는 탐색 요청에 앱 진입 파일을 HTTP 200으로 제공합니다. `/projects/:id`에 직접 접속하거나 새로고침해도 주소를 유지하며 앱이 열립니다. 기존 JS·CSS·샘플·글꼴 파일은 각 자산 경로에서 제공됩니다. [Workers SPA 경로 처리](https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/)
 
-```text
-/projects/* /index.html 200
-```
+`public/_redirects`는 사용하지 않습니다. 기존 `/projects/* /index.html 200` 규칙은 위 SPA 처리와 중복되고, 실제 배포 API에서 무한 반복 규칙으로 거절되었습니다. 파일을 제거한 후 `pnpm run build`를 다시 실행해 오래된 `dist/_redirects`도 남지 않게 합니다. 단순히 예전 빌드 디렉터리를 재업로드하면 제거 전 규칙이 다시 전달될 수 있습니다.
 
-Cloudflare Pages와 Workers Static Assets가 지원하는 같은 사이트 내 200 프록시 규칙을 사용해 주소를 유지한 채 앱 진입 파일을 제공합니다. Workers에서는 `wrangler.jsonc`의 SPA fallback도 적용됩니다. [Workers 리다이렉트](https://developers.cloudflare.com/workers/static-assets/redirects/) Pages는 루트 `404.html`이 없을 때 정적 파일이 없는 경로를 SPA로 처리하지만, 프로젝트 경로는 별도 규칙으로 명시합니다. `/assets/`, `/samples/`, 글꼴 경로는 이 규칙 대상이 아닙니다. 다른 호스팅을 쓰면 `/projects/*` 요청을 `index.html`로 처리하는 동등한 설정이 필요합니다. [리다이렉트와 200 프록시](https://developers.cloudflare.com/pages/configuration/redirects/#proxying) · [SPA 경로 처리](https://developers.cloudflare.com/pages/configuration/serving-pages/#single-page-application-spa-rendering)
+Cloudflare Pages에서도 출력 루트에 `404.html`이 없으면 기본 SPA 경로 처리가 적용됩니다. 현재 빌드는 루트 `404.html`을 만들지 않으므로 별도 `_redirects` 없이 프로젝트 주소를 열 수 있습니다. 다른 호스팅에는 `/projects/*` 요청을 앱 진입 HTML로 처리하는 동등한 설정이 필요합니다. [Pages SPA 경로 처리](https://developers.cloudflare.com/pages/configuration/serving-pages/#single-page-application-spa-rendering)
+
+로컬 경로 확인은 새 빌드 후 `npx --yes wrangler@4.156.2 dev --local --config wrangler.jsonc`로 실행합니다. 프로젝트 URL에는 브라우저 탐색과 같은 `Sec-Fetch-Mode: navigate`, `Accept: text/html` 헤더를 사용해 HTTP 200과 리다이렉트 없는 앱 HTML 응답을 확인합니다. 실제 JS·CSS·샘플 파일의 응답도 함께 확인합니다. `deploy --dry-run`만으로 Cloudflare API의 업로드 검증까지 통과했다고 판단하지 않습니다.
 
 배포 확인에는 기본 주소에서 목록 열기, 샘플 만들기, 생성된 프로젝트 주소로 새로고침, 뒤로/앞으로 이동, 존재하지 않는 ID로 접속, 악기 샘플 파일 로딩을 포함합니다. 프로젝트 URL은 서버 공유 링크가 아니므로 같은 URL을 다른 기기에서 열면 그 기기의 저장소에서 찾습니다. 기기를 옮길 때는 `.garak` 파일을 사용합니다.
 
