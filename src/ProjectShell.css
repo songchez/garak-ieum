@@ -3,3 +3,11 @@
 .project-navigation-status{width:min(390px,100%);padding:32px 24px;background:var(--surface-panel);border:1px solid var(--border-default);border-radius:12px;box-shadow:0 18px 64px #0004;text-align:center;color:var(--text-primary);outline:none}
 .project-navigation-status h2{margin:18px 0 8px;font-size:17px;font-weight:600}
 .project-navigation-status p{margin:0;color:var(--text-secondary);font-size:13px;line-height:1.7}
+/* Shown when the final save before closing or switching projects fails. */
+.project-save-failed{width:min(440px,100%);text-align:left}
+.project-save-failed h2{margin-top:0}
+.project-save-failed-detail{margin-top:10px!important;padding:8px 10px;border-radius:6px;background:var(--surface-input);font-size:11px!important;color:var(--text-muted)!important;word-break:break-word}
+.project-save-failed-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin-top:20px}
+.project-save-failed-actions button{height:32px;padding:0 12px;border:1px solid var(--border-default);border-radius:6px;background:var(--surface-raised);color:var(--text-primary);font-size:12px}
+.project-save-failed-actions .primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.project-save-failed-actions .danger{color:var(--danger)}

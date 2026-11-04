@@ -52,7 +52,7 @@ export interface DesktopProjectHandlers {
   open(file: File): void | Promise<void>
   save(): void | Promise<void>
   create(): void | Promise<void>
-  beforeClose(): Promise<boolean>
+  beforeClose(control?: { awaitingUser(): void }): Promise<boolean>
   error(error: unknown): void
 }
 
@@ -70,8 +70,8 @@ export function bindDesktopProjectEvents(handlers: DesktopProjectHandlers): () =
     releases.push(desktop.onOpenProject(file => run(() => handlers.open(desktopProjectFile(file)))))
     releases.push(desktop.onSaveProject(() => run(handlers.save)))
     releases.push(desktop.onNewProject(() => run(handlers.create)))
-    releases.push(desktop.onBeforeClose(async () => {
-      try { return await handlers.beforeClose() }
+    releases.push(desktop.onBeforeClose(async control => {
+      try { return await handlers.beforeClose(control) }
       catch (error) { handlers.error(error); return false }
     }))
     desktop.ready()

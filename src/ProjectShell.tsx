@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import App from './App'
+import App, { type SaveFailedChoice } from './App'
 import { BRAND } from './brand'
 import { ProjectLauncher } from './components/ProjectLauncher'
 import { createLocalProject, importAsNewLocalProject } from './core/projectLibrary'
@@ -26,6 +26,17 @@ export default function ProjectShell() {
   const [refresh, setRefresh] = useState(0)
   const importInput = useRef<HTMLInputElement>(null)
   const progress = useRef<HTMLElement>(null)
+  const [savePrompt, setSavePrompt] = useState<{ message: string; resolve: (choice: SaveFailedChoice) => void } | null>(null)
+  const savePromptOpen = useRef(false)
+  savePromptOpen.current = !!savePrompt
+  const closeControl = useRef<{ awaitingUser(): void } | null>(null)
+  const askSaveFailed = useCallback((message: string) => {
+    closeControl.current?.awaitingUser()
+    return new Promise<SaveFailedChoice>(resolve => setSavePrompt({ message, resolve }))
+  }, [])
+  const answerSave = (choice: SaveFailedChoice) => { savePrompt?.resolve(choice); setSavePrompt(null) }
+  const firstChoice = useRef<HTMLButtonElement>(null)
+  useEffect(() => { if (savePrompt) firstChoice.current?.focus({ preventScroll: true }) }, [savePrompt])
   const launcherVisible = route.kind !== 'project'
   const blocked = pending || openingFile || closingApp
 
@@ -66,7 +77,8 @@ export default function ProjectShell() {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     progress.current?.focus({ preventScroll: true })
     const trap = (event: KeyboardEvent) => {
-      if (event.key === 'Tab') { event.preventDefault(); progress.current?.focus({ preventScroll: true }) }
+      // The save-failed choice keeps normal Tab order between its own buttons.
+      if (event.key === 'Tab' && !savePromptOpen.current) { event.preventDefault(); progress.current?.focus({ preventScroll: true }) }
     }
     window.addEventListener('keydown', trap, true)
     return () => {
@@ -112,7 +124,7 @@ export default function ProjectShell() {
       else setNavigationError('저장할 프로젝트를 먼저 열어 주세요.')
     },
     create: () => { if (!opening.current && !closing.current) create() },
-    beforeClose: async () => {
+    beforeClose: async control => {
       if (closing.current) return false
       if (navigation.getSnapshot().pending || opening.current) {
         setNavigationError('프로젝트 파일 작업이 끝난 뒤 앱을 닫아 주세요.')
@@ -125,10 +137,12 @@ export default function ProjectShell() {
       let accepted = false
       try {
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+        closeControl.current = control ?? null
         accepted = await (leaveGuard.current?.() ?? Promise.resolve(true))
         return accepted
       } finally {
         // Once accepted, stay inert until the main process closes the window.
+        closeControl.current = null
         if (!accepted) { closing.current = false; setClosingApp(false) }
       }
     },
@@ -140,7 +154,7 @@ export default function ProjectShell() {
         open: file => desktopHandlers.current?.open(file),
         save: () => desktopHandlers.current?.save(),
         create: () => desktopHandlers.current?.create(),
-        beforeClose: () => desktopHandlers.current?.beforeClose() ?? Promise.resolve(false),
+        beforeClose: control => desktopHandlers.current?.beforeClose(control) ?? Promise.resolve(false),
         error: error => desktopHandlers.current?.error(error),
       })
     } catch (error) {
@@ -151,7 +165,7 @@ export default function ProjectShell() {
   return <div className="project-shell">
     <div className="project-shell-content" inert={blocked || undefined}>
       {route.kind === 'project' ? <App key={route.id} projectId={route.id} navigating={blocked} navigationError={navigationError}
-        onHome={() => go({ kind: 'home' })} onNew={() => create()} onOpenProject={() => void openProjectFile()} registerNavigationGuard={registerNavigationGuard} registerProjectSave={registerProjectSave}/>
+        onHome={() => go({ kind: 'home' })} onNew={() => create()} onOpenProject={() => void openProjectFile()} registerNavigationGuard={registerNavigationGuard} registerProjectSave={registerProjectSave} onSaveFailed={askSaveFailed}/>
         : <ProjectLauncher projects={projects} templates={PROJECT_TEMPLATES} loading={loading} busy={blocked}
           error={navigationError || listError} notice={route.kind === 'not-found' ? '이 주소의 화면을 찾지 못했습니다. 아래에서 프로젝트를 선택해 주세요.' : undefined}
           onOpen={open} onTemplate={create} onNew={() => create()} onImport={() => void openProjectFile()}
@@ -163,7 +177,18 @@ export default function ProjectShell() {
         if (file) importFile(file)
       }}/>
     </div>
-    {blocked && <div className="project-navigation-backdrop"><section ref={progress} className="project-navigation-status" role="dialog" aria-modal="true" aria-labelledby="project-navigation-title" tabIndex={-1}>
+    {savePrompt && <div className="project-navigation-backdrop"><section className="project-navigation-status project-save-failed" role="alertdialog" aria-modal="true" aria-labelledby="project-save-failed-title" aria-describedby="project-save-failed-message"
+      onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); answerSave('cancel') } }}>
+      <h2 id="project-save-failed-title">프로젝트를 저장하지 못했습니다</h2>
+      <p id="project-save-failed-message">{closingApp ? '닫기 전에' : '이동하기 전에'} 마지막 변경을 저장하지 못했습니다. 저장하지 않으면 마지막으로 자동 저장된 상태로 남습니다.</p>
+      <p className="project-save-failed-detail" data-selectable-text="" tabIndex={0}>{savePrompt.message}</p>
+      <div className="project-save-failed-actions">
+        <button ref={firstChoice} className="primary" onClick={() => answerSave('file')}>파일로 저장하고 {closingApp ? '닫기' : '이동'}</button>
+        <button className="danger" onClick={() => answerSave('discard')}>저장하지 않고 {closingApp ? '닫기' : '이동'}</button>
+        <button onClick={() => answerSave('cancel')}>취소</button>
+      </div>
+    </section></div>}
+    {blocked && !savePrompt && <div className="project-navigation-backdrop"><section ref={progress} className="project-navigation-status" role="dialog" aria-modal="true" aria-labelledby="project-navigation-title" tabIndex={-1}>
       <span className="spinner" aria-hidden="true"/><h2 id="project-navigation-title">{closingApp ? '작업을 저장합니다' : openingFile ? '프로젝트 파일을 선택합니다' : '프로젝트를 준비합니다'}</h2><p role="status">{closingApp ? '현재 작업을 저장한 뒤 앱을 닫습니다.' : openingFile ? '파일 선택 창에서 열 프로젝트를 골라 주세요.' : '현재 작업을 저장하고 선택한 화면을 열고 있습니다.'}</p>
     </section></div>}
   </div>

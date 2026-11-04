@@ -87,9 +87,11 @@ describe('native file dialogs and web fallback', () => {
   })
 })
 
+const control = { awaitingUser: () => {} }
+
 describe('desktop menu and close ownership', () => {
   it('wires every listener before ready, forwards commands, and cleans up once', async () => {
-    const order: string[] = [], callbacks: { open?: (file: DesktopFile) => void; save?: () => void; create?: () => void; close?: () => Promise<boolean> } = {}
+    const order: string[] = [], callbacks: { open?: (file: DesktopFile) => void; save?: () => void; create?: () => void; close?: (control: { awaitingUser(): void }) => Promise<boolean> } = {}
     const desktop = bridge({
       onOpenProject: fn => { order.push('open'); callbacks.open = fn; return () => { order.push('-open') } },
       onSaveProject: fn => { order.push('save'); callbacks.save = fn; return () => { order.push('-save') } },
@@ -105,30 +107,30 @@ describe('desktop menu and close ownership', () => {
     expect(handlers.open).toHaveBeenCalledWith(expect.any(File))
     callbacks.save?.(); callbacks.create?.()
     expect(handlers.save).toHaveBeenCalledOnce(); expect(handlers.create).toHaveBeenCalledOnce()
-    expect(await callbacks.close?.()).toBe(true)
+    expect(await callbacks.close?.(control)).toBe(true)
     dispose(); dispose()
     expect(order.slice(5)).toEqual(['-close', '-new', '-save', '-open'])
   })
 
   it('rejects closure when the existing save guard rejects or throws', async () => {
-    let close!: () => Promise<boolean>
+    let close!: (control: { awaitingUser(): void }) => Promise<boolean>
     vi.stubGlobal('window', { garakDesktop: bridge({ onBeforeClose: callback => { close = callback; return () => {} } }) })
     const beforeClose = vi.fn(async () => false), error = vi.fn()
     const dispose = bindDesktopProjectEvents({ open: vi.fn(), save: vi.fn(), create: vi.fn(), beforeClose, error })
-    expect(await close()).toBe(false)
+    expect(await close(control)).toBe(false)
     beforeClose.mockRejectedValueOnce(new Error('save failed'))
-    expect(await close()).toBe(false)
+    expect(await close(control)).toBe(false)
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ message: 'save failed' }))
     dispose()
   })
 
   it('waits for the autosave guard before approving closure', async () => {
-    let close!: () => Promise<boolean>, finishSave!: (saved: boolean) => void
+    let close!: (control: { awaitingUser(): void }) => Promise<boolean>, finishSave!: (saved: boolean) => void
     const saving = new Promise<boolean>(resolve => { finishSave = resolve })
     vi.stubGlobal('window', { garakDesktop: bridge({ onBeforeClose: callback => { close = callback; return () => {} } }) })
     const dispose = bindDesktopProjectEvents({ open: vi.fn(), save: vi.fn(), create: vi.fn(), beforeClose: () => saving, error: vi.fn() })
     const approved = vi.fn()
-    const result = close().then(approved)
+    const result = close(control).then(approved)
     await Promise.resolve()
     expect(approved).not.toHaveBeenCalled()
     finishSave(true)
@@ -154,5 +156,17 @@ describe('desktop menu and close ownership', () => {
     vi.stubGlobal('window', { garakDesktop: bridge({ onOpenProject: () => release, ready: () => { throw new Error('not ready') } }) })
     expect(() => bindDesktopProjectEvents({ open: vi.fn(), save: vi.fn(), create: vi.fn(), beforeClose: vi.fn(async () => true), error: vi.fn() })).toThrow('not ready')
     expect(release).toHaveBeenCalledOnce()
+  })
+})
+
+describe('close questions', () => {
+  it('hands the main-process close control to the app so a save-failed question can pause its fallback dialog', async () => {
+    let close!: (control: { awaitingUser(): void }) => Promise<boolean>
+    vi.stubGlobal('window', { garakDesktop: bridge({ onBeforeClose: callback => { close = callback; return () => {} } }) })
+    const awaitingUser = vi.fn()
+    const beforeClose = vi.fn(async (control?: { awaitingUser(): void }) => { control?.awaitingUser(); return true })
+    bindDesktopProjectEvents({ open: vi.fn(), save: vi.fn(), create: vi.fn(), beforeClose, error: vi.fn() })
+    expect(await close({ awaitingUser })).toBe(true)
+    expect(awaitingUser).toHaveBeenCalledOnce()
   })
 })

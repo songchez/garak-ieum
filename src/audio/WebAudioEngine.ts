@@ -9,6 +9,7 @@ import {
 import type { EngineGraph } from './graph'
 import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter, secondsPerBeat } from './math'
 import { SampleLibrary } from './samples'
+import { ownAudioBytes } from './assetBytes'
 import { playOutputTest } from './OutputTest'
 import { assertWebAudioProjectSupported, unsupportedWebAudioInstruments, WAVETABLE_HOST_REQUIRED } from './instrumentSupport'
 import { prepareEffects } from './effectPreparation'
@@ -525,9 +526,10 @@ export class WebAudioEngine implements AudioEngine {
     // File decoding must not open an output device or request a saved output-device permission.
     const context = this.decodeContext?.sampleRate === this.desiredSampleRate ? this.decodeContext
       : (this.decodeContext = new OfflineAudioContext(1, 1, this.desiredSampleRate))
+    const owned = await ownAudioBytes(blob, name)
     let buffer: AudioBuffer
     try {
-      buffer = await context.decodeAudioData(await blob.arrayBuffer())
+      buffer = await context.decodeAudioData(owned.bytes)
     } catch {
       throw new Error('이 오디오 파일을 읽을 수 없습니다. 브라우저에서 지원하는 WAV, MP3, OGG 등의 파일을 사용해 주세요.')
     }
@@ -547,7 +549,7 @@ export class WebAudioEngine implements AudioEngine {
     }
     return {
       id: id ?? globalThis.crypto.randomUUID(),
-      name, blob, buffer, peaks,
+      name, blob: owned.blob, buffer, peaks,
     }
   }
 
