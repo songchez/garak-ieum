@@ -52,6 +52,8 @@ pnpm desktop:source
 
 기존 패키지 스모크는 격리한 임시 프로필에서 MCP 토큰·오류·표준 입출력·EOF 종료·JSON-RPC·실제 GUI 인증 연결, 렌더러 보안, GPL/소스 고지, BPM 숫자 편집·박자표, 프로젝트와 WAV 내보내기, 메뉴·파일 전달, 정상 종료·재시작 저장 복원을 검사합니다. macOS CI에는 실제 클립보드로 프로젝트 이름·MCP 키 붙여넣기, MIDI 클립의 선택·복사·붙여넣기·잘라내기·Undo/Redo와 파일 열기·저장 단축키, Launch Services를 통한 `.garak` 열기를 추가합니다. 텍스트 포커스 여부만 격리된 preload에서 전달하여 네이티브 텍스트 편집과 DAW 편집 단축키를 구분합니다. 검증 결과와 화면은 `garak-ieum-macos-smoke-arm64-<SHA>` Artifact에 저장합니다. **성공 여부는 해당 커밋의 CI 결과로 확인합니다.**
 
+키보드 검사는 앱 활성화와 포커스 전달을 기다린 다음, [Electron의 공식 메뉴 검사](https://github.com/electron/electron/blob/v45.2.1/spec/api-web-contents.spec.ts)와 같은 CDP 네이티브 키 이벤트로 `⌘C/V/X/Z`, `⇧⌘Z`, `⌘O/S`를 보냅니다. Mac의 A 키코드 0은 이 CDP 경로가 네이티브 메뉴로 전달하지 못하므로 텍스트 전체 선택은 Playwright 편집 명령으로 준비하고, DAW의 `⌘A`는 렌더러 단축키 동작을 검사합니다. 텍스트 `⌘A`를 물리 키보드와 같은 AppKit 경로로 검증한 것으로 해석하지 않습니다.
+
 ## 정식 배포 서명과 공증 준비
 
 현재 빌드는 `electron-builder 26.18.0`을 고정해서 사용합니다. 설정 키는 이 버전의 `mac.identity`, `mac.entitlements`, `mac.hardenedRuntime`, `mac.notarize` 구조를 따릅니다. [v26 macOS 설정](https://www.electron.build/v26/docs/mac/) · [v26 공증 절차](https://www.electron.build/v26/docs/features/code-signing/notarization/)

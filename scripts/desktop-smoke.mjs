@@ -211,6 +211,26 @@ async function launch(label) {
     }
     return state
   }, dialogMarker)
+  if (macInstalledSmoke) {
+    // Passive test-side observations only; no field/clipboard values or new
+    // product IPC are exposed. Wait for the existing preload focus signal.
+    running.macInput = await application.evaluateHandle(({ BrowserWindow, ipcMain }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents
+      const state = { textFocused: null, inputs: [] }
+      const observeFocus = (event, value) => {
+        if (!contents.isDestroyed() && event.sender === contents && event.senderFrame === contents.mainFrame && typeof value === 'boolean') state.textFocused = value
+      }
+      ipcMain.on('garak:text-focus', observeFocus)
+      contents.once('destroyed', () => ipcMain.removeListener('garak:text-focus', observeFocus))
+      contents.on('before-input-event', (_event, input) => {
+        if (input.meta && /^[acvxzos]$/i.test(input.key)) {
+          state.inputs.push({ type: input.type, key: input.key, code: input.code, meta: input.meta, shift: input.shift, textFocused: state.textFocused })
+          if (state.inputs.length > 64) state.inputs.shift()
+        }
+      })
+      return state
+    })
+  }
   return running
 }
 
@@ -222,16 +242,37 @@ async function nativeMenu(id) {
   }, id)
 }
 async function macShortcut(key, shift = false) {
-  // Send Electron key input rather than Playwright's browser editing-command
-  // shortcuts, so native menu dispatch and before-input-event both participate.
-  await session.application.evaluate(({ BrowserWindow }, chord) => {
+  const nativeCodes = { A: 0x00, C: 0x08, V: 0x09, X: 0x07, Z: 0x06, O: 0x1f, S: 0x01 }
+  assert.ok(Object.hasOwn(nativeCodes, key), 'Unsupported macOS smoke shortcut.')
+  await session.application.evaluate(({ app, BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(candidate => !candidate.webContents.getURL().startsWith('garak://app/licenses/'))
     if (!window) throw new Error('No editor window for the macOS shortcut check.')
+    app.focus({ steal: true })
     window.focus(); window.webContents.focus()
-    const modifiers = chord.shift ? ['meta', 'shift'] : ['meta']
-    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: chord.key, modifiers })
-    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: chord.key, modifiers })
-  }, { key, shift })
+  })
+  await eventually('active macOS editor window', async () => session.application.evaluate(({ app, BrowserWindow }) => {
+    const window = BrowserWindow.getFocusedWindow()
+    return app.isActive() && Boolean(window?.webContents.isFocused())
+  }))
+  await session.page.waitForFunction(() => document.hasFocus() && document.visibilityState === 'visible')
+  const textFocused = await session.page.evaluate(() => {
+    const active = document.activeElement
+    return active instanceof HTMLElement && (active.isContentEditable
+      || Boolean(active.closest('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),textarea,[data-selectable-text],[role="textbox"],[role="searchbox"],[role="spinbutton"]')))
+  })
+  await eventually('macOS text focus IPC delivery', async () => await session.macInput.evaluate(state => state.textFocused) === textFocused)
+  // Match Electron's own menu-shortcut tests: sendInputEvent has no native
+  // NSEvent on macOS. CDP needs the native key code and text to reach AppKit.
+  // https://github.com/electron/electron/blob/v45.2.1/spec/api-web-contents.spec.ts
+  // ANSI_A is 0, which CDP cannot forward to AppKit. A is used only for DAW DOM
+  // selection here; text selection setup uses Playwright's editing command.
+  session.macCDP ??= await session.page.context().newCDPSession(session.page)
+  const character = shift ? key : key.toLowerCase()
+  const base = { key: character, code: `Key${key}`, windowsVirtualKeyCode: key.charCodeAt(0), modifiers: 4 | (shift ? 8 : 0) }
+  await session.macCDP.send('Input.dispatchKeyEvent', { ...base, type: 'rawKeyDown', nativeVirtualKeyCode: nativeCodes[key], text: character, unmodifiedText: key.toLowerCase() })
+  // Its ordered ack also confirms the keyDown has reached the menu path.
+  await session.macCDP.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' })
+  report.macInput = await session.macInput.evaluate(state => state)
 }
 async function pasteWithMacClipboard(locator, value) {
   // The installation step only sets this path in a disposable hosted Mac.
@@ -240,7 +281,7 @@ async function pasteWithMacClipboard(locator, value) {
   await session.application.evaluate(({ clipboard }, text) => clipboard.writeText(text), value)
   try {
     await locator.focus()
-    await macShortcut('A')
+    await locator.press('Meta+A') // Selection setup; ANSI_A=0 cannot reach AppKit through CDP.
     await macShortcut('V')
     // Avoid including MCP keys in assertion output or locator timeout messages.
     await eventually('native macOS clipboard paste into the text field', async () => await locator.inputValue() === value)
@@ -272,6 +313,9 @@ async function screenshot(name, width = 1280, height = 900) {
   report.artifacts.push(name)
 }
 async function saveLogs(running) {
+  if (running.macInput) {
+    try { report.macInput = await running.macInput.evaluate(state => state) } catch { /* The normal close may already have destroyed the context. */ }
+  }
   const file = `${running.label}-logs.json`
   await writeFile(path.join(artifacts, file), JSON.stringify(running.logs, null, 2))
   if (!report.artifacts.includes(file)) report.artifacts.push(file)
@@ -423,7 +467,7 @@ try {
     const name = page.getByRole('textbox', { name: '프로젝트 이름', exact: true })
     if (macInstalledSmoke) {
       await pasteWithMacClipboard(name, projectName)
-      await macShortcut('A'); await macShortcut('C')
+      await name.press('Meta+A'); await macShortcut('C')
       await eventually('native macOS text copy', async () => await session.application.evaluate(({ clipboard }) => clipboard.readText()) === projectName)
       await session.application.evaluate(({ clipboard }) => clipboard.clear())
     } else await name.fill(projectName)
