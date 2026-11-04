@@ -8,6 +8,8 @@ on:
         description: Preserve this exact release build while other commits run.
         type: boolean
         default: false
+  # Full installer builds run for desktop, native and packaging changes, for every
+  # release (workflow_call) and on demand. App-only PRs get the fast Checks workflow.
   pull_request:
     paths:
       - '.github/workflows/macos.yml'
@@ -21,41 +23,11 @@ on:
       - 'build/entitlements.mac.plist'
       - 'LICENSE'
       - 'THIRD_PARTY_NOTICES.md'
-      - 'src/**'
-      - 'public/**'
       - 'mcp/**'
-      - 'index.html'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - '.node-version'
-      - 'tsconfig*.json'
-      - 'vite.config.*'
-      - 'electron-builder.*'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/macos.yml'
-      - 'desktop/**'
-      - 'native/**'
-      - 'scripts/native-*.mjs'
-      - 'scripts/build-native-audio.mjs'
-      - 'scripts/desktop-*.mjs'
-      - 'scripts/prepare-licenses.mjs'
-      - 'scripts/source-info.mjs'
-      - 'build/entitlements.mac.plist'
-      - 'LICENSE'
-      - 'THIRD_PARTY_NOTICES.md'
-      - 'src/**'
-      - 'public/**'
-      - 'mcp/**'
-      - 'index.html'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - '.node-version'
-      - 'tsconfig*.json'
-      - 'vite.config.*'
       - 'electron-builder.*'
 
 permissions:
@@ -116,6 +88,17 @@ jobs:
         env:
           GARAK_NATIVE_REUSE: ${{ inputs.release_build && '0' || '1' }}
         run: pnpm desktop:build:mac --arm64
+
+      # A release build compiles the native host from scratch on main; keep that result so
+      # pull requests (which can read main's caches) can reuse it.
+      - name: Share the freshly built native host with later validation runs
+        if: ${{ inputs.release_build }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/native-audio
+            build/native-work
+          key: native-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/**', 'scripts/build-native-audio.mjs', 'scripts/native-dependencies.mjs') }}
 
       - name: Verify native audio and actual VST3 host
         run: pnpm native:test
