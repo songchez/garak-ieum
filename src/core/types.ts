@@ -61,7 +61,7 @@ export interface AudioClip extends ClipBase {
   pitch?: PitchEditDocument
 }
 export type Clip = MidiClip | AudioClip
-export type EffectType = 'eq' | 'filter' | 'compressor' | 'drive' | 'delay' | 'reverb'
+export type EffectType = 'eq' | 'filter' | 'compressor' | 'drive' | 'delay' | 'reverb' | 'guitar-rig'
 /** One insert effect. Track.devices is processed left to right. Disabled devices are bypassed. */
 export interface Device {
   id: string

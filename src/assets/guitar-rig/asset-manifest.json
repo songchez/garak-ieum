@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "origin": "Original generated artwork from the Garakieum guitar workshop asset kit. PNG files are copied without pixel edits.",
+  "assets": {
+    "amp-panel.png": {
+      "pixels": [
+        1440,
+        480
+      ],
+      "canvasAspect": [
+        3,
+        1
+      ],
+      "nominalCss": [
+        720,
+        240
+      ],
+      "knobCenters": [
+        [
+          190,
+          164
+        ],
+        [
+          266,
+          164
+        ],
+        [
+          342,
+          164
+        ],
+        [
+          418,
+          164
+        ],
+        [
+          494,
+          164
+        ],
+        [
+          570,
+          164
+        ]
+      ]
+    },
+    "pedal-body.png": {
+      "pixels": [
+        360,
+        600
+      ],
+      "canvasAspect": [
+        3,
+        5
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ]
+    },
+    "cabinet.png": {
+      "pixels": [
+        768,
+        512
+      ],
+      "canvasAspect": [
+        3,
+        2
+      ],
+      "nominalCss": [
+        384,
+        256
+      ],
+      "micSpeakerCenter": [
+        225,
+        260
+      ],
+      "micPositionPathEnd": [
+        345,
+        260
+      ]
+    },
+    "knob-cap.png": {
+      "pixels": [
+        128,
+        128
+      ],
+      "canvasAspect": [
+        1,
+        1
+      ],
+      "css": [
+        44,
+        44
+      ],
+      "pivot": [
+        64,
+        64
+      ],
+      "rotationDegrees": [
+        -135,
+        135
+      ],
+      "circleRadius": 60
+    }
+  },
+  "rendering": "Uniform image scaling only; below the compact breakpoint amp knobs reflow into a separate grid. Shadows, ticks, labels and readouts remain fixed while only knob-cap rotates.",
+  "audio": "Artwork is a common visual panel. Amp/cabinet/mic choices are algorithmic voicings, not representations of measured IRs or named physical hardware."
+}

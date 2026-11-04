@@ -25,6 +25,8 @@ export type RememberNode = <T extends AudioNode>(node: T) => T
 export interface DeviceGraph {
   input: AudioNode
   output: AudioNode
+  /** Release worklet ports and internal sources before the host disconnects nodes. */
+  dispose?(): void
   update(params: Record<string, number>, bpm: number, now: number, smooth: boolean): void
 }
 
@@ -34,6 +36,8 @@ export interface RealtimeEffectModule {
   readonly kind: 'realtime-effect'
   readonly stateVersion: 1
   readonly definition: EffectDef
+  /** Register per-context processors before synchronous create(), without audio nodes on import. */
+  prepare?(context: BaseAudioContext): Promise<void>
   create(context: BaseAudioContext, remember: RememberNode): DeviceGraph
   /** Legacy export tail allowance, including the release guard where required. */
   tailSeconds(params: Record<string, number>, bpm: number): number

@@ -85,6 +85,16 @@ export function createEmptyProject(): Project {
   }
 }
 
+/** A ready-to-edit guitar signal chain. Opening a track never enables an input device. */
+export function createGuitarTrack(): Track {
+  return {
+    ...createTrack('audio'),
+    name: '기타',
+    icon: 'guitar',
+    devices: [createDevice('guitar-rig')],
+  }
+}
+
 function note(pitch: number, start: number, duration: number, velocity = 0.7): MidiNote {
   return { id: uid(), pitch, start, duration, velocity }
 }
