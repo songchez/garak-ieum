@@ -21,6 +21,24 @@ const assets = (...items: NativePcmAsset[]) => new Map(items.map(item => [item.i
 const pcm = (id: string, seconds = 10, sampleRate = 48000): NativePcmAsset => ({ id, sampleRate, frames: seconds * sampleRate, channels: 2 })
 
 describe('native timeline preparation', () => {
+  it('carries a validated independent wavetable patch instead of classifying it as a browser synth', () => {
+    const owner = track('wave', { instrument: 'wavetable', clips: [midi('wave-phrase', { notes: [note(0)] })] })
+    owner.instrumentState!.customBanks = [{ slot: 4, name: 'User', frames: [Array(2048).fill(0)] }]
+    owner.instrumentParams.osc1Bank = 4
+    owner.instrumentState!.lfoCurves[0][2] = 0.15
+    const source = compileNativeTimeline(project([owner])).tracks[0].source
+    expect(source.kind).toBe('native-wavetable')
+    if (source.kind !== 'native-wavetable') throw new Error('Native wave source expected')
+    expect(source.patch.params.osc1Bank).toBe(4)
+    expect(source.patch.customBanks[0].frames[0]).toHaveLength(2048)
+    owner.instrumentState!.customBanks[0].frames[0][0] = 0.7
+    owner.instrumentState!.lfoCurves[0][2] = 0.9
+    expect(source.patch.customBanks[0].frames[0][0]).toBe(0)
+    expect(source.patch.lfoCurves[0][2]).toBe(0.15)
+    owner.instrumentState!.customBanks = []
+    expect(() => compileNativeTimeline(project([owner]))).toThrow(/Invalid IEUM WAVE patch/)
+  })
+
   it('copies builtin source, insert and mixer state without changing the project or creating audio objects', () => {
     const device = { ...createDevice('delay', { time: 0.75, feedback: 0.6 }), id: 'delay', enabled: false }
     const owner = track('piano', { instrument: 'grand', instrumentParams: { release: 0.7 }, volume: 1.2, pan: -0.25, devices: [device] })

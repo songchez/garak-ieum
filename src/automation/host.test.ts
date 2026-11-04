@@ -34,6 +34,19 @@ function setup() {
 }
 
 describe('DAW host bounded reads', () => {
+  it('describes custom synth banks without exposing raw frame arrays or mutable routes', () => {
+    const { handler, session } = setup()
+    const track = createTrack('instrument', 'wavetable')
+    track.id = 'wave'
+    track.instrumentState!.customBanks = [{ slot: 4, name: 'Drawn wave', frames: [Array(2048).fill(0)] }]
+    track.instrumentState!.routes = [{ id: 'motion', enabled: true, source: 'lfo1', destination: 'osc1Position', amount: 0.2, bipolar: true, aux: null, curve: 0 }]
+    session.edit(project => ({ ...project, tracks: [...project.tracks, track] }))
+    const response = handler('get_state', { trackId: 'wave' }) as { track: { instrumentStateSummary: { customBanks: unknown[]; routes: { amount: number }[] } } }
+    expect(response.track.instrumentStateSummary.customBanks).toEqual([{ slot: 4, name: 'Drawn wave', frameCount: 1, frameSize: 2048 }])
+    response.track.instrumentStateSummary.routes[0].amount = 0.8
+    expect(session.getSnapshot().history.present.tracks.at(-1)!.instrumentState!.routes[0].amount).toBe(0.2)
+  })
+
   it('reports the selected meter and quarter-note units without exposing mutable project state', () => {
     const { handler, session } = setup()
     session.edit(project => setProjectTimeSignature(project, 6, 8))

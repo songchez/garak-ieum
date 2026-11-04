@@ -67,6 +67,17 @@ function trackSummary(track: Track) {
     clipCount: track.clips.length, effectCount: track.devices.length,
   }
 }
+/** Describe editable synth state without returning megabytes of raw frame samples in MCP reads. */
+function instrumentStateSummary(track: Track) {
+  const state = track.instrumentState
+  if (!state) return {}
+  return { instrumentStateSummary: {
+    version: state.version, metadata: { ...state.metadata },
+    routes: state.routes.map(route => ({ ...route })),
+    customBanks: state.customBanks.map(bank => ({ slot: bank.slot, name: bank.name, frameCount: bank.frames.length, frameSize: bank.frames[0]?.length ?? 0 })),
+    lfoCurveCount: state.lfoCurves.length,
+  } }
+}
 function selection(project: Project, current: DawSelection): DawSelection {
   const tracks = new Set(project.tracks.map(track => track.id))
   const clips = new Set(project.tracks.flatMap(track => track.clips.map(clip => clip.id)))
@@ -125,7 +136,7 @@ export function createDawRequestHandler(options: DawHostOptions) {
           const { notes, ...metadata } = clip
           return { ...metadata, noteCount: notes.length }
         })
-        return { ...context, scope: 'track', track: { ...trackSummary(track), transpose: track.transpose, velocityOffset: track.velocityOffset, keyLimit: [...track.keyLimit], velocityLimit: [...track.velocityLimit], delayTicks: track.delayTicks, instrumentParams: { ...track.instrumentParams }, devices: track.devices.map(device => ({ ...device, params: { ...device.params } })) }, clips, clipOffset: offset, nextClipOffset: offset + limit < track.clips.length ? offset + limit : null }
+        return { ...context, scope: 'track', track: { ...trackSummary(track), transpose: track.transpose, velocityOffset: track.velocityOffset, keyLimit: [...track.keyLimit], velocityLimit: [...track.velocityLimit], delayTicks: track.delayTicks, instrumentParams: { ...track.instrumentParams }, ...instrumentStateSummary(track), devices: track.devices.map(device => ({ ...device, params: { ...device.params } })) }, clips, clipOffset: offset, nextClipOffset: offset + limit < track.clips.length ? offset + limit : null }
       }
       const offset = page(query.trackOffset, 0, 0, Number.MAX_SAFE_INTEGER, 'trackOffset')
       const limit = page(query.trackLimit, 50, 1, 100, 'trackLimit')

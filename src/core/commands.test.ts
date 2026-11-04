@@ -18,7 +18,8 @@ describe('external command contracts', () => {
   it('describes exactly the supported command discriminants and strict envelopes', () => {
     const types = COMMAND_METADATA.map(item => item.type)
     expect(new Set(types).size).toBe(types.length)
-    expect(types).toHaveLength(19)
+    expect(types).toHaveLength(20)
+    expect(types).toContain('instrument.setParam')
     expect(COMMAND_REQUEST_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: ['projectId', 'expectedRevision', 'operationId', 'commands'] })
     expect(HISTORY_REQUEST_SCHEMA).toMatchObject({ additionalProperties: false })
     for (const item of COMMAND_METADATA) expect(item.inputSchema).toMatchObject({ additionalProperties: false, properties: { type: { const: item.type } } })

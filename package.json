@@ -29,7 +29,12 @@
     "release:prepare": "node scripts/release-config.mjs prepare",
     "release:check": "node scripts/release-config.mjs check",
     "release:test": "node --test scripts/release-tests.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "wavetable:schema": "node src/devices/wavetable-synth/generate-schema.mjs --check",
+    "wavetable:fixtures": "node src/devices/wavetable-synth/generate-fixtures.mjs",
+    "wavetable:build": "cmake -S native/devices/wavetable-synth -B build/native/wavetable-synth -DCMAKE_BUILD_TYPE=Release && cmake --build build/native/wavetable-synth --config Release",
+    "wavetable:test": "ctest --test-dir build/native/wavetable-synth -C Release --output-on-failure",
+    "wavetable:smoke": "node scripts/wavetable-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",

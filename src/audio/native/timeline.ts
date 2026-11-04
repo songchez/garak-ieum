@@ -5,6 +5,7 @@ import { quarterNotesPerBar, validateTimeSignature } from '../../core/meter'
 import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd, playbackNotes, type Occurrence } from '../../core/playback'
 import type { EffectType, MidiClip, Project, TimeSignature, Track } from '../../core/types'
 import { loopRange } from '../math'
+import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
 
 /** Compilation limits, not promises about native device or plugin capacity. No PCM is allocated here. */
 export const NATIVE_TIMELINE_LIMITS = {
@@ -34,6 +35,7 @@ export interface NativePcmAsset {
 
 export type NativeTrackSource =
   | { readonly kind: 'audio' }
+  | { readonly kind: 'native-wavetable'; readonly instrumentId: 'wavetable'; readonly isKit: false; readonly patch: WavetablePatch }
   | { readonly kind: 'builtin-synth'; readonly instrumentId: string; readonly isKit: boolean; readonly params: Readonly<Record<string, number>> }
   | { readonly kind: 'builtin-sampled'; readonly instrumentId: string; readonly sampleSetId: string; readonly isKit: boolean; readonly params: Readonly<Record<string, number>> }
 
@@ -133,6 +135,14 @@ function source(track: Track): NativeTrackSource {
     throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Only existing builtin instruments and audio tracks can be compiled.')
   }
   const def = instrumentDef(track.instrument)
+  if (def.kind === 'native') {
+    if (def.id !== 'wavetable') throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Unknown native instrument module.')
+    try {
+      return { kind: 'native-wavetable', instrumentId: 'wavetable', isKit: false, patch: combineWavetablePatch(track.instrumentParams, track.instrumentState) }
+    } catch (error) {
+      throw new NativeTimelineError('INVALID_PROJECT', `Invalid IEUM WAVE patch: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   const common = { instrumentId: def.id, isKit: def.isKit, params: parameters(def.params, track.instrumentParams) }
   if (def.kind === 'sampled' && def.set) return { kind: 'builtin-sampled', ...common, sampleSetId: def.set }
   return { kind: 'builtin-synth', ...common }

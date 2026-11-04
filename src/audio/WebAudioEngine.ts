@@ -10,6 +10,7 @@ import type { EngineGraph } from './graph'
 import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter, secondsPerBeat } from './math'
 import { SampleLibrary } from './samples'
 import { playOutputTest } from './OutputTest'
+import { assertWebAudioProjectSupported, unsupportedWebAudioInstruments, WAVETABLE_HOST_REQUIRED } from './instrumentSupport'
 
 const SCHEDULER_INTERVAL_MS = 25
 const LOOKAHEAD_SECONDS = 0.12
@@ -338,6 +339,9 @@ export class WebAudioEngine implements AudioEngine {
   readonly getMasterLevel = (): number => this.masterLevel
 
   setProject(project: Project): void {
+    // A live edit can introduce a native instrument. Stop before the browser scheduler
+    // would omit it; the next Play explains the host requirement without replacing its sound.
+    if (this.playing && unsupportedWebAudioInstruments(project).length) this.pause()
     const beat = this.currentBeat()
     const rate = projectSampleRate(project.sampleRate)
     const changedRate = rate !== this.desiredSampleRate
@@ -410,6 +414,7 @@ export class WebAudioEngine implements AudioEngine {
 
   async play(): Promise<void> {
     if (!this.project) throw new Error('재생할 프로젝트가 없습니다.')
+    assertWebAudioProjectSupported(this.project)
     const request = ++this.transportRequest
     const lifecycle = this.lifecycle
     this.pendingPlayRequest = request
@@ -417,6 +422,8 @@ export class WebAudioEngine implements AudioEngine {
       await this.resume()
       if (request !== this.transportRequest || lifecycle !== this.lifecycle || !this.context || !this.project) return
       if (this.playing) return
+      // Project edits may land while a device permission/configuration promise is pending.
+      assertWebAudioProjectSupported(this.project)
       let beat = normalizedStart(this.project, this.position)
       if (!loopRange(this.project) && beat >= this.project.lengthBeats) beat = 0
       this.playing = true
@@ -455,11 +462,15 @@ export class WebAudioEngine implements AudioEngine {
   async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8, trackId?: string): Promise<void> {
     const lifecycle = this.lifecycle
     const def = instrumentDef(instrument)
+    if (def.kind === 'native') throw new Error(WAVETABLE_HOST_REQUIRED)
     await this.resume()
     if (def.set) await this.preloadSamples(def.set)
     if (lifecycle !== this.lifecycle || !this.context || !this.graph || this.outputFault) return
     const tracks = this.project?.tracks ?? []
     const track = trackId === undefined ? undefined : tracks.find(item => item.id === trackId)
+    // Do not audition a stale instrument through a track that changed (or was removed)
+    // while output/sample preparation was pending. Library previews have no trackId.
+    if (trackId !== undefined && (!track || track.kind !== 'instrument' || track.instrument !== instrument)) return
     if (track && !isTrackEnabled(track)) return
     const live = trackNote(track, pitch, velocity)
     if (!live) return
@@ -526,6 +537,7 @@ export class WebAudioEngine implements AudioEngine {
 
   /** Exports the entire arrangement once; the audition loop is deliberately ignored. */
   async exportWav(project: Project = this.requireProject()): Promise<Blob> {
+    assertWebAudioProjectSupported(project)
     for (const setId of this.sampleSets(project)) {
       try { await this.preloadSamples(setId) } catch (error) {
         throw new Error(`샘플 악기 "${setId}"를 불러오지 못했습니다: ${error instanceof Error ? error.message : ''}`)

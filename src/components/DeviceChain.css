@@ -62,3 +62,5 @@
 :root[data-theme-mode="light"] .dc-source .dc-icon,
 :root[data-theme-mode="light"] .dc-output .dc-icon,
 :root[data-theme-mode="light"] .dc-preview svg{color:color-mix(in srgb,var(--track-color) 25%,var(--text-primary))}
+
+.dc-wave-entry{display:flex;flex-direction:column;gap:5px;padding:0 10px 10px;min-width:220px}.dc-wave-entry>span{font-size:10px;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dc-wave-entry button{display:flex;align-items:center;justify-content:center;gap:7px;padding:7px 10px;border:1px solid var(--accent-border);border-radius:5px;color:var(--accent);background:var(--accent-soft);font-size:10px}.dc-wave-entry button:hover{background:var(--surface-hover)}.dc-wave-entry small{color:var(--text-muted);font-size:8px}.dc-wave-loading{position:fixed;right:24px;bottom:24px;z-index:100;padding:14px 20px;background:var(--surface-raised);border:1px solid var(--border-default);border-radius:8px}

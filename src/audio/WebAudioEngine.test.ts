@@ -136,6 +136,47 @@ beforeEach(() => {
 })
 
 describe('selected output device health', () => {
+  it('cancels a pending track audition if the track changes to a native instrument', async () => {
+    const track = createTrack('instrument', 'keys')
+    const project = { ...createEmptyProject(), tracks: [track] }
+    const engine = engineFor(project)
+    await engine.resume()
+    const ready = deferred<void>()
+    vi.spyOn(engine, 'resume').mockReturnValue(ready.promise)
+    const audition = engine.previewNote('keys', 60, 0.8, track.id)
+    engine.setProject({ ...project, tracks: [{ ...createTrack('instrument', 'wavetable'), id: track.id }] })
+    const nodes = ContextSpy.instances[0].gains.length
+    ready.resolve()
+    await expect(audition).resolves.toBeUndefined()
+    expect(ContextSpy.instances[0].gains).toHaveLength(nodes)
+  })
+
+  it('rechecks native support after asynchronous device startup before beginning playback', async () => {
+    const ready = deferred<void>()
+    ContextSpy.plans.push({ resume: ready.promise })
+    const project = createEmptyProject()
+    const engine = engineFor(project)
+    const starting = engine.play()
+    const native = createTrack('instrument', 'wavetable')
+    native.clips = [{ id: 'native-pending-clip', kind: 'midi', name: 'Native', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: 'native-pending-note', pitch: 60, start: 0, duration: 1, velocity: 0.8 }] }]
+    engine.setProject({ ...project, tracks: [native] })
+    ready.resolve()
+    await expect(starting).rejects.toThrow(/네이티브/)
+    expect(engine.getSnapshot().playing).toBe(false)
+  })
+
+  it('stops an active browser transport if a project edit introduces audible native notes', async () => {
+    const project = createEmptyProject()
+    const engine = engineFor(project)
+    await engine.play()
+    expect(engine.getSnapshot().playing).toBe(true)
+    const native = createTrack('instrument', 'wavetable')
+    native.clips = [{ id: 'native-clip', kind: 'midi', name: 'Native', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: 'native-note', pitch: 60, start: 0, duration: 1, velocity: 0.8 }] }]
+    engine.setProject({ ...project, tracks: [native] })
+    expect(engine.getSnapshot().playing).toBe(false)
+    await expect(engine.play()).rejects.toThrow(/네이티브/)
+  })
+
   it('stops transport and monitoring if an explicit output can no longer be verified, and keeps the saved choice', async () => {
     const project = { ...createEmptyProject(), tracks: [{ ...createTrack('audio'), id: 'input', monitor: true }] }
     const engine = engineFor(project)

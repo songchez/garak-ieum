@@ -4,6 +4,7 @@ import { instrumentDef, isInstrumentId } from './instruments'
 import { midiEditorClip, midiSourceOffset } from './midiRegions'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
+import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
 
 let fallbackSequence = 0
@@ -20,6 +21,22 @@ export function uid(): string {
 
 export function defaultInstrumentParams(instrument: InstrumentId): Record<string, number> {
   return defaultParams(instrumentDef(instrument).params)
+}
+
+/** A single transaction replaces both the scalar values and the versioned sound design state. */
+export function withWavetablePatch(track: Track, patch: WavetablePatch): Track {
+  if (track.kind !== 'instrument' || track.instrument !== 'wavetable') throw new Error('IEUM WAVE 악기 트랙이 필요합니다.')
+  const { params, state } = splitWavetablePatch(patch)
+  return { ...track, instrumentParams: params, instrumentState: state }
+}
+
+/** Switching instruments drops the previous instrument's state instead of retaining stale tables. */
+export function withInstrument(track: Track, instrument: InstrumentId): Track {
+  if (!isInstrumentId(instrument)) throw new Error('알 수 없는 악기입니다.')
+  const { instrumentState: _previous, ...rest } = track
+  const next = { ...rest, instrument, instrumentParams: defaultInstrumentParams(instrument) }
+  return instrument === 'wavetable' && track.kind === 'instrument'
+    ? withWavetablePatch(next, createDefaultWavetablePatch()) : next
 }
 
 export function createDevice(type: EffectType, params: Partial<Record<string, number>> = {}): Device {
@@ -64,6 +81,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
     delayTicks: 0,
     clips: [],
     instrumentParams: defaultInstrumentParams(instrument),
+    ...(kind === 'instrument' && instrument === 'wavetable' ? { instrumentState: splitWavetablePatch(createDefaultWavetablePatch()).state } : {}),
     devices: [],
   }
 }
@@ -348,6 +366,7 @@ export function duplicateTrack(track: Track): Track {
     id: uid(),
     name: `${track.name} 복사본`.slice(0, 512),
     instrumentParams: { ...track.instrumentParams },
+    ...(track.instrumentState ? { instrumentState: cloneWavetableState(track.instrumentState) } : {}),
     devices: track.devices.map(device => ({ ...device, id: uid(), params: { ...device.params } })),
     clips: track.clips.map(clip => duplicateClip(clip, clip.startBeat)),
   }
@@ -363,6 +382,7 @@ export function duplicateTrackSettings(track: Track): Track {
     keyLimit: [...track.keyLimit],
     velocityLimit: [...track.velocityLimit],
     instrumentParams: { ...track.instrumentParams },
+    ...(track.instrumentState ? { instrumentState: cloneWavetableState(track.instrumentState) } : {}),
     devices: track.devices.map(device => ({ ...device, id: uid(), params: { ...device.params } })),
     clips: [],
   }
@@ -623,7 +643,14 @@ export function validateProject(input: unknown): Project {
     if (!/^#[\da-f]{6}$/i.test(color)) throw new Error(`${path} color must be a six-digit hex color.`)
     const trackId = id(track.id, `${path} ID`)
     const instrument: InstrumentId = track.instrument
-    const instrumentParams = params(track.instrumentParams, instrumentDef(instrument).params, `${path} instrument`)
+    const instrumentParams = instrument === 'wavetable'
+      ? parseWavetableParams(track.instrumentParams ?? {})
+      : params(track.instrumentParams, instrumentDef(instrument).params, `${path} instrument`)
+    if (track.instrumentState !== undefined && (instrument !== 'wavetable' || track.kind !== 'instrument')) {
+      throw new Error(`${path} instrument state requires an IEUM WAVE instrument track.`)
+    }
+    const instrumentState = instrument === 'wavetable' && track.kind === 'instrument'
+      ? splitWavetablePatch(combineWavetablePatch(instrumentParams, track.instrumentState)).state : undefined
     let devices: Device[]
     if (version === 1) {
       const effects = object(track.effects, `${path} effects`)
@@ -741,6 +768,7 @@ export function validateProject(input: unknown): Project {
       ...(typeof track.icon === 'string' && track.icon.length > 0 && track.icon.length <= 40 ? { icon: track.icon } : {}),
       clips,
       instrumentParams,
+      ...(instrumentState ? { instrumentState } : {}),
       devices,
     }
   })
