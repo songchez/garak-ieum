@@ -300,6 +300,9 @@ async function verifyWindowChrome() {
     assert.ok(menus[index].accelerator?.endsWith(`+${key}`), 'Custom chrome removed a native File shortcut')
   }
   const states = []
+  // Retain intermediate native/renderer geometry when a later platform check
+  // fails. The finally block restores the window before the generic screenshot.
+  report.windowChrome = { states, fileAccelerators: menus, nativeControls: true }
   try {
     for (const zoom of [1, .8, 1.25]) {
       await nativeWindow.evaluate((window, factor) => window.webContents.setZoomFactor(factor), zoom)
@@ -311,12 +314,23 @@ async function verifyWindowChrome() {
     await nativeWindow.evaluate(window => window.webContents.setZoomFactor(1))
     await nativeWindow.evaluate(window => window.setFullScreen(true))
     await eventually('native fullscreen entered', () => nativeWindow.evaluate(window => window.isFullScreen()), 15_000)
-    await eventually('fullscreen title/menu width', async () => {
+    // Electron 45's Windows frame still reports its configured WCO rectangle
+    // in native fullscreen (WinFrameView::LayoutWindowControlsOverlay). Honor
+    // the actual overlay geometry instead of assuming its visible flag is false.
+    // https://github.com/electron/electron/blob/v45.2.1/shell/browser/ui/views/win_frame_view.cc
+    await eventually('fullscreen title/menu safe area', async () => {
       const geometry = await titleBarGeometry()
-      if (geometry.overlay?.visible) return false
-      try { assertTitleBarGeometry(geometry); return true } catch { return false }
+      report.windowChrome.fullscreenProbe = geometry
+      try { assertTitleBarGeometry(geometry); delete report.windowChrome.fullscreenCheckError; return true }
+      catch (error) { report.windowChrome.fullscreenCheckError = String(error); return false }
     }, 15_000)
     states.push({ fullscreen: true, ...await titleBarGeometry() })
+  } catch (error) {
+    report.windowChrome.failedGeometry = await titleBarGeometry()
+    report.windowChrome.failedNativeState = await nativeWindow.evaluate(window => ({ fullscreen: window.isFullScreen(), bounds: window.getBounds(), contentBounds: window.getContentBounds(), zoom: window.webContents.getZoomFactor() }))
+    await page.screenshot({ path: path.join(artifacts, 'titlebar-failure-before-restore.png') })
+    report.artifacts.push('titlebar-failure-before-restore.png')
+    throw error
   } finally {
     await nativeWindow.evaluate(window => { window.webContents.setZoomFactor(1); window.setFullScreen(false) })
     await eventually('native fullscreen exited', async () => !await nativeWindow.evaluate(window => window.isFullScreen()), 15_000)
@@ -349,7 +363,6 @@ async function verifyWindowChrome() {
       await nativeWindow.evaluate(window => window.webContents.setZoomFactor(1))
     }
   } else assert.equal(await page.getByRole('button', { name: '앱 메뉴', exact: true }).count(), 0, 'macOS should use its native application menu')
-  report.windowChrome = { states, fileAccelerators: menus, nativeControls: true }
 }
 async function macShortcut(key, shift = false) {
   const nativeCodes = { A: 0x00, C: 0x08, V: 0x09, X: 0x07, Z: 0x06, O: 0x1f, S: 0x01 }
