@@ -20,6 +20,7 @@ import { encodeWavetablePatch, WAVETABLE_UNAVAILABLE_STATUS, type WavetableBridg
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
 import { WAVE_SCHEMA_FINGERPRINT } from '../../devices/wavetable-synth/schema.generated'
 import type { NativeEngineCapabilities, NativeProjectApplied } from './contracts'
+import { ownAudioBytes } from '../assetBytes'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
@@ -743,8 +744,9 @@ export class NativeAudioEngine implements AudioEngine {
 
   async decodeAsset(blob: Blob, name: string, id: string = globalThis.crypto.randomUUID()): Promise<AudioAsset> {
     if (!blob.size) throw new Error('비어 있는 오디오 파일입니다.')
+    const owned = await ownAudioBytes(blob, name)
     let buffer: AudioBuffer
-    try { buffer = await this.codec().decodeAudioData(await blob.arrayBuffer()) }
+    try { buffer = await this.codec().decodeAudioData(owned.bytes) }
     catch { throw new Error('이 오디오 파일을 읽을 수 없습니다. 지원되는 WAV, MP3, AAC, OGG 또는 WebM 파일을 사용해 주세요.') }
     if (!buffer.length || !Number.isFinite(buffer.duration)) throw new Error('오디오 파일에 재생할 데이터가 없습니다.')
     const count = Math.min(320, buffer.length), peaks: number[] = []
@@ -757,7 +759,7 @@ export class NativeAudioEngine implements AudioEngine {
       }
       peaks.push(Math.min(1, peak))
     }
-    return { id, name, blob, buffer, peaks }
+    return { id, name, blob: owned.blob, buffer, peaks }
   }
 
   async exportWav(project = this.requireProject()): Promise<Blob> {

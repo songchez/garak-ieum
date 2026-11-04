@@ -32,7 +32,8 @@ const bridge: DesktopBridge = {
     const release = subscribe<string>('garak:before-close', async requestId => {
       if (!active || typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/.test(requestId)) return
       let allowed = false
-      try { allowed = await callback() === true } catch { /* A failed autosave must never authorize closing. */ }
+      const awaitingUser = () => { if (active) ipcRenderer.send('garak:close-awaiting-user', { requestId }) }
+      try { allowed = await callback({ awaitingUser }) === true } catch { /* A failed autosave must never authorize closing. */ }
       if (active) ipcRenderer.send('garak:close-response', { requestId, allowed })
     })
     return () => { active = false; release() }

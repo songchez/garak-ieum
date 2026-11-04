@@ -36,6 +36,7 @@ export interface DesktopBridge {
   onOpenProject(callback: (file: DesktopFile) => void): () => void
   onSaveProject(callback: () => void): () => void
   onNewProject(callback: () => void): () => void
-  onBeforeClose(callback: () => Promise<boolean>): () => void
+  /** `awaitingUser` stops the main process's "still saving" fallback dialog while the app asks the user a question. */
+  onBeforeClose(callback: (control: { awaitingUser(): void }) => Promise<boolean>): () => void
   ready(): void
 }

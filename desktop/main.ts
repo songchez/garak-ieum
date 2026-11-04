@@ -189,6 +189,14 @@ function installIpc(): void {
     rendererReady = true
     void deliverPendingFiles()
   })
+  // The renderer is asking the user (e.g. the final save failed); a second, native
+  // "still saving" dialog on top of that question would only confuse.
+  ipcMain.on('garak:close-awaiting-user', (event, value: unknown) => {
+    if (!trusted(event) || !pendingClose || !value || typeof value !== 'object') return
+    if ((value as { requestId?: unknown }).requestId !== pendingClose.id) return
+    if (pendingClose.timer) clearTimeout(pendingClose.timer)
+    pendingClose.timer = null
+  })
   ipcMain.on('garak:close-response', (event, result: unknown) => {
     if (!trusted(event) || !result || typeof result !== 'object') return
     const response = result as { requestId?: unknown; allowed?: unknown }

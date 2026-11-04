@@ -89,10 +89,14 @@ export interface StudioAppProps {
   onNew():void
   onOpenProject():void
   registerNavigationGuard(guard:()=>Promise<boolean>):()=>void
+  /** Asked when the final save before leaving fails; the shell shows the choice outside the inert editor. */
+  onSaveFailed?(message:string):Promise<SaveFailedChoice>
   registerProjectSave(save:()=>Promise<void>):()=>void
 }
 
-export default function App({projectId,navigating,navigationError,onHome,onNew,onOpenProject,registerNavigationGuard,registerProjectSave}:StudioAppProps){
+export type SaveFailedChoice='file'|'discard'|'cancel'
+
+export default function App({projectId,navigating,navigationError,onHome,onNew,onOpenProject,registerNavigationGuard,registerProjectSave,onSaveFailed}:StudioAppProps){
   const desktop=isDesktopApp()
   const headerLocation=useHeaderLocation()
   const [commandSession]=useState(()=>new ProjectSession({...createEmptyProject(),id:projectId}))
@@ -436,10 +440,12 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     if(recordRef.current||recordPreparingRef.current||busy||importing.current||exporting.current||audioApplyingRef.current||pitchBusyRef.current||activeControlEdits.current.size||commandSession.isGestureActive()||document.querySelector('[data-daw-gesture]')){
       notify(desktop?'녹음·파일 처리·드래그가 끝난 뒤 프로젝트를 이동하거나 앱을 닫아 주세요.':'녹음·파일 처리·드래그가 끝난 뒤 프로젝트를 이동해 주세요.');return false
     }
+    let snapshot=commandSession.getSnapshot(),originals=assetsRef.current
     try{
       if(engine.kind==='native'){setBusy('플러그인 상태를 저장하는 중…');await captureNativeProjectState();setBusy('')}
       if(saveTimer.current!==null){window.clearTimeout(saveTimer.current);saveTimer.current=null}
-      const snapshot=commandSession.getSnapshot(),originals=assetsRef.current,revision=++saveRevision.current
+      snapshot=commandSession.getSnapshot();originals=assetsRef.current
+      const revision=++saveRevision.current
       // Always finish with this snapshot. A queued older autosave may still be
       // writing even after undo returned to the previously persisted object.
       setSaveStatus('saving')
@@ -450,7 +456,23 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       }
       if(saveRevision.current===revision){persistedProject.current=snapshot.history.present;persistedRevision.current=snapshot.revision;persistedAssets.current=originals;setSaveStatus('saved')}
       engine.stop();return true
-    }catch(error){setSaveStatus('error');notify(`프로젝트를 저장하지 못해 이동을 멈췄습니다: ${error instanceof Error?error.message:'저장소 오류'}. 현재 작업을 .garak 파일로 보관할 수 있습니다.`);return false}finally{setBusy('')}
+    }catch(error){
+      setSaveStatus('error');setBusy('')
+      const message=error instanceof Error?error.message:'저장소 오류'
+      // Never trap the user: keep a file copy, leave without the unsaved changes, or stay.
+      const choice=onSaveFailed?await onSaveFailed(message):undefined
+      if(choice==='discard'){engine.stop();return true}
+      if(choice==='file'){
+        try{
+          const result=await saveExport(await exportProjectBundle(snapshot.history.present,originals),`${safeFilename(snapshot.history.present.name)}.garak`,'project')
+          if(result.status!=='canceled'){engine.stop();return true}
+          notify('프로젝트 파일 저장을 취소했습니다. 작업은 열려 있습니다.')
+        }catch(saveError){notify(`프로젝트 파일도 저장하지 못했습니다: ${saveError instanceof Error?saveError.message:'파일 오류'}`)}
+        return false
+      }
+      if(!choice)notify(`프로젝트를 저장하지 못해 이동을 멈췄습니다: ${message}. 현재 작업을 .garak 파일로 보관할 수 있습니다.`)
+      return false
+    }finally{setBusy('')}
   }
   useEffect(()=>registerNavigationGuard(()=>navigationGuard.current()),[registerNavigationGuard])
   projectSaveAction.current=saveBundle
