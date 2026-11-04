@@ -238,7 +238,7 @@ describe('MCP stdio → loopback → DAW integration', () => {
     expect(undo.isError).toBe(false)
     expect(session.getSnapshot().history.present.tracks).toHaveLength(0)
     const catalog = (await call('get_catalog', { kind: 'effects' })).value
-    expect(catalog.effects.map((effect: { id: string }) => effect.id).sort()).toEqual(['compressor', 'delay', 'drive', 'eq', 'filter', 'reverb'])
+    expect(catalog.effects.map((effect: { id: string }) => effect.id).sort()).toEqual(['compressor', 'delay', 'drive', 'eq', 'filter', 'guitar-rig', 'reverb'])
     expect(catalog).not.toHaveProperty('instruments')
     expect((await call('get_capabilities')).value.unsupported).toContain('transport control')
 

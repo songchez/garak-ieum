@@ -34,7 +34,7 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   fit: Maximize, arrowsH: MoveHorizontal, arrowsV: MoveVertical,
   lock: LockKeyhole, snowflake: Snowflake, eye: Eye, 'eye-off': EyeOff, dot: CircleSmall,
   eq: SlidersVertical, filter: Funnel, compressor: Minimize2,
-  drive: Flame, delay: Repeat2, reverb: WavesHorizontal,
+  drive: Flame, delay: Repeat2, reverb: WavesHorizontal, 'guitar-rig': Guitar,
 }
 
 export function Icon({ name, size = 18, className = '', style }: { name: string; size?: number; className?: string; style?: CSSProperties }) {

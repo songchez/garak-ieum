@@ -70,8 +70,8 @@ function audioProject(devices: Device[]): Project {
 
 describe('built-in effect modules share one catalog', () => {
   it('retains saved IDs, ordering, and original numeric defaults in UI and MCP', () => {
-    expect(EFFECT_TYPES).toEqual(['eq', 'filter', 'compressor', 'drive', 'delay', 'reverb'])
-    expect(Object.fromEntries(EFFECT_TYPES.map(type => [type, defaultParams(EFFECT_DEFS[type].params)]))).toEqual({
+    expect(EFFECT_TYPES).toEqual(['eq', 'filter', 'compressor', 'drive', 'delay', 'reverb', 'guitar-rig'])
+    expect(Object.fromEntries(EFFECT_TYPES.filter(type => type !== 'guitar-rig').map(type => [type, defaultParams(EFFECT_DEFS[type].params)]))).toEqual({
       eq: { low: 0, mid: 0, midFreq: 1000, high: 0 },
       filter: { cutoff: 1200, resonance: 0.7, mode: 0 },
       compressor: { threshold: -18, ratio: 4, attack: 10, release: 150, makeup: 0 },
@@ -98,7 +98,8 @@ describe('built-in effect modules share one catalog', () => {
 })
 
 describe('independent effect processing contracts', () => {
-  it.each(EFFECT_TYPES)('%s gives the host ownership of every node it creates', type => {
+  // The worklet-backed guitar rig has separate lifecycle and rendering tests.
+  it.each(EFFECT_TYPES.filter(type => type !== 'guitar-rig'))('%s gives the host ownership of every node it creates', type => {
     const { nodes, owned, effect } = create(type)
     effect.update({}, 120, 4, false)
     expect(owned).toEqual(nodes)

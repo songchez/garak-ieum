@@ -6,6 +6,7 @@ import { compressorEffect } from './compressor.js'
 import { driveEffect } from './drive.js'
 import { delayEffect } from './delay.js'
 import { reverbEffect } from './reverb.js'
+import { guitarRigEffect } from '../guitar-rig/index.js'
 
 /** Registration order is the existing rack/catalog order; no audio objects are created on import. */
 export const EFFECT_MODULES = {
@@ -15,6 +16,7 @@ export const EFFECT_MODULES = {
   drive: driveEffect,
   delay: delayEffect,
   reverb: reverbEffect,
+  'guitar-rig': guitarRigEffect,
 } satisfies Record<EffectType, RealtimeEffectModule>
 
 export const EFFECT_TYPES = Object.keys(EFFECT_MODULES) as EffectType[]

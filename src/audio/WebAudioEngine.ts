@@ -10,6 +10,8 @@ import type { EngineGraph } from './graph'
 import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter, secondsPerBeat } from './math'
 import { SampleLibrary } from './samples'
 import { playOutputTest } from './OutputTest'
+import { prepareEffects } from './effectPreparation'
+import { assertGuitarRigHealthy } from '../devices/guitar-rig'
 
 const SCHEDULER_INTERVAL_MS = 25
 const LOOKAHEAD_SECONDS = 0.12
@@ -144,6 +146,9 @@ export class WebAudioEngine implements AudioEngine {
         }
         if (candidate.state !== 'running') await candidate.resume()
         if (!current()) throw configurationCancelled()
+        // Load all built-in worklets once per context. Later graph edits are synchronous.
+        await prepareEffects(candidate)
+        if (!current()) throw configurationCancelled()
         if (candidateOutputError) throw candidateOutputError
         if (candidate.state !== 'running') throw new Error('오디오 장치를 시작하지 못했습니다. 적용 버튼을 다시 눌러 주세요.')
         if (next.outputDeviceId && typeof extras.sinkId === 'string' && extras.sinkId !== next.outputDeviceId) throw new Error('브라우저의 실제 출력이 선택한 장치와 다릅니다. 출력 장치를 다시 선택해 주세요.')
@@ -236,7 +241,13 @@ export class WebAudioEngine implements AudioEngine {
         if (current() && request === enumeration) fail('출력 장치 변경 후 연결·권한을 확인하지 못해 재생과 모니터링을 중지했습니다. 출력 장치를 다시 적용하거나 시스템 기본 출력을 선택해 주세요.')
       })
     }
-    const outputError = () => fail('출력 장치 오류로 재생과 모니터링을 중지했습니다. 장치 연결·스피커 권한을 확인한 뒤 출력 설정을 다시 적용해 주세요.')
+    const outputError = () => {
+      try { assertGuitarRigHealthy(context) } catch (error) {
+        fail(error instanceof Error ? error.message : String(error))
+        return
+      }
+      fail('출력 장치 오류로 재생과 모니터링을 중지했습니다. 장치 연결·스피커 권한을 확인한 뒤 출력 설정을 다시 적용해 주세요.')
+    }
     context.onstatechange = () => { if (current()) this.publishSnapshot() }
     context.addEventListener('sinkchange', sinkChanged)
     context.addEventListener('error', outputError)
@@ -365,9 +376,13 @@ export class WebAudioEngine implements AudioEngine {
     this.position = clamp(beat, 0, project.lengthBeats)
     this.preloadProjectSamples(project)
     if (this.context) {
-      if (this.playing && (changedArrangement || changedLayout)) this.restartAt(this.position)
-      else if (!this.graph || changedLayout || changedRate) this.replaceGraph()
-      else updateGraph(this.graph, project)
+      try {
+        if (this.playing && (changedArrangement || changedLayout)) this.restartAt(this.position)
+        else if (!this.graph || changedLayout || changedRate) this.replaceGraph()
+        else updateGraph(this.graph, project)
+      } catch (error) {
+        this.blockEffectGraph(this.context, error)
+      }
     }
     this.publishSnapshot()
   }
@@ -421,6 +436,7 @@ export class WebAudioEngine implements AudioEngine {
       if (!loopRange(this.project) && beat >= this.project.lengthBeats) beat = 0
       this.playing = true
       this.restartAt(beat)
+      if (this.outputFault) throw new Error(this.audioError ?? this.outputFault)
       this.publishSnapshot()
     } finally {
       // A cancelled play may settle after a newer play has already taken ownership.
@@ -539,10 +555,12 @@ export class WebAudioEngine implements AudioEngine {
     // allocating a multi-gigabyte buffer in this initial browser implementation.
     if (frames > sampleRate * 60 * 15) throw new Error('이 초기 버전은 한 번에 최대 15분까지 WAV로 내보낼 수 있습니다. 프로젝트 길이를 줄여 주세요.')
     const offline = new OfflineAudioContext(2, frames, sampleRate)
+    await prepareEffects(offline)
     const graph = createGraph(offline, project)
     try {
       scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
       const rendered = await offline.startRendering()
+      assertGuitarRigHealthy(offline)
       const bytes = encodePcm16Wav([rendered.getChannelData(0), rendered.getChannelData(1)], rendered.sampleRate)
       return new Blob([bytes], { type: 'audio/wav' })
     } finally {
@@ -597,27 +615,50 @@ export class WebAudioEngine implements AudioEngine {
     return positionAfter(this.project, this.anchorBeat, this.context.currentTime - this.anchorTime)
   }
 
-  private replaceGraph(): void {
-    if (!this.context || !this.project) return
-    if (this.graph) {
-      const old = this.graph
-      if (this.context.state === 'running') {
-        const now = this.context.currentTime
-        old.gate.gain.cancelScheduledValues(now)
-        old.gate.gain.setTargetAtTime(0, now, 0.003)
-        for (const voice of old.voices) voice.stop(now)
-        const timeout = setTimeout(() => {
-          disposeGraph(old)
-          this.retiredGraphs.delete(old)
-        }, 30)
-        this.retiredGraphs.set(old, timeout)
-      } else disposeGraph(old)
+  private blockEffectGraph(context: AudioContext, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error)
+    this.blockOutput(context, `오디오 이펙트를 적용하지 못해 재생과 모니터링을 중지했습니다. 오디오 설정을 다시 적용해 주세요. ${detail}`)
+  }
+
+  private replaceGraph(): boolean {
+    const context = this.context
+    if (!context || !this.project || this.outputFault) return false
+    let replacement: EngineGraph | null = null
+    try {
+      // Construct before retiring the current graph. A failed effect must never leave
+      // a partly connected replacement or quietly substitute the old/dry signal.
+      replacement = createGraph(context, this.project)
+      if (this.graph) {
+        const old = this.graph
+        if (context.state === 'running') {
+          const now = context.currentTime
+          const fadeSeconds = 0.003
+          // Both graphs briefly receive live input. Complementary envelopes keep
+          // their total gain at unity while the previous processors are retired.
+          replacement.gate.gain.value = 0
+          replacement.gate.gain.setValueAtTime(0, now)
+          old.gate.gain.cancelScheduledValues(now)
+          old.gate.gain.setTargetAtTime(0, now, fadeSeconds)
+          replacement.gate.gain.setTargetAtTime(1, now, fadeSeconds)
+          for (const voice of old.voices) voice.stop(now)
+          const timeout = setTimeout(() => {
+            disposeGraph(old)
+            this.retiredGraphs.delete(old)
+          }, 30)
+          this.retiredGraphs.set(old, timeout)
+        } else disposeGraph(old)
+      }
+      this.graph = replacement
+      if (this.outputFault) this.graph.gate.gain.value = 0
+      this.wireMonitor()
+      this.levels.clear()
+      this.masterLevel = 0
+      return true
+    } catch (error) {
+      if (replacement && replacement !== this.graph) disposeGraph(replacement)
+      this.blockEffectGraph(context, error)
+      return false
     }
-    this.graph = createGraph(this.context, this.project)
-    if (this.outputFault) this.graph.gate.gain.value = 0
-    this.wireMonitor()
-    this.levels.clear()
-    this.masterLevel = 0
   }
 
   private restartAt(beat: number): void {
@@ -628,7 +669,7 @@ export class WebAudioEngine implements AudioEngine {
     this.cursorBeat = this.position
     this.cursorTime = this.anchorTime
     this.chaseCursor = true
-    this.replaceGraph()
+    if (!this.replaceGraph()) return
     this.schedule()
   }
 
@@ -645,7 +686,7 @@ export class WebAudioEngine implements AudioEngine {
     if (this.cursorTime < this.context.currentTime - LOOKAHEAD_SECONDS) {
       const nextTime = this.context.currentTime + 0.008
       const beat = positionAfter(project, this.anchorBeat, nextTime - this.anchorTime)
-      this.replaceGraph()
+      if (!this.replaceGraph()) return
       this.cursorTime = nextTime
       this.cursorBeat = beat
       this.chaseCursor = true
