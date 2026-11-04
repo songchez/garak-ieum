@@ -21,6 +21,13 @@ describe('manual recording alignment', () => {
   it('does not create an empty region when correction moves the entire recording before zero', () => {
     expect(recordingPlacement(0, 120, .25, -500)).toBeNull()
   })
+  it('trims native latency pre-roll and applies the manual adjustment exactly once', () => {
+    // At 120 BPM, a -960 frame correction at 48 kHz is -0.04 beats.
+    expect(recordingPlacement(-.04, 120, 1, 0)).toEqual({ startBeat: 0, lengthBeats: 1.96, offsetSeconds: .02 })
+    expect(recordingPlacement(-.04, 120, 1, 10)).toEqual({ startBeat: 0, lengthBeats: 1.98, offsetSeconds: .01 })
+    expect(recordingPlacement(-.04, 120, .01, 0)).toBeNull()
+    expect(recordingPlacement(-.04, 120, 1, 30)!.startBeat).toBeCloseTo(.02)
+  })
   it('uses project tempo and rejects invalid recording dimensions', () => {
     expect(recordingPlacement(4, 60, 1.5, 500)).toEqual({ startBeat: 4.5, lengthBeats: 1.5, offsetSeconds: 0 })
     expect(() => recordingPlacement(0, 0, 1, 0)).toThrow()

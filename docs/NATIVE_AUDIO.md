@@ -1,119 +1,120 @@
-# Windows 네이티브 오디오 구현 계획
+# 네이티브 오디오 엔진
 
-2026-11-03 · 설계와 라이선스 결정 기록
+2026-11-04 · 구현 및 검증 상태
 
-**현재 Electron 앱은 기존 Web Audio 엔진을 사용합니다. VST3 호스트와 ASIO 오디오 출력은 아직 제공하지 않습니다.** 이 문서는 요청된 VST3·ASIO 지원을 구현하기 위한 경로와 완료 조건을 정리합니다. SDK 버전 확인, 타임라인 계약 준비, 데스크톱 실행 검사는 실제 플러그인·장치 지원 완료와 구분합니다. 현재 앱 설치와 실행 방법은 [데스크톱 안내](DESKTOP.md)에 있습니다.
+데스크톱은 **자체 C++20 오디오 엔진**을 별도 `garak-audio-host` 프로세스로 실행합니다. Windows는 **ASIO 또는 WASAPI**, Apple Silicon macOS는 **Core Audio**를 사용합니다. 내장 악기, 오디오 리전, 기타 앰프와 이펙트, VST3, 입력 모니터링, 녹음과 WAV 출력이 이 엔진에 연결됩니다. Electron/React는 편집과 제어를 맡습니다. [C++ 엔진](../native/include/garak/engine.hpp) · [장치 어댑터](../native/src/device.cpp) · [렌더러 연결](../src/audio/native/NativeAudioEngine.ts)
 
-## 1. 구현 방향
+이 문서의 구현 여부와 실제 하드웨어 검증은 구분합니다. 이 작업 환경에서는 **Linux에서 실제 VST3 SDK와 테스트 플러그인을 빌드·실행**했고, Windows 장치·VST3·창 소스는 MinGW로 문법 검사를 통과했습니다. 새 Windows MSVC 및 macOS arm64 CI의 실행 결과, 실제 인터페이스의 입출력·왕복 지연·타사 플러그인 창은 별도 확인 대상입니다. 이전 버전의 Web Audio 검사 결과를 새 장치 검증으로 대신하지 않습니다.
 
-자체 **GPL-3.0-only C++ 엔진과 MIT VST3 SDK**를 사용하고, Windows 기본 장치 backend는 **miniaudio의 WASAPI**로 준비합니다. JUCE는 도입하지 않습니다. **ASIO SDK의 GPLv3 경로는 선택을 완료했으며**, 장치별 처리를 분리하는 adapter와 빌드 경계를 구현할 계획입니다.
+## 1. 오디오가 흐르는 경로
 
-**ASIO는 Windows 제품의 필수 지원 목표**입니다. 사용자는 보유한 장치와 드라이버에 맞춰 WASAPI 또는 ASIO를 선택할 수 있도록 합니다. 일반 Windows 오디오 장치의 기본 경로는 WASAPI로 두며, ASIO 기능의 실제 제공 시점은 엔진 구현과 장치 검증이 완료된 뒤로 구분합니다.
+```mermaid
+flowchart TD
+  UI["React 편집기"] -->|"프로젝트·명령"| Bridge["Electron 제어 브리지"]
+  Bridge -->|"검증된 IPC"| Control["네이티브 제어 스레드"]
+  Control -->|"준비된 그래프·제한된 큐"| Audio["장치 callback"]
+  Device["ASIO / WASAPI / Core Audio"] -->|"입력 PCM"| Audio
+  Audio --> Graph["악기·클립 → 이펙트·VST3 → 믹서"]
+  Graph -->|"출력 PCM"| Device
+  Audio -->|"녹음 링 버퍼"| Writer["파일 작성 스레드"]
+  Audio -->|"위치·미터 스냅숏"| Control
+  Control -->|"상태·오류"| Bridge
+```
 
-Electron은 편집 화면, 프로젝트 명령, 파일 대화상자와 저장을 담당합니다. 네이티브 엔진은 오디오 시계, 장치 입출력, 내장 음원, 플러그인, 믹서와 녹음 처리를 담당합니다. 엔진을 별도 프로세스로 두어 플러그인 오류가 편집 화면과 저장된 프로젝트에 미치는 영향을 줄입니다. 이 분리는 장애 격리와 실행 구조를 위한 결정이며 라이선스 의무를 자동 면제하는 근거로 사용하지 않습니다.
+프로젝트 타임라인은 미리 샘플 프레임으로 변환합니다. 네이티브 장치 시계가 음표·리전과 처리 블록 안의 이벤트 위치를 결정합니다. 오디오 버퍼마다 Electron IPC나 JavaScript 응답을 기다리지 않습니다. IPC에는 재생·정지·탐색·파라미터 명령, 준비된 프로젝트와 자산 등록, 저빈도 상태 정보가 지나갑니다. 파일 등록·디코딩·플러그인 생성·상태 직렬화·그래프 준비는 callback 밖에서 실행합니다. [타임라인 변환](../src/audio/native/timeline.ts) · [제어 서비스](../desktop/native-audio.ts) · [호스트 프로토콜](../native/src/host.cpp)
 
-| 경계 | 책임 | 지켜야 할 조건 |
+호스트가 소유한 callback 자료구조는 미리 할당하며 파일 I/O, JSON 파싱, 블로킹 잠금과 그래프 파괴를 callback에서 하지 않습니다. 외부 VST3의 내부 구현까지 실시간 안전하다고 보증하지는 않습니다. 화면의 버튼 입력과 파라미터 명령에는 UI/IPC 전달 시간이 있을 수 있지만, 이미 재생 중인 오디오와 소프트웨어 모니터링의 매 버퍼가 그 시간을 추가로 거치지는 않습니다.
+
+## 2. 남아 있는 Web Audio의 용도
+
+브라우저 데모는 `WebAudioEngine`을 유지합니다. 데스크톱의 `NativeAudioEngine`은 `OfflineAudioContext`를 **압축 파일의 일회성 디코딩 도구**로 사용하며, 만든 Float32 PCM 자산을 네이티브 엔진에 등록합니다. 파형·피치 분석과 기존 Signalsmith WASM 피치 편집은 비실시간 작업으로 유지하고 결과 PCM을 같은 네이티브 그래프에서 재생합니다. 데스크톱 실시간 출력·녹음·모니터링·WAV 렌더링을 Web Audio에 넘기는 경로는 사용하지 않습니다. 네이티브 호스트가 없거나 실패하면 오류를 보여 주며 브라우저 엔진으로 조용히 전환하지 않습니다.
+
+이는 Opus/WebM·AAC/M4A 샘플을 miniaudio가 직접 디코딩한다고 가정하지 않는 구성입니다. 원본 Blob, 자산 ID, 샘플레이트, 채널 수, 길이와 소스 오프셋을 보존합니다. `.garak`와 피치 편집 문서의 원본·렌더 자산도 유지합니다. 브라우저 DSP와 C++ DSP의 출력이 비트 단위로 같다는 뜻은 아닙니다. [피치 편집기](PITCH_EDITOR.md) · [샘플 규격](SAMPLES.md)
+
+## 3. 장치 설정과 지연
+
+| 대상 | 구현 | 실제 값과 실패 처리 |
 | --- | --- | --- |
-| 편집기 → 엔진 | 프로젝트 버전, 재생·정지·탐색, 장치 선택, 파라미터 변경 전달 | 버전이 있는 제어 메시지를 검증하고, 처리 완료·실패를 응답 |
-| 프로젝트 → 재생 계획 | 리전 반복·트림·딜레이·퀀타이즈·스윙을 실제 이벤트와 오디오 구간으로 해석 | 웹 재생과 같은 편집 의미 유지; 기존 프로젝트의 시간 위치 보존 |
-| 장치 callback | 입력 → 악기·오디오 클립 → 트랙 이펙트·VST3 → 믹서 → 출력 | 하나의 장치 시계와 동일한 샘플 프레임 기준 사용 |
-| 녹음·파일 작업 | 원본 PCM 보관, 파일 디코딩, 플러그인 상태 직렬화, 출력 파일 생성 | 실시간 callback 밖에서 수행; 큐 포화와 실패를 보고 |
-| 엔진 → 편집기 | 재생 위치, 미터, 실제 장치 레이트·블록 크기·오류·지연 보고 | 화면 갱신은 오디오 callback을 기다리게 하지 않음 |
+| Windows ASIO | Steinberg ASIO SDK의 `IASIO`로 드라이버 생성, rate/buffer/channel 설정, 두 버퍼 callback, PCM 변환과 teardown | 입력·출력은 같은 ASIO 드라이버와 시계를 사용. 지원하지 않는 레이트·블록은 거절. reset·clock change·resync 요청은 출력을 멈추고 재설정 요구 |
+| Windows WASAPI | miniaudio의 WASAPI backend만 명시적으로 초기화 | 기본 장치 또는 선택한 endpoint 사용. 공유 모드 등에서 실제 블록과 물리 장치 레이트가 요청과 다르면 실제 값·리샘플링 여부 보고 |
+| Apple Silicon Core Audio | miniaudio의 Core Audio backend만 명시적으로 초기화 | 선택한 장치와 입력 채널을 사용. 중단·경로 변경 시 명시적 재설정 요구 |
 
-실시간 callback 안에서 파일 I/O, JSON 파싱, 플러그인 탐색, IPC 응답 대기, 동적 메모리 할당이나 블로킹 잠금을 수행하지 않는 구조로 만듭니다. 제어 변경은 제한된 큐와 미리 준비한 처리 그래프로 전달합니다. 소스 디코딩과 상태 저장은 작업 스레드에서 처리하고, 재생 중 장치 교체는 정지·해제·초기화·복구 순서로 제어합니다.
+입력은 끔 또는 선택한 1/2채널, 출력은 선택한 스테레오 쌍입니다. 채널 오프셋은 0부터 시작하며 장치의 실제 채널 수를 확인한 뒤 적용합니다. `DeviceState.inputChannels`는 선택된 채널 수이고 `inputChannelOffset`은 시작 채널입니다. 장치 목록의 채널 수는 장치 용량입니다. ASIO 목록을 만들 때 모든 드라이버를 임의로 열지 않으므로, 선택 전에는 채널·레이트·버퍼 목록을 알 수 없을 수 있습니다.
 
-Web Audio의 최종 출력을 별도로 재생하면서 VST3만 ASIO로 내보내면 두 시계와 장치 경로를 관리해야 합니다. 이번 목표는 내장 소리와 플러그인 소리를 같은 네이티브 그래프에서 처리하는 것입니다. **ASIO 장치가 보이는 것만으로 전환 완료로 판단하지 않습니다.**
+선택한 드라이버나 장치가 실패했을 때 다른 backend나 장치로 자동 대체하지 않습니다. ASIO control panel도 호스트에서 열 수 있습니다. WASAPI/Core Audio는 요청 버퍼 크기가 실제 callback 크기와 다를 수 있으므로 상태에는 실제 관찰값을 표시합니다. [장치 계약](../native/include/garak/device.hpp)
 
-## 2. 의존성과 고정할 버전
+지연 정보는 다음처럼 나눕니다.
 
-아래 버전과 commit은 2026-11-03에 공식 저장소의 tag·release와 라이선스 원문으로 확인했습니다. 후속 네이티브 빌드에서 사용할 후보이며 현재 설치물에 포함되었다는 뜻은 아닙니다.
+- **플러그인 지연:** `getLatencySamples()`와 내장 DSP의 처리 지연으로 트랙별 보상량을 계산합니다. 오프라인 출력은 보상용 앞부분을 제거합니다. 낮은 지연 입력 모니터링 모드는 녹음 중인 입력에 다른 트랙을 맞추기 위한 추가 보상을 넣지 않는 정책입니다.
+- **드라이버 지연:** ASIO의 입력·출력 지연 보고값을 각각 표시합니다. miniaudio의 공통 API에서 정확한 별도 값을 얻을 수 없는 WASAPI/Core Audio 항목은 미보고로 둡니다. 블록 크기의 두 배를 임의의 왕복 지연으로 표시하지 않습니다.
+- **실측 왕복 지연:** 인터페이스 루프백 측정이 필요합니다. 이번 작업에서는 실측하지 않았습니다. 녹음 위치에는 보고된 입력/출력 지연과 그래프 지연을 보정하고 원시 시작 frame과 보정 frame, 보고값의 완전성(`compensationKnown`)을 별도로 전달합니다. 미보고 값은 측정한 0으로 표시하지 않습니다. 수동 녹음 위치 보정은 자동 왕복 지연 측정과 별개입니다.
 
-| 구성 요소 | 확인한 버전과 commit | 라이선스·용도 |
-| --- | --- | --- |
-| Steinberg VST3 SDK | `v3.8.1_build_84` · `3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96` | MIT; Windows x64 VST3 악기·이펙트 호스트 |
-| miniaudio | `0.11.26` · `877ea4a7c2601c7b0f2a44e83dfac42e6470fea6` | Public Domain 또는 MIT No Attribution 중 **MIT No Attribution(MIT-0)** 선택; WASAPI 장치 입출력 |
-| Steinberg ASIO SDK | GPLv3 경로 선택 완료; SDK 버전·commit은 도입 시 고정. 현재 빌드에는 미포함 | GPLv3; ASIO 장치 adapter |
+프리앰프 게인, 팬텀 파워, 외부 클럭 설정, 인터페이스 자체 직접 모니터링, 다중 트랙 동시 입력 녹음은 이 장치 API가 제공하지 않습니다.
 
-VST3 SDK는 필요한 submodule도 상위 commit이 가리키는 revision으로 고정하고, 함께 사용하는 소스의 라이선스 고지를 설치물에 포함합니다. SDK 3.8.1의 공식 발표와 원문은 [발표](https://forums.steinberg.net/t/vst-3-8-1-sdk-released/1038865), [tag](https://github.com/steinbergmedia/vst3sdk/tree/v3.8.1_build_84), [해당 commit의 MIT 라이선스](https://github.com/steinbergmedia/vst3sdk/blob/3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96/LICENSE.txt)에서 확인할 수 있습니다. VST3의 MIT 전환은 VST2 지원이나 기존 VST2 계약까지 포함하지 않습니다. [VST3 공식 라이선스 안내](https://forums.steinberg.net/t/vst-3-sdk-license/201637)
+## 4. DSP, 녹음과 오프라인 출력
 
-miniaudio의 [0.11.26 release](https://github.com/mackron/miniaudio/releases/tag/0.11.26)와 [해당 버전의 라이선스](https://github.com/mackron/miniaudio/blob/877ea4a7c2601c7b0f2a44e83dfac42e6470fea6/LICENSE)를 기준으로 삼습니다. WASAPI backend와 장치 설정의 기준은 [공식 매뉴얼](https://miniaud.io/docs/manual/)입니다. 이 선택은 miniaudio의 permissive 라이선스를 사용하는 것이며, ASIO SDK의 권리를 대신하지 않습니다.
+`native/src/engine.cpp`가 준비된 타임라인, 음표의 샘플 offset, 루프·탐색, 샘플 존·벨로시티·choke, 믹서와 트랙별 지연 보상을 처리합니다. `native/src/dsp.cpp`가 내장 합성 악기와 EQ·필터·컴프레서·드라이브·딜레이·리버브·기타 앰프를 처리합니다. 녹음은 장치 입력을 한정된 링 버퍼에 넣고 별도 스레드가 Float32 WAV를 작성합니다. 디스크/큐 오류와 실제 시작 프레임은 제어 응답으로 전달합니다. [엔진](../native/src/engine.cpp) · [DSP](../native/src/dsp.cpp) · [녹음 연결](../src/audio/native/NativeRecording.ts)
 
-## 3. 기존 프로젝트와 소리 보존
+WAV 내보내기는 같은 C++ 그래프와 **새 플러그인 인스턴스**를 오프라인 모드로 실행합니다. 실시간 플러그인 상태를 읽을 때는 callback을 정지시켜 경쟁을 피합니다. VST3와 내장 효과의 tail을 포함하되 전체 tail은 30초로 제한합니다. 출력은 프로젝트 레이트의 스테레오 PCM 16-bit WAV이며, 처리는 블록 단위로 파일에 기록합니다. 피치 렌더 자산도 이 출력에 포함됩니다.
 
-현재 재생 의미는 [core/playback.ts](../src/core/playback.ts), 악기와 믹서는 [audio/graph.ts](../src/audio/graph.ts), 샘플 로딩은 [audio/samples.ts](../src/audio/samples.ts), 이펙트는 [devices/effects](../src/devices/effects)에 있습니다. 이를 네이티브 엔진의 호환성 기준으로 삼습니다. 세부 동작은 [아키텍처](ARCHITECTURE.md)와 [음원 규격](SAMPLES.md)을 함께 확인합니다.
+## 5. VST3 지원 범위
 
-| 보존할 범위 | 구현·검증 계획 |
+`native/src/vst3.cpp`는 SDK의 실제 module factory와 component/processor/controller 인터페이스를 사용합니다. 탐색은 시간 제한이 있는 별도 호스트 프로세스에서 실행합니다. 승인한 경로는 Electron의 로컬 카탈로그에 두고, 프로젝트에는 불투명한 `pluginId`와 `classId`를 저장합니다. 가져온 프로젝트의 임의 파일 경로를 플러그인으로 실행하지 않습니다. [VST3 호스트](../native/src/vst3.cpp) · [프로젝트 계약](../src/core/nativePlugins.ts)
+
+| 기능 | 현재 처리 |
 | --- | --- |
-| 타임라인과 박자 | 저장된 beat는 4분음표 단위로 유지. BPM·프로젝트 레이트로 절대 샘플 프레임을 계산하고, 3/4·6/8·루프 경계·재생 중 탐색을 검증. 장치 블록 중간에서 시작·끝나는 이벤트도 정확한 offset으로 처리 |
-| MIDI 리전 | 반복, 트림, 조옮김, 퀀타이즈, 스윙, 딜레이, 벨로시티·키 범위를 기존 순서대로 해석. 정지·탐색·루프 변경 때 남은 음을 종료 |
-| 내장 악기와 샘플 | 기존 악기 ID와 파라미터, 샘플 존·벨로시티·choke 그룹·튜닝·게인·envelope 유지. 내장 합성 악기는 참조 출력과 청감으로 비교 |
-| 오디오 리전 | 소스 offset, 반복, 겹침 처리, 게인·페이드·딜레이와 원본 참조 유지 |
-| 믹서와 이펙트 | 볼륨·팬·뮤트·솔로·Solo Safe, 여섯 이펙트의 순서·바이패스·파라미터·잔향을 이식. 파라미터 변경 시 불연속과 클릭을 검사 |
-| 피치 편집 | 기존 오프라인 처리 결과를 PCM 자산으로 받아 재생. 원본·편집 문서·Undo/Redo를 보존하고 실시간 피치 보정으로 표시하지 않음 |
-| WAV 출력 | 실시간과 같은 재생 계획·처리 그래프를 오프라인으로 실행. 프로젝트 레이트, 채널 수, 리전 끝과 잔향 길이를 검증 |
+| 악기·이펙트 | float32 mono/stereo main bus 협상, 보조 audio bus 비활성화. 악기는 event input 필요. 선택적 edit controller와 processor-only 플러그인 처리 |
+| 이벤트·시간 | note ID, channel, velocity, note on/off 및 parameter sample offset; tempo, 박자, project/continuous frame, 재생·녹음·cycle context |
+| 파라미터 | controller 정보·정규화 0–1 값, 제한된 큐로 processor 전달, processor 출력값을 제어 스레드에서 controller에 반영 |
+| 상태 | component/controller 별도 바이트를 프로젝트에 base64 저장. 각 상태 최대 16 MiB. callback을 정지한 뒤 저장·복원 |
+| 자체 편집 창 | Windows HWND 및 macOS NSView 창의 attach/resize/remove. 일반 파라미터 UI도 제공. 플러그인 자체 editor가 없으면 명시적 오류 |
+| 재시작·오류 | 처리 실패·유효하지 않은 출력·큐 한도 초과를 보고. bus/latency/reload 변경은 callback 안에서 재생성하지 않고 정지·재로드 요구 |
+| 격리 | 탐색 오류는 탐색 자식 프로세스에 한정. 실행 중 타사 native crash는 오디오 호스트 전체를 종료할 수 있으며 Electron 편집기는 별도 프로세스에 유지 |
 
-기존 샘플은 Opus/WebM과 AAC/M4A 경로를 사용합니다. miniaudio의 기본 디코더가 이를 모두 읽는다고 가정하지 않습니다. 초기에는 기존 디코딩 경로에서 만든 PCM을 callback 밖에서 엔진에 전달하거나, 자산 이용 조건을 유지하는 별도 배포 포맷을 결정합니다. 변환한 자산은 원본 ID·레이트·채널·길이·시작 offset을 기록해 누락·중복 디코딩을 막습니다. miniaudio의 기본 디코더 범위는 [공식 README](https://github.com/mackron/miniaudio/blob/0.11.26/README.md)에 있습니다.
+Windows x64 플러그인은 Windows에서, macOS arm64 플러그인은 Apple Silicon에서 사용합니다. 타 OS의 바이너리를 로드하거나 Intel 플러그인을 Rosetta로 연결하는 bridge는 없습니다. AU·CLAP·VST2, 플러그인의 MIDI output 라우팅, sidechain UI, 모든 타사 제품의 호환성을 제공한다고 주장하지 않습니다. 타사 플러그인 바이너리는 배포물에 넣지 않습니다.
 
-브라우저 DSP와 네이티브 DSP의 출력이 비트 단위로 같다고 약속하지 않습니다. 시간 위치·게인·파라미터 반응과 합의한 오차를 자동 비교하고, 내장 샘플 프로젝트를 실제로 들어 음색·잔향·트랜지언트를 확인한 뒤 기본 엔진을 전환합니다.
+## 6. 정확히 고정한 의존성
 
-## 4. VST3 호스트의 완료 조건
+다운로드 URL, archive 이름, 전체 SHA-256, 추출 경로와 고지 파일의 단일 기준은 [native/dependencies.lock.json](../native/dependencies.lock.json)입니다. 네이티브 빌드는 해시가 다른 archive를 사용하지 않습니다.
 
-첫 대상은 **Windows x64 VST3 악기와 이펙트**입니다. VST2·AU·CLAP이나 모든 타사 플러그인과의 호환성을 함께 약속하지 않습니다. 타사 플러그인은 사용자가 설치한 것을 탐색하며 설치물에 임의로 재배포하지 않습니다.
-
-1. **탐색과 오류 격리:** 별도 탐색 프로세스에 시간 제한을 두고 플러그인 경로·class ID·버전·입출력을 기록합니다. 실패한 플러그인은 격리 목록에 보관하고 사용자가 재시도할 수 있게 합니다.
-2. **오디오 처리:** 플러그인 생성·초기화·bus 협상·활성화·처리·해제를 구현합니다. 악기는 MIDI 이벤트를, 이펙트는 트랙 입력을 받고 동일한 네이티브 장치 callback에서 믹싱합니다.
-3. **재생 문맥:** 샘플 프레임·BPM·박자·재생/정지·루프 상태를 전달합니다. 음표와 파라미터 변경은 처리 블록 안의 offset을 보존합니다.
-4. **편집기와 상태:** 플러그인 편집 창의 수명 주기와 크기 변경, parameter 편집을 연결합니다. component/controller 상태, class ID와 버전, bus 구성을 저장하고 재시작·프로젝트 교환 후 복원을 확인합니다.
-5. **플러그인 부재와 실패:** 설치되지 않은 플러그인의 저장 상태를 유지하고 해당 슬롯의 상태를 표시합니다. 엔진 재시작 때 저장된 프로젝트에서 복구하며 플러그인 오류 때문에 프로젝트를 덮어쓰지 않습니다.
-
-상태 데이터는 버전과 크기 제한을 가진 자산으로 저장하고 `.garak` 왕복 테스트에 포함합니다. 기존 프로젝트의 schema를 실제로 바꿀 때는 마이그레이션과 구버전 회귀 검증을 추가합니다. 파일에 임의의 실행 코드를 저장하거나 타사 플러그인 바이너리를 포함하는 방식으로 구현하지 않습니다.
-
-호스트 구현의 기술 기준은 [Steinberg VST3 Developer Portal](https://steinbergmedia.github.io/vst3_dev_portal/)과 해당 SDK의 호스트 예제를 사용합니다.
-
-## 5. 녹음·장치·지연 보상
-
-녹음은 네이티브 입력과 재생이 같은 프레임 시계를 사용하도록 옮깁니다. 입력 채널을 명시적으로 매핑하고 callback에서 받은 PCM을 제한된 큐로 파일 작성 스레드에 전달합니다. 녹음 중 정지·취소·장치 분리·디스크 오류·큐 overflow를 처리하고, 확정된 자산을 기존 오디오 리전과 연결합니다. 직접 모니터링과 소프트웨어 모니터링의 차이도 표시합니다.
-
-프로젝트가 요청한 레이트·버퍼 크기와 드라이버가 실제 사용한 값을 구분합니다. 지원하지 않는 설정은 오류로 설명하거나 명시적인 리샘플링 경로로 처리합니다. WASAPI 공유·독점 모드와 ASIO의 블록·포맷 협상은 같은 요청을 받아도 결과가 다를 수 있으므로 실제 장치 정보로 확인합니다.
-
-지연은 다음 세 값을 분리해 다룹니다.
-
-- **플러그인 처리 지연:** 플러그인이 보고하는 지연으로 경로별 합을 계산하고, 병렬 트랙에 필요한 보상 버퍼를 적용합니다. 재생 중 지연 변경, bypass와 오프라인 출력도 검사합니다.
-- **장치 입출력 지연:** backend가 보고한 입력·출력 지연과 실제 블록 크기를 표시합니다. 보고값을 왕복 실측값으로 표시하지 않습니다.
-- **녹음 위치 보정:** 루프백으로 측정한 왕복 지연과 사용자 보정값을 별도로 기록하고, 녹음 시작 샘플 위치에 일관되게 적용합니다. 기존 녹음 offset과 중복 보정하지 않습니다.
-
-라이브 입력의 지연은 보상 버퍼로 제거할 수 있다고 설명하지 않습니다. 실시간 모니터링은 전체 경로 지연을 표시하고, 지연이 큰 플러그인을 사용하는 경우 그 영향을 확인할 수 있게 합니다.
-
-## 6. GPL-3.0-only 전환과 ASIO 선택
-
-2026-11-03 사용자 결정에 따라 앱 코드의 배포 라이선스를 **GPL-3.0-only**로 전환하고 **ASIO SDK의 GPLv3 경로를 선택**했습니다. Steinberg가 제공하는 두 라이선스 중 GPLv3 조건을 따르는 것이므로, 이 경로에서 별도의 proprietary 계약이나 Steinberg의 서명을 받을 필요는 없습니다. [ASIO 라이선스 원문](https://github.com/audiosdk/asio/blob/main/LICENSE.txt) · [Steinberg 공식 FAQ](https://forums.steinberg.net/t/asio-sdk-proprietary-licensing-faq/1044024)
-
-현재 변경은 라이선스·고지·소스 배포 정책을 정리하는 단계입니다. ASIO SDK와 네이티브 엔진은 아직 설치물에 포함되지 않으며, 실제 SDK 버전 고정·빌드·장치 연결은 후속 구현에서 진행합니다. 라이선스 선택을 기다릴 필요는 없지만, ASIO·VST3 지원 완료를 선언하려면 아래 기능·장치 검증을 통과해야 합니다.
-
-배포 시 다음 조건을 지킵니다.
-
-- **결합 프로그램의 GPL 배포:** ASIO SDK와 결합한 프로그램은 GPLv3 조건을 따릅니다. 기존 MIT 코드와 MIT VST3 SDK, MIT-0 miniaudio의 원래 저작권·허가 고지도 보존합니다.
-- **정확한 대응 소스:** 배포하는 실행 파일에 대응하는 소스, 변경 사항, 빌드·설치 스크립트와 필요한 고지를 제공합니다. 공개 GitHub 저장소가 있다는 사실만으로 대응 소스 제공 의무를 모두 이행했다고 보지 않습니다. 동일 빌드의 소스 ZIP과 설치 파일을 연결하고 재배포 때도 이 관계를 유지합니다.
-- **이전 MIT 권리 보존:** 이전에 MIT로 제공한 앱 코드의 [고지 원문](../public/licenses/garak-ieum-MIT-notice.txt)을 유지합니다. 기존 MIT 복사본을 받은 사람의 권리를 소급해 취소하지 않습니다.
-- **외부 자료의 조건 유지:** 샘플·글꼴·아이콘·외부 라이브러리의 원래 라이선스는 [제3자 자산 안내](../THIRD_PARTY_NOTICES.md)에 따라 유지합니다. 앱 라이선스 변경을 이유로 해당 원문을 바꾸지 않습니다.
-
-상세한 소스 제공 방식과 재배포 조건은 [GPL 배포 안내](LICENSING.md)를 따릅니다. 근거는 [GPLv3의 대응 소스·결합물·바이너리 배포 조항](https://www.gnu.org/licenses/gpl-3.0.html)과 [GNU 라이선스 호환성 FAQ](https://www.gnu.org/licenses/gpl-faq.en.html#WhatDoesCompatMean)입니다. 별도 DLL이나 프로세스라는 이유만으로 GPL 적용을 피할 수 있다고 가정하지 않습니다.
-
-JUCE는 이번 구성에 도입하지 않습니다. 자체 엔진과 명시적으로 선택한 SDK·장치 라이브러리로 구현합니다.
-
-## 7. 단계별 검증과 완료 판정
-
-아래 표는 후속 구현의 완료 조건입니다. 현재 완료를 선언하는 목록이 아닙니다.
-
-| 단계 | 자동 검증 | 실제 Windows에서 확인할 내용 |
+| 소스 패키지 | 버전 / commit | 선택한 라이선스 |
 | --- | --- | --- |
-| 재생 계획·IPC | 프레임 변환, 3/4·6/8, 루프·트림·겹침, 경계 음표, 명령 순서·실패·재연결 | 탐색·재생·정지가 UI와 일치하고 엔진 종료 후 프로젝트 복구 |
-| WASAPI·내장 DSP | 무장치 오프라인 렌더, 샘플 존·게인·팬·효과 순서, 출력 길이와 피크 | 내장 샘플 프로젝트 청취, 장치 변경, 다양한 레이트·블록에서 underrun과 CPU 사용 |
-| VST3 | 자체 테스트용 gain·delay·instrument 플러그인의 오디오·이벤트·상태·지연 보상 | 사용자가 설치한 대표 플러그인의 창·재생·저장·복원·오류 격리 |
-| 녹음 | 정지·취소·파일 오류·큐 포화·자산 복구·녹음 offset | 인터페이스 입력 채널, 모니터링, 장시간 녹음, 물리 루프백의 실제 위치 오차 |
-| GPL ASIO | 고정한 SDK 버전으로 빌드·포맷 변환·callback 경계 테스트 | 실제 ASIO 드라이버·장치에서 레이트·버퍼·입출력·분리·복구와 왕복 지연 |
-| 배포 | native executable·의존 DLL·고지 파일과 대응 소스 포함, 프로젝트 저장·재실행·이전 파일 왕복 | 같은 소스로 재빌드, 새 Windows 사용자 환경 설치, 오프라인 실행, 서명과 업데이트 검증 |
+| Steinberg ASIO SDK | 2.3.4, `ASIO-SDK_2.3.4_2025-10-15.zip` | SDK 이중 라이선스 중 GPLv3 |
+| miniaudio | 0.11.26, `877ea4a7c2601c7b0f2a44e83dfac42e6470fea6` | MIT-0 |
+| nlohmann/json | 3.11.3, `9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03` | MIT |
+| VST3 SDK | 3.8.1, `3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96` | MIT |
+| VST3 base | `fcf9da0bd27a16f7f03773a3a39822f28f5c8477` | MIT |
+| VST3 pluginterfaces | `4f547e8e102b47de4a8b8aaf343c73b700786372` | MIT |
+| VST3 public.sdk | `586dc5e6c8012c3e4b01c79389375cbe96bdb1da` | MIT |
+| VST3 cmake | `054c9143cbb8d47fc4694e473f2ee3b4d951a8f5` | MIT |
 
-GitHub Windows runner의 빌드 성공이나 Electron smoke test만으로 ASIO 하드웨어·청감·낮은 지연이 검증되었다고 기록하지 않습니다. 실제 검증에는 Windows 버전, 인터페이스 모델, 드라이버 버전, 플러그인 버전, 레이트·버퍼 크기와 실패 조건을 남깁니다. 플러그인 지연 보상과 물리 왕복 지연은 각각 측정합니다.
+ASIO 공식 archive의 SHA-256은 `d5ebf0c20dd2c5f43771fd0c1418f4b361bf52434ee670097cfa6b3a335e2eca`입니다. [공식 ASIO 배포](https://download.steinberg.net/sdk_downloads/ASIO-SDK_2.3.4_2025-10-15.zip) · [고정 VST3 MIT 원문](https://github.com/steinbergmedia/vst3sdk/blob/3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96/LICENSE.txt) · [고정 miniaudio 고지](https://github.com/mackron/miniaudio/blob/877ea4a7c2601c7b0f2a44e83dfac42e6470fea6/LICENSE)
 
-데스크톱 CI에서 생성하는 `release/desktop-smoke/` 자료는 패키징·UI 실행 검사의 진단 자료입니다. 실제 네이티브 호스트 검증과 장치 검증 기록이 준비되기 전에는 제품 화면이나 배포 안내에 VST3·ASIO 지원 완료를 표시하지 않습니다.
+사용자가 선택한 앱 코드의 **GPL-3.0-only**와 ASIO SDK의 **GPLv3 경로**를 유지합니다. JUCE는 사용하지 않습니다. 대응 소스 ZIP은 앱 소스·스크립트뿐 아니라 위 8개 원본 archive를 `native/dependency-sources/`에 포함합니다. Windows와 macOS 소스 ZIP에는 같은 archive 바이트가 들어가며, macOS에서 컴파일하지 않는 ASIO archive도 포함합니다. 설치물의 고지는 `resources/native/licenses/`에 배치합니다. 기존 MIT 고지와 음원·글꼴·아이콘의 원래 조건은 유지합니다. [배포 정책](LICENSING.md) · [제3자 고지](../THIRD_PARTY_NOTICES.md)
+
+## 7. 빌드와 검사
+
+Node.js 24, pnpm 11.25.0, CMake 3.25 이상과 C++20 컴파일러를 준비합니다. Windows는 Visual Studio 2022 C++/Windows SDK, Mac은 Apple Silicon의 Xcode Command Line Tools가 필요합니다. 설치물을 받는 사용자에게 이 개발 도구는 필요하지 않습니다.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm native:build
+pnpm native:test
+```
+
+`native:build`는 고정 archive를 검증·추출하고, 실제 SDK로 helper와 테스트 모듈을 빌드한 뒤 CTest와 설치 단계를 실행합니다. 빌드 작업 폴더는 `build/native-work/`, 배포용 helper와 고지는 `build/native-audio/`입니다. `native:test`는 별도 프로세스 제어·자산·실제 fixture VST3·녹음·WAV 경로를 검사합니다. `desktop:prepare`에도 네이티브 빌드가 포함되며 설치물에는 테스트 플러그인을 넣지 않습니다. [빌드 스크립트](../scripts/build-native-audio.mjs) · [검사 스크립트](../scripts/native-test.mjs)
+
+Linux의 `pnpm native:build`는 장치 없이 실제 VST3/오프라인 엔진을 빌드하는 개발 검사입니다. `pnpm native:build --core-only`는 VST3·장치 지원을 끈 핵심 DSP 검사 용도이며 배포 엔진으로 사용하지 않습니다. Windows/macOS 배포 빌드는 VST3와 플랫폼 장치 지원을 요구하고 Windows는 ASIO를 필수로 요구합니다.
+
+| 검증 | 이번 로컬 결과 / 남은 확인 |
+| --- | --- |
+| CMake 전체 Linux 빌드 | 실제 고정 SDK 사용, 성공 |
+| CTest `native-engine` | 프레임·믹싱·DSP·입력·지연 보상 등 코어 회귀 통과 |
+| CTest `native-asio-formats` | 모든 지원 PCM endian/유효 비트·clipping·비정상 값 변환 통과 |
+| CTest `native-vst3` | 실제 모듈 탐색, effect/instrument/processor-only, 이벤트 offset, 겹친 note ID/reset, 260개 초기 parameter, 상태 왕복·크기 한도 통과 |
+| CMake install | helper 및 8개 패키지의 고지·manifest 설치 확인 |
+| Windows 문법 검사 | 실제 miniaudio/ASIO/VST3 헤더를 사용한 MinGW 검사 통과. MSVC 링크·실행 검증과는 구분 |
+| Windows/macOS CI | workflow에 검사 연결. 이 변경 커밋의 원격 결과는 해당 Actions 실행에서 확인 |
+| 실제 장치·타사 플러그인 | 이 환경에서 미검증. 장치·드라이버·OS·플러그인 버전과 레이트·블록·조건을 기록하여 실기 확인 필요 |
+
+장치 검증에서는 재생/정지/탐색, 마이크 채널·기타 모니터링·녹음 위치, buffer/rate 변경, 장치 분리·재연결, 장시간 부하, 플러그인 창·저장·복원과 물리 루프백 지연을 따로 확인합니다. CI 통과나 ASIO 드라이버 목록 표시만으로 이 검증이 끝난 것으로 기록하지 않습니다.

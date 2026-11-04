@@ -6,6 +6,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import type { DesktopFile, DesktopSaveResult } from './contracts.js'
+import { NativeAudioService } from './native-audio.js'
 import { APP_URL, CONTENT_SECURITY_POLICY, MAX_PROJECT_BYTES, PROJECT_EXTENSIONS, assetRelativePath, desktopMcpStartupErrorMessage, exportExtension, isAppUrl, isBundledLicenseUrl, isExternalUrl, validateSaveRequest } from './policy.js'
 
 const directory = dirname(fileURLToPath(import.meta.url))
@@ -25,6 +26,7 @@ let allowClose = false
 let fileDialogPending = false
 let microphoneAllowed = false
 let microphoneRequest: Promise<boolean> | null = null
+let nativeAudio: NativeAudioService | null = null
 const pendingFiles: string[] = []
 let pendingClose: { id: string; timer: NodeJS.Timeout | null } | null = null
 
@@ -130,6 +132,11 @@ function requestClose(): void {
 }
 
 function installIpc(): void {
+  ipcMain.handle('garak:audio-request', async (event, method: unknown, params: unknown) => {
+    assertTrusted(event)
+    if (!nativeAudio) throw new Error('네이티브 오디오 엔진을 사용할 수 없습니다.')
+    return nativeAudio.request(method, params)
+  })
   ipcMain.on('garak:text-focus', (event, value: unknown) => {
     if (process.platform === 'darwin' && trusted(event) && typeof value === 'boolean') textFocused = value
   })
@@ -338,7 +345,10 @@ async function createWindow(): Promise<void> {
     else if (isBundledLicenseUrl(url)) openBundledLicense(url)
     return { action: 'deny' }
   })
-  window.webContents.on('render-process-gone', () => { rendererReady = false; clearCloseRequest() })
+  window.webContents.on('render-process-gone', () => {
+    rendererReady = false; clearCloseRequest()
+    void nativeAudio?.request('engine.close').catch(() => {})
+  })
   await window.loadURL(APP_URL)
 }
 
@@ -383,9 +393,36 @@ if (cliMode) {
       if (path) queueProject(path)
     })
     app.on('before-quit', event => { if (window && !allowClose) { event.preventDefault(); window.close() } })
-    app.on('window-all-closed', () => app.quit())
+    app.on('window-all-closed', () => {
+      if (nativeAudio) void nativeAudio.dispose().then(() => app.quit(), () => app.quit())
+      else app.quit()
+    })
     app.whenReady().then(async () => {
       await serveAssets()
+      nativeAudio = new NativeAudioService({
+        executable: join(app.isPackaged ? process.resourcesPath : app.getAppPath(), app.isPackaged ? 'native' : 'build/native-audio', process.platform === 'win32' ? 'garak-audio-host.exe' : 'garak-audio-host'),
+        profileDirectory: app.getPath('userData'),
+        testClock: Boolean(profile && process.env.GARAK_NATIVE_TEST_CLOCK === '1'),
+        allowInput: approveMicrophone,
+        onState: state => { if (window && !window.isDestroyed()) window.webContents.send('garak:audio-state', state) },
+        selectPlugin: async () => {
+          if (!window || fileDialogPending || pendingClose) return null
+          fileDialogPending = true
+          try {
+            const selection = await dialog.showMessageBox(window, {
+              title: 'VST3 플러그인 추가', message: '추가할 .vst3 플러그인의 형식을 선택해주세요.',
+              buttons: ['파일 선택', '번들 폴더 선택', '취소'], defaultId: process.platform === 'darwin' ? 1 : 0, cancelId: 2, noLink: true,
+            })
+            if (selection.response === 2) return null
+            const result = await dialog.showOpenDialog(window, {
+              title: 'VST3 플러그인 선택',
+              properties: selection.response === 1 ? ['openDirectory', 'treatPackageAsDirectory'] : ['openFile'],
+              filters: [{ name: 'VST3', extensions: ['vst3'] }],
+            })
+            return result.canceled ? null : result.filePaths[0] ?? null
+          } finally { fileDialogPending = false }
+        },
+      })
       installIpc()
       installPermissions()
       buildMenu()

@@ -1,0 +1,107 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { AudioRecordingResult } from '../AudioRecording'
+import type { NativeAudioBridge } from './contracts'
+import { NativeRecording } from './NativeRecording'
+
+function deferred<T = unknown>() {
+  let resolve!: (value: T) => void, reject!: (error: unknown) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+function harness() {
+  let clock = 0
+  const start = deferred(), stop = deferred()
+  const request = vi.fn((method: string) => method === 'record.start' ? start.promise : stop.promise)
+  const bridge: NativeAudioBridge = { request, subscribe: () => () => undefined }
+  const onComplete = vi.fn<(result: AudioRecordingResult) => void>(), onError = vi.fn<(error: Error) => void>()
+  const recording = new NativeRecording(bridge, 'audio', { onComplete, onError }, 48000, () => clock)
+  const complete = (extra = {}) => stop.resolve({ data: new Uint8Array(48), frames: 96000, sampleRate: 48000, channels: 1, ...extra })
+  return { recording, request, start, stop, onComplete, onError, complete, at: (value: number) => { clock = value } }
+}
+
+describe('native recording clock and ownership', () => {
+  it('uses the native start frame and final sample count rather than IPC/finalization time', async () => {
+    const h = harness(), started = h.recording.start()
+    h.at(1000); h.start.resolve({ startFrame: 123456, sampleRate: 48000 }); await started
+    expect(h.recording.startFrame).toBe(123456)
+    h.at(2050); expect(h.recording.elapsedSeconds).toBe(1.05)
+    h.recording.stop(); h.at(9999)
+    h.complete(); await vi.waitFor(() => expect(h.onComplete).toHaveBeenCalledTimes(1))
+    expect(h.onComplete.mock.calls[0][0]).toMatchObject({ durationSeconds: 2, error: null })
+    expect(h.recording.elapsedSeconds).toBe(2)
+    expect(h.onComplete.mock.calls[0][0].blob.type).toBe('audio/wav')
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(['record.start', 'record.stop'])
+  })
+
+  it('honors Stop before the asynchronous native start is acknowledged and finalizes only once', async () => {
+    const h = harness(), started = h.recording.start()
+    h.recording.stop(); h.recording.stop()
+    h.start.resolve({ startFrame: 24000, sampleRate: 48000 }); await started
+    h.recording.stop(); h.complete()
+    await vi.waitFor(() => expect(h.onComplete).toHaveBeenCalledTimes(1))
+    h.recording.stop(); h.recording.dispose()
+    expect(h.request.mock.calls.filter(([method]) => method === 'record.stop')).toHaveLength(1)
+  })
+
+  it('stops a late native start after unmount without publishing an orphan recording', async () => {
+    const h = harness(), started = h.recording.start()
+    h.recording.dispose()
+    h.start.resolve({ startFrame: 0, sampleRate: 48000 }); h.complete()
+    await started
+    expect(h.request.mock.calls.filter(([method]) => method === 'record.stop')).toHaveLength(1)
+    expect(h.onComplete).not.toHaveBeenCalled(); expect(h.onError).not.toHaveBeenCalled()
+  })
+
+  it('stops an already recording take on dispose and ignores its later result', async () => {
+    const h = harness(), started = h.recording.start()
+    h.start.resolve({ startFrame: 0, sampleRate: 48000 }); await started
+    h.recording.dispose(); h.complete(); await Promise.resolve()
+    expect(h.request.mock.calls.filter(([method]) => method === 'record.stop')).toHaveLength(1)
+    expect(h.onComplete).not.toHaveBeenCalled()
+  })
+
+  it('keeps useful partial WAV data while reporting native write overflow', async () => {
+    const h = harness(), started = h.recording.start()
+    h.start.resolve({ startFrame: 0, sampleRate: 48000 }); await started
+    h.recording.stop(); h.complete({ error: 'recording overflow', frames: 24000 })
+    await vi.waitFor(() => expect(h.onComplete).toHaveBeenCalledTimes(1))
+    const result = h.onComplete.mock.calls[0][0]
+    expect(result.blob.size).toBe(48); expect(result.durationSeconds).toBe(.5)
+    expect(result.error?.message).toBe('recording overflow')
+    expect(h.onError).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases App ownership with an empty result when stop fails', async () => {
+    const h = harness(), started = h.recording.start()
+    h.start.resolve({ startFrame: 0, sampleRate: 48000 }); await started
+    h.recording.stop(); h.stop.reject(new Error('host exited'))
+    await vi.waitFor(() => expect(h.onComplete).toHaveBeenCalledTimes(1))
+    expect(h.onComplete.mock.calls[0][0].blob.size).toBe(0)
+    expect(h.onError.mock.calls[0][0].message).toBe('host exited')
+  })
+
+  it.each([{ startFrame: NaN }, { startFrame: -Infinity }, { startFrame: 2.5 }, { startFrame: 0, sampleRate: 44100 }])('stops a native take whose successful acknowledgement is invalid: %j', async response => {
+    const h = harness(), started = h.recording.start()
+    const rejected = expect(started).rejects.toThrow()
+    h.start.resolve(response); h.complete()
+    await rejected
+    expect(h.request.mock.calls.filter(([method]) => method === 'record.stop')).toHaveLength(1)
+    expect(h.onComplete).not.toHaveBeenCalled()
+  })
+
+  it('preserves signed driver-compensated start frames and their uncertainty', async () => {
+    const h = harness(), started = h.recording.start()
+    h.start.resolve({ startFrame: -960, rawStartFrame: 0, compensationFrames: 960, compensationKnown: false, sampleRate: 48000 }); await started
+    expect(h.recording.startFrame).toBe(-960); expect(h.recording.rawStartFrame).toBe(0)
+    expect(h.recording.compensationFrames).toBe(960); expect(h.recording.compensationKnown).toBe(false)
+    h.recording.dispose(); h.complete()
+  })
+
+  it('does not stop someone else’s take when start was rejected before ownership', async () => {
+    const h = harness(), started = h.recording.start()
+    const rejected = expect(started).rejects.toThrow('already recording')
+    h.start.reject(new Error('already recording')); await rejected
+    h.recording.dispose()
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(['record.start'])
+  })
+})

@@ -12,6 +12,9 @@ on:
     paths:
       - '.github/workflows/desktop.yml'
       - 'desktop/**'
+      - 'native/**'
+      - 'scripts/native-*.mjs'
+      - 'scripts/build-native-audio.mjs'
       - 'scripts/desktop-*.mjs'
       - 'scripts/desktop-*.ps1'
       - 'scripts/build-mcp-launcher.*'
@@ -36,6 +39,9 @@ on:
     paths:
       - '.github/workflows/desktop.yml'
       - 'desktop/**'
+      - 'native/**'
+      - 'scripts/native-*.mjs'
+      - 'scripts/build-native-audio.mjs'
       - 'scripts/desktop-*.mjs'
       - 'scripts/desktop-*.ps1'
       - 'scripts/build-mcp-launcher.*'
@@ -67,7 +73,7 @@ jobs:
   windows:
     name: Windows x64 installer
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -100,6 +106,9 @@ jobs:
 
       - name: Build Windows installer
         run: pnpm desktop:build
+
+      - name: Verify native audio and actual VST3 host
+        run: pnpm native:test
 
       - name: Install and verify .garak file association
         run: ./scripts/desktop-install-smoke.ps1

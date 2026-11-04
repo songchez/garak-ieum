@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type { WebAudioEngine } from '../audio/WebAudioEngine'
+import type { NativeAudioEngine } from '../audio/native/NativeAudioEngine'
+import NativeAudioSettingsDialog from './NativeAudioSettingsDialog'
 import type { InputCapture } from '../audio/InputCapture'
 import {
   DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, RENDER_SIZES, SAMPLE_RATES,
@@ -41,7 +43,12 @@ function SettingRow({ label, hint, children }: { label: string; hint?: string; c
 }
 function Fact({ name, value }: { name: string; value: ReactNode }) { return <><dt>{name}</dt><dd>{value}</dd></> }
 
-export default function AudioSettingsDialog({ engine, inputCapture, settings, project, blockedReason, onApply, onClose }: Props) {
+export default function AudioSettingsDialog(props: Omit<Props, 'engine'> & { engine: WebAudioEngine | NativeAudioEngine }) {
+  if (props.engine.kind === 'native') return <NativeAudioSettingsDialog engine={props.engine} settings={props.settings} project={props.project} blockedReason={props.blockedReason} onApply={props.onApply} onClose={props.onClose}/>
+  return <BrowserAudioSettingsDialog {...props} engine={props.engine}/>
+}
+
+function BrowserAudioSettingsDialog({ engine, inputCapture, settings, project, blockedReason, onApply, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('devices')
   const [draft, setDraft] = useState<AudioSettings>(() => ({ ...settings }))
   const [sampleRate, setSampleRate] = useState<SampleRate>(project.sampleRate)

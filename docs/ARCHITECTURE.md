@@ -1,32 +1,27 @@
 # 가락이음 아키텍처
 
-이 문서는 0.1.0의 실제 구현을 설명합니다. 현재 웹 엔진과 향후 네이티브 호스트 설계를 구분하며, 이름과 인터페이스만 존재하는 기능을 구현 완료로 취급하지 않습니다.
+2026-11-04 기준 소스 구조입니다. 데스크톱의 C++ 네이티브 엔진과 브라우저 데모의 Web Audio 경로를 구분합니다. 실제 장치/청감 검증 상태는 [네이티브 오디오](NATIVE_AUDIO.md)와 [구현 상태](IMPLEMENTATION_STATUS.md)에 따로 기록합니다.
 
 ## 1. 현재 실행 구조
 
-`ProjectShell`은 기본 `/`의 프로젝트 선택 화면과 `/projects/:id`의 편집기를 나눕니다. 편집기의 React 화면은 `ProjectSession`의 프로젝트·이력을 구독하며, 화면 조작과 MCP 편집이 같은 세션을 변경합니다. `WebAudioEngine`은 편집기 안의 재렌더링 수명 주기 밖에서 유지되는 서비스이며, 브라우저의 `AudioContext`와 오디오 그래프를 소유합니다. 프로젝트 저장과 원본 음원 보관은 별도 저장 모듈이 담당합니다.
+`ProjectShell`은 프로젝트 목록과 편집기를 나눕니다. React 화면과 MCP 편집은 같은 `ProjectSession`의 프로젝트·이력을 사용합니다. [engineFactory](../src/audio/engineFactory.ts)는 데스크톱에서 `NativeAudioEngine`, 브라우저에서 `WebAudioEngine`을 선택합니다. 데스크톱에서 native bridge/helper가 없으면 오류를 표시하며 Web Audio로 자동 대체하지 않습니다.
 
 ```mermaid
 flowchart TD
-  Shell["ProjectShell · URL/화면 전환"] --> L["ProjectLauncher · 작업 목록/샘플"]
-  Shell --> UI
-  L --> Create["projectLibrary · 생성/가져오기"]
-  Create --> S
-  UI["React 편집 화면"] --> P["ProjectSession · 편집/이력"]
-  AI["로컬 MCP 클라이언트"] --> M["Node MCP 서버"]
-  M --> H["브라우저 명령 호스트"]
-  H --> P
-  P --> E["WebAudioEngine"]
+  UI["React / MCP 편집"] --> P["ProjectSession"]
   P --> S["IndexedDB / .garak"]
-  A["원본 오디오 Blob"] --> S
-  A --> B["디코딩한 AudioBuffer"]
-  B --> E
-  E --> G["공통 오디오 그래프"]
-  G --> R["AudioContext 실시간 재생"]
-  G --> O["OfflineAudioContext WAV 출력"]
+  P --> N["데스크톱 NativeAudioEngine"]
+  N --> IPC["Electron 제어 브리지"]
+  IPC --> C["C++ 프로젝트·장치 제어"]
+  C --> G["네이티브 오디오 그래프"]
+  G --> D["ASIO / WASAPI / Core Audio"]
+  P --> W["브라우저 WebAudioEngine"]
+  W --> B["AudioContext / OfflineAudioContext"]
+  A["원본 Blob → 준비한 PCM"] --> G
+  A --> B
 ```
 
-오디오 계산을 서버로 보내지 않습니다. 웹 파일을 호스팅하더라도 각 사용자의 브라우저가 재생·렌더링을 수행합니다. 선택적으로 실행하는 로컬 MCP 프로세스는 명령과 결과를 전달하며 오디오 엔진을 소유하지 않습니다. 계정·클라우드 저장 백엔드는 현재 구성에 없습니다.
+오디오는 사용자 컴퓨터에서 처리합니다. 데스크톱의 `garak-audio-host`는 장치 callback과 DSP·VST3·녹음·WAV 출력을 소유합니다. UI에서 준비한 타임라인과 PCM을 미리 전달하며, 매 오디오 버퍼가 JS/IPC 응답을 기다리지 않습니다. 제어·파일 작업과 callback을 분리하고 상태·미터는 저빈도로 화면에 전달합니다. 로컬 MCP 프로세스는 편집 명령만 전달하며 오디오 엔진을 소유하지 않습니다. 계정·클라우드 저장 백엔드는 없습니다.
 
 ### 프로젝트 이동의 보호 범위
 
@@ -58,7 +53,12 @@ flowchart TD
 | [`src/devices/pitch-editor/`](../src/devices/pitch-editor/) | 리전 피치/포먼트 UI·음계 보정·세션 초안/도구옵션·원본 분석·Worker 렌더·v2 문서 검증·float WAV 자산 |
 | [`src/audio/samples.ts`](../src/audio/samples.ts) | 샘플 세트 로더: 매니페스트 해석, 포맷 선택, 디코딩 캐시, 존 선택, 로딩 상태 알림 |
 | [`src/core/storage.ts`](../src/core/storage.ts) | ID별 프로젝트 번들·요약 목록, 기존 latest 이전, IndexedDB 원자적 저장·순서 보장, 원본 Blob 검증, `.garak` 가져오기·내보내기 |
-| [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 오디오 컨텍스트 수명 주기, 재생 위치·루프·예약, 파일 디코딩, 오프라인 출력, UI에 제공하는 스냅숏과 레벨 |
+| [`src/audio/engineFactory.ts`](../src/audio/engineFactory.ts), [`src/audio/native/NativeAudioEngine.ts`](../src/audio/native/NativeAudioEngine.ts) | 환경별 엔진 선택, 네이티브 명령·상태·PCM 등록과 비실시간 디코딩 |
+| [`src/audio/native/timeline.ts`](../src/audio/native/timeline.ts), [`src/core/nativePlugins.ts`](../src/core/nativePlugins.ts) | 리전 의미를 샘플 프레임 계획으로 변환, schema 6 VST3 식별·파라미터·상태 계약 |
+| [`desktop/native-audio.ts`](../desktop/native-audio.ts), [`native/src/host.cpp`](../native/src/host.cpp) | 승인된 IPC·파일·플러그인 카탈로그, 프로세스 수명, 녹음 파일·오프라인 출력 |
+| [`native/src/engine.cpp`](../native/src/engine.cpp), [`native/src/dsp.cpp`](../native/src/dsp.cpp) | callback 타임라인·악기·클립·믹싱·DSP·지연 보상·녹음 큐 |
+| [`native/src/device.cpp`](../native/src/device.cpp), [`native/src/vst3.cpp`](../native/src/vst3.cpp) | ASIO/WASAPI/Core Audio 장치와 실제 VST3 SDK 호스트·네이티브 창 |
+| [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 브라우저 데모의 컨텍스트·예약·디코딩·출력·스냅숏 |
 | [`src/audio/InputCapture.ts`](../src/audio/InputCapture.ts) | 녹음·모니터링 입력 공유, 입력 변경의 준비·확정·복구, 지연된 권한 응답과 장치 종료 처리 |
 | [`src/audio/AudioRecording.ts`](../src/audio/AudioRecording.ts), [`src/audio/recordingTransport.ts`](../src/audio/recordingTransport.ts) | 한 번의 녹음과 마지막 데이터 이벤트의 수명, 녹음을 함께 종료하는 재생·정지·자동 종료 연결 |
 | [`src/core/recording.ts`](../src/core/recording.ts), [`src/components/RecordingRegion.tsx`](../src/components/RecordingRegion.tsx) | 녹음 시작 위치·임시 리전·최종 추가의 공통 계약, 실제 경과 시간 표시 |
@@ -101,7 +101,7 @@ flowchart TD
 
 오디오 클립 분할은 원본 파일을 수정하지 않고 새 클립의 시작 위치·길이·원본 오프셋을 계산합니다. MIDI 리전은 원본 음표를 유지하고 `sourceOffsetBeats`와 `lengthBeats`로 표시·재생 범위를 정합니다. 분할한 오른쪽은 독립된 음표 ID와 소스 오프셋을 가지며 양쪽 모두 다시 늘릴 수 있습니다. 피아노롤은 `midiEditorClip`의 보이는 구간을 편집한 뒤 `applyMidiNoteEdits`로 원본에 병합하므로 숨은 음표와 변경하지 않은 앞뒤 길이를 보존합니다. 합치기는 보이는 구간을 새 소스로 만듭니다.
 
-현재 프로젝트 스키마는 **5**입니다. `timeSignature`에 분자 1–32와 분모 2·4·8·16을 저장하고, `beatsPerBar`에는 `분자 × 4 / 분모`인 4분음표 단위 마디 길이를 저장합니다. 기존 디바이스·피치 문서, `MidiClip.sourceOffsetBeats`, `ClipBase.loopLengthBeats`도 보존합니다. 스키마 1·2·3·4는 기존 4/4를 유지하며 5로 정규화하고, 1의 `track.effects.filter/reverb/delay`는 디바이스 배열로 변환합니다. `.garak` 바깥 번들 버전은 기존 1을 유지합니다. 새 필드를 모르는 구버전 앱은 스키마 검사에서 거절하므로 리전 소스 위치나 박자표를 조용히 잘못 해석하지 않습니다.
+현재 프로젝트 스키마는 **6**입니다. `Track.pluginInstrument`와 `Track.pluginInserts`에 승인 카탈로그의 불투명 `pluginId`, `classId`, normalized parameter와 별도 component/controller 상태를 저장합니다. 각 상태의 디코딩 크기는 16 MiB 이하입니다. 프로젝트 파일이 임의 native 경로를 실행하도록 허용하지 않습니다. `timeSignature`에 분자 1–32와 분모 2·4·8·16을 저장하고, `beatsPerBar`에는 `분자 × 4 / 분모`인 4분음표 단위 마디 길이를 저장합니다. 기존 디바이스·피치 문서, `MidiClip.sourceOffsetBeats`, `ClipBase.loopLengthBeats`도 보존합니다. 스키마 1·2·3·4는 기존 4/4를 유지하고 5는 기존 박자표를 보존하며 6으로 정규화합니다. 플러그인 필드가 없는 이전 프로젝트는 빈 슬롯으로 이전하고, 1의 `track.effects.filter/reverb/delay`는 디바이스 배열로 변환합니다. `.garak` 바깥 번들 버전은 기존 1을 유지합니다. 새 필드를 모르는 구버전 앱은 스키마 검사에서 거절하므로 리전 소스 위치나 박자표를 조용히 잘못 해석하지 않습니다.
 
 박자 변경은 기존 음표·리전·마커·루프·프로젝트 길이의 4분음표 좌표를 이동하거나 늘이지 않습니다. BPM도 4분음표/분 기준을 유지합니다. 타임라인·피아노롤 격자와 마디/박 스냅, 재생 위치 표시, 새 리전 길이와 마디 이동, 루프 길이 선택, 프로젝트 목록·내보내기의 마디 수가 새 박자를 사용합니다. 6/8의 마디는 3 quarter-note beats, 한 박은 0.5 quarter-note beats입니다. 프로젝트 전체의 단일 박자표를 지원하며 곡 중간 박자표 변경 맵은 없습니다.
 
@@ -125,46 +125,21 @@ MCP 편집은 `projectId`·`expectedRevision`·`operationId`와 명시적인 명
 
 ## 4. 오디오 엔진의 실제 범위
 
-현재 백엔드는 직접 작성한 `WebAudioEngine` 하나입니다. `AudioEngine.kind`에 `'native'`라는 미래 구분값이 있지만, 네이티브 구현·브리지·플러그인 호스트는 존재하지 않습니다. openDAW 또는 Tracktion Engine을 가져온 코드도 아닙니다.
+데스크톱은 자체 C++20 엔진, 브라우저 데모는 `WebAudioEngine`을 사용합니다. openDAW·Tracktion·JUCE 엔진을 도입하지 않았습니다. 공통 편집 모델과 `core/playback.ts`의 리전 변환 의미를 유지하고, desktop timeline은 이벤트를 미리 샘플 프레임으로 변환합니다.
 
-### 오디오 장치 설정
+### 데스크톱 장치와 그래프
 
-`App`은 설정 적용 시 재생을 일시 정지하고, 활성 모니터링에 필요한 입력 변경을 먼저 준비한 뒤 `engine.configure(settings, sampleRate)`를 호출합니다. 엔진은 후보 컨텍스트의 레이트·출력·실행 상태를 확인한 뒤 교체하며 실패한 후보는 기존 엔진을 대체하지 않습니다. 입력 확정까지 성공하면 로컬 설정과 프로젝트 레이트를 반영하고, 중간 실패 시 준비 입력을 정리하고 엔진 복구를 시도합니다. 녹음·녹음 준비·파일 처리 중 적용은 차단합니다.
+`NativeAudioEngine.configure` → Electron 검증 → native `DeviceHost`가 backend/device/rate/buffer와 물리 입력 offset을 적용합니다. Windows는 ASIO 또는 WASAPI, Mac은 arm64 Core Audio입니다. 요청한 장치가 사라지거나 초기화에 실패하면 명시적으로 오류를 표시합니다. ASIO는 정확한 요청 레이트/지원 블록을 요구하고, WASAPI/Core Audio는 실제 블록·레이트와 리샘플링 여부를 보고합니다. 장치 변경·플러그인 상태 IO·그래프 준비는 callback 밖에서 합니다.
 
-`latencyHint`와 지원 시 `renderSizeHint`는 요청입니다. `getAudioState()`/`subscribeAudioState()`는 실제 엔진 레이트·블록·지연·출력·오류를 별도 스냅숏으로 제공합니다. 렌더 블록은 하드웨어 I/O 버퍼가 아니며, 보고된 지연은 왕복 실측값이 아닙니다. `AudioContext`의 레이트도 물리 인터페이스 클럭을 제어했다는 뜻은 아닙니다. 지원 범위와 공식 근거는 [오디오 설정 벤치마크](AUDIO_SETTINGS_BENCHMARK.md)에 있습니다.
+장치 callback 안에서 내장 합성·샘플·오디오 리전 → 내장/VST3 인서트 → 팬·볼륨·미터 → 트랙별 지연 보상·마스터 → 출력으로 처리합니다. 기타 앰프와 라이브 입력도 같은 경로입니다. 프로젝트 그래프는 제어 스레드에서 준비하며 소유한 버퍼·큐를 callback 전에 할당합니다. 라이브 모니터링은 낮은 지연 정책에 따라 다른 트랙에 맞추기 위한 추가 보상을 피할 수 있습니다. 플러그인 자체 latency와 물리 장치 지연은 없어지지 않습니다.
 
-브라우저가 출력 변경·오류를 보고하면 엔진은 선택된 특정 출력의 ID와 현재 경로를 확인합니다. 확인할 수 없거나 다른 출력으로 바뀌었으면 재생·모니터링 출력을 막고 선택값을 유지합니다. 정상 재생으로 돌아가려면 사용자가 장치·권한을 확인해 재적용하거나 기본 출력을 직접 선택해야 합니다. 장치 목록이 제한된 상태를 물리 분리라고 단정하지 않습니다.
+VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 스레드에서 수행합니다. 샘플 offset을 가진 MIDI/parameter와 BPM·박자·재생/루프 context를 processor에 전달합니다. 플러그인이 bus/latency 변경을 요구하면 callback 안에서 재생성하지 않고 정지·재로드를 요구합니다. 자체 창은 Windows HWND/macOS NSView에 attach합니다. 외부 플러그인 crash는 오디오 프로세스 전체에 영향을 줄 수 있습니다. [구현·검증 상세](NATIVE_AUDIO.md)
 
-### 재생 예약
+### 브라우저 데모의 호환 경로
 
-시계의 기준은 `AudioContext.currentTime`입니다. JavaScript 타이머는 약 25ms 간격으로 앞으로 120ms 범위의 이벤트를 미리 예약합니다. 악기와 클립에는 오디오 시계에 맞춘 시작·종료 시각을 전달합니다. 타이머가 각 오디오 샘플을 직접 계산하는 구조는 아닙니다.
+브라우저의 시계는 `AudioContext.currentTime`이며 JavaScript 타이머가 이벤트를 미리 예약합니다. 브라우저 기본 노드와 기타 앰프 AudioWorklet을 사용하고, 여섯 효과는 `src/devices/effects/` registry에서 생성합니다. `Track.devices`의 활성 효과는 배열 순서로 직렬 연결하고 dry/wet은 각 효과 내부에서 섞습니다. 이는 데스크톱 callback 구현과 구분되는 브라우저용 DSP입니다.
 
-실제 신호 처리는 `OscillatorNode`, `AudioBufferSourceNode`, `GainNode`, `BiquadFilterNode`, `ConvolverNode`, `DelayNode` 등 브라우저 기본 노드가 수행합니다. 현재 사용자 정의 AudioWorklet, WebAssembly, 별도 오디오 Worker는 사용하지 않습니다.
-
-노트와 배치를 바꾸거나 재생 위치를 이동하면 새 예약·그래프로 전환합니다. 볼륨·팬·효과 값은 오디오 파라미터를 짧게 보간해 적용합니다. 지연된 타이머가 오래된 음표를 한꺼번에 발음하지 않도록 현재 오디오 시계에서 다시 이어 가는 처리가 있지만, 백그라운드 탭·CPU 과부하에서 연속 재생을 보장하는 것은 아닙니다.
-
-### 신호 경로
-
-트랙 입력 뒤에는 `Track.devices`의 활성 이펙트를 **배열 순서대로 직렬 연결**합니다. 예를 들어 EQ → 드라이브 → 리버브를 넣으면 EQ 출력 전체가 드라이브로 들어가고, 드라이브 출력 전체가 리버브로 들어갑니다. 디바이스 순서를 바꾸면 이 연결 순서도 바뀝니다. 비활성 디바이스는 그래프를 만들지 않고 건너뛰며, 활성 이펙트가 없으면 트랙 입력에서 팬으로 바로 연결합니다. 실제 구성은 [`createGraph`](../src/audio/graph.ts)가 담당합니다.
-
-| 단계 | 실제 처리 |
-| --- | --- |
-| 트랙 입력 | 악기 음성·오디오 클립 신호 또는 지정된 라이브 모니터링 입력을 받음 |
-| 인서트 체인 | 활성 `Track.devices` 각각의 input/output을 순서대로 연결 |
-| 트랙 출력 | 팬 → 트랙 볼륨 → 트랙 미터 → 마스터 합산 |
-| 마스터 출력 | 마스터 볼륨 → 컴프레서 → gate → 마스터 미터 → 출력 장치 |
-
-Dry/wet 분기는 **각 이펙트 내부**에 있습니다. 드라이브는 원음과 처리음을 `mix`로 섞고, 딜레이는 원음에 피드백 딜레이의 wet 출력을 더하며, 리버브는 원음에 컨볼루션의 wet 출력을 더합니다. 이 결과가 다음 디바이스로 전달됩니다. 모든 트랙에 필터·리버브·딜레이가 고정으로 달리거나, 트랙 팬 단계에서 세 효과를 병렬 합산하는 구조는 아닙니다.
-
-마스터에는 기본 `DynamicsCompressorNode`가 있습니다. 이를 별도로 검증된 마스터링 리미터로 간주하지 않습니다. 합성 악기와 리버브에 쓰는 노이즈·임펄스는 코드에서 생성하며, 외부 상용 음원 라이브러리를 필요로 하지 않습니다.
-
-### 디바이스 모듈 경계
-
-여섯 내장 이펙트는 `src/devices/effects/`의 독립 파일로 분리했습니다. 각 모듈은 `RealtimeEffectModule` 계약의 `definition`, `create`, `tailSeconds`와 생성한 그래프의 `update`를 소유합니다. `registry.ts`가 표시 순서와 지원 목록을 제공하며 랙 UI·저장 검증·MCP 카탈로그가 같은 정의를 사용합니다. 레지스트리 import 자체는 오디오 컨텍스트나 노드를 만들지 않아 Node MCP에서도 사용할 수 있습니다.
-
-`audio/graph.ts`는 이펙트의 구체 DSP 대신 등록된 모듈을 호출해 트랙 체인을 구성합니다. 노드 연결·해제는 호스트가 관리하고 실시간과 오프라인 출력에서 같은 모듈을 사용합니다. 기존 `Device.type/params` 형식과 이펙트 순서는 유지합니다.
-
-합성 악기는 아직 `graph.ts`의 분기를 사용하고 샘플 악기는 별도 레지스트리를 사용합니다. 모든 악기를 독립 모듈로 분리하거나 외부 VST/AU/CLAP을 불러오는 구조는 아직 아닙니다. 사용자 정의 디바이스 UI를 자동 등록하는 범용 플러그인 계약도 후속 작업입니다.
+브라우저의 `latencyHint`/`renderSizeHint`는 요청값이고 실제 장치 I/O 버퍼 제어와 같지 않습니다. `InputCapture`·`AudioDeviceProbe`·Web Audio 기반 출력 테스트도 브라우저용입니다. 데스크톱 설정은 별도 `NativeAudioSettingsDialog`와 native 장치 API를 사용합니다. GUI·프로젝트·파라미터 정의를 공유하더라도 두 DSP의 출력이 비트 단위로 일치한다고 보장하지 않습니다.
 
 ### 리전 피치 처리
 
@@ -190,9 +165,9 @@ Dry/wet 분기는 **각 이펙트 내부**에 있습니다. 드라이브는 원�
 
 ### 샘플 악기
 
-악기는 `src/core/instruments.ts`의 레지스트리 `INSTRUMENTS`에 정의합니다. 각 항목은 고정 ID(저장 파일이 참조), 표시 이름, 분류(신스·피아노·건반·드럼·국악), 합성/샘플 종류, 킷 여부, 조절기 정의를 가집니다. `Track.instrument`는 이 ID 문자열이며, `validateProject`는 레지스트리에 없는 ID를 거부합니다. 합성 악기(`drums`, `bass`, `keys`, `pad`, `pluck`, `rhodes`)는 `graph.ts`의 `scheduleInstrument`가 오실레이터로 만들고, 샘플 악기는 `set` 필드가 가리키는 `public/samples/<set>/` 폴더의 음원을 씁니다. 매니페스트 규격은 [`SAMPLES.md`](SAMPLES.md)를 따릅니다.
+악기는 `src/core/instruments.ts`의 레지스트리 `INSTRUMENTS`에 정의합니다. 각 항목은 고정 ID(저장 파일이 참조), 표시 이름, 분류(신스·피아노·건반·드럼·국악), 합성/샘플 종류, 킷 여부, 조절기 정의를 가집니다. `Track.instrument`는 이 ID 문자열이며, `validateProject`는 레지스트리에 없는 ID를 거부합니다. 합성 악기(`drums`, `bass`, `keys`, `pad`, `pluck`, `rhodes`)는 브라우저에서 `graph.ts`, 데스크톱에서 `native/src/engine.cpp`·`dsp.cpp`가 생성하고, 샘플 악기는 `set` 필드가 가리키는 `public/samples/<set>/` 폴더의 음원을 씁니다. 매니페스트 규격은 [`SAMPLES.md`](SAMPLES.md)를 따릅니다.
 
-`src/audio/samples.ts`의 `SampleLibrary`는 엔진당 하나이며 `WebAudioEngine.samples`로 접근합니다. `load(setId, context)`는 `manifest.json`을 읽고, 브라우저가 지원하는 포맷(Opus/webm 우선, 아니면 AAC/m4a)을 고른 뒤 모든 존 파일을 동시 6개 이하로 받아 `decodeAudioData`로 디코딩합니다. 세트별로 진행 중인 Promise를 캐시하므로 동시 요청은 한 번만 내려받고, 디코딩된 `AudioBuffer`는 컨텍스트에 묶이지 않아 그래프 재생성과 `OfflineAudioContext` 내보내기에서 그대로 재사용합니다. m4a는 AAC 인코더 지연만큼(44 ms) 재생 시작 위치를 건너뜁니다.
+`src/audio/samples.ts`의 `SampleLibrary`는 브라우저와 데스크톱에서 자산 로딩 규격을 공유합니다. 데스크톱은 `OfflineAudioContext`로 압축 파일을 한 번 디코딩해 Float32 PCM과 존 설정을 native host에 등록합니다. 매 callback에서 JS로 재생하거나 디코딩하지 않습니다. 다음의 예약 설명은 브라우저용 경로입니다. 브라우저에서는 `WebAudioEngine.samples`로 접근합니다. `load(setId, context)`는 `manifest.json`을 읽고, 브라우저가 지원하는 포맷(Opus/webm 우선, 아니면 AAC/m4a)을 고른 뒤 모든 존 파일을 동시 6개 이하로 받아 `decodeAudioData`로 디코딩합니다. 세트별로 진행 중인 Promise를 캐시하므로 동시 요청은 한 번만 내려받고, 디코딩된 `AudioBuffer`는 컨텍스트에 묶이지 않아 그래프 재생성과 `OfflineAudioContext` 내보내기에서 그대로 재사용합니다. m4a는 AAC 인코더 지연만큼(44 ms) 재생 시작 위치를 건너뜁니다.
 
 재생 중 아직 준비되지 않은 세트의 음표는 건너뛰고 로드를 시작합니다. 세트가 준비되면 엔진이 현재 박에서 다시 예약하므로 짧은 끊김이 한 번 생길 수 있습니다. 트랙 추가나 악기 변경으로 새 샘플 악기가 프로젝트에 들어오면 `setProject`에서 미리 로드를 시작하고, WAV 내보내기는 프로젝트가 쓰는 모든 세트를 기다린 뒤 렌더링합니다. UI는 `AudioEngine.sampleStatus`·`subscribeSamples`로 로딩·오류 상태를 트랙 헤더에 표시하고, `sampleAttribution`으로 로드된 세트의 출처를 디바이스 카드에 보여 줍니다.
 
@@ -206,17 +181,13 @@ Dry/wet 분기는 **각 이펙트 내부**에 있습니다. 드라이브는 원�
 
 ## 5. 가져오기와 녹음
 
-편집기의 **오디오 파일 가져오기**는 `decodeAudioData()`로 전체 디코딩합니다. `AudioAsset`에는 원본 `Blob`, 재생용 `AudioBuffer`, 파형 표시용 피크가 함께 존재합니다. 원본은 그대로 보관하고, 피크는 채널을 살펴 최대 320개 지점으로 요약합니다. 확대 수준별 파형 캐시나 부분 디코딩은 없습니다. **프로젝트 번들 가져오기**는 별도로 `projectLibrary.ts`가 검증한 Project와 원본 Blob을 먼저 저장하며, 목록 화면에서 오디오를 디코딩하지 않습니다. 저장 후 편집기를 열 때 해당 프로젝트의 샘플레이트로 원본을 디코딩합니다.
+오디오 파일 가져오기는 원본 Blob을 보관하고 전체 디코딩한 PCM을 자산으로 등록합니다. 화면의 `AudioBuffer`·파형 피크는 편집 도구를 위한 표현이며, 데스크톱에서는 Float32 PCM을 native host에 준비해 재생합니다. 프로젝트 목록은 원본 Blob과 요약만 읽고 오디오 장치를 열지 않습니다. 편집기를 열 때 자산을 준비합니다.
 
-마이크 입력은 `InputCapture`가 녹음·모니터링의 사용 요구와 `getUserMedia()` 스트림을 관리하고, `App`이 `AudioRecording`을 통해 `MediaRecorder`를 소유합니다. 특정 입력 ID는 `exact`로 고정하며 채널 수·샘플레이트·AEC/NS/AGC는 독립적인 요청으로 전달합니다. 모노/스테레오 채널 수 요청은 인터페이스의 물리 포트 선택이 아닙니다. 현재 입력 값은 트랙의 `getSettings()`에서 읽습니다.
+데스크톱 입력은 `DeviceHost`의 선택 채널을 사용합니다. 장치 callback이 녹음 링 버퍼에 PCM을 넣고 파일 스레드가 Float32 WAV를 기록합니다. `NativeRecording`이 실제 녹음 시작 frame·rate·수신 frame 수·파일 결과를 받아 기존 임시 리전/최종 자산 흐름에 연결합니다. 큐 포화·디스크 오류·프로세스 종료는 성공한 녹음으로 보고하지 않습니다. 브라우저에서는 기존 `InputCapture`의 `getUserMedia()`와 `AudioRecording`/`MediaRecorder` 경로를 유지합니다.
 
-사용 가능한 MIME 형식(WebM/Opus, MP4, Ogg/Opus 등) 중 하나를 선택하고 받은 청크를 하나의 Blob으로 합칩니다. 녹음을 끝내면 같은 디코딩 경로를 거쳐 오디오 클립으로 추가합니다. 프로젝트 레이트 선택이 녹음 원본의 코덱이나 비트 깊이 선택을 제공하지는 않습니다. 24-bit·32-bit float PCM 원본 녹음·다중 입력 녹음은 지원하지 않습니다.
+입력 권한 대기와 취소·종료는 take 소유권으로 관리합니다. Space·정지·재생 끝에서 녹음을 확정하며, 임시 리전의 길이는 수신 프레임/경과 시간으로 표시합니다. 최종 오디오 자산과 리전을 한 번 반영하고 새 트랙이 필요하면 같은 Undo에 묶습니다. 실제 PCM의 시작 위치를 사용하므로 UI 메시지 도착 시간을 음원의 시작 시각으로 사용하지 않습니다.
 
-녹음 시작점은 실제 재생 시작 위치를 정규화한 뒤 고정하고, 입력 권한 대기 후의 최신 BPM·위치 보정값·대상 트랙을 사용합니다. `RecordingDraft`는 프로젝트와 별도로 보관합니다. Timeline은 약 100ms마다 실제 경과 시간을 읽어 임시 리전을 늘리며, 사이클에서 되돌아가는 재생 커서로 녹음 길이를 계산하지 않습니다. 숨긴 대상과 예약된 새 트랙도 화면에 표시합니다. 임시 표시에는 아직 실제 파형이 없으며 녹음 상태와 시간을 보여 줍니다.
-
-Space·재생 일시정지·정지·R 재클릭 및 재생의 true→false 전이는 녹음을 함께 종료합니다. 준비 중 취소는 늦은 입력 권한 응답을 무효화합니다. 종료를 요청해도 마지막 `dataavailable`·`onstop`·디코딩까지 take 소유권을 유지하며, 처리 중 임시 리전의 길이는 고정합니다. 최종 오디오 자산과 같은 ID의 리전을 한 번 반영하고 임시 표시를 제거합니다. 예약 새 트랙은 이때 리전과 함께 Undo 한 단계로 추가합니다. 빈 데이터·디코딩 실패·전체가 음수 시간으로 잘린 보정은 안내하고 초안을 정리합니다. 이 과정은 MIDI 입력 녹음과 별개이며, MIDI 녹음은 아직 지원하지 않습니다.
-
-클립 위치는 녹음 시작 시 transport 위치와 그때 적용된 `recordingOffsetMs`(-1000~1000ms 정수)를 사용합니다. 양수는 뒤로, 음수는 앞으로 배치합니다. 0 이전 구간은 원본을 재작성하지 않고 소스 오프셋으로 제외하며, 전체가 0 이전이면 리전을 만들지 않고 알립니다. 입력 장치·녹음 인코더·재생 시작 지연을 자동 측정하여 보상하는 단계는 아직 없습니다. 이 수동 정렬은 샘플 단위로 정렬된 다중 트랙 레코더의 보상을 뜻하지 않습니다.
+네이티브 호스트는 raw 시작 frame과 드라이버가 보고한 입력/출력 지연 및 그래프 지연을 분리해 보고하고 녹음 위치 보정에 적용합니다. 드라이버 미보고 값은 실측한 0으로 취급하지 않으며 `compensationKnown`으로 구분합니다. 사용자의 `recordingOffsetMs`(-1000~1000ms)는 별도 수동 보정입니다. 0 이전 구간은 소스 offset으로 제외합니다. 자동 물리 루프백 측정, USB MIDI 녹음, 여러 입력 트랙의 동시 녹음은 제공하지 않습니다.
 
 ## 6. 보관과 교환 형식
 
@@ -244,7 +215,7 @@ Space·재생 일시정지·정지·R 재클릭 및 재생의 true→false 전�
 {
   "format": "noct-studio",
   "schemaVersion": 1,
-  "project": { "schemaVersion": 5, "sampleRate": 48000, "timeSignature": { "numerator": 4, "denominator": 4 }, "beatsPerBar": 4 },
+  "project": { "schemaVersion": 6, "sampleRate": 48000, "timeSignature": { "numerator": 4, "denominator": 4 }, "beatsPerBar": 4 },
   "assets": [
     {
       "id": "asset-id",
@@ -265,16 +236,19 @@ Space·재생 일시정지·정지·R 재클릭 및 재생의 true→false 전�
 
 ## 7. WAV 출력
 
-실시간 재생과 `OfflineAudioContext`는 같은 그래프 생성·범위 예약 함수를 사용합니다. 출력은 프로젝트 시작부터 끝까지 한 번 렌더링하고, 사용 중인 효과에 맞춘 잔향 시간을 더합니다. 반복 재생용 루프는 파일 길이에 적용하지 않습니다.
+데스크톱은 같은 C++ 타임라인·DSP 그래프와 새 VST3 인스턴스를 오프라인 모드로 실행합니다. 실시간 callback을 정지한 뒤 플러그인 상태를 읽고 프로젝트 레이트로 렌더합니다. 플러그인/내장 이펙트 tail을 포함하되 전체 tail은 30초로 제한하며, 트랙 보상용 앞부분은 파일에서 제거합니다. 출력은 블록 단위로 기록하는 스테레오 PCM 16-bit WAV입니다.
 
-출력은 2채널 16-bit PCM WAV입니다. 샘플레이트는 **`Project.sampleRate`**로 결정하며, 열린 실시간 컨텍스트의 값이나 유무에 의존하지 않습니다. 오프라인 렌더링과 WAV 헤더에 같은 레이트를 사용하고 최종 PCM 인코딩에서 표현 범위를 벗어나는 값은 제한합니다.
-
-현재 구현은 렌더 결과 전체를 RAM에 만들기 때문에 잔향을 포함한 15분 상한을 둡니다. 트랙별 스템, 범위 지정 출력, 스트리밍 인코딩, 다른 비트 깊이·코덱 선택은 아직 제공하지 않습니다.
+브라우저는 `OfflineAudioContext`와 브라우저 실시간용 그래프 함수를 공유합니다. 이 경로는 전체 렌더 결과를 RAM에 만들며 기존 길이 제한을 적용합니다. 피치 편집으로 만들어진 PCM 자산은 두 환경 모두의 출력에 반영합니다. 오프라인 WAV는 물리 장치의 음질이나 왕복 지연을 측정하는 검사가 아닙니다.
 
 ## 8. 검증 경계
 
 | 테스트 | 다루는 범위 |
 | --- | --- |
+| `native/tests/engine_test.cpp` | 실제 C++ 프레임·DSP·믹싱·입력·플러그인 지연 보상 회귀 |
+| `native/tests/vst3_test.cpp` | 실제 SDK/fixture 모듈 탐색·effect/instrument·MIDI/parameter offset·state·reset |
+| `native/tests/vst3_device_test.cpp` | ASIO PCM endian·유효 비트·clipping·비정상 값 변환 |
+| `scripts/native-smoke.mjs` | 실제 native helper의 IPC·승인 경계·녹음·오프라인 WAV·VST3 상태 왕복 |
+| `src/audio/native/*.test.ts` | timeline 번역, 네이티브 명령/상태·take 소유권, 실패 시 Web Audio fallback 차단 |
 | `src/core/project.test.ts` | 이전 데모 호환, 비파괴 클립 편집, 가져온 프로젝트 검증 |
 | `src/core/projectTemplates.test.ts` | 세 샘플의 유효성·독립 ID·편곡 경계·실제 샘플 존과 파일·조성·그루브·섹션 변형 |
 | `src/core/projectLibrary.test.ts` | 저장 완료 후 생성/가져오기, 같은 템플릿의 수정 격리, 같은 원본 ID 파일의 새 저장본과 Blob 보존, 오류 시 기존 목록 유지 |
@@ -287,12 +261,10 @@ Space·재생 일시정지·정지·R 재클릭 및 재생의 true→false 전�
 | `src/audio/InputCapture.test.ts`, `src/audio/AudioDeviceProbe.test.ts` | 입력 준비·권한·취소·전환과 테스트 자원 수명 |
 | `src/audio/WebAudioEngine.test.ts`, `src/audio/OutputTest.test.ts` | 컨텍스트 교체·복구·프로젝트 레이트·WAV·출력 장치 오류와 테스트음 취소 |
 
-이 테스트들은 실제 브라우저의 오디오 장치, 마이크 지연, 네이티브 플러그인 호환성, 장시간 재생 성능을 측정하지 않습니다. fake-indexeddb 저장소 검사와 실제 브라우저의 IndexedDB 실행도 구분합니다. 실제 화면에서의 URL 직접 열기·뒤로/앞으로·새로고침·저장 복원·녹음·내보내기와 세 샘플의 청음·최종 음량 확인은 별도 검증 항목입니다.
+이 테스트들은 실제 브라우저의 오디오 장치, 마이크 지연, 모든 타사 네이티브 플러그인의 호환성, 장시간 재생 성능을 측정하지 않습니다. 실제 fixture를 사용하는 검사는 별도로 위 표에 표시했습니다. fake-indexeddb 저장소 검사와 실제 브라우저의 IndexedDB 실행도 구분합니다. 실제 화면에서의 URL 직접 열기·뒤로/앞으로·새로고침·저장 복원·녹음·내보내기와 세 샘플의 청음·최종 음량 확인은 별도 검증 항목입니다.
 
-## 9. 2.0 네이티브 호스트 경계
+## 9. 네이티브 배포와 남은 검증
 
-향후 React UI를 유지하면서 로컬 네이티브 오디오 그래프와 연결할 수 있도록 엔진 계약을 둡니다. 하지만 지금의 `AudioEngine`을 구현한 클래스 이름만 바꾸면 VST가 지원되는 상태는 아닙니다. 현재 `AudioAsset`이 브라우저 `AudioBuffer`를 직접 포함하는 부분도 네이티브 파일·자산 모델에 맞게 나눠야 합니다.
+Windows x64와 Apple Silicon arm64 배포는 실제 VST3 SDK와 장치 어댑터를 요구합니다. Windows의 ASIO SDK는 사용자가 선택한 GPLv3 경로를 사용하며 앱 코드는 GPL-3.0-only입니다. [고정 manifest](../native/dependencies.lock.json)는 ASIO 2.3.4, miniaudio 0.11.26, JSON 3.11.3 및 VST3 3.8.1의 필요한 하위 소스 전체를 URL/SHA-256으로 고정합니다. 대응 소스 ZIP은 같은 8개 archive를 포함합니다.
 
-2.0에서는 플러그인 스캔·생성·상태 복원, MIDI 이벤트와 자동화 타임스탬프, 오디오 버스, 플러그인 지연 보상, 오프라인 렌더링, 프로세스 수명 주기를 함께 설계합니다. UI에는 명령·상태·미터를 전달하고, 매 오디오 버퍼가 React 렌더링이나 일반 UI 메시지 처리에 의존하지 않도록 합니다.
-
-기존 플러그인의 자체 GUI는 로컬 네이티브 창으로 표시하는 것을 초기 방향으로 둡니다. Electron은 배포·창·프로세스를 묶을 수 있는 후보이며, Electron만 추가하면 플러그인 호스트가 생기는 것은 아닙니다. 네이티브 엔진의 선택·라이선스·지원 플랫폼은 아직 확정된 구현이 아닙니다.
+`pnpm native:build`는 네이티브 빌드/CTest/설치를, `pnpm native:test`는 실제 프로세스와 VST3 fixture 스모크를 수행합니다. 새 Windows/macOS CI 결과와 실제 장치·권한·플러그인 창·긴 세션·왕복 지연은 해당 환경에서 확인해야 합니다. Linux 실제 SDK/fixture 통과와 Windows 소스 문법 검사 결과를 물리 장치 검증으로 해석하지 않습니다. 상세 한도·빌드 방법은 [NATIVE_AUDIO](NATIVE_AUDIO.md)를 따릅니다.

@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process'
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { repository, repositoryUrl, sourceInfo } from './source-info.mjs'
+import { nativeDependencyLock } from './native-dependencies.mjs'
 
 const info = sourceInfo()
 const target = path.join(repository, 'public', 'licenses')
@@ -30,6 +31,14 @@ for (const dependency of dependencies) {
   }
 }
 sections.push('\nElectron, Chromium and Node.js notices are also shipped by Electron in LICENSE.electron.txt and LICENSES.chromium.html beside the installed executable.\n')
+const nativeLicenses = path.join(repository, 'build/native-audio/licenses')
+if (await access(nativeLicenses).then(() => true, () => false)) {
+  sections.push('\n## Desktop native audio dependency notices\n\nThe desktop audio host uses these exact pinned sources. The matching source ZIP includes their original verified archives under native/dependency-sources/.\n')
+  for (const dependency of (await nativeDependencyLock()).dependencies) {
+    sections.push(`\n### ${dependency.id} ${dependency.version} (${dependency.license})\nSource: ${dependency.url}\nSHA256: ${dependency.sha256}\n`)
+    for (const relative of dependency.licenseFiles) sections.push(`\n${dependency.id}/${relative}\n\n${await readFile(path.join(nativeLicenses, dependency.id, relative), 'utf8')}\n`)
+  }
+}
 await writeFile(path.join(target, 'THIRD_PARTY_NOTICES.txt'), sections.join('\n'))
 
 const state = info.origin === 'git'
@@ -54,7 +63,8 @@ ${info.archive ? `이 원본 커밋의 소스 묶음 파일명: ${info.archive}`
 소스 ZIP은 개발·수정용이며 앱 설치에는 Windows .exe 또는 Apple Silicon Mac .dmg를 사용합니다.
 공개 Releases 또는 랜딩에 배포할 때에도 해당 설치 파일 옆에 같은 버전의 소스 묶음을 제공합니다.
 소스에서 빌드하는 방법과 도구 버전은 소스의 docs/DESKTOP.md(Windows), docs/MACOS.md(macOS), 배포 조건은 docs/LICENSING.md를 읽으세요.
-pnpm-lock.yaml은 JavaScript 의존성을 고정합니다. 기존 WASM 모듈의 원본 커밋과 변경 방법은 src/devices/pitch-editor/vendor/README.md에 있습니다.
+pnpm-lock.yaml은 JavaScript 의존성을 고정합니다. native/dependencies.lock.json은 ASIO·VST3·miniaudio·JSON 소스의 버전과 SHA256을 고정합니다. 소스 ZIP의 native/dependency-sources/에는 해당 SDK·라이브러리의 검증된 원본 소스 묶음이 들어 있으며 native:build는 이 파일을 먼저 사용합니다.
+기존 WASM 모듈의 원본 커밋과 변경 방법은 src/devices/pitch-editor/vendor/README.md에 있습니다.
 
 프로그램 라이선스만을 이유로 사용자가 새로 만든 음악이나 녹음에 GPL이 적용되지는 않습니다.
 함께 제공되는 샘플을 사용할 때에는 해당 샘플의 별도 이용 조건을 확인하세요.

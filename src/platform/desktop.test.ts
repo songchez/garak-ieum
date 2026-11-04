@@ -5,6 +5,7 @@ import { bindDesktopProjectEvents, chooseProjectFile, desktopProjectFile, isDesk
 function bridge(patch: Partial<DesktopBridge> = {}): DesktopBridge {
   return {
     isDesktop: true, platform: 'win32', version: '1.0.0',
+    audio: { request: vi.fn(async () => ({})), subscribe: vi.fn(() => () => {}) },
     openProject: vi.fn(async () => null), saveFile: vi.fn(async () => ({ canceled: false, fileName: 'song.garak' })),
     onOpenProject: vi.fn(() => () => {}), onSaveProject: vi.fn(() => () => {}), onNewProject: vi.fn(() => () => {}),
     onBeforeClose: vi.fn(() => () => {}), ready: vi.fn(), ...patch,
