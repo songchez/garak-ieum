@@ -118,7 +118,7 @@ Windows 빌드 결과는 `release/*.exe`이고, 압축되지 않은 앱은 `rele
 
 ## 5. Windows CI의 검증 범위
 
-[desktop.yml](../.github/workflows/desktop.yml)은 수동 실행, 관련 파일을 바꾸는 PR, `main`의 관련 변경에 대해 Windows 작업을 실행합니다.
+[desktop.yml](../.github/workflows/desktop.yml)은 수동 실행, 데스크톱·네이티브·패키징 파일을 바꾸는 PR, 공개 릴리스에서 Windows 작업을 실행합니다. 앱 코드(`src/**` 등)만 바꾼 PR은 [checks.yml](../.github/workflows/checks.yml)의 빠른 검사만 실행하므로, 그 커밋의 설치 파일이 필요하면 Actions에서 **Run workflow**로 수동 실행합니다.
 
 1. 커밋 SHA로 고정한 공식 Actions로 Node.js와 pnpm을 준비합니다.
 2. `pnpm install --frozen-lockfile`로 잠긴 의존성을 설치합니다.

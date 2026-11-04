@@ -8,6 +8,8 @@ on:
         description: Preserve this exact release build while other commits run.
         type: boolean
         default: false
+  # Full installer builds run for desktop, native and packaging changes, for every
+  # release (workflow_call) and on demand. App-only PRs get the fast Checks workflow.
   pull_request:
     paths:
       - '.github/workflows/desktop.yml'
@@ -23,43 +25,11 @@ on:
       - 'LICENSE'
       - 'THIRD_PARTY_NOTICES.md'
       - 'build/installer.nsh'
-      - 'src/**'
-      - 'public/**'
       - 'mcp/**'
-      - 'index.html'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - '.node-version'
-      - 'tsconfig*.json'
-      - 'vite.config.*'
-      - 'electron-builder.*'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/desktop.yml'
-      - 'desktop/**'
-      - 'native/**'
-      - 'scripts/native-*.mjs'
-      - 'scripts/build-native-audio.mjs'
-      - 'scripts/desktop-*.mjs'
-      - 'scripts/desktop-*.ps1'
-      - 'scripts/build-mcp-launcher.*'
-      - 'scripts/prepare-licenses.mjs'
-      - 'scripts/source-info.mjs'
-      - 'LICENSE'
-      - 'THIRD_PARTY_NOTICES.md'
-      - 'build/installer.nsh'
-      - 'src/**'
-      - 'public/**'
-      - 'mcp/**'
-      - 'index.html'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - '.node-version'
-      - 'tsconfig*.json'
-      - 'vite.config.*'
       - 'electron-builder.*'
 
 permissions:
@@ -121,7 +91,19 @@ jobs:
         run: |
           # Validation installers skip LZMA so packaging is fast; the installed app is identical.
           # Release installers keep the configured normal compression.
-          if ('${{ inputs.release_build }}' -eq 'true') { pnpm desktop:build } else { pnpm desktop:build -c.compression=store }
+          # Keep the argument quoted: pwsh splits an unquoted `-c.x=y` into two arguments.
+          if ('${{ inputs.release_build }}' -eq 'true') { pnpm desktop:build } else { pnpm desktop:build '--config.compression=store' }
+
+      # A release build compiles the native host from scratch on main; keep that result so
+      # pull requests (which can read main's caches) can reuse it.
+      - name: Share the freshly built native host with later validation runs
+        if: ${{ inputs.release_build }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/native-audio
+            build/native-work
+          key: native-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/**', 'scripts/build-native-audio.mjs', 'scripts/native-dependencies.mjs') }}
 
       - name: Verify native audio and actual VST3 host
         run: pnpm native:test
