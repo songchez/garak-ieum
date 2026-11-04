@@ -388,23 +388,34 @@ void malformedPatchAndRateValidation() {
 void concurrentPatchPreparationAndRender() {
   auto patch = dryPatch(); auto p = project(patch); RenderEngine engine(48000,64);
   engine.submit(engine.prepare(p,{})); check(engine.noteOn(0,60,.8f,0),"Concurrent WAVE live note failed");
-  std::atomic<bool> bad {false};
-  std::jthread audio([&](std::stop_token stop) {
+  std::atomic<bool> bad {false}, stop {false};
+  std::thread audio([&] {
     std::array<float,128> out {};
-    while (!stop.stop_requested()) {
+    while (!stop.load(std::memory_order_relaxed)) {
       allocations = deallocations = 0; watchAllocations = true; engine.render(out.data(),nullptr,64,0); watchAllocations = false;
       if (allocations || deallocations) bad.store(true);
       for (float sample : out) if (!std::isfinite(sample)) bad.store(true);
       std::this_thread::yield();
     }
   });
+  // AppleClang's libc++ does not provide jthread on every supported SDK. Keep
+  // the callback joined before the engine is destroyed, including test errors.
+  struct StopAndJoin {
+    std::atomic<bool>& stop;
+    std::thread& audio;
+    void finish() {
+      stop.store(true,std::memory_order_relaxed);
+      if (audio.joinable()) audio.join();
+    }
+    ~StopAndJoin() { finish(); }
+  } stopAudio {stop,audio};
   for (unsigned i = 0; i < 16; ++i) {
     set(patch,ParameterId::Level,.08f+.005f*i); ++p.revision; p.tracks[0].source.patchData = pack(patch);
     engine.submit(engine.prepare(p,{})); engine.collectRetired();
   }
   const auto deadline = std::chrono::steady_clock::now()+std::chrono::seconds(5);
   while (engine.snapshot().revision != p.revision && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
-  const auto status = engine.snapshot(); audio.request_stop(); audio.join(); engine.collectRetired();
+  const auto status = engine.snapshot(); stopAudio.finish(); engine.collectRetired();
   check(status.revision == p.revision,"Concurrent WAVE graph updates did not reach the last revision");
   check(!bad.load() && status.invalidSamples == 0,"Concurrent WAVE updates violated callback allocation/lifetime safety");
   check(energy(render(engine,1024)) > .001,"Concurrent WAVE patch preparation lost its held note");
