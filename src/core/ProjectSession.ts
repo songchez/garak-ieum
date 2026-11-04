@@ -1,5 +1,5 @@
 import { EFFECT_DEFS } from './devices'
-import { isInstrumentId } from './instruments'
+import { instrumentDef, isInstrumentId } from './instruments'
 import { createDevice, createTrack, fitProjectLength, validateProject } from './project'
 import type { Clip, Device, EffectType, MidiClip, Project, Track } from './types'
 import {
@@ -229,6 +229,21 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
             result.before = { semitones: clip.transpose ?? 0 }; result.after = { semitones: command.semitones }
             if ((clip.transpose ?? 0) !== command.semitones) replaceClip(track, { ...clip, transpose: command.semitones })
           }
+          break
+        }
+        case 'instrument.setParam': {
+          const track = knownTrack(next, command.trackId)
+          if (track.kind !== 'instrument') throw new DomainError('TYPE_MISMATCH', '악기 트랙이 필요합니다.', { trackId: track.id })
+          const def = instrumentDef(track.instrument).params.find(param => param.id === command.paramId)
+          if (!def) throw new DomainError('UNKNOWN_PARAMETER', '이 악기에 없는 파라미터입니다.', { instrument: track.instrument, paramId: command.paramId })
+          if (command.value < def.min || command.value > def.max || (def.options && !def.options.some(option => option.value === command.value))) {
+            throw new DomainError('INVALID_ARGUMENT', '악기 파라미터가 허용 범위를 벗어납니다.', { paramId: command.paramId, min: def.min, max: def.max, unit: def.unit })
+          }
+          const before = track.instrumentParams[command.paramId] ?? def.default
+          result.trackId = track.id
+          result.before = { paramId: command.paramId, value: before }
+          result.after = { paramId: command.paramId, value: command.value }
+          if (before !== command.value) replaceTrack({ ...track, instrumentParams: { ...track.instrumentParams, [command.paramId]: command.value } })
           break
         }
         case 'effect.add': case 'effect.setParam': case 'effect.remove': case 'effect.setEnabled': {

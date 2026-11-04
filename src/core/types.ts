@@ -1,5 +1,7 @@
 import type { SampleRate } from './audioSettings'
 import type { PitchEditDocument } from '../devices/pitch-editor/model'
+import type { WavetableState } from '../devices/wavetable-synth/model'
+import type { WavetableNativeBridge } from '../devices/wavetable-synth/bridge'
 import type { NativePluginInstance } from '../audio/native/contracts'
 
 /** A key of INSTRUMENTS in core/instruments.ts. Saved files store it as plain text. */
@@ -102,6 +104,8 @@ export interface Track {
   clips: Clip[]
   /** Keys and ranges are defined by instrumentDef(instrument).params in core/instruments.ts. */
   instrumentParams: Record<string, number>
+  /** Versioned waveforms and modulation; scalar values live only in instrumentParams. */
+  instrumentState?: WavetableState
   devices: Device[]
   /** Native VST3 source; the builtin instrument selection remains available when removed. */
   pluginInstrument?: NativePluginInstance
@@ -152,6 +156,8 @@ export interface TransportSnapshot {
 }
 export interface AudioEngine {
   readonly kind: 'web-audio' | 'native'
+  /** Supplied only by a native host that actually loads the IEUM WAVE DSP module. */
+  readonly wavetable?: WavetableNativeBridge
   setProject(project: Project): void
   setAssets(assets: Map<string, AudioAsset>): void
   resume(): Promise<void>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createDevice, createEmptyProject, createTrack } from '../../core/project'
 import type { AudioClip, MidiClip, MidiNote, Project, Track } from '../../core/types'
 import { compileNativeTimeline, NATIVE_TIMELINE_LIMITS, planNativeSeek, type NativePcmAsset } from './timeline'
+import type { NativePluginInstance } from './contracts'
 
 let noteSequence = 0
 const note = (start: number, duration = 1, pitch = 60, velocity = 1): MidiNote => ({ id: `note-${noteSequence++}`, start, duration, pitch, velocity })
@@ -21,6 +22,53 @@ const assets = (...items: NativePcmAsset[]) => new Map(items.map(item => [item.i
 const pcm = (id: string, seconds = 10, sampleRate = 48000): NativePcmAsset => ({ id, sampleRate, frames: seconds * sampleRate, channels: 2 })
 
 describe('native timeline preparation', () => {
+  it('carries a validated independent wavetable patch instead of classifying it as a browser synth', () => {
+    const owner = track('wave', { instrument: 'wavetable', clips: [midi('wave-phrase', { notes: [note(0)] })] })
+    owner.instrumentState!.customBanks = [{ slot: 4, name: 'User', frames: [Array(2048).fill(0)] }]
+    owner.instrumentParams.osc1Bank = 4
+    owner.instrumentState!.lfoCurves[0][2] = 0.15
+    const source = compileNativeTimeline(project([owner])).tracks[0].source
+    expect(source.kind).toBe('native-wavetable')
+    if (source.kind !== 'native-wavetable') throw new Error('Native wave source expected')
+    expect(source.patch.params.osc1Bank).toBe(4)
+    expect(source.patch.customBanks[0].frames[0]).toHaveLength(2048)
+    owner.instrumentState!.customBanks[0].frames[0][0] = 0.7
+    owner.instrumentState!.lfoCurves[0][2] = 0.9
+    expect(source.patch.customBanks[0].frames[0][0]).toBe(0)
+    expect(source.patch.lfoCurves[0][2]).toBe(0.15)
+    owner.instrumentState!.customBanks = []
+    expect(() => compileNativeTimeline(project([owner]))).toThrow(/Invalid IEUM WAVE patch/)
+  })
+
+  it('preserves WAVE and VST3 sources together, including plugin state, inserts and instrument bypass', () => {
+    const plugin: NativePluginInstance = { id: 'instrument-instance', pluginId: 'catalog-instrument', classId: 'instrument-class', name: 'Native instrument',
+      enabled: true, parameters: { '17': 0.25 }, state: { component: 'AQ==', controller: 'Ag==' } }
+    const insert: NativePluginInstance = { id: 'insert-instance', pluginId: 'catalog-effect', classId: 'effect-class', name: 'Native insert',
+      enabled: false, parameters: { '31': 0.75 }, state: { component: 'Aw==', controller: 'BA==' } }
+    const wave = track('wave', { instrument: 'wavetable', pluginInserts: [insert], clips: [midi('wave-notes', { notes: [note(0)] })] })
+    wave.instrumentParams.macro1 = 0.4
+    const vst = track('vst', { pluginInstrument: plugin, clips: [midi('vst-notes', { notes: [note(1)] })] })
+    const bypassed = track('bypassed', { pluginInstrument: { ...plugin, id: 'bypassed-instance', enabled: false }, clips: [midi('bypassed-notes', { notes: [note(2)] })] })
+
+    const result = compileNativeTimeline(project([wave, vst, bypassed]))
+    expect(result.tracks.map(item => item.source.kind)).toEqual(['native-wavetable', 'vst3', 'vst3'])
+    expect(result.tracks[0].source).toMatchObject({ instrumentId: 'wavetable', patch: { params: { macro1: 0.4 } } })
+    expect(result.tracks[0].inserts[0]).toMatchObject({ id: insert.id, type: 'vst3', enabled: false, params: { '31': 0.75 }, plugin: insert })
+    expect(result.tracks[1]).toMatchObject({ enabled: true, audible: true, source: { kind: 'vst3', plugin, isKit: false } })
+    expect(result.tracks[2]).toMatchObject({ enabled: false, audible: false, source: { kind: 'vst3', plugin: { id: 'bypassed-instance', enabled: false } } })
+    expect(result.tracks.map(item => item.notes.length)).toEqual([1, 1, 1])
+
+    // Project edits must not mutate an already prepared revision or lose either state block.
+    wave.instrumentParams.macro1 = 0.9
+    plugin.parameters['17'] = 0.8
+    plugin.state!.component = 'BQ=='
+    insert.parameters['31'] = 0.1
+    insert.state!.controller = 'Bg=='
+    expect(result.tracks[0].source).toMatchObject({ patch: { params: { macro1: 0.4 } } })
+    expect(result.tracks[1].source).toMatchObject({ plugin: { parameters: { '17': 0.25 }, state: { component: 'AQ==', controller: 'Ag==' } } })
+    expect(result.tracks[0].inserts[0]).toMatchObject({ params: { '31': 0.75 }, plugin: { parameters: { '31': 0.75 }, state: { component: 'Aw==', controller: 'BA==' } } })
+  })
+
   it('copies builtin source, insert and mixer state without changing the project or creating audio objects', () => {
     const device = { ...createDevice('delay', { time: 0.75, feedback: 0.6 }), id: 'delay', enabled: false }
     const owner = track('piano', { instrument: 'grand', instrumentParams: { release: 0.7 }, volume: 1.2, pan: -0.25, devices: [device] })

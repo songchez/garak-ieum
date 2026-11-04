@@ -1,7 +1,8 @@
 import { INSTRUMENT_PARAMS, SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, type ParamDef, type SynthId } from './devices'
 import type { SampleAttribution } from './types'
+import { WAVETABLE_DEFINITION } from '../devices/wavetable-synth/definition'
 
-export type InstrumentKind = 'synth' | 'sampled'
+export type InstrumentKind = 'synth' | 'sampled' | 'native'
 export type InstrumentCategory = 'synth' | 'piano' | 'keys' | 'drums' | 'gugak'
 
 export interface InstrumentDef {
@@ -56,6 +57,7 @@ export function categoryIcon(category: InstrumentCategory): string {
 
 /** IDs are stable; saved projects reference them by name. */
 export const INSTRUMENTS: readonly InstrumentDef[] = [
+  WAVETABLE_DEFINITION,
   synth('keys', 'Velvet Keys', '벨벳 키', 'ELECTRIC PIANO', 'synth', 'keys', '#6f9fd0', '부드러운 건반과 따뜻한 하모닉스'),
   synth('rhodes', 'Tine EP', '틴 전기 피아노', 'FM TINE PIANO', 'keys', 'keys', '#86a8d8', 'FM 타인으로 만든 전기 피아노'),
   synth('bass', 'Mono Bass', '모노 베이스', 'ANALOG BASS', 'synth', 'synth', '#7fb59a', '낮게 흐르는 아날로그 베이스'),

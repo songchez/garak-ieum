@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createEmptyProject, createTrack } from '../../core/project'
 import { DEFAULT_AUDIO_SETTINGS } from '../../core/audioSettings'
-import type { AudioAsset, AudioClip, Project } from '../../core/types'
+import type { AudioAsset, AudioClip, Project, Track } from '../../core/types'
+import { exportProjectBundle, importProjectBundle } from '../../core/storage'
 import type { SampleLibrary } from '../samples'
 import { NativeAudioEngine, nativeBackendForPlatform } from './NativeAudioEngine'
 import type { NativeAudioBridge, NativeDeviceState, NativeEngineEvent, NativePluginInstance } from './contracts'
+import type { NativeProjectTimeline } from './timeline'
 
 function deferred<T = unknown>() {
   let resolve!: (value: T) => void, reject!: (reason: unknown) => void
@@ -40,6 +42,14 @@ function harness(input = project(), samples?: SampleLibrary) {
 const engines: NativeAudioEngine[] = []
 afterEach(() => { for (const engine of engines.splice(0)) engine.dispose(); vi.unstubAllGlobals(); vi.useRealTimers() })
 const managed = (input?: Project, samples?: SampleLibrary) => { const h = harness(input, samples); engines.push(h.engine); return h }
+
+function waveProject(): Project {
+  const wave: Track = { ...createTrack('instrument', 'wavetable'), id: 'wave', clips: [{
+    id: 'wave-phrase', kind: 'midi', name: 'Wave phrase', startBeat: 0, lengthBeats: 4, gain: 1,
+    notes: [{ id: 'wave-note', start: 0, duration: 1, pitch: 60, velocity: .8 }],
+  }] }
+  return { ...project(), tracks: [...project().tracks, wave] }
+}
 
 describe('desktop native runtime boundary', () => {
   it('plays and previews synths through native controls without constructing Web Audio or opening microphone input', async () => {
@@ -286,6 +296,119 @@ describe('native asset and project synchronization', () => {
   })
 })
 
+
+describe('native host coexistence with the standalone WAVE editor', () => {
+  it('rejects unavailable WAVE playback, export and direct preview before opening a device', async () => {
+    const h = managed(waveProject())
+    await expect(h.engine.play()).rejects.toThrow('IEUM WAVE')
+    await expect(h.engine.exportWav()).rejects.toThrow('IEUM WAVE')
+    await expect(h.engine.previewNote('wavetable', 60)).rejects.toThrow('IEUM WAVE')
+    await expect(h.engine.previewNote('keys', 60, .8, 'wave')).rejects.toThrow('IEUM WAVE')
+    expect(h.calls('engine.configure')).toHaveLength(0)
+    expect(h.calls('note.preview')).toHaveLength(0)
+    expect(h.calls('render.wav')).toHaveLength(0)
+    expect(h.engine.getAudioState().error).toBeNull()
+  })
+
+  it('keeps WAVE patches and both tracks\' VST states savable without sending an unsupported source to the device host', async () => {
+    const p = waveProject()
+    p.tracks[0].pluginInstrument = plugin()
+    p.tracks[1].pluginInserts = [{ ...plugin(), id: 'wave-insert', name: 'Wave insert' }]
+    p.tracks[1].instrumentParams.macro1 = .37
+    const originalState = structuredClone(p.tracks[1].instrumentState)
+    const h = managed(p)
+    h.handlers.set('project.set', ({ timeline }) => {
+      for (const track of (timeline as NativeProjectTimeline).tracks) {
+        if (track.source.kind === 'native-wavetable') throw new Error('Unsupported native track source: native-wavetable')
+      }
+      return {}
+    })
+    await h.engine.resume()
+    const timeline = h.calls('project.set')[0]?.timeline as NativeProjectTimeline
+    expect(timeline.tracks[0].source.kind).toBe('vst3')
+    expect(timeline.tracks[1]).toMatchObject({ source: { kind: 'audio' }, notes: [], inserts: [{ type: 'vst3', plugin: { id: 'wave-insert' } }] })
+    const captured = await h.engine.capturePluginStates(p)
+    expect(captured.tracks[0].pluginInstrument).toMatchObject({ state: { component: 'AQID', controller: 'BA==' }, parameters: { '1': .8 } })
+    expect(captured.tracks[1].pluginInserts?.[0]).toMatchObject({ state: { component: 'AQID', controller: 'BA==' }, parameters: { '1': .8 } })
+    expect(captured.tracks[1].instrumentState).toEqual(originalState)
+    expect(captured.tracks[1].instrumentParams.macro1).toBe(.37)
+    expect(captured.tracks[1].clips).toEqual(p.tracks[1].clips)
+    const saved = await importProjectBundle(await exportProjectBundle(captured, new Map()))
+    expect(saved.project).toEqual(captured)
+    await expect(h.engine.play()).rejects.toThrow('IEUM WAVE')
+    expect(h.calls('transport.play')).toHaveLength(0)
+  })
+
+  it.each([{ mute: true }, { enabled: false }, { volume: 0 }, { clips: [] }])('allows inaudible WAVE tracks to coexist with native playback: %j', async patch => {
+    const p = waveProject(); p.tracks[1] = { ...p.tracks[1], ...patch }
+    const h = managed(p)
+    await h.engine.play(); await h.engine.exportWav()
+    expect(h.calls('transport.play')).toHaveLength(1)
+    expect(h.calls('render.wav')).toHaveLength(1)
+  })
+
+  it('honors a VST3 source override on a track that retains a WAVE patch', async () => {
+    const p = waveProject(); p.tracks[1].pluginInstrument = plugin()
+    const h = managed(p)
+    await h.engine.play(); await h.engine.previewNote('wavetable', 60, .8, 'wave')
+    const timeline = h.calls('project.set')[0]?.timeline as NativeProjectTimeline
+    expect(timeline.tracks[1].source.kind).toBe('vst3')
+    expect(timeline.tracks[1].notes).toHaveLength(1)
+    expect(h.calls('note.preview')[0]).toMatchObject({ trackId: 'wave', pitch: 60 })
+  })
+
+  it('stops live playback when an edit introduces unavailable WAVE notes without turning that into a device failure', async () => {
+    const h = managed(); await h.engine.play()
+    h.engine.setProject(waveProject())
+    expect(h.engine.getSnapshot().playing).toBe(false)
+    expect(h.calls('transport.pause')).toHaveLength(1)
+    await h.engine.resume()
+    await expect(h.engine.play()).rejects.toThrow('IEUM WAVE')
+    expect(h.engine.getAudioState().status).toBe('ready')
+    expect(h.calls('transport.play')).toHaveLength(1)
+  })
+
+  it('rechecks WAVE availability after a delayed device configuration', async () => {
+    const h = managed(), pending = deferred<NativeDeviceState>()
+    h.handlers.set('engine.configure', () => pending.promise)
+    const playing = h.engine.play()
+    const rejected = expect(playing).rejects.toThrow('IEUM WAVE')
+    h.engine.setProject(waveProject())
+    pending.resolve({ backend: 'wasapi', sampleRate: 48000, bufferFrames: 128, inputChannels: 0, outputChannels: 2, inputDeviceId: '', outputDeviceId: 'output' })
+    await rejected
+    expect(h.calls('transport.play')).toHaveLength(0)
+  })
+
+  it.each(['play', 'record', 'monitor'] as const)('cancels native playback when WAVE is introduced while the %s response is pending', async mode => {
+    const h = managed(), pending = deferred()
+    if (mode !== 'play') await h.engine.play()
+    h.handlers.set('transport.play', () => pending.promise)
+    const playing = mode === 'play' ? h.engine.play() : mode === 'record' ? h.engine.prepareRecording() : h.engine.setNativeMonitoring(['keys'])
+    const starts = mode === 'play' ? 1 : 2
+    await vi.waitFor(() => expect(h.calls('transport.play')).toHaveLength(starts))
+    h.engine.setProject(waveProject())
+    const pausesDuringStart = h.calls('transport.pause').length
+    pending.resolve({}); await playing
+    expect(pausesDuringStart).toBe(1)
+    expect(h.engine.getSnapshot().playing).toBe(false)
+    await expect(h.engine.play()).rejects.toThrow('IEUM WAVE')
+    expect(h.calls('transport.play')).toHaveLength(starts)
+  })
+
+  it.each(['record', 'monitor'] as const)('rechecks WAVE before restoring playback after %s input configuration', async mode => {
+    const h = managed(); await h.engine.play()
+    const pending = deferred<NativeDeviceState>()
+    h.handlers.set('engine.configure', () => pending.promise)
+    const preparation = mode === 'record' ? h.engine.prepareRecording() : h.engine.setNativeMonitoring(['keys'])
+    const rejected = expect(preparation).rejects.toThrow('IEUM WAVE')
+    await vi.waitFor(() => expect(h.calls('engine.configure')).toHaveLength(2))
+    h.engine.setProject(waveProject())
+    pending.resolve({ backend: 'wasapi', sampleRate: 48000, bufferFrames: 128, inputChannels: 1, outputChannels: 2, inputDeviceId: 'input', outputDeviceId: 'output' })
+    await rejected
+    expect(h.calls('transport.play')).toHaveLength(1)
+    expect(h.engine.getSnapshot().playing).toBe(false)
+  })
+})
 
 describe('offline file decoding and sample transfer', () => {
   it('uses a tiny offline decoder and transfers sample/release PCM once, without a realtime graph', async () => {

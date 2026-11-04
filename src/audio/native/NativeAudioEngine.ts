@@ -5,10 +5,11 @@ import {
 import { defaultInstrumentParams } from '../../core/project'
 import { validateNativePluginState } from '../../core/nativePlugins'
 import { instrumentDef } from '../../core/instruments'
-import type { AudioAsset, AudioEngine, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../../core/types'
+import type { AudioAsset, AudioEngine, InstrumentId, Project, SampleAttribution, SampleStatus, Track, TransportSnapshot } from '../../core/types'
 import type { AudioRecordingCallbacks } from '../AudioRecording'
 import { SampleLibrary } from '../samples'
 import { clamp, normalizedStart } from '../math'
+import { assertNativeInstrumentsSupported, canPlayInstrument, unsupportedNativeInstruments, WAVETABLE_HOST_REQUIRED } from '../instrumentSupport'
 import { compileNativeTimeline, type NativePcmAsset } from './timeline'
 import type {
   NativeAudioBridge, NativeAudioFile, NativeBackend, NativeDevice, NativeDeviceState,
@@ -58,6 +59,7 @@ export class NativeAudioEngine implements AudioEngine {
   private bridgeRelease: (() => void) | null = null
   private generation = 0
   private transportRequest = 0
+  private pendingPlayRequest: number | null = null
   private revision = 0
   private appliedRevision = -1
   private syncTask: Promise<void> | null = null
@@ -139,6 +141,7 @@ export class NativeAudioEngine implements AudioEngine {
 
   private invalidateHost(): void {
     this.generation++; this.transportRequest++; this.monitorRequest++
+    this.pendingPlayRequest = null
     this.uploaded.clear(); this.uploadTasks.clear(); this.registeredSets.clear(); this.sampleTasks.clear(); this.sampleErrors.clear()
     this.appliedRevision = -1; this.configured = false; this.syncTask = null
     this.updateTransport({ playing: false, ready: false })
@@ -213,6 +216,7 @@ export class NativeAudioEngine implements AudioEngine {
 
   configure(settings: AudioSettings, sampleRate: SampleRate): Promise<void> {
     this.transportRequest++
+    this.pendingPlayRequest = null
     return this.beginConfiguration(settings, sampleRate)
   }
 
@@ -268,6 +272,7 @@ export class NativeAudioEngine implements AudioEngine {
   setProject(project: Project): void {
     const rate = projectSampleRate(project.sampleRate)
     if (project === this.project) return
+    if ((this.snapshot.playing || this.pendingPlayRequest !== null) && unsupportedNativeInstruments(project, this.sourceAvailable).length) this.pause()
     this.project = project; this.desiredSampleRate = rate; this.revision++
     this.updateAudio({ requestedSampleRate: rate, needsReconfiguration: !!this.nativeDevice && this.nativeDevice.sampleRate !== rate })
     this.updateTransport({ beat: clamp(this.snapshot.beat, 0, project.lengthBeats) })
@@ -334,6 +339,8 @@ export class NativeAudioEngine implements AudioEngine {
 
   private publishSamples(): void { for (const listener of this.sampleListeners) listener() }
 
+  private readonly sourceAvailable = (track: Track): boolean => !!track.pluginInstrument || canPlayInstrument(this, track.instrument)
+
   private async prepareTimeline(project: Project, revision: number) {
     for (const track of project.tracks) {
       if (track.kind !== 'instrument' || track.pluginInstrument) continue
@@ -348,7 +355,15 @@ export class NativeAudioEngine implements AudioEngine {
       await this.putPcm(id, asset.buffer)
       metadata.set(id, { id, sampleRate: asset.buffer.sampleRate, frames: asset.buffer.length, channels: asset.buffer.numberOfChannels })
     }
-    return { ...compileNativeTimeline(project, metadata, revision), lowLatencyMonitoring: this.settings.lowLatencyMonitoring }
+    const timeline = compileNativeTimeline(project, metadata, revision)
+    // The standalone WAVE editor/DSP does not yet provide the host capability.
+    // Keep its project patch intact and its VST insert chain editable/savable,
+    // but submit no instrument notes to the current device host. Every audible
+    // playback/export/preview entry point explicitly rejects that missing source.
+    const tracks = timeline.tracks.map(track => track.source.kind === 'native-wavetable' && !canPlayInstrument(this, 'wavetable')
+      ? { ...track, source: { kind: 'audio' as const }, notes: [] }
+      : track)
+    return { ...timeline, tracks, lowLatencyMonitoring: this.settings.lowLatencyMonitoring }
   }
 
   private syncProject(): Promise<void> {
@@ -382,32 +397,46 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   async play(): Promise<void> {
+    assertNativeInstrumentsSupported(this.requireProject(), this.sourceAvailable)
     const request = ++this.transportRequest, generation = this.generation
     await this.resume()
     if (generation !== this.generation || this.transportRequest !== request) return
-    const current = this.transportRequest
-    const project = this.requireProject(), beat = normalizedStart(project, this.snapshot.beat)
-    await this.request('transport.play', { frame: this.frameForBeat(beat) })
-    if (generation !== this.generation || current !== this.transportRequest) return
-    this.updateTransport({ playing: true, ready: true, beat })
+    await this.startNativePlayback(request, generation, normalizedStart(this.requireProject(), this.snapshot.beat))
+  }
+
+  /** Shared by Play and playback restoration after opening recording/monitoring input. */
+  private async startNativePlayback(request: number, generation: number, beat: number): Promise<void> {
+    if (generation !== this.generation || request !== this.transportRequest) return
+    assertNativeInstrumentsSupported(this.requireProject(), this.sourceAvailable)
+    this.pendingPlayRequest = request
+    try {
+      await this.request('transport.play', { frame: this.frameForBeat(beat) })
+      if (generation !== this.generation || request !== this.transportRequest) return
+      this.updateTransport({ playing: true, ready: true, beat })
+    } finally {
+      if (this.pendingPlayRequest === request) this.pendingPlayRequest = null
+    }
   }
 
   async togglePlayback(): Promise<void> { if (this.snapshot.playing) this.pause(); else await this.play() }
 
   pause(): void {
     this.transportRequest++
+    this.pendingPlayRequest = null
     this.updateTransport({ playing: false })
     if (this.configured) void this.request('transport.pause').catch(error => this.fail(error))
   }
 
   async pauseAndWait(): Promise<void> {
     this.transportRequest++
+    this.pendingPlayRequest = null
     this.updateTransport({ playing: false })
     if (this.configured) await this.request('transport.pause')
   }
 
   stop(): void {
     this.transportRequest++
+    this.pendingPlayRequest = null
     this.updateTransport({ playing: false, beat: 0 })
     if (this.configured) void this.request('transport.stop').catch(error => this.fail(error))
   }
@@ -421,11 +450,14 @@ export class NativeAudioEngine implements AudioEngine {
   private frameForBeat(beat: number): number { return Math.round(beat * 60 / (this.project?.bpm ?? 120) * this.desiredSampleRate) }
 
   async previewNote(instrument: InstrumentId, pitch: number, velocity = .8, trackId?: string): Promise<void> {
+    const requestedTrack = trackId ? this.project?.tracks.find(item => item.id === trackId) : undefined
+    if (!requestedTrack?.pluginInstrument && !canPlayInstrument(this, requestedTrack?.instrument ?? instrument)) throw new Error(WAVETABLE_HOST_REQUIRED)
     const generation = this.generation
     await this.resume()
     const def = instrumentDef(instrument)
     const track = trackId ? this.project?.tracks.find(item => item.id === trackId) : undefined
     if (trackId && (!track || !track.enabled || track.kind !== 'instrument')) return
+    if (!track?.pluginInstrument && !canPlayInstrument(this, track?.instrument ?? instrument)) throw new Error(WAVETABLE_HOST_REQUIRED)
     if (!track?.pluginInstrument && def.set) await this.preloadSamples(def.set)
     if (generation !== this.generation) return
     await this.request('note.preview', {
@@ -469,8 +501,7 @@ export class NativeAudioEngine implements AudioEngine {
       this.updateTransport({ beat })
     }
     if (playing && request === this.transportRequest && (this.captureWanted || this.monitorIds.length)) {
-      await this.request('transport.play', { frame: this.frameForBeat(beat) })
-      if (request === this.transportRequest) this.updateTransport({ playing: true })
+      await this.startNativePlayback(request, generation, beat)
     }
     if (!this.nativeDevice?.inputChannels) throw new Error('선택한 장치에 사용할 수 있는 오디오 입력이 없습니다.')
   }
@@ -532,6 +563,7 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   async exportWav(project = this.requireProject()): Promise<Blob> {
+    assertNativeInstrumentsSupported(project, this.sourceAvailable)
     // Wait for uploads/graph edits and their errors before asking the host to clone.
     await this.resume()
     await this.pauseAndWait()
@@ -600,6 +632,7 @@ export class NativeAudioEngine implements AudioEngine {
 
   dispose(): void {
     this.generation++; this.transportRequest++; this.monitorRequest++
+    this.pendingPlayRequest = null
     if (this.syncTimer !== null) clearTimeout(this.syncTimer)
     const hostWasUsed = this.configured || !!this.configurationTask || !!this.bridgeRelease
     this.syncTimer = null; this.syncTask = null; this.configurationTask = null

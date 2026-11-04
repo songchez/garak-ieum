@@ -38,6 +38,7 @@ export type DawCommand =
   | { type: 'track.setPan'; trackId: string; pan: number }
   | { type: 'track.setMute'; trackId: string; mute: boolean }
   | { type: 'track.setSolo'; trackId: string; solo: boolean }
+  | { type: 'instrument.setParam'; trackId: string; paramId: string; value: number }
   | { type: 'clip.addMidi'; trackId: string } & MidiClipInput
   | { type: 'clip.rename'; clipId: string; name: string }
   | { type: 'clip.move'; clipId: string; startBeat: number; toTrackId?: string }
@@ -130,6 +131,7 @@ export const COMMAND_METADATA = [
   descriptor('track.setPan', 'Set pan from -1 (left) through 0 (center) to 1 (right).', { trackId: idSchema, pan: { type: 'number', minimum: -1, maximum: 1 } }),
   descriptor('track.setMute', 'Set mute explicitly; this is not a toggle.', { trackId: idSchema, mute: boolSchema }),
   descriptor('track.setSolo', 'Set solo explicitly; other tracks are not modified.', { trackId: idSchema, solo: boolSchema }),
+  descriptor('instrument.setParam', 'Set an instrument parameter in its catalog unit. Waveform banks and modulation routes are preserved; native instruments still require a connected native audio host to sound.', { trackId: idSchema, paramId: idSchema, value: { type: 'number' } }),
   descriptor('clip.addMidi', 'Add editable MIDI notes to an instrument track. Note starts are clip-relative beats; pitch is MIDI 0–127 (60=C3).', { trackId: idSchema, ...clipProperties }, ['trackId', 'startBeat', 'lengthBeats', 'notes']),
   descriptor('clip.rename', 'Rename the explicit clip.', { clipId: idSchema, name: nameSchema }),
   descriptor('clip.move', 'Move a clip to an absolute project beat, optionally to a compatible track. Overlaps are preserved.', { clipId: idSchema, startBeat: beatSchema, toTrackId: idSchema }, ['clipId', 'startBeat']),
@@ -224,6 +226,7 @@ export function parseCommand(value: unknown, index = 0): DawCommand {
     case 'track.setPan': return { type: c.type, trackId: trackId(), pan: numeric(c.pan, `${path}.pan`, -1, 1) }
     case 'track.setMute': return { type: c.type, trackId: trackId(), mute: boolean(c.mute, `${path}.mute`) }
     case 'track.setSolo': return { type: c.type, trackId: trackId(), solo: boolean(c.solo, `${path}.solo`) }
+    case 'instrument.setParam': return { type: c.type, trackId: trackId(), paramId: string(c.paramId, `${path}.paramId`), value: numeric(c.value, `${path}.value`, -Number.MAX_VALUE, Number.MAX_VALUE) }
     case 'clip.addMidi': return { type: c.type, trackId: trackId(), ...parseMidiClip(c, path, fields) }
     case 'clip.rename': return { type: c.type, clipId: clipId(), name: name() }
     case 'clip.move': return { type: c.type, clipId: clipId(), startBeat: numeric(c.startBeat, `${path}.startBeat`, 0, COMMAND_LIMITS.maxBeat), ...(c.toTrackId === undefined ? {} : { toTrackId: string(c.toTrackId, `${path}.toTrackId`) }) }

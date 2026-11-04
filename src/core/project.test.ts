@@ -4,11 +4,15 @@ import {
   addMarker, applyDragMode, createDemoProject, createDevice, createEmptyProject, createMarker, createTrack, cropNotesToClip,
   cycleClipIds, defaultInstrumentParams, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength,
   insertTracks, joinClips, moveClipToPlayhead, moveDevice, moveMarker, renameMarker, splitClip, transposeClip, trimClipEnd,
-  trimClipStart, trimClipStarts, validateProject, visibleTracks, DEFAULT_TRACK_COLORS, MIN_CLIP_BEATS,
+  trimClipStart, trimClipStarts, validateProject, visibleTracks, withInstrument, withWavetablePatch, DEFAULT_TRACK_COLORS, MIN_CLIP_BEATS,
 } from './project'
+import type { NativePluginInstance } from '../audio/native/contracts'
+import { combineWavetablePatch, createDefaultWavetablePatch } from '../devices/wavetable-synth/model'
+import { WAVE_LIMITS } from '../devices/wavetable-synth/definition'
 import { instrumentDef } from './instruments'
 import { SAMPLE_RATES } from './audioSettings'
 import { visibleMidiNotes } from './midiRegions'
+import { exportProjectBundle, importProjectBundle } from './storage'
 import { QUANTIZE_VALUES, type AudioClip, type Clip, type MidiClip, type Project, type Track } from './types'
 
 function midi(): MidiClip {
@@ -69,6 +73,99 @@ describe('track defaults', () => {
     expect(instrument).not.toHaveProperty('icon')
     expect(createTrack('audio').color).toBe(DEFAULT_TRACK_COLORS.audio)
     expect(createEmptyProject().markers).toEqual([])
+  })
+})
+
+describe('IEUM WAVE and native VST3 project coexistence', () => {
+  const plugin = (id: string): NativePluginInstance => ({
+    id, pluginId: 'catalog:trusted-module', classId: '0123456789ABCDEF0123456789ABCDEF',
+    name: 'Native plugin', enabled: true, parameters: { '7': 0.375 },
+    state: { component: 'AAECA/8=', controller: 'BAUG' },
+  })
+  function fixture() {
+    const patch = createDefaultWavetablePatch()
+    patch.params.osc1Bank = 4
+    patch.params.macro1 = 0.3
+    patch.customBanks = [{ slot: 4, name: 'Saved wave', frames: [Array.from({ length: WAVE_LIMITS.frameSize }, (_, i) => Math.sin(i * 2 * Math.PI / WAVE_LIMITS.frameSize))] }]
+    patch.lfoCurves[0][12] = 0.15
+    patch.routes = [{ id: 'wave-motion', enabled: true, source: 'lfo1', destination: 'osc1Position', amount: 0.4, bipolar: true, aux: 'macro1', curve: 0.2 }]
+    patch.metadata.name = 'Preserved builtin sound'
+    const track: Track = {
+      ...withWavetablePatch(createTrack('instrument', 'wavetable'), patch),
+      devices: [createDevice('filter')],
+      pluginInstrument: plugin('vst-source'), pluginInserts: [plugin('vst-insert')],
+    }
+    return { patch, track, project: { ...createEmptyProject(), tracks: [track] } }
+  }
+
+  it('round-trips the custom wave and opaque VST3 source/insert states in the same schema 6 bundle', async () => {
+    const { patch, track, project } = fixture()
+    const bundle = await exportProjectBundle(project, new Map())
+    const loaded = (await importProjectBundle(bundle)).project
+    expect(loaded).toEqual(project)
+    expect(loaded.schemaVersion).toBe(6)
+    expect(combineWavetablePatch(loaded.tracks[0].instrumentParams, loaded.tracks[0].instrumentState)).toEqual(patch)
+    expect(loaded.tracks[0].pluginInstrument?.state).toEqual(track.pluginInstrument!.state)
+    expect(loaded.tracks[0].pluginInserts?.[0].state).toEqual(track.pluginInserts![0].state)
+    expect(loaded.tracks[0].instrumentState).not.toHaveProperty('params')
+    expect(loaded.tracks[0].instrumentState!.customBanks[0].frames[0]).not.toBe(track.instrumentState!.customBanks[0].frames[0])
+  })
+
+  it('migrates existing schema 5 WAVE projects before allowing native plugin data', () => {
+    const { patch, track, project } = fixture()
+    const { pluginInstrument: _source, pluginInserts: _inserts, ...legacyTrack } = track
+    const migrated = validateProject({ ...project, schemaVersion: 5, tracks: [legacyTrack] })
+    expect(migrated.schemaVersion).toBe(6)
+    expect(combineWavetablePatch(migrated.tracks[0].instrumentParams, migrated.tracks[0].instrumentState)).toEqual(patch)
+    expect(migrated.tracks[0]).not.toHaveProperty('pluginInstrument')
+    expect(() => validateProject({ ...project, schemaVersion: 5 })).toThrow('schema version 6')
+    const withPlugins = { ...migrated, tracks: [{ ...migrated.tracks[0], pluginInstrument: track.pluginInstrument, pluginInserts: track.pluginInserts }] }
+    expect(validateProject(JSON.parse(JSON.stringify(withPlugins)))).toEqual(project)
+  })
+
+  it('validates both sound formats even when the VST3 source overrides the builtin wave', () => {
+    const { track, project } = fixture()
+    expect(() => validateProject({ ...project, tracks: [{ ...track, instrumentState: { ...track.instrumentState, customBanks: [] } }] })).toThrow(/데이터가 없습니다/)
+    expect(() => validateProject({ ...project, tracks: [{ ...track, pluginInstrument: { ...track.pluginInstrument, path: '/untrusted/plugin.vst3' } }] })).toThrow('unsupported plugin field')
+    expect(() => validateProject({ ...project, tracks: [{ ...track, pluginInserts: [{ ...track.pluginInserts![0], state: { component: 'invalid!' } }] }] })).toThrow('base64')
+  })
+
+  it.each([duplicateTrack, duplicateTrackSettings])('duplicates both editable states with independent data and fresh VST3 instance IDs', duplicate => {
+    const { track, project } = fixture()
+    const copied = duplicate(track)
+    expect(validateProject({ ...project, tracks: [track, copied] }).tracks).toHaveLength(2)
+    expect(copied.pluginInstrument?.id).not.toBe(track.pluginInstrument!.id)
+    expect(copied.pluginInserts?.[0].id).not.toBe(track.pluginInserts![0].id)
+    copied.instrumentParams.macro1 = 0.9
+    copied.instrumentState!.customBanks[0].frames[0][0] = 0.8
+    copied.instrumentState!.routes[0].amount = -0.3
+    copied.pluginInstrument!.parameters['7'] = 1
+    copied.pluginInstrument!.state!.component = 'BQ=='
+    copied.pluginInserts![0].state!.controller = 'Bg=='
+    expect(track.instrumentParams.macro1).toBe(0.3)
+    expect(track.instrumentState!.customBanks[0].frames[0][0]).toBe(0)
+    expect(track.instrumentState!.routes[0].amount).toBe(0.4)
+    expect(track.pluginInstrument!.parameters['7']).toBe(0.375)
+    expect(track.pluginInstrument!.state!.component).toBe('AAECA/8=')
+    expect(track.pluginInserts![0].state!.controller).toBe('BAUG')
+  })
+
+  it.each(['keys', 'wavetable'])('selecting builtin %s clears the VST3 source while retaining the insert chain', instrument => {
+    const { track, project } = fixture()
+    const changed = withInstrument(track, instrument)
+    expect(changed.instrument).toBe(instrument)
+    expect(changed).not.toHaveProperty('pluginInstrument')
+    expect(changed.pluginInserts).toEqual(track.pluginInserts)
+    expect(changed.devices).toEqual(track.devices)
+    expect(changed.instrumentParams).toEqual(defaultInstrumentParams(instrument))
+    if (instrument === 'wavetable') {
+      expect(combineWavetablePatch(changed.instrumentParams, changed.instrumentState)).toEqual(createDefaultWavetablePatch())
+    } else {
+      expect(changed).not.toHaveProperty('instrumentState')
+    }
+    expect(track.pluginInstrument?.id).toBe('vst-source')
+    expect(track.instrumentState!.customBanks).toHaveLength(1)
+    expect(validateProject({ ...project, tracks: [changed] }).tracks[0]).toEqual(changed)
   })
 })
 

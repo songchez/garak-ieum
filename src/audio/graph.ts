@@ -280,6 +280,8 @@ export function scheduleInstrument(
   params?: Record<string, number>,
 ): void {
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
+  // Native instruments are rendered by their host; never use the browser's keys fallback.
+  if (instrumentDef(instrument).kind === 'native') return
   const context = graph.context
   const strength = clamp(velocity, 0, 2)
   const p = (id: string): number => paramValue(instrumentDef(instrument).params, params, id)
