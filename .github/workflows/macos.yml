@@ -2,6 +2,12 @@ name: macOS desktop
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_build:
+        description: Preserve this exact release build while other commits run.
+        type: boolean
+        default: false
   pull_request:
     paths:
       - '.github/workflows/macos.yml'
@@ -50,8 +56,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: macos-${{ github.workflow }}-${{ github.ref }}-${{ inputs.release_build && github.run_id || 'validation' }}
+  cancel-in-progress: ${{ !inputs.release_build }}
 
 jobs:
   macos:

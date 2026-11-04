@@ -14,9 +14,12 @@ const prefix = `Garak-Ieum-Source-${info.version}/`
 // Archive the entire tracked tree, including assets, the lockfile, vendored
 // modules, CI and build/install scripts. No ignored files or developer secrets.
 execFileSync('git', [
-  'archive', '--format=zip', `--prefix=${prefix}`, `--output=${path.join(release, info.archive)}`,
+  // Stored ZIP entries avoid platform-specific zlib output. Explicit LF and
+  // UTC avoid Git's Windows autocrlf and local-time archive transformations.
+  '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
+  'archive', '--format=zip', '-0', `--prefix=${prefix}`, `--output=${path.join(release, info.archive)}`,
   `--add-virtual-file=${prefix}SOURCE_VERSION.json:${JSON.stringify(info, null, 2)}\n`, info.commit,
-], { cwd: repository, stdio: 'inherit', windowsHide: true })
+], { cwd: repository, stdio: 'inherit', windowsHide: true, env: { ...process.env, TZ: 'UTC' } })
 await copyFile(path.join(repository, 'dist', 'licenses', 'SOURCE.txt'), path.join(release, 'SOURCE.txt'))
 await copyFile(path.join(repository, 'LICENSE'), path.join(release, 'LICENSE.txt'))
 await copyFile(path.join(repository, 'dist', 'licenses', 'THIRD_PARTY_NOTICES.txt'), path.join(release, 'THIRD_PARTY_NOTICES.txt'))
