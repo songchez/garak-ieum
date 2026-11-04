@@ -1,6 +1,6 @@
 {
   "name": "garak-ieum",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "가락이음 — 로컬 음악 작업실",
   "author": "songchez",
   "main": "dist-desktop/main.js",
