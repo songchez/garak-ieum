@@ -69,6 +69,8 @@ flowchart TD
 | [`src/components/PianoRoll.tsx`](../src/components/PianoRoll.tsx) | 음표·세기 편집, 음표 단위 단축키, 미리듣기 요청 |
 | [`src/components/Mixer.tsx`](../src/components/Mixer.tsx) | 트랙·마스터 믹서 조작 |
 | [`src/components/DeviceChain.tsx`](../src/components/DeviceChain.tsx) | 공통 디바이스 카드·노브, 악기 선택, 이펙트 추가·삭제·순서·바이패스 조작 |
+| [`src/components/GuitarRig.tsx`](../src/components/GuitarRig.tsx), [`src/devices/guitar-rig`](../src/devices/guitar-rig) | 기타 앰프 전용 편집기, 수치형 설정·프리셋, 컴프·페달·앰프·캐비닛/마이크 모델, causal 마스터. [사용법과 범위](GUITAR_RIG.md) |
+| [`src/audio/effectPreparation.ts`](../src/audio/effectPreparation.ts) | 실시간/오프라인 컨텍스트별 효과 프로세서 등록, 중복 준비 합치기와 오류 전달 |
 | [`src/components/Waveform.tsx`](../src/components/Waveform.tsx), [`src/core/waveform.ts`](../src/core/waveform.ts) | 원본 구간에 맞춘 파형 표시. 확대 수준과 처리량에 따라 캐시 피크 또는 실제 PCM 사용 |
 | [`src/components/AudioSettingsDialog.tsx`](../src/components/AudioSettingsDialog.tsx), [`src/components/useAudioDevices.ts`](../src/components/useAudioDevices.ts) | 장치·녹음·프로젝트·진단 설정 초안, 적용/취소 UI, 수동 권한·장치 목록·테스트 연결 |
 

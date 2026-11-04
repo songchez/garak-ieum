@@ -1,8 +1,12 @@
-import { describe, expect, it, vi } from 'vitest'
-import { createEmptyProject, createTrack } from '../core/project'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createDevice, createEmptyProject, createTrack } from '../core/project'
 import type { MidiClip, Project } from '../core/types'
-import { connectMonitor, createGraph, disconnectMonitor, disposeGraph, scheduleRange, updateGraph } from './graph'
+import { connectMonitor, createGraph, disconnectMonitor, disposeGraph, scheduleRange, trackLayoutKey, updateGraph } from './graph'
 import type { LoadedSet, SampleLibrary } from './samples'
+import { EFFECT_MODULES } from '../devices/effects/registry'
+import * as guitarRig from '../devices/guitar-rig'
+
+afterEach(() => { vi.restoreAllMocks() })
 
 // These are Web Audio scheduling/connection spies, not a DSP or listening test.
 class Parameter {
@@ -41,16 +45,18 @@ class AudioNodeSpy {
 
 function contextSpy() {
   const sources: AudioNodeSpy[] = []
+  const nodes: AudioNodeSpy[] = []
+  const node = () => { const value = new AudioNodeSpy(); nodes.push(value); return value }
   const context = {
     currentTime: 0, sampleRate: 48000, destination: new AudioNodeSpy(),
-    createGain: () => new AudioNodeSpy(),
-    createStereoPanner: () => new AudioNodeSpy(),
-    createAnalyser: () => new AudioNodeSpy(),
-    createDynamicsCompressor: () => new AudioNodeSpy(),
-    createBiquadFilter: () => new AudioNodeSpy(),
-    createBufferSource: () => { const source = new AudioNodeSpy(); sources.push(source); return source },
+    createGain: node,
+    createStereoPanner: node,
+    createAnalyser: node,
+    createDynamicsCompressor: vi.fn(node),
+    createBiquadFilter: node,
+    createBufferSource: () => { const source = node(); sources.push(source); return source },
   } as unknown as BaseAudioContext
-  return { context, sources }
+  return { context, sources, nodes }
 }
 
 const sample: LoadedSet = {
@@ -154,5 +160,101 @@ describe('input monitoring uses the live channel graph', () => {
     expect([...source.connections]).toEqual([replacement.tracks.get('a')!.input])
     disposeGraph(replacement)
     expect(source.connections.size).toBe(0)
+  })
+})
+
+
+describe('effect resources and master selection', () => {
+  const audioProject = () => ({ ...createEmptyProject(), tracks: [{ ...createTrack('audio'), id: 'input' }] })
+
+  it('releases device internals once when a graph is retired', () => {
+    const { context, nodes } = contextSpy()
+    const dispose = vi.fn()
+    vi.spyOn(EFFECT_MODULES.eq, 'create').mockImplementation((audio, remember) => {
+      const input = remember(audio.createGain())
+      return { input, output: input, update: vi.fn(), dispose }
+    })
+    const project = audioProject()
+    project.tracks[0].devices = [createDevice('eq')]
+    const graph = createGraph(context, project)
+    const source = new AudioNodeSpy()
+    connectMonitor(graph, source as unknown as MediaStreamAudioSourceNode, ['input'])
+    const voiceDisconnect = vi.fn()
+    graph.voices.add({ stop() { throw new Error('already closed') }, disconnect: voiceDisconnect })
+    disposeGraph(graph)
+    disposeGraph(graph)
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(voiceDisconnect).toHaveBeenCalledTimes(1)
+    expect(graph.voices.size).toBe(0)
+    expect(source.connections.size).toBe(0)
+    expect(nodes.every(node => node.disconnect.mock.calls.length === 1)).toBe(true)
+  })
+
+  it('releases every connected node and created device if initial parameter application fails', () => {
+    const { context, nodes } = contextSpy()
+    const dispose = vi.fn()
+    vi.spyOn(EFFECT_MODULES.eq, 'create').mockImplementation((audio, remember) => {
+      const input = remember(audio.createGain())
+      return { input, output: input, dispose, update() { throw new Error('invalid processor state') } }
+    })
+    const project = audioProject()
+    project.tracks[0].devices = [createDevice('eq')]
+    expect(() => createGraph(context, project)).toThrow('invalid processor state')
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(nodes.every(node => node.connections.size === 0 && node.disconnect.mock.calls.length === 1)).toBe(true)
+  })
+
+  it.each([
+    { trackEnabled: true, deviceEnabled: false },
+    { trackEnabled: false, deviceEnabled: true },
+  ])('preserves the existing master with track=$trackEnabled and rig=$deviceEnabled', ({ trackEnabled, deviceEnabled }) => {
+    const { context } = contextSpy()
+    const project = audioProject()
+    project.tracks[0].enabled = trackEnabled
+    project.tracks[0].devices = [{ ...createDevice('guitar-rig'), enabled: deviceEnabled }]
+    vi.spyOn(EFFECT_MODULES['guitar-rig'], 'create').mockImplementation((audio, remember) => {
+      const input = remember(audio.createGain())
+      return { input, output: input, update: vi.fn() }
+    })
+    const masterFactory = vi.spyOn(guitarRig, 'createGuitarRigMaster')
+    const graph = createGraph(context, project)
+    expect(masterFactory).not.toHaveBeenCalled()
+    expect(context.createDynamicsCompressor).toHaveBeenCalledTimes(1)
+    const compressor = vi.mocked(context.createDynamicsCompressor).mock.results[0].value!
+    expect([compressor.threshold.value, compressor.knee.value, compressor.ratio.value, compressor.attack.value, compressor.release.value])
+      .toEqual([-3, 3, 12, 0.003, 0.12])
+    disposeGraph(graph)
+  })
+
+  it('invalidates a stopped graph when track enable changes its master, but preserves fader-only edits', () => {
+    const track = { ...createTrack('audio'), devices: [createDevice('guitar-rig')] }
+    const initial = trackLayoutKey([track])
+    expect(trackLayoutKey([{ ...track, enabled: false }])).not.toBe(initial)
+    expect(trackLayoutKey([{ ...track, mute: true }])).toBe(initial)
+    expect(trackLayoutKey([{ ...track, solo: true, soloSafe: true }])).toBe(initial)
+    expect(trackLayoutKey([{ ...track, volume: 0.3, pan: 0.5 }])).toBe(initial)
+  })
+
+  it('uses and disposes the causal master for an enabled guitar rig in either context type', () => {
+    const masterDispose = vi.fn()
+    const masterFactory = vi.spyOn(guitarRig, 'createGuitarRigMaster').mockImplementation((audio, remember) => {
+      const input = remember(audio.createGain())
+      return { input, output: input, update: vi.fn(), dispose: masterDispose }
+    })
+    vi.spyOn(EFFECT_MODULES['guitar-rig'], 'create').mockImplementation((audio, remember) => {
+      const input = remember(audio.createGain())
+      return { input, output: input, update: vi.fn() }
+    })
+    const project = audioProject()
+    project.tracks[0].devices = [createDevice('guitar-rig')]
+    // createGraph accepts BaseAudioContext, so live/offline construction takes the same branch.
+    for (let contextNumber = 0; contextNumber < 2; contextNumber += 1) {
+      const { context } = contextSpy()
+      const graph = createGraph(context, project)
+      expect(masterFactory).toHaveBeenLastCalledWith(context, expect.any(Function))
+      expect(context.createDynamicsCompressor).not.toHaveBeenCalled()
+      disposeGraph(graph)
+    }
+    expect(masterDispose).toHaveBeenCalledTimes(2)
   })
 })

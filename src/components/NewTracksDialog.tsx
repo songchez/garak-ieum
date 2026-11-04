@@ -4,7 +4,7 @@ import { Icon } from './Icon'
 import { InstrumentOptions } from './InstrumentOptions'
 import './Inspector.css'
 
-export interface NewTracksOptions { kind: 'instrument' | 'audio'; instrument?: InstrumentId; count: number; openLibrary: boolean }
+export interface NewTracksOptions { kind: 'instrument' | 'audio'; instrument?: InstrumentId; count: number; openLibrary: boolean; guitarRig?: boolean }
 
 export interface NewTracksDialogProps {
   focusedKind: 'instrument' | 'audio' | undefined
@@ -18,22 +18,25 @@ export const MAX_NEW_TRACKS = 16
 
 export function NewTracksDialog({ focusedKind, focusedInstrument, onCreate, onClose }: NewTracksDialogProps) {
   const [kind, setKind] = useState<'instrument' | 'audio'>(focusedKind ?? 'instrument')
+  const [guitarRig, setGuitarRig] = useState(false)
   const [instrument, setInstrument] = useState<InstrumentId>(focusedInstrument ?? 'keys')
   const [count, setCount] = useState(1)
   const [openLibrary, setOpenLibrary] = useState(true)
   const first = useRef<HTMLButtonElement>(null)
   useEffect(() => { first.current?.focus() }, [])
   const clampCount = (n: number) => Math.max(1, Math.min(MAX_NEW_TRACKS, Math.round(n) || 1))
-  const create = () => onCreate({ kind, instrument: kind === 'instrument' ? instrument : undefined, count: clampCount(count), openLibrary: kind === 'instrument' && openLibrary })
+  const create = () => onCreate({ kind, instrument: kind === 'instrument' ? instrument : undefined, count: clampCount(count), openLibrary: kind === 'instrument' && openLibrary, guitarRig: kind === 'audio' && guitarRig })
   return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
     <section className="modal new-tracks" role="dialog" aria-modal="true" aria-labelledby="new-tracks-title" onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } else if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLSelectElement)) { e.preventDefault(); create() } }}>
       <button type="button" className="modal-close icon-button" onClick={onClose} aria-label="창 닫기"><Icon name="close" /></button>
       <h2 id="new-tracks-title">새 트랙</h2>
       <div className="new-tracks-types" role="radiogroup" aria-label="트랙 유형">
-        <button ref={first} type="button" role="radio" aria-checked={kind === 'instrument'} className={kind === 'instrument' ? 'active' : ''} onClick={() => setKind('instrument')}><Icon name="keys" size={26} /><strong>MIDI</strong><span>소프트웨어 악기</span></button>
-        <button type="button" role="radio" aria-checked={kind === 'audio'} className={kind === 'audio' ? 'active' : ''} onClick={() => setKind('audio')}><Icon name="wave" size={26} /><strong>오디오</strong><span>마이크 · 가져온 파일</span></button>
+        <button ref={first} type="button" role="radio" aria-checked={kind === 'instrument'} className={kind === 'instrument' ? 'active' : ''} onClick={() => { setKind('instrument'); setGuitarRig(false) }}><Icon name="keys" size={26} /><strong>MIDI</strong><span>소프트웨어 악기</span></button>
+        <button type="button" role="radio" aria-checked={kind === 'audio' && !guitarRig} className={kind === 'audio' && !guitarRig ? 'active' : ''} onClick={() => { setKind('audio'); setGuitarRig(false) }}><Icon name="wave" size={26} /><strong>오디오</strong><span>마이크 · 가져온 파일</span></button>
+        <button type="button" role="radio" aria-checked={kind === 'audio' && guitarRig} className={kind === 'audio' && guitarRig ? 'active' : ''} onClick={() => { setKind('audio'); setGuitarRig(true) }}><Icon name="guitar" size={26} /><strong>기타</strong><span>앰프 · 컴프 · 이펙터</span></button>
       </div>
       <div className="new-tracks-details">
+        {kind === 'audio' && guitarRig && <p>기타 앰프가 연결된 오디오 트랙을 만듭니다. 입력 장치를 선택하고 모니터링을 켜면 연주를 들을 수 있습니다.</p>}
         {kind === 'instrument' && <label className="new-tracks-row"><span>악기</span><select className="insp-select" value={instrument} onChange={e => setInstrument(e.target.value)}><InstrumentOptions /></select></label>}
         <label className="new-tracks-row"><span>생성할 트랙 수</span><input className="new-tracks-count" type="number" min={1} max={MAX_NEW_TRACKS} value={count} onChange={e => setCount(Number(e.target.value))} onBlur={() => setCount(c => clampCount(c))} /></label>
         {kind === 'instrument' && <label className="new-tracks-row new-tracks-check"><input type="checkbox" checked={openLibrary} onChange={e => setOpenLibrary(e.target.checked)} /><span>라이브러리 열기</span></label>}

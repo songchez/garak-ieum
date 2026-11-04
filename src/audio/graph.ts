@@ -8,6 +8,7 @@ import { pickZone, type LoadedSet, type SampleLibrary } from './samples'
 import type { DeviceGraph } from '../devices/contracts'
 export type { DeviceGraph } from '../devices/contracts'
 import { EFFECT_MODULES } from '../devices/effects/registry'
+import { createGuitarRigMaster } from '../devices/guitar-rig'
 import { dbToGain, randomGenerator, setParameter } from '../devices/effects/shared'
 
 type SourceNode = AudioBufferSourceNode | OscillatorNode
@@ -40,10 +41,12 @@ export interface EngineGraph {
   meter: AnalyserNode
   meterData: Float32Array<ArrayBuffer>
   nodes: AudioNode[]
+  resources: DeviceGraph[]
   /** Live input currently wired into track inputs; see connectMonitor. */
   monitor?: { source: MediaStreamAudioSourceNode; trackIds: string[] }
 }
 
+const disposedGraphs = new WeakSet<EngineGraph>()
 const noiseBuffers = new WeakMap<BaseAudioContext, AudioBuffer>()
 let tineCurve: Float32Array<ArrayBuffer> | null = null
 const SAMPLE_TRIM_DB = -6
@@ -103,56 +106,89 @@ export function renderTailSeconds(project: Project): number {
   return tail
 }
 
+function usesGuitarRigMaster(tracks: readonly Track[]): boolean {
+  return tracks.some(track => isTrackEnabled(track) && track.devices.some(device => device.enabled && device.type === 'guitar-rig'))
+}
+
 /** This graph is used unchanged by realtime playback and OfflineAudioContext. */
 export function createGraph(context: BaseAudioContext, project: Project): EngineGraph {
   const nodes: AudioNode[] = []
+  const resources: DeviceGraph[] = []
   const remember = <T extends AudioNode>(node: T): T => { nodes.push(node); return node }
-  const sum = remember(context.createGain())
-  const masterVolume = remember(context.createGain())
-  const compressor = remember(context.createDynamicsCompressor())
-  compressor.threshold.value = -3
-  compressor.knee.value = 3
-  compressor.ratio.value = 12
-  compressor.attack.value = 0.003
-  compressor.release.value = 0.12
-  const gate = remember(context.createGain())
-  const meter = remember(context.createAnalyser())
-  meter.fftSize = 256
-  sum.connect(masterVolume).connect(compressor).connect(gate).connect(meter).connect(context.destination)
-  const previewInput = remember(context.createGain())
-  previewInput.gain.value = 0.65
-  previewInput.connect(sum)
-  const tracks = new Map<string, TrackGraph>()
-  for (const track of project.tracks) {
-    const input = remember(context.createGain())
-    const panner = remember(context.createStereoPanner())
-    const fader = remember(context.createGain())
-    const trackMeter = remember(context.createAnalyser())
-    trackMeter.fftSize = 256
-    const devices = new Map<string, DeviceGraph>()
-    let tail: AudioNode = input
-    for (const device of track.devices) {
-      const effect = EFFECT_MODULES[device.type]
-      if (!device.enabled || !effect || devices.has(device.id)) continue
-      const node = effect.create(context, remember)
-      tail.connect(node.input)
-      tail = node.output
-      devices.set(device.id, node)
+  try {
+    const sum = remember(context.createGain())
+    const masterVolume = remember(context.createGain())
+    const hasGuitarRig = usesGuitarRigMaster(project.tracks)
+    let master: { input: AudioNode; output: AudioNode }
+    if (hasGuitarRig) {
+      // The legacy DynamicsCompressor has 6 ms of fixed lookahead. Select the same
+      // causal master for live and offline rig projects; preserve existing mixes.
+      const processor = createGuitarRigMaster(context, remember)
+      resources.push(processor)
+      master = processor
+    } else {
+      const compressor = remember(context.createDynamicsCompressor())
+      compressor.threshold.value = -3
+      compressor.knee.value = 3
+      compressor.ratio.value = 12
+      compressor.attack.value = 0.003
+      compressor.release.value = 0.12
+      master = { input: compressor, output: compressor }
     }
-    tail.connect(panner)
-    panner.connect(fader).connect(trackMeter).connect(sum)
+    const gate = remember(context.createGain())
+    const meter = remember(context.createAnalyser())
+    meter.fftSize = 256
+    sum.connect(masterVolume).connect(master.input)
+    master.output.connect(gate).connect(meter).connect(context.destination)
+    const previewInput = remember(context.createGain())
+    previewInput.gain.value = 0.65
+    previewInput.connect(sum)
+    const tracks = new Map<string, TrackGraph>()
+    for (const track of project.tracks) {
+      const input = remember(context.createGain())
+      const panner = remember(context.createStereoPanner())
+      const fader = remember(context.createGain())
+      const trackMeter = remember(context.createAnalyser())
+      trackMeter.fftSize = 256
+      const devices = new Map<string, DeviceGraph>()
+      let tail: AudioNode = input
+      for (const device of track.devices) {
+        const effect = EFFECT_MODULES[device.type]
+        if (!device.enabled || !effect || devices.has(device.id)) continue
+        const node = effect.create(context, remember)
+        resources.push(node)
+        tail.connect(node.input)
+        tail = node.output
+        devices.set(device.id, node)
+      }
+      tail.connect(panner)
+      panner.connect(fader).connect(trackMeter).connect(sum)
 
-    tracks.set(track.id, {
-      input, devices, panner, fader, meter: trackMeter,
-      meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(),
-    })
+      tracks.set(track.id, {
+        input, devices, panner, fader, meter: trackMeter,
+        meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(),
+      })
+    }
+    const graph: EngineGraph = {
+      context, tracks, voices: new Set(), previewInput, masterVolume, gate, meter,
+      meterData: new Float32Array(meter.fftSize), nodes, resources,
+    }
+    updateGraph(graph, project, false)
+    return graph
+  } catch (error) {
+    // A partially constructed effect must not leave a connected/dry path behind.
+    releaseResources(resources, nodes)
+    throw error
   }
-  const graph: EngineGraph = {
-    context, tracks, voices: new Set(), previewInput, masterVolume, gate, meter,
-    meterData: new Float32Array(meter.fftSize), nodes,
+}
+
+function releaseResources(resources: readonly DeviceGraph[], nodes: readonly AudioNode[]): void {
+  for (const resource of resources) {
+    try { resource.dispose?.() } catch { /* Continue releasing the remaining graph. */ }
   }
-  updateGraph(graph, project, false)
-  return graph
+  for (const node of nodes) {
+    try { node.disconnect() } catch { /* A failed/disposed context may already have detached it. */ }
+  }
 }
 
 /** Wires one live input into the given tracks' inputs, replacing any earlier wiring on this graph. */
@@ -175,13 +211,15 @@ export function disconnectMonitor(graph: EngineGraph): void {
 }
 
 export function disposeGraph(graph: EngineGraph): void {
+  if (disposedGraphs.has(graph)) return
+  disposedGraphs.add(graph)
   disconnectMonitor(graph)
   for (const voice of [...graph.voices]) {
-    voice.stop(graph.context.currentTime)
-    voice.disconnect()
+    try { voice.stop(graph.context.currentTime) } catch { /* Still release its nodes and effect processors. */ }
+    try { voice.disconnect() } catch { /* Continue releasing the remaining graph. */ }
   }
   graph.voices.clear()
-  for (const node of graph.nodes) node.disconnect()
+  releaseResources(graph.resources, graph.nodes)
 }
 
 function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNode[], envelope: GainNode): Voice {
@@ -618,7 +656,10 @@ export function rmsLevel(meter: AnalyserNode, values: Float32Array<ArrayBuffer>)
 }
 
 export function trackLayoutKey(tracks: readonly Track[]): string {
-  return tracks.map(track =>
+  // Track enable changes may switch the master even while transport is stopped.
+  // Mute, solo and solo-safe remain fader changes and do not alter master voicing.
+  const master = usesGuitarRigMaster(tracks) ? 'guitar-rig' : 'legacy'
+  return master + ':' + tracks.map(track =>
     track.id + '[' + track.devices.filter(device => device.enabled).map(device => device.type + ':' + device.id).join(',') + ']',
   ).join('|')
 }
