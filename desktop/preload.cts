@@ -33,3 +33,23 @@ const bridge: DesktopBridge = {
 }
 
 contextBridge.exposeInMainWorld('garakDesktop', Object.freeze(bridge))
+
+if (process.platform === 'darwin') {
+  // Keep this signal private to the isolated preload. Never send field values,
+  // selected text, clipboard contents, or keystrokes across this IPC channel.
+  let lastTextFocus: boolean | undefined
+  const reportTextFocus = () => {
+    const active = document.activeElement
+    const focused = document.hasFocus() && active instanceof HTMLElement && (active.isContentEditable
+      || Boolean(active.closest('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),textarea,[data-selectable-text],[role="textbox"],[role="searchbox"],[role="spinbutton"]')))
+    if (focused !== lastTextFocus) {
+      lastTextFocus = focused
+      ipcRenderer.send('garak:text-focus', focused)
+    }
+  }
+  document.addEventListener('focusin', reportTextFocus, true)
+  document.addEventListener('focusout', () => queueMicrotask(reportTextFocus), true)
+  document.addEventListener('DOMContentLoaded', reportTextFocus, { once: true })
+  window.addEventListener('focus', reportTextFocus)
+  window.addEventListener('blur', reportTextFocus)
+}

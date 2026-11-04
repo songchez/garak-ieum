@@ -12,12 +12,16 @@ import { _electron } from 'playwright'
 // the product contains no automation-only IPC or filesystem access.
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const artifacts = path.join(repository, 'release', 'desktop-smoke')
+const defaultExecutable = process.platform === 'darwin'
+  ? path.join(repository, 'release', 'mac-arm64', '가락이음.app', 'Contents', 'MacOS', '가락이음')
+  : path.join(repository, 'release', 'win-unpacked', '가락이음.exe')
 const executable = process.env.GARAK_ELECTRON_EXECUTABLE
   ? path.resolve(process.env.GARAK_ELECTRON_EXECUTABLE)
-  : path.join(repository, 'release', 'win-unpacked', '가락이음.exe')
+  : defaultExecutable
 // Windows MCP must use the installed console launcher, not the GUI subsystem's
 // stdout/stdin handles. The launcher alone configures its child Node runtime.
 const mcpExecutable = process.platform === 'win32' ? path.join(path.dirname(executable), 'garak-mcp.exe') : executable
+const macInstalledSmoke = process.platform === 'darwin' && Boolean(process.env.GARAK_MAC_APP_BUNDLE)
 const closeTimeout = 30_000 // Main waits 12 seconds before its recovery dialog.
 const dialogMarker = 'GARAK_SMOKE_UNEXPECTED_NATIVE_DIALOG'
 const report = { status: 'running', startedAt: new Date().toISOString(), executable, mcpExecutable, checks: [], artifacts: [], launches: [], cli: [] }
@@ -80,7 +84,7 @@ function launchEnvironment(overrides = {}) {
   // Never inherit a developer's real bridge token into the smoke processes.
   const excluded = new Set(['ELECTRON_RUN_AS_NODE', 'GARAK_MCP_TOKEN', 'GARAK_MCP_PORT', 'GARAK_DESKTOP_TEST_PROFILE'])
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => !excluded.has(key.toUpperCase()) && typeof value === 'string'))
-  return { ...environment, GARAK_DESKTOP_TEST_PROFILE: profile, ...overrides }
+  return { ...environment, ...(process.platform === 'darwin' ? { ELECTRON_ENABLE_LOGGING: '1', ELECTRON_ENABLE_STACK_DUMPING: '1' } : {}), GARAK_DESKTOP_TEST_PROFILE: profile, ...overrides }
 }
 async function freeLoopbackPort() {
   const server = createServer()
@@ -207,6 +211,26 @@ async function launch(label) {
     }
     return state
   }, dialogMarker)
+  if (macInstalledSmoke) {
+    // Passive test-side observations only; no field/clipboard values or new
+    // product IPC are exposed. Wait for the existing preload focus signal.
+    running.macInput = await application.evaluateHandle(({ BrowserWindow, ipcMain }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents
+      const state = { textFocused: null, inputs: [] }
+      const observeFocus = (event, value) => {
+        if (!contents.isDestroyed() && event.sender === contents && event.senderFrame === contents.mainFrame && typeof value === 'boolean') state.textFocused = value
+      }
+      ipcMain.on('garak:text-focus', observeFocus)
+      contents.once('destroyed', () => ipcMain.removeListener('garak:text-focus', observeFocus))
+      contents.on('before-input-event', (_event, input) => {
+        if (input.meta && /^[acvxzos]$/i.test(input.key)) {
+          state.inputs.push({ type: input.type, key: input.key, code: input.code, meta: input.meta, shift: input.shift, textFocused: state.textFocused })
+          if (state.inputs.length > 64) state.inputs.shift()
+        }
+      })
+      return state
+    })
+  }
   return running
 }
 
@@ -217,14 +241,81 @@ async function nativeMenu(id) {
     item.click(item, BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0], {})
   }, id)
 }
+async function macShortcut(key, shift = false) {
+  const nativeCodes = { A: 0x00, C: 0x08, V: 0x09, X: 0x07, Z: 0x06, O: 0x1f, S: 0x01 }
+  assert.ok(Object.hasOwn(nativeCodes, key), 'Unsupported macOS smoke shortcut.')
+  await session.application.evaluate(({ app, BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(candidate => !candidate.webContents.getURL().startsWith('garak://app/licenses/'))
+    if (!window) throw new Error('No editor window for the macOS shortcut check.')
+    app.focus({ steal: true })
+    window.focus(); window.webContents.focus()
+  })
+  await eventually('active macOS editor window', async () => session.application.evaluate(({ app, BrowserWindow }) => {
+    const window = BrowserWindow.getFocusedWindow()
+    return app.isActive() && Boolean(window?.webContents.isFocused())
+  }))
+  await session.page.waitForFunction(() => document.hasFocus() && document.visibilityState === 'visible')
+  const textFocused = await session.page.evaluate(() => {
+    const active = document.activeElement
+    return active instanceof HTMLElement && (active.isContentEditable
+      || Boolean(active.closest('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),textarea,[data-selectable-text],[role="textbox"],[role="searchbox"],[role="spinbutton"]')))
+  })
+  await eventually('macOS text focus IPC delivery', async () => await session.macInput.evaluate(state => state.textFocused) === textFocused)
+  // Match Electron's own menu-shortcut tests: sendInputEvent has no native
+  // NSEvent on macOS. CDP needs the native key code and text to reach AppKit.
+  // https://github.com/electron/electron/blob/v45.2.1/spec/api-web-contents.spec.ts
+  // ANSI_A is 0, which CDP cannot forward to AppKit. A is used only for DAW DOM
+  // selection here; text selection setup uses Playwright's editing command.
+  session.macCDP ??= await session.page.context().newCDPSession(session.page)
+  const character = shift ? key : key.toLowerCase()
+  const base = { key: character, code: `Key${key}`, windowsVirtualKeyCode: key.charCodeAt(0), modifiers: 4 | (shift ? 8 : 0) }
+  await session.macCDP.send('Input.dispatchKeyEvent', { ...base, type: 'rawKeyDown', nativeVirtualKeyCode: nativeCodes[key], text: character, unmodifiedText: key.toLowerCase() })
+  // Its ordered ack also confirms the keyDown has reached the menu path.
+  await session.macCDP.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' })
+  report.macInput = await session.macInput.evaluate(state => state)
+}
+async function pasteWithMacClipboard(locator, value) {
+  // The installation step only sets this path in a disposable hosted Mac.
+  // Never overwrite a developer's clipboard during a local unpacked smoke.
+  assert.ok(macInstalledSmoke && process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted')
+  await session.application.evaluate(({ clipboard }, text) => clipboard.writeText(text), value)
+  try {
+    await locator.focus()
+    await locator.press('Meta+A') // Selection setup; ANSI_A=0 cannot reach AppKit through CDP.
+    await macShortcut('V')
+    // Avoid including MCP keys in assertion output or locator timeout messages.
+    await eventually('native macOS clipboard paste into the text field', async () => await locator.inputValue() === value)
+  } finally {
+    await session.application.evaluate(({ clipboard }) => clipboard.clear())
+  }
+}
 async function screenshot(name, width = 1280, height = 900) {
   const windowHandle = await session.application.browserWindow(session.page)
-  await windowHandle.evaluate((window, size) => window.setContentSize(size.width, size.height), { width, height })
-  await session.page.waitForFunction(size => innerWidth === size.width && innerHeight === size.height, { width, height })
+  const geometry = await windowHandle.evaluate((window, size) => {
+    window.setContentSize(size.width, size.height)
+    return { contentSize: window.getContentSize(), bounds: window.getBounds() }
+  }, { width, height })
+  const display = await session.application.evaluate(({ screen }, bounds) => {
+    const matching = screen.getDisplayMatching(bounds)
+    return { workArea: matching.workArea, scaleFactor: matching.scaleFactor }
+  }, geometry.bounds)
+  // macOS clamps native windows to the available desktop (the hosted runner
+  // currently provides 656 content pixels in height). Verify the renderer has
+  // reached the real native size, and retain both requested and actual sizes.
+  const target = process.platform === 'darwin'
+    ? { width: geometry.contentSize[0], height: geometry.contentSize[1] }
+    : { width, height }
+  assert.ok(target.width > 0 && target.height > 0, 'The screenshot window has no content area.')
+  report.screenshots ??= []
+  report.screenshots.push({ name, requested: { width, height }, ...geometry, ...display })
+  await session.page.waitForFunction(size => innerWidth === size.width && innerHeight === size.height, target)
   await session.page.screenshot({ path: path.join(artifacts, name) })
   report.artifacts.push(name)
 }
 async function saveLogs(running) {
+  if (running.macInput) {
+    try { report.macInput = await running.macInput.evaluate(state => state) } catch { /* The normal close may already have destroyed the context. */ }
+  }
   const file = `${running.label}-logs.json`
   await writeFile(path.join(artifacts, file), JSON.stringify(running.logs, null, 2))
   if (!report.artifacts.includes(file)) report.artifacts.push(file)
@@ -254,7 +345,7 @@ async function closeNormally() {
 try {
   await mkdir(artifacts, { recursive: true })
   await access(executable)
-  if (process.platform !== 'win32' && !process.env.GARAK_ELECTRON_EXECUTABLE) throw new Error('Run the packaged Windows smoke on Windows, or set GARAK_ELECTRON_EXECUTABLE to a compatible packaged app.')
+  if (!['win32', 'darwin'].includes(process.platform) && !process.env.GARAK_ELECTRON_EXECUTABLE) throw new Error('Run the packaged smoke on Windows or macOS, or set GARAK_ELECTRON_EXECUTABLE to a compatible packaged app.')
   if (process.env.ELECTRON_DISABLE_SANDBOX) throw new Error('Remove ELECTRON_DISABLE_SANDBOX before testing the packaged app.')
   profile = await mkdtemp(path.join(tmpdir(), 'garak-desktop-smoke-'))
   report.profile = profile
@@ -374,7 +465,13 @@ try {
     await page.waitForURL(/\/projects\//)
     await page.locator('.save-indicator.saved').waitFor()
     const name = page.getByRole('textbox', { name: '프로젝트 이름', exact: true })
-    await name.fill(projectName); await name.press('Tab')
+    if (macInstalledSmoke) {
+      await pasteWithMacClipboard(name, projectName)
+      await name.press('Meta+A'); await macShortcut('C')
+      await eventually('native macOS text copy', async () => await session.application.evaluate(({ clipboard }) => clipboard.readText()) === projectName)
+      await session.application.evaluate(({ clipboard }) => clipboard.clear())
+    } else await name.fill(projectName)
+    await name.press('Tab')
     const bpm = page.getByRole('spinbutton', { name: '템포 BPM', exact: true })
     const original = await bpm.inputValue()
     await bpm.focus(); await bpm.press('ControlOrMeta+A'); await bpm.press('Backspace')
@@ -478,7 +575,8 @@ try {
         await page.getByRole('menuitem', { name: /^AI 연결/ }).click()
         const dialog = page.getByRole('dialog', { name: 'AI 연결', exact: true })
         await dialog.getByLabel('브리지 주소', { exact: true }).fill(connection.url)
-        await dialog.getByLabel('연결 키', { exact: true }).fill(token)
+        if (macInstalledSmoke) await pasteWithMacClipboard(dialog.getByLabel('연결 키', { exact: true }), token)
+        else await dialog.getByLabel('연결 키', { exact: true }).fill(token)
         await dialog.getByRole('button', { name: '연결', exact: true }).click()
         await dialog.getByText('연결됨', { exact: true }).waitFor()
         await eventually('authenticated bridge ready frame', async () => connection.receivedReady)
@@ -543,6 +641,61 @@ try {
     report.reopenURL = reopenURL
   })
 
+  if (macInstalledSmoke) {
+    await checked('macOS native text editing preserves DAW and File menu shortcuts', async () => {
+      const page = session.page
+      const fixture = JSON.parse(await readFile(projectFile, 'utf8'))
+      fixture.project.tracks = [{
+        id: 'mac-keyboard-track', name: 'Mac keyboard smoke', kind: 'instrument', instrument: 'keys', color: '#5c9b8e',
+        volume: 0.7, pan: 0, mute: false, solo: false, soloSafe: false, enabled: true, armed: false, monitor: false,
+        hidden: false, transpose: 0, velocityOffset: 0, keyLimit: [0, 127], velocityLimit: [1, 127], delayTicks: 0,
+        instrumentParams: {}, devices: [],
+        clips: [0, 8].map((startBeat, index) => ({
+          id: `mac-keyboard-clip-${index}`, name: `Mac keyboard ${index + 1}`, kind: 'midi', startBeat, lengthBeats: 4, gain: 1,
+          notes: [{ id: `mac-keyboard-note-${index}`, pitch: 60 + index * 4, start: 0, duration: 1, velocity: 0.7 }],
+        })),
+      }]
+      const fixtureFile = path.join(artifacts, 'mac keyboard project.garak')
+      await writeFile(fixtureFile, JSON.stringify(fixture))
+      const arrangement = page.locator('[data-keyboard-scope="timeline"]')
+      const command = async (key, shift = false) => { await arrangement.focus(); await macShortcut(key, shift) }
+      const previous = page.url()
+      await session.dialogs.evaluate((state, filePath) => { state.open = { canceled: false, filePaths: [filePath] } }, fixtureFile)
+      await command('O')
+      await eventually('keyboard-open imported project route', async () => page.url() !== previous)
+      const clips = page.locator('.timeline-clip.midi')
+      await eventually('two imported MIDI clips', async () => await clips.count() === 2)
+      await clips.first().click()
+      await command('A')
+      await eventually('DAW select-all', async () => await page.locator('.timeline-clip.clip-selected').count() === 2)
+      await command('C'); await arrangement.press('Delete')
+      await eventually('DAW delete', async () => await clips.count() === 0)
+      await command('V')
+      await eventually('DAW clipboard paste', async () => await clips.count() === 2)
+      await command('Z')
+      await eventually('DAW undo paste', async () => await clips.count() === 0)
+      await command('Z', true)
+      await eventually('DAW redo paste', async () => await clips.count() === 2)
+      await command('A'); await command('X')
+      await eventually('DAW cut', async () => await clips.count() === 0)
+      await command('Z')
+      await eventually('DAW undo cut', async () => await clips.count() === 2)
+      await page.locator('.save-indicator.saved').waitFor()
+      const saves = await session.dialogs.evaluate(state => { state.save = { canceled: true }; return state.saveCalls })
+      await command('S')
+      await eventually('keyboard File Save dialog', async () => await session.dialogs.evaluate(state => state.saveCalls) === saves + 1)
+      const modified = page.url()
+      await session.dialogs.evaluate((state, filePath) => { state.open = { canceled: false, filePaths: [filePath] } }, projectFile)
+      await command('O')
+      await eventually('keyboard-open restored original project', async () => page.url() !== modified)
+      await valueIs(page.getByRole('textbox', { name: '프로젝트 이름', exact: true }), projectName)
+      await page.locator('.save-indicator.saved').waitFor()
+      reopenURL = page.url()
+      report.reopenURL = reopenURL
+      report.macKeyboard = { textClipboard: true, mcpPaste: true, dawSelectCopyPasteCutUndoRedo: true, fileOpenSave: true }
+    })
+  }
+
   await checked('second executable forwards a spaced .garak path to the original window', async () => {
     const page = session.page, previous = page.url()
     // The same isolated profile must hit the installed app's single-instance
@@ -562,6 +715,28 @@ try {
     report.reopenURL = reopenURL
     report.secondInstanceOpen = { fileName: path.basename(projectFile), exitCode: result.code, route: reopenURL }
   })
+
+  if (macInstalledSmoke) {
+    await checked('macOS Launch Services opens a .garak file in the existing app', async () => {
+      const application = path.resolve(process.env.GARAK_MAC_APP_BUNDLE)
+      assert.equal(executable.normalize('NFC'), path.join(application, 'Contents', 'MacOS', '가락이음').normalize('NFC'), 'Launch Services must target the same isolated test app.')
+      const page = session.page, previous = page.url()
+      // Explicitly select the installed temporary app. No default-app changes,
+      // additional user profile, or Finder automation permissions are required.
+      const result = await runProcess('/usr/bin/open', 'Launch Services project file open', ['-a', application, '--', projectFile])
+      assert.equal(result.code, 0, 'Launch Services rejected the project file.')
+      await eventually('Launch Services imported project route', async () => page.url() !== previous)
+      await valueIs(page.getByRole('textbox', { name: '프로젝트 이름', exact: true }), projectName)
+      await valueIs(page.getByRole('spinbutton', { name: '템포 BPM', exact: true }), '137')
+      await valueIs(page.getByLabel('박자표 분자', { exact: true }), '6')
+      await valueIs(page.getByLabel('박자표 분모', { exact: true }), '8')
+      await page.locator('.save-indicator.saved').waitFor()
+      assert.equal(await session.application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1)
+      reopenURL = page.url()
+      report.reopenURL = reopenURL
+      report.launchServicesOpen = { fileName: path.basename(projectFile), route: reopenURL }
+    })
+  }
 
   await checked('normal close commits active BPM input and flushes autosave', async () => {
     const bpm = session.page.getByRole('spinbutton', { name: '템포 BPM', exact: true })

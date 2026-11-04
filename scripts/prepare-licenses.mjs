@@ -50,10 +50,10 @@ ${state}
 프로젝트 소스: ${info.commit ? `${repositoryUrl}/tree/${info.commit}` : repositoryUrl}
 ${info.archive ? `이 원본 커밋의 소스 묶음 파일명: ${info.archive}` : '배포용 소스 묶음: 깨끗한 Git 커밋에서 다시 빌드해야 합니다.'}
 
-공식 CI는 검증한 설치 파일과 같은 다운로드 묶음에 소스 ZIP, 이 안내와 SHA256SUMS.txt를 넣습니다.
-소스 ZIP은 개발·수정용이며 앱을 설치하는 데에는 .exe 설치 파일만 필요합니다.
+공식 CI는 검증한 설치 파일과 같은 다운로드 묶음에 소스 ZIP, 이 안내와 SHA256SUMS.txt(Windows) 또는 SHA256SUMS-macos-arm64.txt(macOS)를 넣습니다.
+소스 ZIP은 개발·수정용이며 앱 설치에는 Windows .exe 또는 Apple Silicon Mac .dmg를 사용합니다.
 공개 Releases 또는 랜딩에 배포할 때에도 해당 설치 파일 옆에 같은 버전의 소스 묶음을 제공합니다.
-소스에서 빌드하는 방법과 도구 버전은 소스의 docs/DESKTOP.md, 배포 조건은 docs/LICENSING.md를 읽으세요.
+소스에서 빌드하는 방법과 도구 버전은 소스의 docs/DESKTOP.md(Windows), docs/MACOS.md(macOS), 배포 조건은 docs/LICENSING.md를 읽으세요.
 pnpm-lock.yaml은 JavaScript 의존성을 고정합니다. 기존 WASM 모듈의 원본 커밋과 변경 방법은 src/devices/pitch-editor/vendor/README.md에 있습니다.
 
 프로그램 라이선스만을 이유로 사용자가 새로 만든 음악이나 녹음에 GPL이 적용되지는 않습니다.

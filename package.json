@@ -22,6 +22,8 @@
     "desktop:launcher": "node scripts/build-mcp-launcher.mjs",
     "desktop:pack": "pnpm run desktop:launcher && pnpm run desktop:prepare && electron-builder --dir --publish never",
     "desktop:build": "pnpm run desktop:launcher --require-windows && pnpm run desktop:prepare && electron-builder --win nsis --x64 --publish never",
+    "desktop:build:mac": "node scripts/desktop-build-macos.mjs",
+    "desktop:install:mac:test": "node scripts/desktop-install-macos.mjs",
     "desktop:test": "node scripts/desktop-smoke.mjs",
     "desktop:source": "node scripts/desktop-source.mjs",
     "test": "vitest run"

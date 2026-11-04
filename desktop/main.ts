@@ -20,6 +20,7 @@ protocol.registerSchemesAsPrivileged([
 let window: BrowserWindow | null = null
 let licenseWindow: BrowserWindow | null = null
 let rendererReady = false
+let textFocused = false
 let allowClose = false
 let fileDialogPending = false
 let microphoneAllowed = false
@@ -129,6 +130,9 @@ function requestClose(): void {
 }
 
 function installIpc(): void {
+  ipcMain.on('garak:text-focus', (event, value: unknown) => {
+    if (process.platform === 'darwin' && trusted(event) && typeof value === 'boolean') textFocused = value
+  })
   ipcMain.handle('garak:open-project', async event => { assertTrusted(event); return showOpenProject() })
   ipcMain.handle('garak:save-file', async (event, value: unknown): Promise<DesktopSaveResult> => {
     assertTrusted(event)
@@ -172,11 +176,21 @@ function buildMenu(): void {
       { id: 'project-open', label: '프로젝트 가져오기…', accelerator: 'CmdOrCtrl+O', click: () => { void showOpenProject().then(file => { if (file && rendererReady) window?.webContents.send('garak:project-opened', file) }).catch(reportFileError) } },
       { id: 'project-save', label: '프로젝트 파일 저장…', accelerator: 'CmdOrCtrl+S', click: () => send('garak:save-project') },
       { type: 'separator' },
-      { label: '종료', accelerator: 'Alt+F4', click: () => window?.close() },
+      process.platform === 'darwin'
+        ? { role: 'close', label: '창 닫기' }
+        : { label: '종료', accelerator: 'Alt+F4', click: () => window?.close() },
     ] },
     { label: '보기', submenu: [{ role: 'resetZoom', label: '화면 배율 초기화' }, { role: 'zoomIn', label: '화면 확대' }, { role: 'zoomOut', label: '화면 축소' }, { type: 'separator' }, { role: 'togglefullscreen', label: '전체 화면' }] },
   ]
-  if (process.platform === 'darwin') menu.unshift({ role: 'appMenu' })
+  if (process.platform === 'darwin') {
+    menu.splice(1, 0, { label: '편집', submenu: [
+      { role: 'undo', label: '실행 취소' }, { role: 'redo', label: '다시 실행' },
+      { type: 'separator' },
+      { role: 'cut', label: '잘라내기' }, { role: 'copy', label: '복사' }, { role: 'paste', label: '붙여넣기' },
+      { role: 'pasteAndMatchStyle', label: '스타일에 맞추어 붙여넣기' }, { role: 'selectAll', label: '모두 선택' },
+    ] })
+    menu.unshift({ role: 'appMenu' })
+  }
   Menu.setApplicationMenu(Menu.buildFromTemplate(menu))
 }
 
@@ -286,6 +300,7 @@ function openBundledLicense(url: string): void {
 
 async function createWindow(): Promise<void> {
   rendererReady = false
+  textFocused = false
   allowClose = false
   window = new BrowserWindow({
     title: '가락이음', width: 1440, height: 940, minWidth: 960, minHeight: 640,
@@ -299,7 +314,17 @@ async function createWindow(): Promise<void> {
   })
   window.once('ready-to-show', () => window?.show())
   window.on('close', event => { if (!allowClose) { event.preventDefault(); requestClose() } })
-  window.on('closed', () => { clearCloseRequest(); window = null; rendererReady = false })
+  window.on('closed', () => { clearCloseRequest(); window = null; rendererReady = false; textFocused = false })
+  if (process.platform === 'darwin') {
+    const contents = window.webContents
+    contents.on('before-input-event', (_event, input) => {
+      // Text controls need AppKit's editing roles; the DAW owns these same
+      // chords outside text. Keep File/App shortcuts (Cmd+O/S/Q…) available.
+      const editingChord = input.meta && !input.control && !input.alt && /^Key[ACVXZ]$/.test(input.code)
+      contents.setIgnoreMenuShortcuts(editingChord && !textFocused)
+    })
+    contents.on('did-start-loading', () => { textFocused = false; contents.setIgnoreMenuShortcuts(false) })
+  }
   window.webContents.on('will-navigate', (event, url) => { if (!isAppUrl(url)) event.preventDefault() })
   window.webContents.on('will-frame-navigate', event => { if (!isAppUrl(event.url)) event.preventDefault() })
   window.webContents.on('will-attach-webview', event => event.preventDefault())
