@@ -5,7 +5,7 @@ import {
 import { defaultInstrumentParams } from '../../core/project'
 import { validateNativePluginState } from '../../core/nativePlugins'
 import { instrumentDef } from '../../core/instruments'
-import type { AudioAsset, AudioEngine, InstrumentId, Project, SampleAttribution, SampleStatus, Track, TransportSnapshot } from '../../core/types'
+import { isPluginDevice, type AudioAsset, type AudioEngine, type InstrumentId, type Project, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot } from '../../core/types'
 import type { AudioRecordingCallbacks } from '../AudioRecording'
 import { SampleLibrary } from '../samples'
 import { clamp, normalizedStart } from '../math'
@@ -801,7 +801,8 @@ export class NativeAudioEngine implements AudioEngine {
     return validateNativePluginState(await this.request('plugins.state', { instanceId }))
   }
 
-  async capturePlugin(instance: NativePluginInstance, allowUnloaded = !instance.enabled): Promise<NativePluginInstance> {
+  /** Returns the same object when nothing changed; otherwise a copy that keeps every field (a VST3 device stays a device). */
+  async capturePlugin<T extends NativePluginInstance>(instance: T, allowUnloaded = !instance.enabled): Promise<T> {
     await this.pauseAndWait(); await this.syncProject()
     const value = await this.request('plugins.state', { instanceId: instance.id, allowUnloaded })
     if (value === null && allowUnloaded) return instance
@@ -816,20 +817,22 @@ export class NativeAudioEngine implements AudioEngine {
 
   /** Call for explicit save/close or after editing a plugin, never on a realtime callback. */
   async capturePluginStates(project: Project): Promise<Project> {
-    const instances = project.tracks.flatMap(track => [...(track.pluginInstrument ? [track.pluginInstrument] : []), ...(track.pluginInserts ?? [])])
+    const pluginsOf = (track: Track): NativePluginInstance[] => [...(track.pluginInstrument ? [track.pluginInstrument] : []), ...track.devices.filter(isPluginDevice)]
+    const instances = project.tracks.flatMap(pluginsOf)
     if (!instances.length || !this.configured) return project
     await this.pauseAndWait()
     await this.syncProject()
     const captured = new Map<string, NativePluginInstance>()
-    for (const track of project.tracks) for (const instance of [...(track.pluginInstrument ? [track.pluginInstrument] : []), ...(track.pluginInserts ?? [])]) {
+    for (const track of project.tracks) for (const instance of pluginsOf(track)) {
       captured.set(instance.id, await this.capturePlugin(instance, !track.enabled || !instance.enabled))
     }
     if (instances.every(instance => captured.get(instance.id) === instance)) return project
     return { ...project, tracks: project.tracks.map(track => {
       const instrument = track.pluginInstrument && captured.get(track.pluginInstrument.id)!
-      const inserts = track.pluginInserts?.map(plugin => captured.get(plugin.id)!)
-      if (instrument === track.pluginInstrument && (!inserts || inserts.every((plugin, index) => plugin === track.pluginInserts?.[index]))) return track
-      return { ...track, ...(instrument ? { pluginInstrument: instrument } : {}), ...(inserts ? { pluginInserts: inserts } : {}) }
+      // capturePlugin keeps every field it was given, so a VST3 device stays a device.
+      const devices = track.devices.map(device => device.type === 'vst3' ? captured.get(device.id) as typeof device : device)
+      if (instrument === track.pluginInstrument && devices.every((device, index) => device === track.devices[index])) return track
+      return { ...track, ...(instrument ? { pluginInstrument: instrument } : {}), devices }
     }) }
   }
 

@@ -29,7 +29,7 @@ describe('project time signatures', () => {
   it.each([1, 2, 3, 4])('migrates schema %i into an explicit 4/4 project', schemaVersion => {
     const { timeSignature: _signature, ...legacy } = createEmptyProject()
     const migrated = validateProject({ ...legacy, schemaVersion })
-    expect(migrated).toMatchObject({ schemaVersion: 6, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4 })
+    expect(migrated).toMatchObject({ schemaVersion: 7, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4 })
     expect(() => validateProject({ ...legacy, schemaVersion, beatsPerBar: 3 })).toThrow(/Legacy projects/)
   })
 
@@ -78,7 +78,7 @@ describe('project time signatures', () => {
     const project = setProjectTimeSignature(createDemoProject(), numerator, denominator)
     const blob = await exportProjectBundle(project, new Map())
     const serialized = JSON.parse(await blob.text())
-    expect(serialized).toMatchObject({ schemaVersion: 1, project: { schemaVersion: 6, timeSignature: { numerator, denominator } } })
+    expect(serialized).toMatchObject({ schemaVersion: 1, project: { schemaVersion: 7, timeSignature: { numerator, denominator } } })
     expect((await importProjectBundle(blob)).project).toEqual(project)
   })
 })

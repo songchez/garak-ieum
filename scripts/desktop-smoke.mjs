@@ -247,37 +247,31 @@ async function titleBarGeometry() {
     const titlebar = document.querySelector('.desktop-titlebar')
     const content = document.querySelector('.desktop-titlebar-content')
     const workspace = document.querySelector('.desktop-window-content')
-    const menu = document.querySelector('.desktop-app-menu')
-    const editorMenus = document.querySelector('.workspace-header-menus')
+    const menuBar = document.querySelector('.desktop-titlebar .header-menu-slot')
     if (!titlebar || !content || !workspace) throw new Error('Custom desktop frame is missing')
     const overlay = navigator.windowControlsOverlay
     return {
       viewport: { width: innerWidth, height: innerHeight },
       titlebar: titlebar.getBoundingClientRect().toJSON(), content: content.getBoundingClientRect().toJSON(),
-      workspace: workspace.getBoundingClientRect().toJSON(), menu: menu?.getBoundingClientRect().toJSON(),
+      workspace: workspace.getBoundingClientRect().toJSON(),
       drag: getComputedStyle(titlebar).getPropertyValue('-webkit-app-region'),
-      menuDrag: menu && getComputedStyle(menu).getPropertyValue('-webkit-app-region'),
-      editorMenus: editorMenus?.getBoundingClientRect().toJSON(),
-      editorMenusDrag: editorMenus && getComputedStyle(editorMenus).getPropertyValue('-webkit-app-region'),
+      menuBar: menuBar && getComputedStyle(menuBar).display !== 'none' ? menuBar.getBoundingClientRect().toJSON() : undefined,
+      menuBarDrag: menuBar && getComputedStyle(menuBar).getPropertyValue('-webkit-app-region'),
       captionVisible: titlebar.getAttribute('data-caption-visible'),
       overlay: overlay && { visible: overlay.visible, rect: overlay.getTitlebarAreaRect().toJSON() },
     }
   })
 }
 function assertTitleBarGeometry(geometry) {
-  const { titlebar, content, workspace, viewport, overlay, menu } = geometry
+  const { titlebar, content, workspace, viewport, overlay, menuBar } = geometry
   assert.equal(geometry.drag, 'drag', 'The custom title bar cannot move the native window')
   assert.ok(titlebar.height >= 31.5 && titlebar.top === 0, 'Custom title bar is missing or collapsed')
   assert.ok(Math.abs(workspace.top - titlebar.bottom) <= 1, 'Workspace overlaps the title bar')
   assert.ok(Math.abs(workspace.bottom - viewport.height) <= 1, 'Desktop frame clips the bottom of the workspace')
   assert.ok(content.width > 200 && content.right <= viewport.width + 1, 'Title content escaped the window')
-  if (menu) {
-    assert.equal(geometry.menuDrag, 'no-drag', 'The menu button is swallowed by the draggable region')
-    assert.ok(menu.left >= content.left - 1 && menu.right <= content.right + 1, 'Menu overlaps native caption controls')
-  }
-  if (geometry.editorMenus) {
-    assert.equal(geometry.editorMenusDrag, 'no-drag', 'Editor menu buttons are swallowed by the draggable region')
-    assert.ok(geometry.editorMenus.left >= content.left - 1 && geometry.editorMenus.right <= content.right + 1, 'Editor menus overlap native caption controls')
+  if (menuBar) {
+    assert.equal(geometry.menuBarDrag, 'no-drag', 'Menu bar buttons are swallowed by the draggable region')
+    assert.ok(menuBar.left >= content.left - 1 && menuBar.right <= content.right + 1, 'Menu bar overlaps native caption controls')
   }
   assert.ok(overlay, 'The native window did not enable Window Controls Overlay')
   if (overlay.visible) {
@@ -340,29 +334,8 @@ async function verifyWindowChrome() {
     if (!geometry.overlay?.visible) return false
     try { assertTitleBarGeometry(geometry); return true } catch { return false }
   }, 15_000)
-  if (process.platform !== 'darwin') {
-    // Observe the real native popup, then dismiss it via its public API. This
-    // validates pointer hit testing, safe-area anchoring and preload delivery.
-    const observer = await session.application.evaluateHandle(({ Menu, BrowserWindow }) => {
-      const menu = Menu.getApplicationMenu(), window = BrowserWindow.getAllWindows()[0]
-      const original = menu.popup, state = { calls: [] }
-      menu.popup = function (options) { state.calls.push({ x: options.x, y: options.y, ownWindow: options.window === window }); return original.call(this, options) }
-      state.restore = () => { menu.closePopup(window); menu.popup = original }
-      return state
-    })
-    try {
-      await nativeWindow.evaluate(window => window.webContents.setZoomFactor(1.25))
-      const menu = page.getByRole('button', { name: '앱 메뉴', exact: true })
-      await menu.click()
-      await eventually('custom app menu native popup', async () => await observer.evaluate(state => state.calls.length) === 1)
-      const geometry = await titleBarGeometry(), call = await observer.evaluate(state => state.calls[0])
-      assert.equal(call.ownWindow, true)
-      assert.ok(Math.abs(call.x - geometry.menu.left * 1.25) <= 1 && Math.abs(call.y - geometry.menu.bottom * 1.25) <= 1, 'Menu popup ignored page zoom or native caption safe area')
-    } finally {
-      await observer.evaluate(state => state.restore()); await observer.dispose()
-      await nativeWindow.evaluate(window => window.webContents.setZoomFactor(1))
-    }
-  } else assert.equal(await page.getByRole('button', { name: '앱 메뉴', exact: true }).count(), 0, 'macOS should use its native application menu')
+  // The in-app menu bar replaced the hamburger popup; the hidden native menu only keeps accelerators.
+  assert.equal(await page.getByRole('button', { name: '앱 메뉴', exact: true }).count(), 0, 'The removed hamburger app menu came back')
 }
 async function macShortcut(key, shift = false) {
   const nativeCodes = { A: 0x00, C: 0x08, V: 0x09, X: 0x07, Z: 0x06, O: 0x1f, S: 0x01 }
@@ -618,9 +591,9 @@ try {
     await bpm.press('ArrowDown'); await valueIs(bpm, '137'); await bpm.press('Enter')
   })
 
-  await checked('editor menus live in the custom header and preserve View actions', async () => {
+  await checked('menu bar lives in the custom header and preserves View actions', async () => {
     const page = session.page
-    assert.equal(await page.locator('.desktop-titlebar .workspace-header-menus > button').count(), 3)
+    assert.deepEqual(await page.locator('.desktop-titlebar .workspace-header-menus > button').evaluateAll(buttons => buttons.map(button => button.dataset.menu)), ['file', 'edit', 'functions', 'view', 'help'])
     assert.equal(await page.locator('.tracks-menubar [data-menu="edit"], .tracks-menubar [data-menu="functions"], .tracks-menubar [data-menu="view"]').count(), 0)
     assertTitleBarGeometry(await titleBarGeometry())
     const view = page.locator('.workspace-header-menus [data-menu="view"]')
@@ -638,6 +611,15 @@ try {
     assert.ok(anchor && bounds && Math.abs(bounds.x - anchor.x) <= 1 && Math.abs(bounds.y - anchor.y - anchor.height) <= 1, 'Track header configuration lost its menu anchor')
     await page.keyboard.press('Escape')
     await panel.waitFor({ state: 'hidden' })
+    const nativeWindow = await session.application.browserWindow(page)
+    try {
+      await view.click()
+      await page.getByRole('menuitem', { name: /^화면 배율/ }).click()
+      await page.getByRole('menuitem', { name: /^화면 확대/ }).click()
+      await eventually('in-app View menu zoomed the native window', async () => await nativeWindow.evaluate(window => window.webContents.getZoomLevel()) > 0)
+    } finally {
+      await nativeWindow.evaluate(window => window.webContents.setZoomLevel(0))
+    }
     report.windowChrome.editorMenus = true
   })
 
@@ -684,7 +666,7 @@ try {
 
   await checked('bundled license links switch isolated document windows', async () => {
     const page = session.page
-    await page.getByRole('button', { name: '가락이음 메뉴', exact: true }).click()
+    await page.locator('.workspace-header-menus [data-menu="help"]').click()
     await page.getByRole('menuitem', { name: '가락이음 정보', exact: true }).click()
     for (const filename of ['GPL-3.0-only.txt', 'garak-ieum-MIT-notice.txt', 'THIRD_PARTY_NOTICES.txt', 'SOURCE.txt']) {
       await page.bringToFront()
@@ -762,8 +744,7 @@ try {
     let result
     try {
       result = await runCli('GUI loopback pairing', ['--mcp'], { GARAK_MCP_TOKEN: token, GARAK_MCP_PORT: String(port) }, `loopback bridge 127.0.0.1:${port}`, async () => {
-        await page.getByRole('button', { name: '가락이음 메뉴', exact: true }).click()
-        await page.getByRole('menuitem', { name: /^AI 연결/ }).click()
+        await page.getByRole('button', { name: /^AI 연결/ }).click()
         const dialog = page.getByRole('dialog', { name: 'AI 연결', exact: true })
         await dialog.getByLabel('브리지 주소', { exact: true }).fill(connection.url)
         if (macInstalledSmoke) await pasteWithMacClipboard(dialog.getByLabel('연결 키', { exact: true }), token)

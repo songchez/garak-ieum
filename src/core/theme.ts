@@ -13,7 +13,6 @@ export interface ThemeColors {
   brand: string; brandHover: string; brass: string; loopFill: string
   play: string; playHover: string; record: string; playhead: string
   success: string; danger: string; warning: string
-  giwa: string; giwaEdge: string
   meterEmpty: string; meterLow: string; meterMid: string; meterHigh: string
   onAccent: string; onPlay: string; onRecord: string; onBrass: string; onTrack: string
 }
@@ -37,7 +36,7 @@ const dawn: ThemeColors = {
   accent:'#9bc8b5', accentHover:'#b4dac9', accentStrong:'#86b5a0', accentBorder:'#729c86',
   brand:'#e0a08a', brandHover:'#edbba6', brass:'#d4ba7e', loopFill:'#d4ba7e',
   play:'#9dcba5', playHover:'#b8ddbd', record:'#e5533d', playhead:'#f0e2be',
-  success:'#b4dac9', danger:'#f1b0a1', warning:'#e6c481', giwa:'#39423b', giwaEdge:'#647062',
+  success:'#b4dac9', danger:'#f1b0a1', warning:'#e6c481',
   meterEmpty:'#212824', meterLow:'#83bd9c', meterMid:'#d4ba7e', meterHigh:'#ed8d77',
   onAccent:'#202821', onPlay:'#202821', onRecord:'#ffffff', onBrass:'#202821', onTrack:'#202821',
 }
@@ -58,7 +57,7 @@ const definitions: Omit<ThemeDefinition, 'tokens'>[] = [
       accent:'#f3c86d',accentHover:'#ffdc8c',accentStrong:'#f3c86d',accentBorder:'#3d7865',
       brand:'#f9c5b3',brandHover:'#ffe0cf',brass:'#f3c86d',loopFill:'#e6a838',
       play:'#b4d5b0',playHover:'#d0e6c9',record:'#df5435',playhead:'#f6dc9b',
-      success:'#b4d5b0',danger:'#ffc0a9',warning:'#f3c86d',giwa:'#8b3a2b',giwaEdge:'#df5435',
+      success:'#b4d5b0',danger:'#ffc0a9',warning:'#f3c86d',
       meterEmpty:'#182d24',meterLow:'#8bc4a2',meterMid:'#e6a838',meterHigh:'#f18f72',
       onAccent:'#25352b',onPlay:'#25352b',onRecord:'#111a15',onBrass:'#25352b',onTrack:'#202821',
     },
@@ -74,7 +73,7 @@ const definitions: Omit<ThemeDefinition, 'tokens'>[] = [
       accent:'#244f86',accentHover:'#193e70',accentStrong:'#193e70',accentBorder:'#42689a',
       brand:'#2a4b7c',brandHover:'#203b63',brass:'#745012',loopFill:'#d9b458',
       play:'#286044',playHover:'#204e38',record:'#a83428',playhead:'#244f86',
-      success:'#286044',danger:'#982d23',warning:'#745012',giwa:'#b5b6aa',giwaEdge:'#6e7569',
+      success:'#286044',danger:'#982d23',warning:'#745012',
       meterEmpty:'#d4cbbb',meterLow:'#2f7357',meterMid:'#87570f',meterHigh:'#a83428',
       onAccent:'#f8f6f0',onPlay:'#f8f6f0',onRecord:'#ffffff',onBrass:'#202124',onTrack:'#202124',
     },
@@ -90,7 +89,7 @@ const definitions: Omit<ThemeDefinition, 'tokens'>[] = [
       accent:'#1f5849',accentHover:'#174738',accentStrong:'#1f5849',accentBorder:'#3e7a65',
       brand:'#285c50',brandHover:'#214c42',brass:'#5f4813',loopFill:'#b9b482',
       play:'#205848',playHover:'#174738',record:'#a63c31',playhead:'#1f5849',
-      success:'#205848',danger:'#963d32',warning:'#5f4813',giwa:'#99b3a6',giwaEdge:'#4e7262',
+      success:'#205848',danger:'#963d32',warning:'#5f4813',
       meterEmpty:'#b7ccbd',meterLow:'#2a6851',meterMid:'#795e17',meterHigh:'#a63c31',
       onAccent:'#f4f5ed',onPlay:'#f4f5ed',onRecord:'#ffffff',onBrass:'#3c4340',onTrack:'#202821',
     },
@@ -106,7 +105,7 @@ const definitions: Omit<ThemeDefinition, 'tokens'>[] = [
       accent:'#274a73',accentHover:'#1b3a60',accentStrong:'#1b3a60',accentBorder:'#426f6a',
       brand:'#783645',brandHover:'#642937',brass:'#70470b',loopFill:'#e2a944',
       play:'#2b5f50',playHover:'#234e41',record:'#a63c39',playhead:'#783645',
-      success:'#2b5f50',danger:'#983d39',warning:'#70470b',giwa:'#a6b5b9',giwaEdge:'#5a6d7b',
+      success:'#2b5f50',danger:'#983d39',warning:'#70470b',
       meterEmpty:'#d3c5b2',meterLow:'#2d6954',meterMid:'#875a13',meterHigh:'#a63c39',
       onAccent:'#fff9f0',onPlay:'#fff9f0',onRecord:'#ffffff',onBrass:'#2c3e56',onTrack:'#202821',
     },
@@ -122,7 +121,7 @@ const definitions: Omit<ThemeDefinition, 'tokens'>[] = [
       accent:'#e7c9a9',accentHover:'#f5ddc0',accentStrong:'#e3c09e',accentBorder:'#b27c56',
       brand:'#eacaa8',brandHover:'#f5ddc0',brass:'#e3c68b',loopFill:'#d5b774',
       play:'#bfd4ba',playHover:'#d0dfcb',record:'#d96149',playhead:'#ead7b6',
-      success:'#bfd3bb',danger:'#f9c5b3',warning:'#e2c58a',giwa:'#373c42',giwaEdge:'#9c978f',
+      success:'#bfd3bb',danger:'#f9c5b3',warning:'#e2c58a',
       meterEmpty:'#252d28',meterLow:'#9abc91',meterMid:'#d5b774',meterHigh:'#ee997f',
       onAccent:'#2d302b',onPlay:'#2d302b',onRecord:'#111a15',onBrass:'#2d302b',onTrack:'#202821',
     },
@@ -147,7 +146,6 @@ function tokensFor(def: Omit<ThemeDefinition, 'tokens'>): Record<string,string> 
     '--brand-accent':c.brand,'--brand-accent-hover':c.brandHover,'--brass':c.brass,'--loop-fill':c.loopFill,
     '--play':c.play,'--play-hover':c.playHover,'--record':c.record,'--playhead':c.playhead,
     '--success':c.success,'--danger':c.danger,'--warning':c.warning,
-    '--giwa':c.giwa,'--giwa-edge':c.giwaEdge,
     '--meter-empty':c.meterEmpty,'--meter-low':c.meterLow,'--meter-mid':c.meterMid,'--meter-high':c.meterHigh,
     '--on-accent':c.onAccent,'--on-play':c.onPlay,'--on-record':c.onRecord,'--on-brass':c.onBrass,'--on-track-color':c.onTrack,
     '--hanji':c.playhead,

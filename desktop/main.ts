@@ -5,7 +5,7 @@ import { open, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import type { DesktopFile, DesktopSaveResult } from './contracts.js'
+import type { DesktopFile, DesktopSaveResult, DesktopViewCommand } from './contracts.js'
 import { NativeAudioService } from './native-audio.js'
 import { APP_URL, CONTENT_SECURITY_POLICY, MAX_PROJECT_BYTES, PROJECT_EXTENSIONS, assetRelativePath, desktopMcpStartupErrorMessage, exportExtension, isAppUrl, isBundledLicenseUrl, isExternalUrl, validateSaveRequest } from './policy.js'
 
@@ -131,6 +131,10 @@ function requestClose(): void {
   waitForClose(id)
 }
 
+// Electron's zoomIn/zoomOut roles step by 0.5 level; Chromium clamps at roughly 25%–500%.
+const VIEW_COMMANDS = new Set<DesktopViewCommand>(['zoomIn', 'zoomOut', 'resetZoom', 'toggleFullscreen'])
+const ZOOM_STEP = 0.5, MIN_ZOOM_LEVEL = -7.5, MAX_ZOOM_LEVEL = 9
+
 function installIpc(): void {
   ipcMain.handle('garak:window-colors', (event, colors: unknown) => {
     assertTrusted(event)
@@ -140,19 +144,16 @@ function installIpc(): void {
       || !/^#[0-9a-f]{6}$/i.test(background) || !/^#[0-9a-f]{6}$/i.test(foreground)) throw new Error('Invalid window colors.')
     if (process.platform !== 'darwin') window?.setTitleBarOverlay({ color: background, symbolColor: foreground })
   })
-  ipcMain.on('garak:window-menu', (event, anchor: unknown) => {
-    if (!trusted(event) || !window || pendingClose) return
-    let x = 12, y = 32
-    if (anchor !== undefined) {
-      if (!anchor || typeof anchor !== 'object') return
-      const point = anchor as Record<string, unknown>
-      if (typeof point.x !== 'number' || typeof point.y !== 'number' || !Number.isFinite(point.x)
-        || !Number.isFinite(point.y) || point.x < 0 || point.y < 0) return
-      const zoom = window.webContents.getZoomFactor(), [width, height] = window.getContentSize()
-      x = Math.round(Math.min(width, point.x * zoom))
-      y = Math.round(Math.min(height, point.y * zoom))
+  // The in-app 보기 menu reaches the same window actions as the native View menu roles.
+  ipcMain.on('garak:window-view', (event, command: unknown) => {
+    if (!trusted(event) || !window || pendingClose || typeof command !== 'string' || !VIEW_COMMANDS.has(command as DesktopViewCommand)) return
+    const contents = window.webContents
+    switch (command as DesktopViewCommand) {
+      case 'zoomIn': contents.setZoomLevel(Math.min(MAX_ZOOM_LEVEL, contents.getZoomLevel() + ZOOM_STEP)); break
+      case 'zoomOut': contents.setZoomLevel(Math.max(MIN_ZOOM_LEVEL, contents.getZoomLevel() - ZOOM_STEP)); break
+      case 'resetZoom': contents.setZoomLevel(0); break
+      case 'toggleFullscreen': window.setFullScreen(!window.isFullScreen()); break
     }
-    Menu.getApplicationMenu()?.popup({ window, x, y })
   })
   ipcMain.handle('garak:audio-request', async (event, method: unknown, params: unknown) => {
     assertTrusted(event)
@@ -197,12 +198,14 @@ function installIpc(): void {
   })
 }
 
+/** macOS shows this menu in the system bar. Elsewhere it stays hidden behind the custom title bar
+ * and only supplies accelerators (Ctrl+N/O/S, zoom, full screen); the in-app menu bar is the visible one. */
 function buildMenu(): void {
   const send = (channel: string) => { if (rendererReady && !pendingClose) window?.webContents.send(channel) }
   const menu: MenuItemConstructorOptions[] = [
     { label: '파일', submenu: [
       { id: 'project-new', label: '새 프로젝트', accelerator: 'CmdOrCtrl+N', click: () => send('garak:new-project') },
-      { id: 'project-open', label: '프로젝트 가져오기…', accelerator: 'CmdOrCtrl+O', click: () => { void showOpenProject().then(file => { if (file && rendererReady) window?.webContents.send('garak:project-opened', file) }).catch(reportFileError) } },
+      { id: 'project-open', label: '프로젝트 파일 열기…', accelerator: 'CmdOrCtrl+O', click: () => { void showOpenProject().then(file => { if (file && rendererReady) window?.webContents.send('garak:project-opened', file) }).catch(reportFileError) } },
       { id: 'project-save', label: '프로젝트 파일 저장…', accelerator: 'CmdOrCtrl+S', click: () => send('garak:save-project') },
       { type: 'separator' },
       process.platform === 'darwin'

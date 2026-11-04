@@ -8,7 +8,7 @@
   --ink-09:#232927;--ink-10:#252c28;--ink-11:#29302b;--ink-12:#303831;--ink-13:#343c35;--ink-14:#394139;--ink-15:#3d453c;--ink-16:#40483e;--ink-17:#434b40;--ink-18:#454d43;--ink-19:#485147;--ink-20:#4b544a;--ink-21:#4e574d;--ink-22:#515a4f;--ink-23:#545d52;--ink-24:#575f54;--ink-25:#5a6257;--ink-26:#5d655a;--ink-27:#60685c;--ink-28:#636b5f;--ink-29:#666e62;--ink-30:#697165;
   --ink-33:#717a6e;--ink-36:#798274;--ink-39:#838c7d;--ink-42:#8e9788;--ink-45:#99a191;--ink-48:#a4ac9c;--ink-51:#afb6a7;--ink-54:#b8beaf;--ink-57:#c0c5b7;--ink-60:#c7ccbd;--ink-63:#cdd0c1;--ink-66:#d3d5c8;--ink-69:#d9dacd;--ink-72:#dfdfd3;--ink-75:#e4e3d7;--ink-78:#e8e6dc;--ink-81:#ece9e0;--ink-84:#efede5;--ink-87:#f1efe8;--ink-90:#f4f1eb;--ink-93:#f7f4ee;--ink-96:#faf8f2;--ink-99:#fdfcf7;
   --seokganju-36:#985343;--seokganju-42:#ae6552;--seokganju-54:#c67e68;--seokganju-57:#ce8872;--seokganju-60:#d6917b;--seokganju-63:#e0a08a;--seokganju-66:#e7ae98;--seokganju-69:#edbba6;
-  --hanji:#f0e2be;--dancheong-red:#c87963;--dancheong-green:#6d9b7e;--dancheong-blue:#789eb0;--dancheong-gold:#d4ba7e;--giwa:#39423b;--giwa-edge:#647062;
+  --hanji:#f0e2be;--dancheong-red:#c87963;--dancheong-green:#6d9b7e;--dancheong-blue:#789eb0;--dancheong-gold:#d4ba7e;
 
   --surface-base:var(--ink-09);
   --surface-canvas:var(--ink-10);

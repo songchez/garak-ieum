@@ -1,7 +1,7 @@
-/* One studio bar: project, transport, and file actions share the 36px above the roof. */
+/* Control bar, Logic-style: left panels + project · transport · right panel, tools and export.
+   File/edit/view/help menus live in the desktop title bar (or, in a browser, at the start of this bar). */
 .studio-app {
-  --app-header-height: 48px;
-  --header-roof-height: 12px;
+  --app-header-height: 44px;
 }
 
 .app-header {
@@ -9,28 +9,27 @@
   min-height: var(--app-header-height);
   flex-shrink: 0;
   display: grid;
-  grid-template-columns: minmax(188px, 1fr) auto minmax(max-content, 1fr);
+  /* The start column takes what is left after transport and tools; only the project name shrinks. */
+  grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
   align-items: center;
-  padding: 0 12px var(--header-roof-height);
+  padding: 0 10px;
   gap: 12px;
   background: linear-gradient(to bottom, var(--surface-raised), var(--surface-panel));
   position: relative;
   z-index: 40;
-  box-shadow: 0 1px 0 var(--ink-09);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-/* The shared SVG keeps its tile spacing and remains inside the 48px header. */
-.app-header > .giwa-eave {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: var(--header-roof-height);
-}
-
-.app-header .brand { height: 28px; }
-.header-project { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.header-start { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.header-start > :not(.project-identity) { flex-shrink: 0; }
+.header-logo { flex-shrink: 0; border-radius: 4px; }
+.header-panels { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .header-divider { width: 1px; height: 18px; background: var(--ink-22); flex-shrink: 0; }
+.app-header .header-toggle.active { color: var(--accent); background: var(--surface-selected); }
+.app-header .header-toggle.active:hover:not(:disabled) { color: var(--accent); }
+.header-ai { position: relative; }
+.header-ai.connected { color: var(--success); }
+.header-ai.connected::after { content: ""; position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 2px var(--surface-panel); }
 .project-identity { display: flex; flex-direction: column; align-items: flex-start; flex: 1; min-width: 0; max-width: 240px; }
 .project-identity input {
   background: transparent;
@@ -41,15 +40,15 @@
   font-size: 12px;
   font-weight: 550;
   letter-spacing: .1px;
+  text-overflow: ellipsis;
 }
 .project-identity input:focus { background: var(--surface-overlay); border-radius: 3px; }
 .save-indicator { display: flex; align-items: center; gap: 4px; padding-left: 2px; height: 12px; flex-shrink: 0; color:var(--text-muted); font-size: 9px; line-height: 1; white-space: nowrap; }
 .save-indicator i { height: 5px; width: 5px; border-radius: 50%; background: var(--success); }
 .save-indicator.saving i, .save-indicator.loading i { background: var(--loop-fill); }
 .save-indicator.error i { background: var(--danger); }
-.header-actions { justify-self: end; display: flex; gap: 6px; align-items: center; }
-.header-text { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 28px; padding: 0 4px; border-radius: 5px; font-size: 11px; white-space: nowrap; color:var(--text-muted); }
-.header-text:hover { color:var(--text-primary); background: var(--ink-21); }
+.header-actions { justify-self: end; display: flex; gap: 4px; align-items: center; }
+.header-actions > .header-divider { margin-inline: 4px; }
 .app-header .icon-button { width: 28px; height: 28px; flex-shrink: 0; }
 .app-header button:focus-visible, .app-header input:focus-visible, .app-header select:focus-visible { outline-offset: 0; }
 .export-button {
@@ -110,14 +109,14 @@
 
 @media (max-width: 1250px) {
   .loop-length { display: none; }
-  .header-text > span, .export-button > span { display: none; }
-  .header-text, .export-button { width: 28px; padding: 0; }
+  .export-button > span { display: none; }
+  .export-button { width: 28px; padding: 0; }
 }
 
 @media (max-width: 900px) {
-  .app-header { grid-template-columns: minmax(94px, 1fr) auto minmax(max-content, 1fr); gap: 8px; padding-inline: 10px; }
-  .header-project { gap: 6px; }
-  .app-header .brand-wordmark, .header-project > .header-divider { display: none; }
+  .app-header { gap: 8px; padding-inline: 10px; }
+  .header-start { gap: 4px; }
+  .header-start > .header-divider { display: none; }
   .project-identity input { font-size: 11px; }
   .header-actions { gap: 2px; }
   .transport-bar { gap: 6px; }

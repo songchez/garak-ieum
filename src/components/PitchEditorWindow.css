@@ -1,0 +1,45 @@
+/* Floating, non-modal: the studio stays usable (transport, timeline selection) behind it. */
+.pitch-window {
+  position: fixed;
+  z-index: 90; /* below .toast (100) and modals, above the studio panels */
+  top: 112px;
+  left: max(16px, calc(50% - 620px));
+  width: min(1240px, calc(100vw - 32px));
+  height: min(720px, calc(100vh - 150px));
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 38%), 0 0 0 1px rgb(0 0 0 / 12%);
+}
+.pitch-window.is-maximized { top: 8px; left: 8px; width: calc(100vw - 16px); height: calc(100vh - 16px); resize: none; }
+.desktop-window .pitch-window.is-maximized { top: calc(var(--desktop-titlebar-height) + 8px); height: calc(100vh - var(--desktop-titlebar-height) - 16px); }
+.pitch-window-bar {
+  flex-shrink: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 12px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.pitch-window.is-maximized .pitch-window-bar { cursor: default; }
+.pitch-window-bar:active { cursor: grabbing; }
+.pitch-window-bar > svg { color: var(--accent); flex-shrink: 0; }
+.pitch-window-bar strong { font-size: 11px; font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.pitch-window-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-muted); }
+.pitch-window-tools { display: flex; gap: 2px; }
+.pitch-window-tools button { width: 26px; height: 24px; display: grid; place-items: center; border-radius: 4px; color: var(--text-secondary); cursor: pointer; }
+.pitch-window-tools button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.pitch-window-tools button:disabled { opacity: .4; cursor: default; }
+.pitch-window-body { flex: 1; min-height: 0; display: flex; }
+.pitch-window-body > .editor-empty { flex: 1; }

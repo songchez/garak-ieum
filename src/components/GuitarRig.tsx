@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import type { Device, Track } from '../core/types'
+import type { EffectDevice, Track } from '../core/types'
 import type { AudioState } from '../core/audioSettings'
 import { formatParam, paramValue, type ParamDef } from '../core/devices'
 import { useHistoryGesture } from '../core/historyGesture'
@@ -29,7 +29,7 @@ const valueOf = (params: Record<string, number>, id: string) => paramValue(GUITA
 const choiceLabel = (params: Record<string, number>, id: string) => PARAMS.get(id)?.options?.find(option => option.value === valueOf(params, id))?.label ?? ''
 const matchedPreset = (params: Record<string, number>) => GUITAR_RIG_PRESETS.find(preset => GUITAR_RIG_PARAMS.every(def => Math.abs(valueOf(params, def.id) - preset.params[def.id]) < 0.000001))
 
-export function GuitarRigSummary({ device, onOpen }: { device: Device; onOpen: () => void }) {
+export function GuitarRigSummary({ device, onOpen }: { device: EffectDevice; onOpen: () => void }) {
   const preset = matchedPreset(device.params)
   return <div className="dc-guitar-summary">
     <button className="dc-guitar-open" onClick={onOpen} aria-haspopup="dialog" aria-label="기타 앰프 편집기 열기">
@@ -67,7 +67,7 @@ function RigRange({ def, value, onChange, left, right }: { def: ParamDef; value:
 }
 
 interface EditorProps {
-  device: Device
+  device: EffectDevice
   track: Track
   audioState: AudioState | null
   onParam: (key: string, value: number) => void

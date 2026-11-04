@@ -7,6 +7,7 @@ import { DEFAULT_AUDIO_SETTINGS, SAMPLE_RATES, type AudioSettings, type SampleRa
 import { parseRecordingOffset } from '../core/recordingOffset'
 import type { Project } from '../core/types'
 import AppearanceSettings from './AppearanceSettings'
+import { PluginSettings } from './PluginSettings'
 import { Icon } from './Icon'
 import './AudioSettingsDialog.css'
 
@@ -17,12 +18,14 @@ interface Props {
   blockedReason: string | null
   onApply(settings: AudioSettings, rate: SampleRate): Promise<{ persisted: boolean }>
   onClose(): void
+  initialTab?: Tab
 }
-type Tab = 'devices' | 'recording' | 'project' | 'appearance' | 'status'
+export type Tab = 'devices' | 'recording' | 'project' | 'plugins' | 'appearance' | 'status'
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'devices', label: '오디오 장치', icon: 'headphones' },
   { id: 'recording', label: '녹음·모니터링', icon: 'mic' },
   { id: 'project', label: '프로젝트 오디오', icon: 'wave' },
+  { id: 'plugins', label: '플러그인', icon: 'plug' },
   { id: 'appearance', label: '화면 테마', icon: 'palette' },
   { id: 'status', label: '상태·진단', icon: 'info' },
 ]
@@ -34,9 +37,9 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 }
 function Fact({ name, value }: { name: string; value: ReactNode }) { return <><dt>{name}</dt><dd>{value}</dd></> }
 
-export default function NativeAudioSettingsDialog({ engine, settings, project, blockedReason, onApply, onClose }: Props) {
+export default function NativeAudioSettingsDialog({ engine, settings, project, blockedReason, onApply, onClose, initialTab = 'devices' }: Props) {
   const audio = useSyncExternalStore(engine.subscribeAudioState, engine.getAudioState, engine.getAudioState)
-  const [tab, setTab] = useState<Tab>('devices')
+  const [tab, setTab] = useState<Tab>(initialTab)
   const [draft, setDraft] = useState({ ...settings })
   const [rate, setRate] = useState<SampleRate>(project.sampleRate)
   const [offset, setOffset] = useState(String(settings.recordingOffsetMs))
@@ -120,6 +123,7 @@ export default function NativeAudioSettingsDialog({ engine, settings, project, b
         <nav className="audio-settings-nav" aria-label="설정 분류">{tabs.map(item => <button key={item.id} type="button" aria-current={tab === item.id ? 'page' : undefined} className={tab === item.id ? 'active' : ''} disabled={applying} onClick={() => setTab(item.id)}><Icon name={item.icon} size={16}/><span>{item.label}</span></button>)}<p>장치 설정은 이 컴퓨터에,<br/>프로젝트 레이트와 플러그인은<br/>프로젝트에 저장합니다.</p></nav>
         <div className="audio-settings-content">
           {tab === 'appearance' && <AppearanceSettings disabled={applying}/>}
+          {tab === 'plugins' && <PluginSettings engine={engine}/>}
           {tab === 'devices' && <>
             <div className="audio-settings-section-title"><h3>드라이버와 장치</h3><button className="audio-small-button" disabled={locked || loading} onClick={() => setRefreshId(value => value + 1)}>{loading ? '확인 중…' : '목록 새로고침'}</button></div>
             <Row label="오디오 드라이버" hint={engine.platform === 'darwin' ? 'Apple Silicon Mac의 Core Audio 장치를 사용합니다.' : '오디오 인터페이스의 ASIO 드라이버 또는 Windows WASAPI를 선택합니다.'}>

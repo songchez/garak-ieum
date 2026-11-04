@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AudioEngine, EffectType, InstrumentId, Project, Track } from '../core/types'
+import type { AudioEngine, Device, EffectType, InstrumentId, Project, Track } from '../core/types'
 import { EFFECT_DEFS, EFFECT_TYPES } from '../core/devices'
 import { INSTRUMENTS, INSTRUMENT_SECTIONS, instrumentDef } from '../core/instruments'
 import { contrastTextColor } from '../core/colors'
@@ -11,6 +11,8 @@ import { VolumeSlider } from './VolumeSlider'
 import { PanKnob } from './PanKnob'
 import { trackIcon } from './TrackInspector'
 import { useHistoryGesture } from '../core/historyGesture'
+
+const deviceName = (device: Device) => device.type === 'vst3' ? device.name : EFFECT_DEFS[device.type].name
 
 export const formatGainDb = (v: number) => v <= 0 ? '−∞' : `${v > 1 ? '+' : ''}${(20 * Math.log10(v)).toFixed(1)}`
 const BUTTONS: TrackButtonKind[] = ['mute', 'solo', 'arm', 'monitor']
@@ -100,14 +102,14 @@ export function ChannelStrip(props: ChannelStripProps) {
   }
   return <div className={`cstrip ${focused ? 'focused' : ''} ${compact ? 'compact' : ''} ${track.enabled ? '' : 'off'}`} style={{ '--track-color': track.color, '--track-label-color': contrastTextColor(track.color) } as React.CSSProperties} aria-label={`${track.name} 채널 스트립`} onClick={onSelect}>
     <div className="cstrip-slot cstrip-kind">{track.kind === 'audio' ? '오디오' : '악기'}</div>
-    {track.kind === 'instrument' && <div className="cstrip-slot cstrip-instrument" title={`${def.name} · ${def.nameKo}`}>
-      <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); if (props.onOpenDevices) props.onOpenDevices(id); else open('instrument', e) }} aria-label={`악기 ${def.name}`}><Icon name={def.icon} size={11} /><span>{def.name}</span></button>
+    {track.kind === 'instrument' && <div className="cstrip-slot cstrip-instrument" title={track.pluginInstrument ? `${track.pluginInstrument.name} · VST3` : `${def.name} · ${def.nameKo}`}>
+      <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); if (props.onOpenDevices) props.onOpenDevices(id); else open('instrument', e) }} aria-label={`악기 ${track.pluginInstrument?.name ?? def.name}`}><Icon name={track.pluginInstrument ? 'plug' : def.icon} size={11} /><span>{track.pluginInstrument?.name ?? def.name}</span></button>
       <button type="button" className="cstrip-slot-caret" onClick={e => { stop(e); open('instrument', e) }} aria-label="악기 선택" aria-haspopup="menu" aria-expanded={menu?.kind === 'instrument'}><Icon name="chevron" size={10} /></button>
     </div>}
     <div className="cstrip-inserts" role="list" aria-label="인서트">
       {track.devices.map((device, index) => <div key={device.id} role="listitem" data-insert-index={index} className={`cstrip-slot cstrip-insert ${device.enabled ? '' : 'bypassed'}`} onPointerDown={e => insertPointerDown(e, device.id, index)} onContextMenu={e => { e.preventDefault(); stop(e); setMenu({ kind: 'device', deviceId: device.id, x: e.clientX, y: e.clientY }) }}>
-        <button type="button" className={`cstrip-power ${device.enabled ? 'on' : ''}`} aria-pressed={device.enabled} aria-label={`${EFFECT_DEFS[device.type].name} 켜기/끄기`} title="켜기/끄기 (바이패스)" onClick={e => { stop(e); props.onToggleDevice?.(id, device.id) }} />
-        <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); props.onOpenDevices?.(id, device.id) }} title={`${EFFECT_DEFS[device.type].name} 열기`}><span>{EFFECT_DEFS[device.type].name}</span></button>
+        <button type="button" className={`cstrip-power ${device.enabled ? 'on' : ''}`} aria-pressed={device.enabled} aria-label={`${deviceName(device)} 켜기/끄기`} title="켜기/끄기 (바이패스)" onClick={e => { stop(e); props.onToggleDevice?.(id, device.id) }} />
+        <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); props.onOpenDevices?.(id, device.id) }} title={`${deviceName(device)} 열기`}><span>{deviceName(device)}</span></button>
       </div>)}
       <button type="button" className="cstrip-slot cstrip-insert-empty" onClick={e => { stop(e); open('add', e) }} aria-label="디바이스 추가" aria-haspopup="menu" aria-expanded={menu?.kind === 'add'} title="디바이스 추가"><Icon name="plus" size={10} /></button>
     </div>

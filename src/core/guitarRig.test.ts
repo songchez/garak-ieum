@@ -3,7 +3,7 @@ import { EFFECT_DEFS } from './devices'
 import { ProjectSession } from './ProjectSession'
 import { createDevice, createEmptyProject, createGuitarTrack, validateProject } from './project'
 import { exportProjectBundle, importProjectBundle } from './storage'
-import type { AudioAsset, AudioClip } from './types'
+import type { AudioAsset, AudioClip, EffectDevice } from './types'
 
 const definitions = EFFECT_DEFS['guitar-rig'].params
 const editedParams = () => Object.fromEntries(definitions.map(def => [
@@ -18,14 +18,14 @@ describe('built-in guitar rig project integration', () => {
     expect(first.devices[0]).toMatchObject({ type: 'guitar-rig', enabled: true })
     expect(first.id).not.toBe(second.id)
     expect(first.devices[0].id).not.toBe(second.devices[0].id)
-    expect(first.devices[0].params).not.toBe(second.devices[0].params)
+    expect((first.devices[0] as EffectDevice).params).not.toBe((second.devices[0] as EffectDevice).params)
     const project = { ...createEmptyProject(), tracks: [first, second] }
     expect(validateProject(JSON.parse(JSON.stringify(project)))).toEqual(project)
   })
 
   it('preserves every rig setting and bypass in a portable project without altering the dry source', async () => {
     const track = createGuitarTrack()
-    track.devices[0] = { ...track.devices[0], enabled: false, params: editedParams() }
+    track.devices[0] = { ...(track.devices[0] as EffectDevice), enabled: false, params: editedParams() }
     const clip: AudioClip = {
       id: 'dry-take', kind: 'audio', name: 'Guitar DI', assetId: 'dry-source',
       startBeat: 0, lengthBeats: 4, gain: 1, offsetSeconds: 0, fadeIn: 0, fadeOut: 0,
@@ -45,15 +45,15 @@ describe('built-in guitar rig project integration', () => {
 
   it('fills missing settings, discards unknown keys, and rejects invalid knob and selector values', () => {
     const track = createGuitarTrack()
-    track.devices[0].params = { unused: 99 }
+    ;(track.devices[0] as EffectDevice).params = { unused: 99 }
     const project = { ...createEmptyProject(), tracks: [track] }
     const restored = validateProject(project)
-    expect(restored.tracks[0].devices[0].params).toEqual(createDevice('guitar-rig').params)
+    expect((restored.tracks[0].devices[0] as EffectDevice).params).toEqual(createDevice('guitar-rig').params)
     for (const def of definitions) {
-      track.devices[0].params = { [def.id]: def.max + 1 }
+      ;(track.devices[0] as EffectDevice).params = { [def.id]: def.max + 1 }
       expect(() => validateProject(project)).toThrow(def.id)
       if (def.options) {
-        track.devices[0].params = { [def.id]: def.min + 0.123 }
+        ;(track.devices[0] as EffectDevice).params = { [def.id]: def.min + 0.123 }
         expect(() => validateProject(project)).toThrow(def.id)
       }
     }
@@ -69,7 +69,7 @@ describe('built-in guitar rig project integration', () => {
       commands: [{ type: 'effect.add', trackId: track.id, effectType: 'guitar-rig', params: editedParams() }],
     })
     const added = session.getSnapshot().history.present
-    expect(added.tracks[0].devices[0].params).toEqual(editedParams())
+    expect((added.tracks[0].devices[0] as EffectDevice).params).toEqual(editedParams())
     expect(validateProject(added)).toEqual(added)
     session.dispatch({ type: 'undo' })
     expect(session.getSnapshot().history.present.tracks[0].devices).toEqual([])

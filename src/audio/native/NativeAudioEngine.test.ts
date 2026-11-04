@@ -286,12 +286,12 @@ describe('native asset and project synchronization', () => {
   })
 
   it('retains serialized state for an explicitly unloaded bypassed plugin but does not swallow a missing enabled instance', async () => {
-    const p = project(); p.tracks[0].pluginInserts = [{ ...plugin(), enabled: false }]
+    const p = project(); p.tracks[0].devices = [{ ...plugin(), type: 'vst3', enabled: false }]
     const h = managed(p); await h.engine.resume()
     h.handlers.set('plugins.state', () => null)
     expect(await h.engine.capturePluginStates(p)).toBe(p)
     expect(h.calls('plugins.state').at(-1)).toEqual({ instanceId: 'vst', allowUnloaded: true })
-    const enabled = { ...p, tracks: [{ ...p.tracks[0], pluginInserts: [plugin()] }] }
+    const enabled = { ...p, tracks: [{ ...p.tracks[0], devices: [{ ...plugin(), type: 'vst3' as const }] }] }
     h.engine.setProject(enabled)
     await expect(h.engine.capturePluginStates(enabled)).rejects.toThrow('object')
   })
@@ -530,7 +530,7 @@ describe('unsupported native host coexistence with the WAVE editor', () => {
   it('keeps WAVE patches and both tracks\' VST states savable without sending an unsupported source to the device host', async () => {
     const p = waveProject()
     p.tracks[0].pluginInstrument = plugin()
-    p.tracks[1].pluginInserts = [{ ...plugin(), id: 'wave-insert', name: 'Wave insert' }]
+    p.tracks[1].devices = [{ ...plugin(), type: 'vst3', id: 'wave-insert', name: 'Wave insert' }]
     p.tracks[1].instrumentParams.macro1 = .37
     const originalState = structuredClone(p.tracks[1].instrumentState)
     const h = managedUnsupported(p)
@@ -546,7 +546,7 @@ describe('unsupported native host coexistence with the WAVE editor', () => {
     expect(timeline.tracks[1]).toMatchObject({ source: { kind: 'audio' }, notes: [], inserts: [{ type: 'vst3', plugin: { id: 'wave-insert' } }] })
     const captured = await h.engine.capturePluginStates(p)
     expect(captured.tracks[0].pluginInstrument).toMatchObject({ state: { component: 'AQID', controller: 'BA==' }, parameters: { '1': .8 } })
-    expect(captured.tracks[1].pluginInserts?.[0]).toMatchObject({ state: { component: 'AQID', controller: 'BA==' }, parameters: { '1': .8 } })
+    expect(captured.tracks[1].devices[0]).toMatchObject({ type: 'vst3', state: { component: 'AQID', controller: 'BA==' }, parameters: { '1': .8 } })
     expect(captured.tracks[1].instrumentState).toEqual(originalState)
     expect(captured.tracks[1].instrumentParams.macro1).toBe(.37)
     expect(captured.tracks[1].clips).toEqual(p.tracks[1].clips)

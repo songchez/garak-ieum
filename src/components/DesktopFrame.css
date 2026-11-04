@@ -46,18 +46,6 @@
 .desktop-titlebar-brand { font-size: 10px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
 .desktop-titlebar-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .desktop-titlebar[data-focused="false"] :is(.desktop-titlebar-brand, .desktop-titlebar-title) { opacity: .65; }
-.desktop-app-menu {
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 26px;
-  border-radius: 4px;
-  margin-left: -6px;
-}
-.desktop-app-menu:hover { background: var(--surface-hover); }
-.desktop-app-menu:focus-visible { outline-offset: -2px; }
 .desktop-window-content { flex: 1; min-height: 0; overflow: hidden; }
 .desktop-window-content :is(.project-shell, .project-shell-content, .studio-app, .project-launcher) { height: 100%; }
 .desktop-window .busy-indicator { top: calc(var(--desktop-titlebar-height) + var(--app-header-height) + 8px); }

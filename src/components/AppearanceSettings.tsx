@@ -1,7 +1,6 @@
 import { useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { getThemeSnapshot, setTheme, subscribeTheme, themeDefinition, THEMES, type ThemeDefinition, type ThemeId } from '../core/theme'
 import { Icon } from './Icon'
-import { GiwaEave } from './GiwaEave'
 import './AppearanceSettings.css'
 
 function Preview({ theme }: { theme: ThemeDefinition }) {
@@ -10,12 +9,11 @@ function Preview({ theme }: { theme: ThemeDefinition }) {
     '--preview-base':c.base,'--preview-panel':c.panel,'--preview-canvas':c.canvas,
     '--preview-border':c.border,'--preview-text':c.muted,'--preview-accent':c.accent,
     '--preview-brand':c.brand,'--preview-loop':c.loopFill,
-    '--giwa':c.giwa,'--giwa-edge':c.giwaEdge,'--surface-panel':c.panel,
+    '--surface-panel':c.panel,
     '--preview-soft':c.panelSoft,
   } as CSSProperties
   return <span className="appearance-preview" style={style} aria-hidden="true">
     <span className="appearance-preview-header"><i/><b/><em/><small/></span>
-    <GiwaEave compact className="appearance-preview-roof"/>
     <span className="appearance-preview-workspace"><span className="appearance-preview-sidebar"><i/><i/><i/></span><span className="appearance-preview-arrangement"><b/><i/><i/><i/><em/></span></span>
     <span className="appearance-preview-footer"><i/><b/></span>
   </span>
