@@ -26,6 +26,9 @@
     "desktop:install:mac:test": "node scripts/desktop-install-macos.mjs",
     "desktop:test": "node scripts/desktop-smoke.mjs",
     "desktop:source": "node scripts/desktop-source.mjs",
+    "release:prepare": "node scripts/release-config.mjs prepare",
+    "release:check": "node scripts/release-config.mjs check",
+    "release:test": "node --test scripts/release-tests.mjs",
     "test": "vitest run"
   },
   "dependencies": {
