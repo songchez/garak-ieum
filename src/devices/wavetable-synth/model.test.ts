@@ -1,4 +1,7 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -178,6 +181,44 @@ describe('IEUM WAVE saved patch', () => {
   it('keeps generated TypeScript and C++ metadata synchronized with the neutral manifest', () => {
     const generator = fileURLToPath(new URL('./generate-schema.mjs', import.meta.url))
     expect(() => execFileSync(process.execPath, [generator, '--check'], { encoding: 'utf8' })).not.toThrow()
+  })
+
+  it('accepts CRLF checkouts while detecting actual drift and preserving the binary fingerprint', () => {
+    const sourceRoot = fileURLToPath(new URL('../../../', import.meta.url))
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'ieum-wave-schema-'))
+    const generator = 'src/devices/wavetable-synth/generate-schema.mjs'
+    const outputs = ['src/devices/wavetable-synth/schema.generated.ts', 'native/devices/wavetable-synth/generated/patch_schema.hpp']
+    const lf = (value: string) => value.replace(/\r\n/g, '\n')
+    const crlf = (value: string) => lf(value).replace(/\n/g, '\r\n')
+    const expected = new Map(outputs.map(path => [path, lf(readFileSync(resolve(sourceRoot, path), 'utf8'))]))
+    const run = (...args: string[]) => spawnSync(process.execPath, [resolve(fixtureRoot, generator), ...args], { cwd: fixtureRoot, encoding: 'utf8' })
+    try {
+      // Model an autocrlf checkout, including the manifest used for hashing.
+      for (const path of [generator, 'src/devices/wavetable-synth/schema.json', ...outputs]) {
+        const destination = resolve(fixtureRoot, path)
+        mkdirSync(dirname(destination), { recursive: true })
+        writeFileSync(destination, crlf(readFileSync(resolve(sourceRoot, path), 'utf8')))
+      }
+      const checked = run('--check')
+      expect({ status: checked.status, stderr: checked.stderr }).toEqual({ status: 0, stderr: '' })
+
+      // Only line endings may differ: a changed wire fingerprint must still fail.
+      for (const path of outputs) {
+        const original = expected.get(path)!
+        const stale = original.replace(`= ${WAVE_SCHEMA_FINGERPRINT}`, `= ${(WAVE_SCHEMA_FINGERPRINT + 1) >>> 0}`)
+        expect(stale).not.toBe(original)
+        writeFileSync(resolve(fixtureRoot, path), crlf(stale))
+      }
+      const stale = run('--check')
+      expect(stale.status).toBe(1)
+      expect(stale.stderr).toContain('schema.generated.ts')
+      expect(stale.stderr).toContain('patch_schema.hpp')
+
+      // CRLF in schema.json must not change either generated content or its hash.
+      const regenerated = run()
+      expect({ status: regenerated.status, stderr: regenerated.stderr }).toEqual({ status: 0, stderr: '' })
+      for (const path of outputs) expect(readFileSync(resolve(fixtureRoot, path), 'utf8')).toBe(expected.get(path))
+    } finally { rmSync(fixtureRoot, { recursive: true, force: true }) }
   })
 })
 

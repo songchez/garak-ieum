@@ -76,7 +76,9 @@ for (const [path, contents] of [
 ]) {
   if (process.argv.includes('--check')) {
     const existing = await readFile(path, 'utf8').catch(() => '')
-    if (existing !== contents) { console.error(`Stale generated schema: ${path}`); stale = true }
+    // Git may check text out with CRLF. Only that newline difference is ignored;
+    // generated content and the semantic schema fingerprint remain unchanged.
+    if (existing.replace(/\r\n/g, '\n') !== contents) { console.error(`Stale generated schema: ${path}`); stale = true }
   } else {
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, contents)
