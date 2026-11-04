@@ -8,6 +8,7 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace garak {
@@ -147,6 +148,12 @@ struct Voice {
 struct ResolvedWindow { AudioWindow window; std::shared_ptr<const PcmAsset> asset; };
 struct TimedPluginEvent { std::int64_t frame; PluginEvent event; };
 struct InsertRuntime {
+  InsertRuntime() = default;
+  InsertRuntime(const InsertRuntime&) = delete;
+  InsertRuntime& operator=(const InsertRuntime&) = delete;
+  InsertRuntime(InsertRuntime&&) noexcept = default;
+  InsertRuntime& operator=(InsertRuntime&&) noexcept = default;
+
   std::unique_ptr<dsp::StereoProcessor> builtin;
   std::shared_ptr<PluginProcessor> plugin;
 };
@@ -174,6 +181,15 @@ class CompensationDelay {
 };
 
 struct TrackRuntime {
+  TrackRuntime() = default;
+  TrackRuntime(const TrackRuntime&) = delete;
+  TrackRuntime& operator=(const TrackRuntime&) = delete;
+  // Configuration maps can make this move potentially throwing on MSVC. Keep
+  // the compiler-derived exception specification: deleting copy is what makes
+  // vector relocation select move without promising an unsafe noexcept move.
+  TrackRuntime(TrackRuntime&&) = default;
+  TrackRuntime& operator=(TrackRuntime&&) = default;
+
   TrackTimeline timeline;
   Synth synth;
   ResolvedSet samples;
@@ -476,6 +492,8 @@ struct TrackRuntime {
   }
   bool contextLowLatency=true;
 };
+static_assert(!std::is_copy_constructible_v<InsertRuntime> && std::is_nothrow_move_constructible_v<InsertRuntime>);
+static_assert(!std::is_copy_constructible_v<TrackRuntime> && std::is_move_constructible_v<TrackRuntime>);
 
 std::shared_ptr<const PcmAsset> resolveAsset(const AssetStore& assets,const std::string&id) {
   const auto a=assets.find(id);require(a!=assets.end()&&a->second,"Native PCM asset is not registered");
