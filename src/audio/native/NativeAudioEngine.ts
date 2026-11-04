@@ -16,11 +16,23 @@ import type {
   NativeEngineEvent, NativePluginDescriptor, NativePluginInstance, NativePluginParameter, NativePluginState,
 } from './contracts'
 import { NativeRecording } from './NativeRecording'
+import { encodeWavetablePatch, WAVETABLE_UNAVAILABLE_STATUS, type WavetableBridgeStatus, type WavetableNativeBridge } from '../../devices/wavetable-synth/bridge'
+import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
+import { WAVE_SCHEMA_FINGERPRINT } from '../../devices/wavetable-synth/schema.generated'
+import type { NativeEngineCapabilities, NativeProjectApplied } from './contracts'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 const finite = (value: unknown, fallback = 0): number => typeof value === 'number' && Number.isFinite(value) ? value : fallback
 const abortError = () => new DOMException('오디오 작업이 취소되었습니다.', 'AbortError')
+const isAbort = (error: unknown): boolean => error instanceof Error && error.name === 'AbortError'
+const wavePatchData = (patch: WavetablePatch): string => {
+  const bytes = encodeWavetablePatch(patch)
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  return btoa(binary)
+}
+interface WaveAuditionNote { noteId: number; pitch: number; generation: number; configuration: number }
 
 export function nativeBackendForPlatform(settings: AudioSettings, platform: string): NativeBackend {
   if (platform !== 'win32' && platform !== 'darwin') throw new Error('이 데스크톱 오디오 엔진은 Windows와 Apple Silicon macOS를 지원합니다.')
@@ -77,6 +89,31 @@ export class NativeAudioEngine implements AudioEngine {
   private hostGeneration: number | null = null
   private captureWanted = false
   private monitorRequest = 0
+  private configurationEpoch = 0
+  private waveCapability: boolean | undefined
+  private waveCapabilityTask: Promise<void> | null = null
+  private waveCapabilityReason = WAVETABLE_UNAVAILABLE_STATUS.reason!
+  private waveStatus: WavetableBridgeStatus = WAVETABLE_UNAVAILABLE_STATUS
+  private waveListeners = new Set<(status: WavetableBridgeStatus) => void>()
+  private wavePatchRequests = new Map<string, { revision: number }>()
+  private waveReady = new Map<string, { patchData: string; generation: number; configuration: number }>()
+  private wavePayloads = new Map<string, { params: Track['instrumentParams']; state: Track['instrumentState']; data: string }>()
+  private waveNotes = new Map<string, Map<string, WaveAuditionNote>>()
+  private nextWaveNoteId = 1_000_000_000
+
+  readonly wavetable: WavetableNativeBridge = {
+    protocolVersion: 1,
+    getStatus: () => this.waveStatus,
+    subscribe: listener => {
+      this.waveListeners.add(listener)
+      void this.ensureWaveCapability().catch(() => undefined)
+      return () => { this.waveListeners.delete(listener) }
+    },
+    applyPatch: (trackId, patch, revision) => this.applyWavePatch(trackId, patch, revision),
+    previewNoteOn: (trackId, note, velocity, channel = 0) => this.waveNoteOn(trackId, note, velocity, channel),
+    previewNoteOff: (trackId, note, channel = 0) => this.waveNoteOff(trackId, note, channel),
+    allNotesOff: trackId => this.releaseWaveNotes(trackId),
+  }
 
   constructor(
     private readonly bridge: NativeAudioBridge | undefined,
@@ -122,7 +159,128 @@ export class NativeAudioEngine implements AudioEngine {
 
   private updateAudio(patch: Partial<AudioState>): void {
     this.audioSnapshot = { ...this.audioSnapshot, ...patch }
+    this.publishWaveStatus()
     for (const listener of this.audioListeners) listener()
+  }
+
+  private publishWaveStatus(): void {
+    const usable = this.audioSnapshot.status !== 'error' && this.audioSnapshot.status !== 'configuring'
+    const backend = this.nativeDevice?.backend
+    const next: WavetableBridgeStatus = Object.freeze({
+      available: this.waveCapability === true && usable,
+      ...(this.waveCapability !== true ? { reason: this.waveCapabilityReason }
+        : !usable ? { reason: this.audioSnapshot.error ?? '오디오 장치 설정을 적용하는 중입니다.' } : {}),
+      ...(this.configured && backend ? { backend: backend === 'coreaudio' ? 'core-audio' : backend === 'test' ? 'offline' : backend, sampleRate: this.nativeDevice!.sampleRate } : {}),
+    })
+    if (next.available === this.waveStatus.available && next.reason === this.waveStatus.reason && next.backend === this.waveStatus.backend && next.sampleRate === this.waveStatus.sampleRate) return
+    this.waveStatus = next
+    for (const listener of this.waveListeners) listener(next)
+  }
+
+  private ensureWaveCapability(): Promise<void> {
+    if (this.waveCapabilityTask) return this.waveCapabilityTask
+    if (this.waveCapability !== undefined) return Promise.resolve()
+    const generation = this.generation, closing = this.closingTask
+    const task = (async () => {
+      if (closing) await closing.catch(() => undefined)
+      if (generation !== this.generation) throw abortError()
+      try {
+        const value = await this.request<NativeEngineCapabilities>('engine.capabilities')
+        if (generation !== this.generation) throw abortError()
+        this.waveCapability = value?.protocol === 1 && value.wavetable?.protocolVersion === 1 && value.wavetable.schemaFingerprint === WAVE_SCHEMA_FINGERPRINT
+        this.waveCapabilityReason = value?.wavetable
+          ? 'IEUM WAVE 엔진과 앱의 버전이 다릅니다. 앱을 업데이트해 주세요.'
+          : '이 앱의 네이티브 오디오 엔진은 IEUM WAVE를 지원하지 않습니다. 앱을 업데이트해 주세요.'
+      } catch (error) {
+        if (generation !== this.generation) throw abortError()
+        // Older installed hosts remain usable for their supported instruments.
+        // They must never acquire WAVE support merely by being a native process.
+        this.waveCapability = false
+        this.waveCapabilityReason = `IEUM WAVE 엔진을 확인하지 못했습니다. ${message(error)}`
+      }
+      this.publishWaveStatus()
+    })()
+    this.waveCapabilityTask = task
+    void task.finally(() => { if (this.waveCapabilityTask === task) this.waveCapabilityTask = null }).catch(() => undefined)
+    return task
+  }
+
+  private waveTrack(trackId: string): Track | undefined {
+    return this.project?.tracks.find(track => track.id === trackId && track.kind === 'instrument' && track.instrument === 'wavetable' && !track.pluginInstrument)
+  }
+
+  private trackWaveData(track: Track): string {
+    const cached = this.wavePayloads.get(track.id)
+    if (cached && cached.params === track.instrumentParams && cached.state === track.instrumentState) return cached.data
+    const data = wavePatchData(combineWavetablePatch(track.instrumentParams, track.instrumentState))
+    this.wavePayloads.set(track.id, { params: track.instrumentParams, state: track.instrumentState, data })
+    return data
+  }
+
+  private async applyWavePatch(trackId: string, patch: WavetablePatch, revision: number): Promise<{ revision: number }> {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('IEUM WAVE 패치 확인 번호가 유효하지 않습니다.')
+    if (revision <= (this.wavePatchRequests.get(trackId)?.revision ?? 0)) throw abortError()
+    const request = { revision }, generation = this.generation, patchData = wavePatchData(patch)
+    this.wavePatchRequests.set(trackId, request)
+    // Yield before reading the authoritative project: React's parent project
+    // effect can follow the editor's effect in the same commit.
+    await this.ensureWaveCapability()
+    const current = () => {
+      if (generation !== this.generation || this.wavePatchRequests.get(trackId) !== request) throw abortError()
+      const track = this.waveTrack(trackId)
+      if (!track || this.trackWaveData(track) !== patchData) throw abortError()
+      return track
+    }
+    current()
+    if (this.waveCapability !== true) throw new Error(this.waveStatus.reason ?? WAVETABLE_HOST_REQUIRED)
+    await this.resume()
+    const configuration = this.configurationEpoch
+    await this.syncProject()
+    current()
+    if (configuration !== this.configurationEpoch || !this.configured || !this.waveStatus.available || this.appliedRevision !== this.revision) throw abortError()
+    this.waveReady.set(trackId, { patchData, generation, configuration })
+    return { revision }
+  }
+
+  private waveNoteOn(trackId: string, pitch: number, velocity: number, channel: number): void {
+    if (!Number.isInteger(pitch) || pitch < 0 || pitch > 127 || !Number.isInteger(channel) || channel < 0 || channel > 15 || !Number.isFinite(velocity) || velocity < 0 || velocity > 1) throw new Error('IEUM WAVE 미리듣기 음표가 유효하지 않습니다.')
+    if (velocity === 0) { this.waveNoteOff(trackId, pitch, channel); return }
+    const track = this.waveTrack(trackId), ready = this.waveReady.get(trackId)
+    if (!this.configured || !this.waveStatus.available || !track?.enabled || !ready || ready.generation !== this.generation || ready.configuration !== this.configurationEpoch || ready.patchData !== this.trackWaveData(track) || this.appliedRevision !== this.revision) throw new Error('IEUM WAVE의 최신 음색이 오디오 엔진에 적용될 때까지 기다려 주세요.')
+    this.waveNoteOff(trackId, pitch, channel)
+    let notes = this.waveNotes.get(trackId)
+    if (!notes) { notes = new Map(); this.waveNotes.set(trackId, notes) }
+    const key = `${channel}:${pitch}`, note = { pitch, noteId: this.nextWaveNoteId++, generation: this.generation, configuration: this.configurationEpoch }
+    if (this.nextWaveNoteId > 2_000_000_000) this.nextWaveNoteId = 1_000_000_000
+    notes.set(key, note)
+    void this.request('note.on', { trackId, pitch, velocity, noteId: note.noteId }).catch(error => {
+      if (this.waveNotes.get(trackId)?.get(key) === note && note.generation === this.generation && note.configuration === this.configurationEpoch) this.fail(error)
+    })
+  }
+
+  private waveNoteOff(trackId: string, pitch: number, channel: number): void {
+    const notes = this.waveNotes.get(trackId), key = `${channel}:${pitch}`, note = notes?.get(key)
+    if (!note) return
+    notes!.delete(key)
+    if (!notes!.size) this.waveNotes.delete(trackId)
+    if (!this.configured || note.generation !== this.generation || note.configuration !== this.configurationEpoch) return
+    void this.request('note.off', { trackId, pitch: note.pitch, noteId: note.noteId }).catch(error => {
+      if (this.configured && note.generation === this.generation && note.configuration === this.configurationEpoch && this.waveTrack(trackId)?.enabled) this.fail(error)
+    })
+  }
+
+  private releaseWaveNotes(trackId: string): void {
+    const notes = this.waveNotes.get(trackId)
+    if (!notes) return
+    for (const key of [...notes.keys()]) {
+      const [channel, pitch] = key.split(':').map(Number)
+      this.waveNoteOff(trackId, pitch, channel)
+    }
+  }
+
+  private clearWaveAudition(release: boolean): void {
+    if (release) for (const trackId of [...this.waveNotes.keys()]) this.releaseWaveNotes(trackId)
+    this.waveNotes.clear(); this.waveReady.clear()
   }
 
   private updateTransport(patch: Partial<TransportSnapshot>): void {
@@ -134,6 +292,7 @@ export class NativeAudioEngine implements AudioEngine {
 
   private fail(error: unknown): void {
     const text = message(error)
+    this.clearWaveAudition(true)
     this.updateTransport({ playing: false, ready: false })
     this.levels.clear(); this.masterLevel = 0
     this.updateAudio({ status: 'error', error: text, needsReconfiguration: true })
@@ -144,6 +303,10 @@ export class NativeAudioEngine implements AudioEngine {
     this.pendingPlayRequest = null
     this.uploaded.clear(); this.uploadTasks.clear(); this.registeredSets.clear(); this.sampleTasks.clear(); this.sampleErrors.clear()
     this.appliedRevision = -1; this.configured = false; this.syncTask = null
+    this.clearWaveAudition(false); this.wavePatchRequests.clear(); this.wavePayloads.clear()
+    this.waveCapability = undefined; this.waveCapabilityTask = null
+    this.waveCapabilityReason = '네이티브 오디오 엔진 연결을 다시 확인해야 합니다. 오디오 설정을 다시 적용해 주세요.'
+    this.publishWaveStatus()
     this.updateTransport({ playing: false, ready: false })
   }
 
@@ -153,7 +316,14 @@ export class NativeAudioEngine implements AudioEngine {
       if (this.hostGeneration !== null && event.generation < this.hostGeneration) return
       // A failed host was already invalidated. Its replacement announces its
       // generation before configure starts; do not cancel that recovery request.
-      if (this.hostGeneration !== null && (this.configured || this.uploaded.size || this.registeredSets.size || this.appliedRevision >= 0)) this.invalidateHost()
+      if (this.hostGeneration !== null && (this.configured || this.uploaded.size || this.registeredSets.size || this.appliedRevision >= 0 || (this.waveCapability !== undefined && this.audioSnapshot.status !== 'configuring'))) this.invalidateHost()
+      else if (this.hostGeneration !== null && this.waveCapability !== undefined) {
+        // A replacement can announce itself during explicit recovery. Keep
+        // that configure request alive, but rediscover its actual DSP module.
+        this.waveCapability = undefined; this.waveCapabilityTask = null
+        this.waveCapabilityReason = WAVETABLE_UNAVAILABLE_STATUS.reason!
+        this.publishWaveStatus()
+      }
       this.hostGeneration = event.generation
     }
     if (event.type === 'error' || event.error) {
@@ -236,9 +406,14 @@ export class NativeAudioEngine implements AudioEngine {
 
   private async configureDevice(next: AudioSettings, rate: SampleRate): Promise<void> {
     const generation = this.generation
+    this.clearWaveAudition(true)
+    this.configurationEpoch++; this.configured = false; this.appliedRevision = -1; this.syncTask = null
+    if (this.syncTimer !== null) { clearTimeout(this.syncTimer); this.syncTimer = null }
     this.updateTransport({ playing: false, ready: false })
     this.updateAudio({ status: 'configuring', error: null })
     try {
+      await this.ensureWaveCapability()
+      if (generation !== this.generation) throw abortError()
       // This is a requested device block, independent of the browser renderSizeHint.
       const result = await this.request<NativeDeviceState | { device: NativeDeviceState }>('engine.configure', {
         backend: nativeBackendForPlatform(next, this.platform),
@@ -247,6 +422,8 @@ export class NativeAudioEngine implements AudioEngine {
         inputChannels: this.captureWanted || (next.softwareMonitoring && this.monitorIds.length) ? next.inputChannels === 'default' ? 1 : next.inputChannels : 0,
         inputChannelOffset: next.nativeInputChannel, lowLatencyMonitoring: next.lowLatencyMonitoring,
       })
+      if (generation !== this.generation) throw abortError()
+      await this.ensureWaveCapability()
       if (generation !== this.generation) throw abortError()
       const device = 'device' in result ? result.device : result
       if (device.sampleRate !== rate) throw new Error(`장치가 ${rate} Hz 요청 대신 ${device.sampleRate} Hz를 적용했습니다. 프로젝트와 장치의 샘플레이트를 맞춰 주세요.`)
@@ -273,7 +450,13 @@ export class NativeAudioEngine implements AudioEngine {
     const rate = projectSampleRate(project.sampleRate)
     if (project === this.project) return
     if ((this.snapshot.playing || this.pendingPlayRequest !== null) && unsupportedNativeInstruments(project, this.sourceAvailable).length) this.pause()
+    if (this.project?.id !== project.id) {
+      this.clearWaveAudition(true); this.waveReady.clear(); this.wavePatchRequests.clear(); this.wavePayloads.clear()
+    }
     this.project = project; this.desiredSampleRate = rate; this.revision++
+    for (const trackId of new Set([...this.waveReady.keys(), ...this.waveNotes.keys()])) {
+      if (!this.waveTrack(trackId)?.enabled) { this.releaseWaveNotes(trackId); this.waveReady.delete(trackId); this.wavePatchRequests.delete(trackId); this.wavePayloads.delete(trackId) }
+    }
     this.updateAudio({ requestedSampleRate: rate, needsReconfiguration: !!this.nativeDevice && this.nativeDevice.sampleRate !== rate })
     this.updateTransport({ beat: clamp(this.snapshot.beat, 0, project.lengthBeats) })
     if (this.configured && this.nativeDevice?.sampleRate === rate) this.scheduleSync()
@@ -291,6 +474,7 @@ export class NativeAudioEngine implements AudioEngine {
     this.syncTimer = setTimeout(() => {
       this.syncTimer = null
       void this.syncProject().catch(error => {
+        if (isAbort(error)) return
         this.fail(error)
         void this.request('transport.pause').catch(() => undefined)
       })
@@ -339,7 +523,7 @@ export class NativeAudioEngine implements AudioEngine {
 
   private publishSamples(): void { for (const listener of this.sampleListeners) listener() }
 
-  private readonly sourceAvailable = (track: Track): boolean => !!track.pluginInstrument || canPlayInstrument(this, track.instrument)
+  private readonly sourceAvailable = (track: Track): boolean => !!track.pluginInstrument || (track.instrument === 'wavetable' ? this.waveCapability === true : canPlayInstrument(this, track.instrument))
 
   private async prepareTimeline(project: Project, revision: number) {
     for (const track of project.tracks) {
@@ -356,31 +540,34 @@ export class NativeAudioEngine implements AudioEngine {
       metadata.set(id, { id, sampleRate: asset.buffer.sampleRate, frames: asset.buffer.length, channels: asset.buffer.numberOfChannels })
     }
     const timeline = compileNativeTimeline(project, metadata, revision)
-    // The standalone WAVE editor/DSP does not yet provide the host capability.
-    // Keep its project patch intact and its VST insert chain editable/savable,
-    // but submit no instrument notes to the current device host. Every audible
-    // playback/export/preview entry point explicitly rejects that missing source.
-    const tracks = timeline.tracks.map(track => track.source.kind === 'native-wavetable' && !canPlayInstrument(this, 'wavetable')
-      ? { ...track, source: { kind: 'audio' as const }, notes: [] }
-      : track)
+    // Native DSP receives the bounded binary schema. Unsupported older hosts
+    // can still save/edit WAVE and play other tracks; audible use is rejected.
+    const tracks = timeline.tracks.map(track => {
+      if (track.source.kind !== 'native-wavetable') return track
+      if (this.waveCapability !== true) return { ...track, source: { kind: 'audio' as const }, notes: [] }
+      const { patch, ...source } = track.source
+      return { ...track, source: { ...source, patchData: wavePatchData(patch) } }
+    })
     return { ...timeline, tracks, lowLatencyMonitoring: this.settings.lowLatencyMonitoring }
   }
 
   private syncProject(): Promise<void> {
     if (this.syncTask) return this.syncTask
     if (!this.project || !this.configured || this.appliedRevision === this.revision) return Promise.resolve()
-    const generation = this.generation
+    const generation = this.generation, configuration = this.configurationEpoch
     const task = (async () => {
-      while (generation === this.generation && this.project && this.appliedRevision !== this.revision) {
+      while (generation === this.generation && configuration === this.configurationEpoch && this.project && this.appliedRevision !== this.revision) {
         const revision = this.revision
         // Settings Apply configures the device before the UI commits its project
         // rate. Compile the candidate at that rate so no stale-rate graph reaches it.
         const project = this.project.sampleRate === this.desiredSampleRate ? this.project : { ...this.project, sampleRate: this.desiredSampleRate }
         const timeline = await this.prepareTimeline(project, revision)
-        if (generation !== this.generation) throw abortError()
+        if (generation !== this.generation || configuration !== this.configurationEpoch) throw abortError()
         if (revision !== this.revision) continue
-        await this.request('project.set', { timeline })
-        if (generation !== this.generation) throw abortError()
+        const awaitApplied = timeline.tracks.some(track => track.source.kind === 'native-wavetable')
+        const result = await this.request<NativeProjectApplied>('project.set', { timeline, ...(awaitApplied ? { awaitApplied: true } : {}) })
+        if (generation !== this.generation || configuration !== this.configurationEpoch) throw abortError()
+        if (awaitApplied && result?.revision !== revision) throw new Error('IEUM WAVE의 프로젝트 적용 확인 번호가 일치하지 않습니다.')
         this.appliedRevision = revision
       }
     })()
@@ -390,15 +577,22 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   async resume(): Promise<void> {
+    const generation = this.generation
+    await this.ensureWaveCapability()
+    if (generation !== this.generation) throw abortError()
     if (this.configurationTask) await this.configurationTask
+    if (generation !== this.generation) throw abortError()
     if (this.audioSnapshot.status === 'error') throw new Error(this.audioSnapshot.error ?? '오디오 장치를 다시 적용해 주세요.')
     if (!this.configured || this.nativeDevice?.sampleRate !== this.desiredSampleRate) await this.beginConfiguration(this.settings, this.desiredSampleRate)
     else await this.syncProject()
   }
 
   async play(): Promise<void> {
-    assertNativeInstrumentsSupported(this.requireProject(), this.sourceAvailable)
     const request = ++this.transportRequest, generation = this.generation
+    await this.ensureWaveCapability()
+    if (generation !== this.generation) throw abortError()
+    if (request !== this.transportRequest) return
+    assertNativeInstrumentsSupported(this.requireProject(), this.sourceAvailable)
     await this.resume()
     if (generation !== this.generation || this.transportRequest !== request) return
     await this.startNativePlayback(request, generation, normalizedStart(this.requireProject(), this.snapshot.beat))
@@ -437,6 +631,7 @@ export class NativeAudioEngine implements AudioEngine {
   stop(): void {
     this.transportRequest++
     this.pendingPlayRequest = null
+    this.clearWaveAudition(true)
     this.updateTransport({ playing: false, beat: 0 })
     if (this.configured) void this.request('transport.stop').catch(error => this.fail(error))
   }
@@ -450,9 +645,12 @@ export class NativeAudioEngine implements AudioEngine {
   private frameForBeat(beat: number): number { return Math.round(beat * 60 / (this.project?.bpm ?? 120) * this.desiredSampleRate) }
 
   async previewNote(instrument: InstrumentId, pitch: number, velocity = .8, trackId?: string): Promise<void> {
-    const requestedTrack = trackId ? this.project?.tracks.find(item => item.id === trackId) : undefined
-    if (!requestedTrack?.pluginInstrument && !canPlayInstrument(this, requestedTrack?.instrument ?? instrument)) throw new Error(WAVETABLE_HOST_REQUIRED)
     const generation = this.generation
+    await this.ensureWaveCapability()
+    if (generation !== this.generation) throw abortError()
+    const requestedTrack = trackId ? this.project?.tracks.find(item => item.id === trackId) : undefined
+    if (!requestedTrack?.pluginInstrument && (requestedTrack?.instrument ?? instrument) === 'wavetable' && this.waveCapability !== true) throw new Error(WAVETABLE_HOST_REQUIRED)
+    if (!requestedTrack && instrument === 'wavetable') throw new Error('IEUM WAVE 미리듣기에는 프로젝트의 악기 트랙이 필요합니다.')
     await this.resume()
     const def = instrumentDef(instrument)
     const track = trackId ? this.project?.tracks.find(item => item.id === trackId) : undefined
@@ -563,11 +761,16 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   async exportWav(project = this.requireProject()): Promise<Blob> {
+    const generation = this.generation
+    await this.ensureWaveCapability()
+    if (generation !== this.generation) throw abortError()
     assertNativeInstrumentsSupported(project, this.sourceAvailable)
     // Wait for uploads/graph edits and their errors before asking the host to clone.
     await this.resume()
     await this.pauseAndWait()
     const timeline = await this.prepareTimeline(project, this.revision)
+    if (generation !== this.generation) throw abortError()
+    assertNativeInstrumentsSupported(project, this.sourceAvailable)
     const result = await this.request<NativeAudioFile>('render.wav', { timeline })
     if (!(result?.data instanceof Uint8Array) || result.data.byteLength < 44) throw new Error('네이티브 엔진이 유효한 WAV 파일을 반환하지 않았습니다.')
     return new Blob([new Uint8Array(result.data)], { type: 'audio/wav' })
@@ -631,6 +834,7 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   dispose(): void {
+    this.clearWaveAudition(true)
     this.generation++; this.transportRequest++; this.monitorRequest++
     this.pendingPlayRequest = null
     if (this.syncTimer !== null) clearTimeout(this.syncTimer)
@@ -641,12 +845,14 @@ export class NativeAudioEngine implements AudioEngine {
     if (this.closingTask) void this.closingTask.catch(() => undefined)
     this.bridgeRelease?.(); this.bridgeRelease = null
     this.configured = false; this.nativeDevice = null; this.monitorIds = []; this.captureWanted = false; this.appliedRevision = -1
+    this.waveCapability = undefined; this.waveCapabilityTask = null; this.waveCapabilityReason = WAVETABLE_UNAVAILABLE_STATUS.reason!
+    this.wavePatchRequests.clear(); this.wavePayloads.clear()
     this.project = null; this.assets = new Map(); this.decodeContext = null
     this.uploaded.clear(); this.uploadTasks.clear(); this.registeredSets.clear(); this.sampleTasks.clear(); this.sampleErrors.clear()
     this.levels.clear(); this.masterLevel = 0
     this.updateTransport({ playing: false, ready: false, beat: 0 })
     this.updateAudio({ status: this.bridge ? 'idle' : 'error', contextState: 'uninitialized', sampleRate: null, nativeDevice: null, error: this.bridge ? null : '네이티브 오디오 연결부가 없습니다.', needsReconfiguration: false })
-    this.listeners.clear(); this.audioListeners.clear(); this.inputListeners.clear(); this.sampleListeners.clear()
+    this.listeners.clear(); this.audioListeners.clear(); this.inputListeners.clear(); this.sampleListeners.clear(); this.waveListeners.clear()
   }
 
   private requireProject(): Project {

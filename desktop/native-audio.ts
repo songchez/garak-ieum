@@ -18,7 +18,7 @@ export interface NativeAudioOptions {
 interface CatalogEntry { pluginId: string; classId: string; path: string; name: string; vendor: string; version?: string; isInstrument: boolean; category?: string }
 const MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 const MAX_PCM_BYTES = 512 * 1024 * 1024
-const METHODS = new Set(['devices.list', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
+const METHODS = new Set(['devices.list', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
 
 function record(value: unknown, label = 'request'): Json {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid native audio ${label}.`)
@@ -268,6 +268,9 @@ export class NativeAudioService {
       return {}
     }
     await this.start()
+    // Discover the running host's instrument support without opening an audio
+    // device. The renderer must not infer WAVE support from Electron alone.
+    if (method === 'engine.capabilities') return this.send('hello', {})
     if (method === 'engine.close') { const result = await this.send(method, params); this.activeTake = null; return result }
     if (method === 'asset.put') return this.pcmAsset(params)
     if (method === 'engine.configure' && Number(params.inputChannels) > 0 && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')

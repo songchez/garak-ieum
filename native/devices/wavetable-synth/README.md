@@ -2,7 +2,19 @@
 
 This directory contains the original C++17 synthesis engine, a strict patch-pack decoder, native tests, and a float32 WAV renderer. It has no third-party DSP dependency and makes no calls to an audio device, Electron, Web Audio, WASM, JUCE, or an operating-system audio API. The repository's GPL-3.0 license applies.
 
-The external native audio host must instantiate and route this engine. Compiling this library or editing the React patch does not by itself create an audio-device connection. Rendered WAV files exercise the actual C++ engine independently of that host.
+The application's `garak_core` now links this engine through `native/src/wavetable.cpp`. The common `RenderEngine` routes WAVE timeline notes, live/editor notes and offline WAV export through the same synth. Windows WASAPI and ASIO, and macOS Core Audio, use that common renderer. This library remains independent of the device adapters; its standalone WAV renderer also exercises the C++ synth directly.
+
+## Application host connection
+
+The host `hello` response advertises `wavetable.protocolVersion: 1`, the generated `schemaFingerprint`, and the supported 22,050–192,000 Hz range. The renderer verifies the handshake before advertising a playable WAVE instrument. An enabled WAVE source at an unsupported device/export rate is rejected explicitly.
+
+`project.set` supplies each `native-wavetable` source with `instrumentId: "wavetable"` and `patchData`, a base64-encoded `IEWAVE01` pack. `awaitApplied: true` acknowledges the actual callback graph ticket before returning its revision. This project path also synchronizes tracks whose editor has never been opened. The native host decodes/validates packs and builds mip tables on the control thread, reusing immutable tables when only parameters change.
+
+When a compatible project revision arrives, the new graph adopts the existing synth instance. Held notes, envelope stages, phases and effect state survive scalar/LFO/route edits. Replacing custom tables uses the DSP's 20 ms crossfade; a subsequent graph waits for that fade to finish before another replacement. Completed table ownership and unused processors remain in retired graphs until control-thread collection. Both current/fading sets and queued WAVE graphs count against the native memory budget. The callback never allocates or frees them.
+
+Timeline and audition events use separate internal MIDI channels and nonzero host IDs. `note.on`, `note.off` and timed `note.preview` preserve velocity × clip gain up to 2. `note.allOff {trackId}` releases that track's live/audition notes while preserving its timeline notes and all other tracks. An editor that owns individual note IDs should send their note-offs when it closes. Stop, seek and device reconfiguration reset the synth deterministically. Project-end note-offs are delivered before rendering the release/effect tail, including when a note ends exactly at the project boundary.
+
+The parent native CMake build includes `native-wavetable-host`, which checks real common-renderer output, callback partition independence, offline/live agreement, live note ownership, held-note edits, rapid disjoint custom-table updates, and callback allocation/deallocation. The CLI/Electron smoke suite additionally checks binary transport, capability negotiation, reconfiguration and WAV export. Synthetic-clock tests verify routing but do not claim physical WASAPI/ASIO/Core Audio driver latency or hardware playback validation.
 
 ## Implemented synthesis
 
@@ -155,6 +167,6 @@ Use an actual generated fixture filename in `--patch`; omitting the argument ren
 
 ## Current boundaries
 
-This version provides wavetable synthesis, original banks and a native integration contract. It does not implement Serum's warp modes, FM/PM, sample/granular/spectral/multisample oscillators, a commercial factory library, audio-to-wavetable analysis, oversampled nonlinear filters, or a native audio-device host. There is no claim of Serum sound equivalence.
+This version provides wavetable synthesis, original banks and application-native host integration. It does not implement Serum's warp modes, FM/PM, sample/granular/spectral/multisample oscillators, a commercial factory library, audio-to-wavetable analysis, or oversampled nonlinear filters. There is no claim of Serum sound equivalence.
 
 The drive uses first-order antiderivative antialiasing, not oversampling. The final output has a transparent-below-0.94 soft safety ceiling approaching 0.98, not lookahead limiting or loudness normalization. Extreme patch levels or dense chords can reach that ceiling and color the result. Effects and waveform interpolation are original algorithms and still require listening/host-hardware evaluation beyond the deterministic and spectral tests.

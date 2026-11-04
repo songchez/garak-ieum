@@ -8,6 +8,17 @@ export interface NativeAudioBridge {
 
 export type NativeBackend = 'asio' | 'wasapi' | 'coreaudio'
 
+/** Advertised by the loaded host, independently of opening an audio device. */
+export interface NativeEngineCapabilities {
+  protocol: number
+  wavetable?: { protocolVersion: number; schemaFingerprint: number }
+}
+
+/** With awaitApplied, this revision has crossed the native audio block boundary. */
+export interface NativeProjectApplied {
+  revision: number
+}
+
 export interface NativeDevice {
   id: string
   name: string

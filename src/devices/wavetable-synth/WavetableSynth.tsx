@@ -111,7 +111,12 @@ export function WavetableSynth({ patch, onPatchChange, onClose, trackId, trackNa
     }
     event.stopPropagation()
   }
-  const nativeMessage = !native.engine.available ? '네이티브 오디오 엔진 연결 준비 중 · 음색 편집과 저장 가능' : native.error ? '음색을 엔진에 적용하지 못했습니다' : native.ready ? '네이티브 엔진 · 최신 음색 적용 완료' : '음색을 네이티브 엔진에 적용하는 중…'
+  const backendName = native.engine.backend === 'wasapi' ? 'WASAPI' : native.engine.backend === 'asio' ? 'ASIO' : native.engine.backend === 'core-audio' ? 'Core Audio' : native.engine.backend === 'offline' ? '테스트 오디오' : '네이티브 엔진'
+  const nativeMessage = !native.engine.available
+    ? native.engine.reason ?? '네이티브 오디오 엔진 연결 준비 중 · 음색 편집과 저장 가능'
+    : native.error ? '음색을 엔진에 적용하지 못했습니다'
+    : native.ready ? `${backendName} · 최신 음색 적용 완료`
+    : '음색을 네이티브 엔진에 적용하는 중…'
   const tabIndex = TABS.findIndex(item => item.id === tab)
   const matrixProps = { routes: patch.routes, onUpdate: updateRoute, onRemove: removeRoute, onAdd: addRoute }
   return createPortal(<div className="iw-overlay" onPointerDown={event => { if (event.target === event.currentTarget) latest.current.onClose() }}>

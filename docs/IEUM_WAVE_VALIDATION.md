@@ -1,6 +1,24 @@
 # IEUM WAVE 구현·검증 기록
 
-검사일: **2026-11-04 UTC**. 기준 브랜치는 `main`의 `9c4a1f3d3358406b7387433ce7999624a8dfb512`입니다. 새로운 네이티브 호스트와 장치 연결을 완료한 릴리스가 아니라, 프로젝트에 연결한 음색 편집기와 독립 C++ 음원 모듈의 검증입니다.
+## 공통 네이티브 호스트 통합 · 2026-11-04 UTC
+
+`NativeAudioEngine` → Electron 서비스 → 실제 `garak-audio-host` → 공통 `RenderEngine` → WAVE DSP 연결을 추가했습니다. WASAPI·ASIO·Core Audio 장치 어댑터는 이 공통 렌더러의 출력을 사용합니다.
+
+| 대상 | 결과 | 확인한 내용 |
+| --- | --- | --- |
+| 공통 네이티브 CMake/CTest | **5개 대상 통과** | 기존 엔진, WAVE 통합, ASIO 형식, 실제 VST3, 독립 WAVE DSP |
+| 공통 WAVE 회귀 | **11/11 통과** | 22.05/44.1/48/96/192 kHz, 정확한 onset, timeline/live ID 분리, 리전 gain, held voice 유지, 파형 연속 교체와 수명, 끝 프레임 note-off와 tail |
+| 공통 WAVE ASan/UBSan | **11/11 통과** | 실시간 파형 교체와 control/audio 동시 실행. ptrace 제약으로 LeakSanitizer만 비활성화 |
+| 실제 Electron 서비스 → C++ 호스트 | **17개 검사 통과** | UI 바이너리 인코더로 만든 패치, capability/스키마 확인, 사용자 뱅크 WAV 출력, 정지 상태 audition, 트랙별 해제, 패치 적용 응답, 샘플레이트 재설정과 기존 VST3/녹음 회귀 |
+| Renderer/WAVE 회귀 | **83개 테스트 통과** | 지원 호스트와 구버전 호스트, WASAPI/ASIO/Core Audio 경로, 편집기 초기 연결, 이전 revision·장치 응답 무효화, preview 음 소유권, 내보내기 |
+| 전체 TypeScript/Vitest 후속 검사 | **71개 파일, 1,131개 테스트 통과** | WAVE 연결, MIDI 가져오기와 기존 프로젝트·편집·저장 회귀 |
+| 실제 Chromium → 네이티브 서비스 → C++ 호스트 | 통과, page error 0 | WAVE 건반/프리셋/닫기 후 해제, MIDI 선택/드롭/저장/Undo/Redo, 기존 음색·템포 보존과 실제 DSP 재생 |
+
+위 Linux 검증에서 실제 DSP 오디오 샘플과 PCM WAV를 확인했습니다. 호스트 통합 검사는 **명시적인 테스트 클록**을 사용합니다. Chromium UI 검증은 실제 앱과 네이티브 서비스를 명시적인 QA 전송 어댑터로 연결한 것이며, 실제 Electron 창이나 물리 WASAPI·ASIO·Core Audio endpoint의 소리, 장치별 안정성 및 왕복 지연을 측정했다는 뜻은 아닙니다. 설치 앱 smoke에도 실제 편집기 건반 → IPC → native meter, preset 적용, 편집기 닫기 후 note release와 MIDI 가져오기 검사를 추가했습니다.
+
+## 이전 독립 모듈·편집기 검증
+
+검사일: **2026-11-04 UTC**. 아래 기록의 기준 브랜치는 `main`의 `9c4a1f3d3358406b7387433ce7999624a8dfb512`입니다. 당시에는 프로젝트에 연결한 음색 편집기와 독립 C++ 음원 모듈을 검증했으며, 공통 호스트 연결은 위 후속 통합에서 추가했습니다.
 
 ## 완료한 검사
 

@@ -19,6 +19,12 @@ export interface DesktopBridge {
   readonly isDesktop: true
   readonly platform: string
   readonly version: string
+  /** Native caption buttons remain OS-owned; only their appearance is exposed. */
+  readonly windowChrome?: {
+    setColors(colors: { background: string; foreground: string }): Promise<void>
+    /** CSS-pixel anchor from the menu button; the main process applies zoom. */
+    showMenu(anchor?: { x: number; y: number }): void
+  }
   readonly audio: {
     request(method: string, params?: Record<string, unknown>): Promise<unknown>
     subscribe(callback: (event: { type: 'state' | 'error'; error?: string | null }) => void): () => void

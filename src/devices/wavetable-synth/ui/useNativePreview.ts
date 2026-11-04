@@ -30,7 +30,10 @@ export function useNativePreview(bridge: WavetableNativeBridge | undefined, trac
     setAcknowledged(null)
     void session.applyPatch(patch).then(accepted => { if (current && accepted && currentPatch.current === patch) setAcknowledged(patch) })
     return () => { current = false }
-  }, [session, patch, engine.available])
+  // A device reopen can publish unavailable/available in one React batch.
+  // Observe the immutable snapshot too so the identical patch is reapplied
+  // even when the final boolean and the selected backend are unchanged.
+  }, [session, patch, engine])
   useEffect(() => {
     const release = () => session?.allNotesOff()
     window.addEventListener('blur', release)

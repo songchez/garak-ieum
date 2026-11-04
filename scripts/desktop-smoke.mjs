@@ -242,6 +242,128 @@ async function nativeMenu(id) {
     item.click(item, BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0], {})
   }, id)
 }
+async function titleBarGeometry() {
+  return session.page.evaluate(() => {
+    const titlebar = document.querySelector('.desktop-titlebar')
+    const content = document.querySelector('.desktop-titlebar-content')
+    const workspace = document.querySelector('.desktop-window-content')
+    const menu = document.querySelector('.desktop-app-menu')
+    const editorMenus = document.querySelector('.workspace-header-menus')
+    if (!titlebar || !content || !workspace) throw new Error('Custom desktop frame is missing')
+    const overlay = navigator.windowControlsOverlay
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      titlebar: titlebar.getBoundingClientRect().toJSON(), content: content.getBoundingClientRect().toJSON(),
+      workspace: workspace.getBoundingClientRect().toJSON(), menu: menu?.getBoundingClientRect().toJSON(),
+      drag: getComputedStyle(titlebar).getPropertyValue('-webkit-app-region'),
+      menuDrag: menu && getComputedStyle(menu).getPropertyValue('-webkit-app-region'),
+      editorMenus: editorMenus?.getBoundingClientRect().toJSON(),
+      editorMenusDrag: editorMenus && getComputedStyle(editorMenus).getPropertyValue('-webkit-app-region'),
+      captionVisible: titlebar.getAttribute('data-caption-visible'),
+      overlay: overlay && { visible: overlay.visible, rect: overlay.getTitlebarAreaRect().toJSON() },
+    }
+  })
+}
+function assertTitleBarGeometry(geometry) {
+  const { titlebar, content, workspace, viewport, overlay, menu } = geometry
+  assert.equal(geometry.drag, 'drag', 'The custom title bar cannot move the native window')
+  assert.ok(titlebar.height >= 31.5 && titlebar.top === 0, 'Custom title bar is missing or collapsed')
+  assert.ok(Math.abs(workspace.top - titlebar.bottom) <= 1, 'Workspace overlaps the title bar')
+  assert.ok(Math.abs(workspace.bottom - viewport.height) <= 1, 'Desktop frame clips the bottom of the workspace')
+  assert.ok(content.width > 200 && content.right <= viewport.width + 1, 'Title content escaped the window')
+  if (menu) {
+    assert.equal(geometry.menuDrag, 'no-drag', 'The menu button is swallowed by the draggable region')
+    assert.ok(menu.left >= content.left - 1 && menu.right <= content.right + 1, 'Menu overlaps native caption controls')
+  }
+  if (geometry.editorMenus) {
+    assert.equal(geometry.editorMenusDrag, 'no-drag', 'Editor menu buttons are swallowed by the draggable region')
+    assert.ok(geometry.editorMenus.left >= content.left - 1 && geometry.editorMenus.right <= content.right + 1, 'Editor menus overlap native caption controls')
+  }
+  assert.ok(overlay, 'The native window did not enable Window Controls Overlay')
+  if (overlay.visible) {
+    assert.ok(content.left >= overlay.rect.x - 1 && content.right <= overlay.rect.x + overlay.rect.width + 1, 'Custom title content overlaps native caption controls')
+    assert.ok(titlebar.height >= overlay.rect.height - 1, 'Page zoom moved the workspace under native caption buttons')
+  } else {
+    assert.equal(geometry.captionVisible, 'false')
+    assert.ok(Math.abs(content.left) <= 1 && Math.abs(content.width - viewport.width) <= 1, 'Fullscreen collapsed the title/menu safe area')
+  }
+}
+async function verifyWindowChrome() {
+  const page = session.page, nativeWindow = await session.application.browserWindow(page)
+  await page.locator('.desktop-titlebar').waitFor()
+  const menus = await session.application.evaluate(({ Menu }) => {
+    const menu = Menu.getApplicationMenu()
+    return ['project-new', 'project-open', 'project-save'].map(id => ({ id, enabled: menu?.getMenuItemById(id)?.enabled, accelerator: menu?.getMenuItemById(id)?.accelerator }))
+  })
+  for (const [index, key] of ['N', 'O', 'S'].entries()) {
+    assert.equal(menus[index].enabled, true, 'Custom chrome removed a native File command')
+    assert.ok(menus[index].accelerator?.endsWith(`+${key}`), 'Custom chrome removed a native File shortcut')
+  }
+  const states = []
+  // Retain intermediate native/renderer geometry when a later platform check
+  // fails. The finally block restores the window before the generic screenshot.
+  report.windowChrome = { states, fileAccelerators: menus, nativeControls: true }
+  try {
+    for (const zoom of [1, .8, 1.25]) {
+      await nativeWindow.evaluate((window, factor) => window.webContents.setZoomFactor(factor), zoom)
+      await eventually(`safe custom title bar at ${zoom} zoom`, async () => {
+        try { assertTitleBarGeometry(await titleBarGeometry()); return true } catch { return false }
+      })
+      states.push({ zoom, ...await titleBarGeometry() })
+    }
+    await nativeWindow.evaluate(window => window.webContents.setZoomFactor(1))
+    await nativeWindow.evaluate(window => window.setFullScreen(true))
+    await eventually('native fullscreen entered', () => nativeWindow.evaluate(window => window.isFullScreen()), 15_000)
+    // Electron 45's Windows frame still reports its configured WCO rectangle
+    // in native fullscreen (WinFrameView::LayoutWindowControlsOverlay). Honor
+    // the actual overlay geometry instead of assuming its visible flag is false.
+    // https://github.com/electron/electron/blob/v45.2.1/shell/browser/ui/views/win_frame_view.cc
+    await eventually('fullscreen title/menu safe area', async () => {
+      const geometry = await titleBarGeometry()
+      report.windowChrome.fullscreenProbe = geometry
+      try { assertTitleBarGeometry(geometry); delete report.windowChrome.fullscreenCheckError; return true }
+      catch (error) { report.windowChrome.fullscreenCheckError = String(error); return false }
+    }, 15_000)
+    states.push({ fullscreen: true, ...await titleBarGeometry() })
+  } catch (error) {
+    report.windowChrome.failedGeometry = await titleBarGeometry()
+    report.windowChrome.failedNativeState = await nativeWindow.evaluate(window => ({ fullscreen: window.isFullScreen(), bounds: window.getBounds(), contentBounds: window.getContentBounds(), zoom: window.webContents.getZoomFactor() }))
+    await page.screenshot({ path: path.join(artifacts, 'titlebar-failure-before-restore.png') })
+    report.artifacts.push('titlebar-failure-before-restore.png')
+    throw error
+  } finally {
+    await nativeWindow.evaluate(window => { window.webContents.setZoomFactor(1); window.setFullScreen(false) })
+    await eventually('native fullscreen exited', async () => !await nativeWindow.evaluate(window => window.isFullScreen()), 15_000)
+  }
+  await eventually('native caption controls restored', async () => {
+    const geometry = await titleBarGeometry()
+    if (!geometry.overlay?.visible) return false
+    try { assertTitleBarGeometry(geometry); return true } catch { return false }
+  }, 15_000)
+  if (process.platform !== 'darwin') {
+    // Observe the real native popup, then dismiss it via its public API. This
+    // validates pointer hit testing, safe-area anchoring and preload delivery.
+    const observer = await session.application.evaluateHandle(({ Menu, BrowserWindow }) => {
+      const menu = Menu.getApplicationMenu(), window = BrowserWindow.getAllWindows()[0]
+      const original = menu.popup, state = { calls: [] }
+      menu.popup = function (options) { state.calls.push({ x: options.x, y: options.y, ownWindow: options.window === window }); return original.call(this, options) }
+      state.restore = () => { menu.closePopup(window); menu.popup = original }
+      return state
+    })
+    try {
+      await nativeWindow.evaluate(window => window.webContents.setZoomFactor(1.25))
+      const menu = page.getByRole('button', { name: '앱 메뉴', exact: true })
+      await menu.click()
+      await eventually('custom app menu native popup', async () => await observer.evaluate(state => state.calls.length) === 1)
+      const geometry = await titleBarGeometry(), call = await observer.evaluate(state => state.calls[0])
+      assert.equal(call.ownWindow, true)
+      assert.ok(Math.abs(call.x - geometry.menu.left * 1.25) <= 1 && Math.abs(call.y - geometry.menu.bottom * 1.25) <= 1, 'Menu popup ignored page zoom or native caption safe area')
+    } finally {
+      await observer.evaluate(state => state.restore()); await observer.dispose()
+      await nativeWindow.evaluate(window => window.webContents.setZoomFactor(1))
+    }
+  } else assert.equal(await page.getByRole('button', { name: '앱 메뉴', exact: true }).count(), 0, 'macOS should use its native application menu')
+}
 async function macShortcut(key, shift = false) {
   const nativeCodes = { A: 0x00, C: 0x08, V: 0x09, X: 0x07, Z: 0x06, O: 0x1f, S: 0x01 }
   assert.ok(Object.hasOwn(nativeCodes, key), 'Unsupported macOS smoke shortcut.')
@@ -436,6 +558,8 @@ try {
     await screenshot('01-launcher.png')
   })
 
+  await checked('custom title bar safe area, zoom, fullscreen and native app menu', verifyWindowChrome)
+
   await checked('packaged GPL notices and source identity', async () => {
     const documents = await session.page.evaluate(async () => {
       const files = ['GPL-3.0-only.txt', 'garak-ieum-MIT-notice.txt', 'THIRD_PARTY_NOTICES.txt', 'SOURCE.txt', 'SOURCE.json']
@@ -492,6 +616,70 @@ try {
     await bpm.fill('88'); await bpm.press('Escape'); await valueIs(bpm, '137')
     await bpm.focus(); await bpm.press('ArrowUp'); await valueIs(bpm, '138')
     await bpm.press('ArrowDown'); await valueIs(bpm, '137'); await bpm.press('Enter')
+  })
+
+  await checked('editor menus live in the custom header and preserve View actions', async () => {
+    const page = session.page
+    assert.equal(await page.locator('.desktop-titlebar .workspace-header-menus > button').count(), 3)
+    assert.equal(await page.locator('.tracks-menubar [data-menu="edit"], .tracks-menubar [data-menu="functions"], .tracks-menubar [data-menu="view"]').count(), 0)
+    assertTitleBarGeometry(await titleBarGeometry())
+    const view = page.locator('.workspace-header-menus [data-menu="view"]')
+    const gridBefore = await page.locator('.arrangement').evaluate(element => element.classList.contains('no-grid'))
+    for (const expected of [!gridBefore, gridBefore]) {
+      await view.click()
+      await page.getByRole('menuitemradio', { name: /그리드 선/ }).click()
+      assert.equal(await page.locator('.arrangement').evaluate(element => element.classList.contains('no-grid')), expected)
+    }
+    await view.click()
+    await page.getByRole('menuitem', { name: /^트랙 헤더 구성/ }).click()
+    const panel = page.getByRole('group', { name: '트랙 헤더 구성', exact: true })
+    await panel.waitFor()
+    const anchor = await view.boundingBox(), bounds = await panel.boundingBox()
+    assert.ok(anchor && bounds && Math.abs(bounds.x - anchor.x) <= 1 && Math.abs(bounds.y - anchor.y - anchor.height) <= 1, 'Track header configuration lost its menu anchor')
+    await page.keyboard.press('Escape')
+    await panel.waitFor({ state: 'hidden' })
+    report.windowChrome.editorMenus = true
+  })
+
+  await checked('custom title follows project name and theme with validated caption colors', async () => {
+    const page = session.page
+    await eventually('project title in the custom frame', async () => await page.locator('.desktop-titlebar-title').textContent() === projectName)
+    const observer = await session.application.evaluateHandle(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0], original = window.setTitleBarOverlay
+      const state = { colors: [] }
+      window.setTitleBarOverlay = function (colors) { state.colors.push(colors); return original.call(this, colors) }
+      state.restore = () => { window.setTitleBarOverlay = original }
+      return state
+    })
+    try {
+      await page.locator('button.audio-status').click()
+      const settings = page.getByRole('dialog', { name: '설정', exact: true })
+      await settings.getByRole('button', { name: '화면 테마', exact: true }).click()
+      for (const [name, background, foreground] of [['백자와 수묵, 밝은 테마', '#f8f6f0', '#202124'], ['새벽 한옥, 어두운 테마', '#303831', '#eee9dc']]) {
+        // The full preview card is the native radio's label/click target.
+        const option = settings.getByRole('radio', { name, exact: true })
+        await option.locator('..').click()
+        assert.equal(await option.isChecked(), true)
+        await eventually(`caption theme ${name}`, async () => {
+          const matches = await page.evaluate(color => {
+            const sample = document.createElement('span'); sample.style.color = color; document.body.append(sample)
+            const expected = getComputedStyle(sample).color; sample.remove()
+            return getComputedStyle(document.querySelector('.desktop-titlebar')).backgroundColor === expected
+          }, background)
+          if (!matches) return false
+          if (process.platform === 'darwin') return true
+          return observer.evaluate((state, colors) => state.colors.some(value => value.color === colors.background && value.symbolColor === colors.foreground), { background, foreground })
+        })
+      }
+      const before = await observer.evaluate(state => state.colors.length)
+      assert.equal(await page.evaluate(async () => {
+        try { await window.garakDesktop.windowChrome.setColors({ background: 'transparent', foreground: '#ffffff' }); return false } catch { return true }
+      }), true, 'Caption color IPC accepted an unsupported value')
+      assert.equal(await observer.evaluate(state => state.colors.length), before, 'Rejected caption colors reached the native window')
+      await settings.getByRole('button', { name: '설정 닫기', exact: true }).click()
+      await settings.waitFor({ state: 'hidden' })
+      report.windowChrome.titleAndTheme = true
+    } finally { await observer.evaluate(state => state.restore()); await observer.dispose() }
   })
 
   await checked('bundled license links switch isolated document windows', async () => {

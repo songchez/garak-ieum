@@ -1,6 +1,7 @@
 #include "protocol.hpp"
 #include "garak/device.hpp"
 #include "garak/vst3.hpp"
+#include "ieum_wave/patch.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -131,7 +132,8 @@ class Host {
     }
   }
   Json request(const std::string& method,const Json& a) {
-    if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"backends",DeviceHost::availableBackends()}};
+    if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"backends",DeviceHost::availableBackends()},
+      {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}}};
     if (method=="engine.snapshot") return snapshot();
     if (method=="devices.list") {
       Json result=Json::array();
@@ -157,7 +159,9 @@ class Host {
       if (engine_ && configured_ && project.sampleRate!=engine_->snapshot().sampleRate) throw std::runtime_error("Project and device sample rates differ; configure the device first");
       if (!engine_) engine_=std::make_unique<RenderEngine>(project.sampleRate,scratchFrames);
       auto prepared=engine_->prepare(project,assets_,sets_,resolver(false));
-      engine_->submit(std::move(prepared)); project_=std::move(project); prunePlugins();
+      if(a.value("awaitApplied",false))requireEngine();
+      const auto ticket=engine_->submit(std::move(prepared)); project_=std::move(project); prunePlugins();
+      if(a.value("awaitApplied",false))awaitApplied(ticket);
       return {{"revision",project_.revision}};
     }
     if (method=="render.wav") return render(a);
@@ -174,7 +178,7 @@ class Host {
       if (a.contains("trackId") && a.at("trackId").is_string() && !a.at("trackId").get<std::string>().empty()) { awaitApplied(engine_->previewNote(trackIndex(a.at("trackId").get<std::string>()),pitch,velocity,frames)); }
       else {
         auto audition=source(a.at("source"));
-        if(audition.kind!=TrackSource::Kind::BuiltinSynth && audition.kind!=TrackSource::Kind::BuiltinSampled) throw std::runtime_error("Standalone audition supports built-in instruments only");
+        if(audition.kind!=TrackSource::Kind::BuiltinSynth && audition.kind!=TrackSource::Kind::BuiltinSampled && audition.kind!=TrackSource::Kind::NativeWavetable) throw std::runtime_error("Standalone audition supports built-in instruments only");
         preview(std::move(audition),pitch,velocity,frames);
       }
       return Json::object();
@@ -184,6 +188,7 @@ class Host {
       awaitApplied(method=="note.on"?engine_->noteOn(index,pitch,static_cast<float>(number(a,"velocity",0,4,.8)),id):engine_->noteOff(index,pitch,id));
       return Json::object();
     }
+    if(method=="note.allOff") { awaitApplied(engine_->allNotesOff(trackIndex(string(a,"trackId")))); return Json::object(); }
     if (method=="monitor.set") {
       std::vector<std::uint32_t> tracks;
       if(a.value("enabled",false)) {

@@ -70,6 +70,7 @@ struct PluginEvent {
   std::uint8_t pitch = 60, channel = 0;
   float value = 1;
   std::uint32_t parameterId = 0;
+  bool audition = false; // Separate WAVE live/editor note ownership from the timeline.
 };
 class PluginProcessor {
  public:
@@ -89,13 +90,14 @@ using ExternalProcessor = PluginProcessor;
 using PluginResolver = std::function<std::shared_ptr<PluginProcessor>(const PluginSpec&, double, std::uint32_t)>;
 
 struct TrackSource {
-  enum class Kind { Audio, BuiltinSynth, BuiltinSampled, Vst3 };
+  enum class Kind { Audio, BuiltinSynth, BuiltinSampled, Vst3, NativeWavetable };
   Kind kind = Kind::Audio;
   std::string instrumentId;
   std::string sampleSetId;
   bool isKit = false;
   Parameters params;
   PluginSpec plugin;
+  std::vector<std::uint8_t> patchData; // Validated IEWAVE01 pack, decoded off the callback.
   bool operator==(const TrackSource&) const = default;
 };
 struct BuiltinInsert {
@@ -186,7 +188,7 @@ class RenderEngine {
       const SampleSetStore& = {}, const PluginResolver& = {}) const;
   // Control-thread only; throws if the bounded graph queue is full. Ownership is
   // consumed on either outcome. Retired destruction happens in collectRetired.
-  void submit(std::unique_ptr<PreparedProject> project);
+  std::uint64_t submit(std::unique_ptr<PreparedProject> project);
   void collectRetired();
   [[nodiscard]] std::uint64_t play();
   [[nodiscard]] std::uint64_t pause();
@@ -196,6 +198,8 @@ class RenderEngine {
                                         std::uint32_t durationFrames = 24000);
   [[nodiscard]] std::uint64_t noteOn(std::uint32_t trackIndex, int pitch, float velocity, std::int32_t noteId);
   [[nodiscard]] std::uint64_t noteOff(std::uint32_t trackIndex, int pitch, std::int32_t noteId);
+  // Release audition/live notes on this track without touching timeline notes.
+  [[nodiscard]] std::uint64_t allNotesOff(std::uint32_t trackIndex);
   [[nodiscard]] std::uint64_t setMonitoring(std::span<const std::uint32_t> tracks);
   [[nodiscard]] std::uint64_t startRecording();
   [[nodiscard]] std::uint64_t stopRecording();
