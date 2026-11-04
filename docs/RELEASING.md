@@ -2,7 +2,7 @@
 
 설치 파일은 이 저장소의 [GitHub Releases](https://github.com/songchez/garak-ieum/releases)에 공개합니다. **Windows x64 설치 EXE와 Apple Silicon Mac DMG를 같은 커밋에서 만들고, 두 플랫폼의 설치·실행 검사가 모두 성공한 뒤 한 릴리스로 공개**합니다. 랜딩 페이지는 공개된 릴리스와 첨부 파일을 읽어 최신 다운로드 및 버전별 다운로드를 표시합니다.
 
-현재 `release.config.json`은 `publish: false`입니다. 이 파이프라인을 추가한 커밋은 설치 파일을 공개하거나 태그를 만들지 않습니다. CI의 임시 artifact는 GitHub 로그인과 보관 기간이 필요하므로 랜딩의 공개 다운로드로 사용하지 않습니다.
+공개 여부는 `release.config.json`의 버전·채널·`publish` 설정으로 결정합니다. 일반 코드 push는 테스트용 빌드를 만들고, 발행을 요청한 릴리스 설정 변경이 `main`에 반영되면 검증 후 GitHub Releases에 게시합니다. 같은 설정을 유지한 후속 커밋은 이미 공개한 버전을 다시 게시하지 않습니다. CI의 임시 artifact는 GitHub 로그인과 보관 기간이 필요하므로 랜딩의 공개 다운로드로 사용하지 않습니다.
 
 ## 1. 커밋에서 버전과 발행 여부 설정
 
