@@ -2,6 +2,6 @@
   "schemaVersion": 1,
   "version": "0.1.1",
   "channel": "preview",
-  "publish": false,
+  "publish": true,
   "notes": "releases/0.1.1.md"
 }
