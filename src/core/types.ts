@@ -1,5 +1,6 @@
 import type { SampleRate } from './audioSettings'
 import type { PitchEditDocument } from '../devices/pitch-editor/model'
+import type { NativePluginInstance } from '../audio/native/contracts'
 
 /** A key of INSTRUMENTS in core/instruments.ts. Saved files store it as plain text. */
 export type InstrumentId = string
@@ -102,6 +103,10 @@ export interface Track {
   /** Keys and ranges are defined by instrumentDef(instrument).params in core/instruments.ts. */
   instrumentParams: Record<string, number>
   devices: Device[]
+  /** Native VST3 source; the builtin instrument selection remains available when removed. */
+  pluginInstrument?: NativePluginInstance
+  /** Ordered native VST3 inserts, processed after the builtin insert chain. */
+  pluginInserts?: NativePluginInstance[]
 }
 export interface Marker {
   id: string
@@ -114,7 +119,7 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  schemaVersion: 5
+  schemaVersion: 6
   id: string
   name: string
   bpm: number

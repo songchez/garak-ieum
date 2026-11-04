@@ -14,6 +14,13 @@ files:
     filter:
       - LICENSE.signalsmith.txt
 asar: true
+extraResources:
+  - from: build/native-audio
+    to: native
+    filter:
+      - garak-audio-host
+      - garak-audio-host.exe
+      - licenses/**
 # The Windows MCP console launcher uses this bundled Node runtime with inherited pipes.
 electronFuses:
   runAsNode: true

@@ -12,6 +12,9 @@ on:
     paths:
       - '.github/workflows/macos.yml'
       - 'desktop/**'
+      - 'native/**'
+      - 'scripts/native-*.mjs'
+      - 'scripts/build-native-audio.mjs'
       - 'scripts/desktop-*.mjs'
       - 'scripts/prepare-licenses.mjs'
       - 'scripts/source-info.mjs'
@@ -34,6 +37,9 @@ on:
     paths:
       - '.github/workflows/macos.yml'
       - 'desktop/**'
+      - 'native/**'
+      - 'scripts/native-*.mjs'
+      - 'scripts/build-native-audio.mjs'
       - 'scripts/desktop-*.mjs'
       - 'scripts/prepare-licenses.mjs'
       - 'scripts/source-info.mjs'
@@ -63,7 +69,7 @@ jobs:
   macos:
     name: macOS Apple Silicon DMG
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -97,6 +103,9 @@ jobs:
 
       - name: Build ad-hoc signed preview DMG
         run: pnpm desktop:build:mac --arm64
+
+      - name: Verify native audio and actual VST3 host
+        run: pnpm native:test
 
       - name: Install DMG and verify bundle metadata
         run: pnpm desktop:install:mac:test

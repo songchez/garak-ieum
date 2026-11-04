@@ -2,6 +2,7 @@ import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
 import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { midiEditorClip, midiSourceOffset } from './midiRegions'
+import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
 import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
@@ -70,7 +71,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -359,6 +360,8 @@ export function duplicateTrack(track: Track): Track {
     name: `${track.name} 복사본`.slice(0, 512),
     instrumentParams: { ...track.instrumentParams },
     devices: track.devices.map(device => ({ ...device, id: uid(), params: { ...device.params } })),
+    ...(track.pluginInstrument ? { pluginInstrument: cloneNativePlugin(track.pluginInstrument, uid()) } : {}),
+    ...(track.pluginInserts ? { pluginInserts: track.pluginInserts.map(plugin => cloneNativePlugin(plugin, uid())) } : {}),
     clips: track.clips.map(clip => duplicateClip(clip, clip.startBeat)),
   }
 }
@@ -374,6 +377,8 @@ export function duplicateTrackSettings(track: Track): Track {
     velocityLimit: [...track.velocityLimit],
     instrumentParams: { ...track.instrumentParams },
     devices: track.devices.map(device => ({ ...device, id: uid(), params: { ...device.params } })),
+    ...(track.pluginInstrument ? { pluginInstrument: cloneNativePlugin(track.pluginInstrument, uid()) } : {}),
+    ...(track.pluginInserts ? { pluginInserts: track.pluginInserts.map(plugin => cloneNativePlugin(plugin, uid())) } : {}),
     clips: [],
   }
 }
@@ -605,8 +610,8 @@ function params(value: unknown, defs: readonly ParamDef[], path: string): Record
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) throw new Error('This project version is not supported. Expected schema version 1, 2, 3, 4 or 5.')
-  const timeSignature = version === 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6) throw new Error('This project version is not supported. Expected schema version 1 through 6.')
+  const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
   const seen = new Set<string>()
@@ -634,6 +639,10 @@ export function validateProject(input: unknown): Project {
     const trackId = id(track.id, `${path} ID`)
     const instrument: InstrumentId = track.instrument
     const instrumentParams = params(track.instrumentParams, instrumentDef(instrument).params, `${path} instrument`)
+    if (version < 6 && (track.pluginInstrument !== undefined || track.pluginInserts !== undefined)) throw new Error('VST3 plugins require project schema version 6 or later.')
+    if (track.kind !== 'instrument' && track.pluginInstrument !== undefined) throw new Error(`${path} cannot place a VST3 instrument on an audio track.`)
+    const pluginInstrument = track.pluginInstrument === undefined ? undefined : validateNativePlugin(track.pluginInstrument, `${path} VST3 instrument`, id)
+    const pluginInserts = track.pluginInserts === undefined ? undefined : list(track.pluginInserts, `${path} VST3 inserts`, 64).map((plugin, index) => validateNativePlugin(plugin, `${path} VST3 insert ${index + 1}`, id))
     let devices: Device[]
     if (version === 1) {
       const effects = object(track.effects, `${path} effects`)
@@ -665,6 +674,7 @@ export function validateProject(input: unknown): Project {
         }
       })
     }
+    if (devices.length + (pluginInserts?.length ?? 0) > 64) throw new Error(`${path} may contain at most 64 inserts including VST3.`)
     const clips = list(track.clips, `${path} clips`, 100_000).map((clipInput, clipIndex): Clip => {
       clipCount += 1
       if (clipCount > 100_000) throw new Error('The project contains too many clips.')
@@ -752,6 +762,8 @@ export function validateProject(input: unknown): Project {
       clips,
       instrumentParams,
       devices,
+      ...(pluginInstrument ? { pluginInstrument } : {}),
+      ...(pluginInserts ? { pluginInserts } : {}),
     }
   })
   const markers = sortMarkers(list(source.markers ?? [], 'Markers', 10_000).map((markerInput, markerIndex): Marker => {
@@ -764,7 +776,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

@@ -1,6 +1,6 @@
 # 가락이음 macOS 데스크톱
 
-2026-11-04 · Electron 기반 Apple Silicon 개발 프리뷰
+2026-11-04 · Electron + C++ Core Audio, Apple Silicon 개발 프리뷰
 
 macOS용 가락이음은 **DMG 안의 `가락이음.app`을 응용 프로그램 폴더에 복사하는 방식**으로 설치합니다. 앱을 실행할 때 Node.js나 pnpm을 따로 설치할 필요는 없습니다. Windows의 NSIS `.exe` 배포는 그대로 유지합니다.
 
@@ -20,7 +20,7 @@ Artifact에는 DMG, 같은 버전·커밋의 `Garak-Ieum-Source-<버전>-<커밋
 shasum -a 256 -c SHA256SUMS-macos-arm64.txt
 ```
 
-대응 소스 ZIP은 개발·수정·재빌드용입니다. 앱 설치에는 DMG를 사용합니다. Artifact 보관 기간은 14일이며 GitHub Releases에 자동 공개하지 않습니다. 외부 재배포 시 정확히 일치하는 대응 소스와 라이선스 고지를 함께 제공하는 방법은 [GPL 배포 안내](LICENSING.md)를 따릅니다.
+대응 소스 ZIP은 개발·수정·재빌드용입니다. 앱 설치에는 DMG를 사용합니다. 소스 ZIP은 `native/dependency-sources/`에 8개 고정 네이티브 소스 archive를 포함합니다. 개발 검사 Artifact 보관 기간은 14일입니다. 공개 버전은 `release.config.json`을 커밋해 요청하는 별도 [공개 배포 workflow](../.github/workflows/release.yml)와 [Releases](https://github.com/songchez/garak-ieum/releases)를 사용합니다. 외부 재배포 시 정확히 일치하는 대응 소스와 라이선스 고지를 함께 제공하는 방법은 [GPL 배포 안내](LICENSING.md)를 따릅니다.
 
 ## 프로젝트, 파일 아이콘과 마이크
 
@@ -30,21 +30,26 @@ shasum -a 256 -c SHA256SUMS-macos-arm64.txt
 
 녹음할 때 앱 안의 확인과 macOS 마이크 권한 요청을 거칩니다. 앱 패키지에는 한국어 권한 설명과 오디오 입력 entitlement를 넣습니다. 실제 마이크·오디오 인터페이스의 녹음, 재생 지연, 권한 거절과 재허용은 장치가 있는 Mac에서 별도로 검증해야 합니다. CI는 물리 장치 녹음이나 권한 승인을 대신하지 않습니다. [Electron 마이크 권한](https://www.electronjs.org/docs/latest/api/system-preferences#systempreferencesaskformediaaccessmediatype-macos)
 
-현재 음원 재생·녹음 엔진은 기존 **Web Audio**입니다. macOS 설치 파일 추가가 네이티브 ASIO·VST3·Audio Unit 호스트 구현을 뜻하지 않습니다. ASIO는 Windows 네이티브 오디오 계획에서 다루며, macOS 네이티브 엔진은 별도 Core Audio 설계·검증 대상입니다. [네이티브 오디오 계획](NATIVE_AUDIO.md)
+음원 재생·입력 모니터링·녹음·WAV 출력은 `garak-audio-host` C++ 프로세스의 **Core Audio** backend를 사용합니다. miniaudio 0.11.26으로 장치/레이트/채널을 열고 내장 음원·기타 앰프·이펙트와 VST3가 같은 callback에서 처리됩니다. VST3는 **arm64 플러그인**을 사용하며 자체 창은 NSView에 연결합니다. Intel 전용 플러그인용 Rosetta bridge와 AU/CLAP/VST2 호스트는 없습니다. ASIO는 Windows 경로입니다.
+
+Web Audio는 브라우저 데모와 압축 자산의 일회성 `OfflineAudioContext` 디코딩·비실시간 피치 작업에 남습니다. 실제 출력과 모니터링 PCM은 JavaScript/IPC를 버퍼마다 왕복하지 않습니다. 새 macOS 빌드·창·Core Audio·권한 동작은 해당 커밋의 CI와 실제 장치에서 확인해야 합니다. Linux에서 통과한 실제 SDK/fixture 검사를 Mac 장치 실측으로 표시하지 않습니다. [네이티브 엔진과 검증 범위](NATIVE_AUDIO.md)
 
 ## 소스에서 빌드하기
 
-Apple Silicon Mac에 arm64 Node.js 24와 pnpm 11.25.0을 준비합니다. 현재 빌드 스크립트는 Linux/Windows의 macOS 크로스 빌드와 Rosetta 빌드를 허용하지 않습니다.
+Apple Silicon Mac에 arm64 Node.js 24, pnpm 11.25.0, CMake 3.25 이상과 Xcode Command Line Tools(C++20)를 준비합니다. 현재 빌드 스크립트는 Linux/Windows의 macOS 크로스 빌드와 Rosetta 빌드를 허용하지 않습니다.
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm test
 pnpm desktop:build:mac --arm64
+pnpm native:test
 pnpm desktop:test
 pnpm desktop:source
 ```
 
-`desktop:build:mac`은 웹 에셋·MCP·Electron 코드를 빌드한 뒤 arm64 DMG를 생성합니다. `--arm64` 인수는 생략할 수 있으며 다른 아키텍처는 허용하지 않습니다. 기본 모드는 ad-hoc 서명입니다. 이 모드에서는 서명·공증 자격 증명 환경 변수를 자식 빌드에 전달하지 않고, 인증서가 필요 없는 ad-hoc 서명을 PR에서도 수행한 다음 실제 번들 서명을 검증합니다. `desktop:source`는 빌드와 소스가 같은 **깨끗한 Git 커밋**일 때만 소스 ZIP을 생성합니다.
+`desktop:build:mac`은 네이티브 C++ 엔진·웹 에셋·MCP·Electron 코드를 빌드한 뒤 arm64 DMG를 생성합니다. `--arm64` 인수는 생략할 수 있으며 다른 아키텍처는 허용하지 않습니다. 기본 모드는 ad-hoc 서명입니다. 이 모드에서는 서명·공증 자격 증명 환경 변수를 자식 빌드에 전달하지 않고, 인증서가 필요 없는 ad-hoc 서명을 PR에서도 수행한 다음 실제 번들 서명을 검증합니다. `desktop:source`는 빌드와 소스가 같은 **깨끗한 Git 커밋**일 때만 소스 ZIP을 생성합니다.
+
+`pnpm native:build`로 네이티브 엔진만 빌드·CTest 실행할 수 있고, `pnpm native:test`는 실제 helper와 VST3 fixture를 검사합니다. 앱에는 `Contents/Resources/native/garak-audio-host`와 `native/licenses/`가 들어갑니다. 네이티브 창은 메인 스레드의 AppKit 이벤트 펌프를 사용하며, 오디오 callback은 창 이벤트나 Electron 응답을 기다리지 않습니다.
 
 `desktop:install:mac:test`는 일회성 **GitHub-hosted macOS runner에서만** 실행됩니다. DMG를 읽기 전용으로 연결하고, 공백이 있는 임시 경로로 앱을 복사한 뒤 이미지를 해제합니다. 실제 `/Applications`와 사용자 프로젝트는 수정하지 않습니다. 번들 ID·버전·아이콘·UTI·CPU·서명·entitlement를 검증하고 설치한 실행 파일을 후속 스모크 검사에 전달합니다.
 

@@ -19,12 +19,19 @@ export interface AudioSettings {
   inputChannels: 'default' | 1 | 2
   /** Positive shifts the new recorded region later; negative shifts it earlier. */
   recordingOffsetMs: number
+  /** Device backend is independent of the web renderer. Auto resolves by desktop platform. */
+  nativeBackend: 'auto' | 'asio' | 'wasapi' | 'coreaudio'
+  nativeBufferFrames: number
+  /** First physical input channel (zero based); stereo uses this channel and the next. */
+  nativeInputChannel: number
+  lowLatencyMonitoring: boolean
 }
 
 export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   inputDeviceId: '', outputDeviceId: '', latencyHint: 'interactive', renderSizeHint: 'default',
   softwareMonitoring: true, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
   inputChannels: 'default', recordingOffsetMs: 0,
+  nativeBackend: 'auto', nativeBufferFrames: 128, nativeInputChannel: 0, lowLatencyMonitoring: true,
 }
 export const AUDIO_SETTINGS_STORAGE_KEY = 'garak-ieum:audio-settings:v1'
 
@@ -50,6 +57,10 @@ export function normalizeAudioSettings(value: unknown): AudioSettings {
     inputChannels: raw.inputChannels === 1 || raw.inputChannels === 2 ? raw.inputChannels : 'default',
     recordingOffsetMs: typeof raw.recordingOffsetMs === 'number' && Number.isFinite(raw.recordingOffsetMs)
       ? Math.round(Math.min(1000, Math.max(-1000, raw.recordingOffsetMs))) : 0,
+    nativeBackend: raw.nativeBackend === 'asio' || raw.nativeBackend === 'wasapi' || raw.nativeBackend === 'coreaudio' ? raw.nativeBackend : 'auto',
+    nativeBufferFrames: typeof raw.nativeBufferFrames === 'number' && Number.isInteger(raw.nativeBufferFrames) && raw.nativeBufferFrames >= 16 && raw.nativeBufferFrames <= 8192 ? raw.nativeBufferFrames : 128,
+    nativeInputChannel: typeof raw.nativeInputChannel === 'number' && Number.isInteger(raw.nativeInputChannel) && raw.nativeInputChannel >= 0 && raw.nativeInputChannel < 256 ? raw.nativeInputChannel : 0,
+    lowLatencyMonitoring: flag('lowLatencyMonitoring'),
   }
 }
 
@@ -90,6 +101,13 @@ export interface AudioState {
   supportsRenderSize: boolean
   needsReconfiguration: boolean
   error: string | null
+  /** Native driver reports; kept separate from browser render-quantum hints. */
+  nativeDevice?: import('../audio/native/contracts').NativeDeviceState | null
+  inputLatency?: number | null
+  pluginLatencyFrames?: number
+  underruns?: number
+  commandOverflows?: number
+  voiceOverflows?: number
 }
 
 export interface InputState {
