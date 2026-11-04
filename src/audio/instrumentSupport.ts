@@ -31,16 +31,24 @@ function hasPlayableNotes(track: Track, projectEnd: number): boolean {
 }
 
 /** Empty, disabled, muted and non-solo native tracks must not block the rest of a session. */
-export function unsupportedWebAudioInstruments(project: Project): string[] {
+export function unsupportedNativeInstruments(project: Project, sourceAvailable: (track: Track) => boolean = () => false): string[] {
   if (project.masterVolume <= 0) return []
   const audible = audibleTrackIds(project.tracks)
   return project.tracks.filter(track => track.kind === 'instrument'
-    && instrumentDef(track.instrument).kind === 'native' && audible.has(track.id)
+    && instrumentDef(track.instrument).kind === 'native' && !sourceAvailable(track) && audible.has(track.id)
     && track.volume > 0 && hasPlayableNotes(track, project.lengthBeats))
     .map(track => track.name)
 }
 
-export function assertWebAudioProjectSupported(project: Project): void {
-  const tracks = unsupportedWebAudioInstruments(project)
+export function assertNativeInstrumentsSupported(project: Project, sourceAvailable: (track: Track) => boolean = () => false): void {
+  const tracks = unsupportedNativeInstruments(project, sourceAvailable)
   if (tracks.length) throw new Error(`${WAVETABLE_HOST_REQUIRED} 대상 트랙: ${tracks.slice(0, 4).join(', ')}${tracks.length > 4 ? '…' : ''}`)
+}
+
+export function unsupportedWebAudioInstruments(project: Project): string[] {
+  return unsupportedNativeInstruments(project)
+}
+
+export function assertWebAudioProjectSupported(project: Project): void {
+  assertNativeInstrumentsSupported(project)
 }

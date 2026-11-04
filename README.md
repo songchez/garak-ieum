@@ -244,11 +244,11 @@ pnpm build
 pnpm mcp:build
 ```
 
-기술 구성은 **React · TypeScript · Vite · Web Audio API · IndexedDB**입니다. 직접 작성한 Web Audio 엔진에 모듈형 이펙트를 연결하고, 오디오 피치의 오프라인 처리에는 Worker와 Signalsmith WASM을 사용합니다.
+화면은 **React · TypeScript · Vite · Electron**, 데스크톱 오디오는 **자체 C++20 엔진**을 사용합니다. Windows의 ASIO/WASAPI와 Apple Silicon의 Core Audio에서 내장 악기·샘플·이펙트·기타 앰프·VST3·믹서·모니터링·녹음·WAV 출력을 같은 그래프로 처리합니다. Web Audio는 브라우저 데모와 압축 파일의 일회성 디코딩에 남으며, 피치의 오프라인 처리에는 Worker와 Signalsmith WASM을 사용합니다. [오디오 구조와 검증 범위](docs/NATIVE_AUDIO.md)
 
 ## 라이선스와 크레딧
 
-앱 코드와 오리지널 MIDI 편곡 코드는 [GNU GPL v3.0 only (`GPL-3.0-only`)](LICENSE)로 제공합니다. ASIO SDK도 GPLv3 경로를 선택했으므로 별도의 Steinberg proprietary 계약은 필요하지 않습니다. **ASIO·VST3 네이티브 엔진은 아직 구현되지 않았으며**, 현재 설치형 앱은 기존 Web Audio 엔진을 사용합니다. [네이티브 오디오 계획](docs/NATIVE_AUDIO.md)
+앱 코드와 오리지널 MIDI 편곡 코드는 [GNU GPL v3.0 only (`GPL-3.0-only`)](LICENSE)로 제공합니다. ASIO SDK는 GPLv3 경로로 도입했으며, 설치물에 네이티브 호스트와 의존성 고지를 포함합니다. 같은 빌드의 대응 소스 ZIP에는 ASIO·VST3·miniaudio·JSON 라이브러리의 검증된 원본 소스도 함께 제공합니다. 실제 장치의 왕복 지연과 개별 플러그인 호환성은 [네이티브 오디오 검증 범위](docs/NATIVE_AUDIO.md)에서 구분합니다.
 
 이전에 MIT로 제공한 코드의 [저작권·허가 고지](public/licenses/garak-ieum-MIT-notice.txt)를 보존합니다. 이미 MIT 조건으로 받은 복사본의 권리는 소급해 취소하지 않습니다. 아이콘·글꼴·샘플 음원·외부 라이브러리는 각각의 원래 라이선스와 고지를 유지합니다.
 

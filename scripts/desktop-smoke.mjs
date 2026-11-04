@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron } from 'playwright'
+import { verifyNativeAudioUI } from './desktop-native-ui-smoke.mjs'
 
 // Run against the packaged application, with normal sandbox/security settings.
 // Native dialogs are stubbed only through Playwright's Electron main context;
@@ -82,9 +83,9 @@ async function independentChecked(name, action) {
 
 function launchEnvironment(overrides = {}) {
   // Never inherit a developer's real bridge token into the smoke processes.
-  const excluded = new Set(['ELECTRON_RUN_AS_NODE', 'GARAK_MCP_TOKEN', 'GARAK_MCP_PORT', 'GARAK_DESKTOP_TEST_PROFILE'])
+  const excluded = new Set(['ELECTRON_RUN_AS_NODE', 'GARAK_MCP_TOKEN', 'GARAK_MCP_PORT', 'GARAK_DESKTOP_TEST_PROFILE', 'GARAK_NATIVE_TEST_CLOCK'])
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => !excluded.has(key.toUpperCase()) && typeof value === 'string'))
-  return { ...environment, ...(process.platform === 'darwin' ? { ELECTRON_ENABLE_LOGGING: '1', ELECTRON_ENABLE_STACK_DUMPING: '1' } : {}), GARAK_DESKTOP_TEST_PROFILE: profile, ...overrides }
+  return { ...environment, ...(process.platform === 'darwin' ? { ELECTRON_ENABLE_LOGGING: '1', ELECTRON_ENABLE_STACK_DUMPING: '1' } : {}), GARAK_DESKTOP_TEST_PROFILE: profile, GARAK_NATIVE_TEST_CLOCK: '1', ...overrides }
 }
 async function freeLoopbackPort() {
   const server = createServer()
@@ -419,6 +420,7 @@ try {
         protocol: location.protocol, host: location.host,
         require: typeof window.require, process: typeof window.process, buffer: typeof window.Buffer, fs: typeof window.fs,
         desktop: bridge?.isDesktop, platform: bridge?.platform, version: bridge?.version,
+        nativeAudio: typeof bridge?.audio?.request,
         methods: Object.fromEntries(['openProject', 'saveFile', 'onOpenProject', 'onSaveProject', 'onNewProject', 'onBeforeClose', 'ready'].map(name => [name, typeof bridge?.[name]])),
         exposedFilesystem: ['fs', 'readFile', 'writeFile', 'require', 'ipcRenderer'].some(name => bridge && name in bridge),
       }
@@ -428,6 +430,7 @@ try {
     assert.equal(isolation.desktop, true); assert.equal(isolation.platform, process.platform)
     assert.equal(isolation.version, report.launches.at(-1).details.version)
     assert.equal(isolation.exposedFilesystem, false)
+    assert.equal(isolation.nativeAudio, 'function')
     for (const [name, type] of Object.entries(isolation.methods)) assert.equal(type, 'function', `Missing bridge method ${name}`)
     await session.page.getByText('이 컴퓨터의 작업실', { exact: true }).waitFor()
     await screenshot('01-launcher.png')
@@ -618,7 +621,18 @@ try {
     await session.page.getByText('스테레오 WAV 파일을 저장했습니다.', { exact: true }).waitFor({ timeout: 30_000 })
     const wav = await readFile(wavFile)
     assert.ok(wav.length > 44); assert.equal(wav.toString('ascii', 0, 4), 'RIFF'); assert.equal(wav.toString('ascii', 8, 12), 'WAVE')
+    const nativeState = await session.page.evaluate(() => window.garakDesktop.audio.request('engine.snapshot'))
+    assert.equal(nativeState.testClock, true)
+    assert.equal(nativeState.device.backend, 'test')
+    assert.equal(nativeState.device.testClock, true)
+    assert.equal(nativeState.sampleRate, wav.readUInt32LE(24))
+    assert.ok(nativeState.ready, 'WAV export must use the real packaged native host')
     report.artifacts.push('smoke-audio.wav')
+  })
+
+  await checked('native device controls and VST3 panel', async () => {
+    report.nativeAudioUI = await verifyNativeAudioUI(session.page)
+    await screenshot('native-audio-vst3.png')
   })
 
   let reopenURL

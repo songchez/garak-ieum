@@ -137,3 +137,24 @@ SOFTWARE.
 - 라이선스: MIT. [원문](src/devices/pitch-editor/vendor/LICENSE.signalsmith.txt)을 함께 포함합니다.
 - 추출 방법·원본 출처·변경 범위는 [vendor 안내](src/devices/pitch-editor/vendor/README.md)에 기록합니다.
 - 이 모듈은 피치 편집 렌더에 사용하며 네이티브 플러그인 호스트나 실시간 마이크 피치 보정기를 제공하지 않습니다.
+
+## 네이티브 오디오 엔진 의존성
+
+C++ 엔진은 아래 고정 소스를 사용합니다. 다운로드 URL, 정확한 SHA-256과 archive 이름, 하위 소스 commit, 고지 파일 경로는 [native/dependencies.lock.json](native/dependencies.lock.json)이 기준입니다. JUCE는 사용하지 않습니다.
+
+| 패키지 | 고정 버전 / commit | 적용 라이선스와 저작권 고지 |
+| --- | --- | --- |
+| Steinberg ASIO SDK | 2.3.4, 공식 `ASIO-SDK_2.3.4_2025-10-15.zip` | Steinberg Media Technologies GmbH. 제공된 이중 라이선스 중 GPLv3 경로 선택. 원본 `LICENSE.txt` 및 `common/LICENSE.txt` 보존 |
+| miniaudio | 0.11.26 · `877ea4a7c2601c7b0f2a44e83dfac42e6470fea6` | David Reid 및 기여자. Public Domain/MIT No Attribution 선택지 중 MIT-0. 원본 `LICENSE` 보존 |
+| nlohmann/json | 3.11.3 · `9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03` | Niels Lohmann 및 기여자, MIT. 원본 `LICENSE.MIT` 보존 |
+| VST3 SDK | 3.8.1 · `3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96` | Steinberg Media Technologies GmbH, MIT. root 및 각 하위 소스 `LICENSE.txt` 보존 |
+| VST3 base | `fcf9da0bd27a16f7f03773a3a39822f28f5c8477` | MIT |
+| VST3 pluginterfaces | `4f547e8e102b47de4a8b8aaf343c73b700786372` | MIT |
+| VST3 public.sdk | `586dc5e6c8012c3e4b01c79389375cbe96bdb1da` | MIT |
+| VST3 cmake | `054c9143cbb8d47fc4694e473f2ee3b4d951a8f5` | MIT |
+
+원본 출처: [ASIO 공식 SDK](https://download.steinberg.net/sdk_downloads/ASIO-SDK_2.3.4_2025-10-15.zip), [miniaudio](https://github.com/mackron/miniaudio/tree/877ea4a7c2601c7b0f2a44e83dfac42e6470fea6), [nlohmann/json](https://github.com/nlohmann/json/tree/9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03), [VST3 SDK](https://github.com/steinbergmedia/vst3sdk/tree/3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96). 하위 저장소의 고정 URL은 manifest에 모두 기록합니다.
+
+이 의존성의 원본 archive는 수정하지 않고 SHA-256을 확인해 빌드합니다. 자체 어댑터·호스트·DSP와 테스트 코드는 `native/`에 있습니다. 설치물에는 `resources/native/licenses/<패키지>/`와 동일 manifest를 넣습니다. 대응 소스 ZIP에는 8개 archive를 모두 `native/dependency-sources/`에 넣고 Windows/macOS에서 같은 소스 묶음을 제공합니다. macOS에서 ASIO를 컴파일하지 않더라도 대응 소스 묶음에는 ASIO 원본이 포함됩니다. [빌드/배포 상세](docs/NATIVE_AUDIO.md)
+
+사용자가 설치한 제3자 VST3 플러그인은 각 제작자의 별도 제품입니다. 그 바이너리는 가락이음의 설치물이나 대응 소스 ZIP에 포함하지 않습니다. ASIO/VST 명칭은 Steinberg의 상표이며, SDK 사용을 Steinberg나 개별 플러그인 제작자의 보증으로 표시하지 않습니다.

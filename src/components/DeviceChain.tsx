@@ -69,18 +69,19 @@ export function DeviceChain({track,engine,scale=1,onScaleChange,zoomRef,...on}:P
   const def=instrumentDef(track.instrument)
   const defs=def.params
   const [waveEditorTrackId,setWaveEditorTrackId]=useState<string|null>(null)
-  useEffect(()=>setWaveEditorTrackId(null),[track.id,track.instrument])
-  const wavePatch=useMemo(()=>track.kind==='instrument'&&track.instrument==='wavetable'?combineWavetablePatch(track.instrumentParams,track.instrumentState):null,[track.kind,track.instrument,track.instrumentParams,track.instrumentState])
+  useEffect(()=>setWaveEditorTrackId(null),[track.id,track.instrument,track.pluginInstrument?.id])
+  const wavePatch=useMemo(()=>track.kind==='instrument'&&!track.pluginInstrument&&track.instrument==='wavetable'?combineWavetablePatch(track.instrumentParams,track.instrumentState):null,[track.kind,track.pluginInstrument,track.instrument,track.instrumentParams,track.instrumentState])
   const cardDefs=wavePatch?defs.filter(param=>/^macro[1-4]$/.test(param.id)):defs
   const rackRef=useRef<HTMLDivElement>(null),chainRef=useRef<HTMLDivElement>(null)
   const anchor=useRef<{pos:number;px:number}|null>(null)
   function zoom(factor:number,px=0){const next=zoomBy(scale,factor,ZOOM_LIMITS.deviceScale);if(Math.abs(next-scale)<.001)return;const el=chainRef.current;if(el)anchor.current={pos:(el.scrollLeft+px)/scale,px};onScaleChange?.(next)}
+  function openPlugins(){const panel=rackRef.current?.parentElement?.querySelector<HTMLElement>('.native-plugins-panel');panel?.scrollIntoView({block:'nearest'});panel?.focus({preventScroll:true})}
   function reset(){if(scale===1)return;anchor.current={pos:0,px:0};onScaleChange?.(1)}
   useZoomHandle(zoomRef,{zoom:(_axis,factor)=>zoom(factor),fit:reset})
   useZoomWheel(rackRef,{onZoomX:(factor,x)=>zoom(factor,x),onZoomY:factor=>zoom(factor)})
   useLayoutEffect(()=>{const a=anchor.current;anchor.current=null;const el=chainRef.current;if(a&&el)el.scrollLeft=Math.max(0,a.pos*scale-a.px)})
   return <div className="dc-rack" ref={rackRef} data-keyboard-scope="devices" tabIndex={-1} aria-label="디바이스 랙" style={{'--device-scale':scale} as React.CSSProperties} onPointerDown={e=>{if(e.target instanceof Element&&!e.target.closest('button,input,textarea,select,a[href],[data-selectable-text],[role="slider"]'))e.currentTarget.focus({preventScroll:true})}}><div className="device-chain" ref={chainRef} role="list" aria-label={`${track.name} 디바이스 체인`} style={{'--track-color':track.color} as React.CSSProperties}>
-    {track.kind==='instrument'?<section className="dc-card dc-source" role="listitem" aria-label={`악기 ${def.name}`}>
+    {track.kind==='instrument'&&track.pluginInstrument?<section className={`dc-card dc-source ${track.pluginInstrument.enabled?'':'bypassed'}`} role="listitem" aria-label={`VST3 악기 ${track.pluginInstrument.name}`}><header className="dc-head"><span className="dc-icon"><Icon name="plug" size={14}/></span><strong>{track.pluginInstrument.name}</strong><button className="dc-preview" onClick={on.onPreview} disabled={!track.pluginInstrument.enabled} title="VST3 악기 미리 듣기"><Icon name="play" size={10}/>미리 듣기</button></header><p className="dc-note">이 트랙의 MIDI 음표를 VST3 악기로 연주합니다.</p><div className="dc-pitch-entry"><button onClick={openPlugins}>VST3 설정 열기</button></div></section>:track.kind==='instrument'?<section className="dc-card dc-source" role="listitem" aria-label={`악기 ${def.name}`}>
       <header className="dc-head"><span className="dc-icon"><Icon name={def.icon} size={14}/></span><select aria-label="악기 변경" value={track.instrument} onChange={e=>on.onInstrumentChange(e.target.value)}><InstrumentOptions/></select><button className="dc-preview" onClick={on.onPreview} disabled={!canPlay(track.instrument)} title={canPlay(track.instrument)?'현재 설정으로 미리 듣기':WAVETABLE_HOST_REQUIRED}><Icon name="play" size={10}/>미리 듣기</button></header>
       <div className="dc-knobs" style={{'--cols':Math.ceil(cardDefs.length/2)} as React.CSSProperties}>{cardDefs.map(d=><Knob key={d.id} def={d} value={paramValue(defs,track.instrumentParams,d.id)} color={track.color} onChange={v=>on.onInstrumentParam(d.id,v)}/>)}</div>
       {wavePatch&&<div className="dc-wave-entry"><span>{wavePatch.metadata.name}</span><button onClick={()=>setWaveEditorTrackId(track.id)} aria-label="IEUM WAVE 편집기 열기"><Icon name="synth" size={14}/> IEUM WAVE 열기 <Icon name="right" size={12}/></button><small>{canPlay(track.instrument)?'네이티브 음원 연결됨':'음색 편집 · 저장 가능 / 엔진 연결 대기'}</small></div>}
@@ -101,6 +102,7 @@ export function DeviceChain({track,engine,scale=1,onScaleChange,zoomRef,...on}:P
       <div className="dc-add-list">{EFFECT_TYPES.map(type=><button key={type} onClick={()=>on.onAddDevice(type)} title={`${EFFECT_DEFS[type].name}를 체인 끝에 추가`}><Icon name={type} size={12}/>{EFFECT_DEFS[type].short}</button>)}</div>
     </section>
     <Wire/>
+    {!!track.pluginInserts?.length&&<><section className="dc-card dc-effect" role="listitem" aria-label="VST3 인서트"><header className="dc-head"><span className="dc-icon"><Icon name="plug" size={14}/></span><strong>VST3 인서트</strong></header><p className="dc-note">{track.pluginInserts.map((plugin,index)=><Fragment key={plugin.id}>{index+1}. {plugin.name}{plugin.enabled?'':' · 바이패스'}<br/></Fragment>)}</p><div className="dc-pitch-entry"><button onClick={openPlugins}>VST3 체인 편집</button></div></section><Wire/></>}
     <section className="dc-card dc-output" role="listitem" aria-label="출력">
       <header className="dc-head"><span className="dc-icon"><Icon name="volume" size={13}/></span><strong>출력</strong></header>
       <div className="dc-output-body"><div className="dc-output-knobs"><Knob def={VOLUME} value={track.volume} color={track.color} onChange={volume=>on.onTrackChange({volume})}/><Knob def={PAN} value={track.pan} color={track.color} onChange={pan=>on.onTrackChange({pan})}/></div><MiniMeter engine={engine} trackId={track.id} vertical color={track.color}/></div>

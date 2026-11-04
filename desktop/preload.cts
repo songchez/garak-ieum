@@ -14,6 +14,10 @@ const bridge: DesktopBridge = {
   isDesktop: true,
   platform: process.platform,
   version,
+  audio: {
+    request: (method, params) => ipcRenderer.invoke('garak:audio-request', method, params ?? {}),
+    subscribe: callback => subscribe('garak:audio-state', callback),
+  },
   openProject: (): Promise<DesktopFile | null> => ipcRenderer.invoke('garak:open-project'),
   saveFile: (request: DesktopSaveRequest): Promise<DesktopSaveResult> => ipcRenderer.invoke('garak:save-file', request),
   onOpenProject: callback => subscribe('garak:project-opened', callback),

@@ -6,6 +6,7 @@ import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd
 import type { EffectType, MidiClip, Project, TimeSignature, Track } from '../../core/types'
 import { loopRange } from '../math'
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
+import type { NativePluginInstance } from './contracts'
 
 /** Compilation limits, not promises about native device or plugin capacity. No PCM is allocated here. */
 export const NATIVE_TIMELINE_LIMITS = {
@@ -36,6 +37,7 @@ export interface NativePcmAsset {
 export type NativeTrackSource =
   | { readonly kind: 'audio' }
   | { readonly kind: 'native-wavetable'; readonly instrumentId: 'wavetable'; readonly isKit: false; readonly patch: WavetablePatch }
+  | { readonly kind: 'vst3'; readonly plugin: NativePluginInstance; readonly isKit: false }
   | { readonly kind: 'builtin-synth'; readonly instrumentId: string; readonly isKit: boolean; readonly params: Readonly<Record<string, number>> }
   | { readonly kind: 'builtin-sampled'; readonly instrumentId: string; readonly sampleSetId: string; readonly isKit: boolean; readonly params: Readonly<Record<string, number>> }
 
@@ -44,6 +46,14 @@ export interface NativeBuiltinInsert {
   readonly type: EffectType
   readonly enabled: boolean
   readonly params: Readonly<Record<string, number>>
+}
+
+export interface NativePluginInsert {
+  readonly id: string
+  readonly type: 'vst3'
+  readonly enabled: boolean
+  readonly params: Readonly<Record<string, number>>
+  readonly plugin: NativePluginInstance
 }
 
 /**
@@ -91,7 +101,7 @@ export interface NativeTrackTimeline {
   readonly soloSafe: boolean
   /** Fader audibility; muted/unsoloed tracks still have events, but disabled sources must not run. */
   readonly audible: boolean
-  readonly inserts: readonly NativeBuiltinInsert[]
+  readonly inserts: readonly (NativeBuiltinInsert | NativePluginInsert)[]
   /** Sorted by onset, then off frame and ID. Notes are cropped to the project, not the audition cycle. */
   readonly notes: readonly NativeNotePair[]
   readonly audio: readonly NativeAudioWindow[]
@@ -131,6 +141,7 @@ function parameters(defs: readonly ParamDef[], values: Readonly<Record<string, n
 }
 function source(track: Track): NativeTrackSource {
   if (track.kind === 'audio') return { kind: 'audio' }
+  if (track.pluginInstrument) return { kind: 'vst3', plugin: { ...track.pluginInstrument, parameters: { ...track.pluginInstrument.parameters }, ...(track.pluginInstrument.state ? { state: { ...track.pluginInstrument.state } } : {}) }, isKit: false }
   if (track.kind !== 'instrument' || !isInstrumentId(track.instrument)) {
     throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Only existing builtin instruments and audio tracks can be compiled.')
   }
@@ -160,7 +171,7 @@ function prepareOccurrences(project: Project): Map<MidiClip, readonly Occurrence
   const prepared = new Map<MidiClip, readonly Occurrence[]>()
   for (const track of project.tracks) {
     unique(track.id)
-    limit(track.devices.length <= NATIVE_TIMELINE_LIMITS.insertsPerTrack, 'inserts per track')
+    limit(track.devices.length + (track.pluginInserts?.length ?? 0) <= NATIVE_TIMELINE_LIMITS.insertsPerTrack, 'inserts per track')
     let trackAudio = 0
     clips += track.clips.length
     limit(clips <= NATIVE_TIMELINE_LIMITS.clips, 'clips')
@@ -198,7 +209,7 @@ function prepareOccurrences(project: Project): Map<MidiClip, readonly Occurrence
 }
 
 /**
- * Pure preparation for a future host; it neither creates a native engine nor changes the active runtime.
+ * Pure preparation for the native host; it allocates no realtime audio objects.
  * Input must be a normalized Project (external JSON still goes through validateProject first).
  * Musical endpoints use nearest-sample rounding, never accumulated interval rounding. Subsample
  * events that collapse to zero frames are omitted. Expansion limits reject instead of truncating.
@@ -277,11 +288,11 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
     notes.sort((a, b) => a.onFrame - b.onFrame || a.offFrame - b.offFrame || a.id - b.id)
     audio.sort((a, b) => a.startFrame - b.startFrame || a.id - b.id)
     return { id: track.id, source: source(track), gain: number(track.volume, 0, 2, 'track gain'), pan: number(track.pan, -1, 1, 'track pan'),
-      enabled: isTrackEnabled(track), mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, audible: audible.has(track.id),
-      inserts: track.devices.map(device => {
+      enabled: isTrackEnabled(track) && track.pluginInstrument?.enabled !== false, mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, audible: audible.has(track.id) && track.pluginInstrument?.enabled !== false,
+      inserts: [...track.devices.map((device): NativeBuiltinInsert => {
         if (!Object.hasOwn(EFFECT_DEFS, device.type)) throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Unknown builtin insert.')
         return { id: id(device.id), type: device.type, enabled: device.enabled, params: parameters(EFFECT_DEFS[device.type].params, device.params) }
-      }), notes, audio }
+      }), ...(track.pluginInserts ?? []).map((plugin): NativePluginInsert => ({ id: id(plugin.id), type: 'vst3', enabled: plugin.enabled, params: { ...plugin.parameters }, plugin: { ...plugin, parameters: { ...plugin.parameters }, ...(plugin.state ? { state: { ...plugin.state } } : {}) } }))], notes, audio }
   })
   return { version: 1, projectId: project.id, revision, sampleRate, bpm, timeSignature, beatsPerBar: project.beatsPerBar,
     lengthFrames, cycle, masterGain: number(project.masterVolume, 0, 2, 'master gain'), assets: [...usedAssets.values()], tracks }

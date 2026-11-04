@@ -8,6 +8,7 @@ export interface RecordingDraft {
   name: string
   trackId: string
   track: Track
+  /** May be negative after native driver/PDC compensation; placement trims pre-roll. */
   startBeat: number
   bpm: number
   offsetMs: number

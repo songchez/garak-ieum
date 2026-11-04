@@ -5,6 +5,9 @@ dist-desktop/
 release/
 desktop-test-results/
 build/native/
+build/native-audio/
+build/native-work/
+build/native-deps/
 .sites-runtime/
 .openai/
 .wrangler/

@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "dependencies": [
+    {
+      "id": "asio",
+      "version": "2.3.4",
+      "license": "GPL-3.0-only",
+      "url": "https://download.steinberg.net/sdk_downloads/ASIO-SDK_2.3.4_2025-10-15.zip",
+      "archive": "asio-sdk-2.3.4.zip",
+      "sha256": "d5ebf0c20dd2c5f43771fd0c1418f4b361bf52434ee670097cfa6b3a335e2eca",
+      "directory": "asio",
+      "archiveRoot": "ASIOSDK",
+      "licenseFiles": [
+        "LICENSE.txt",
+        "common/LICENSE.txt"
+      ]
+    },
+    {
+      "id": "miniaudio",
+      "version": "0.11.26",
+      "license": "MIT-0",
+      "url": "https://codeload.github.com/mackron/miniaudio/tar.gz/877ea4a7c2601c7b0f2a44e83dfac42e6470fea6",
+      "archive": "miniaudio-877ea4a7.tar.gz",
+      "sha256": "b142cefa199ec27cfe77c5da7514d4a82fdc208444dd0abef947efeada14b60d",
+      "directory": "miniaudio",
+      "archiveRoot": "miniaudio-877ea4a7c2601c7b0f2a44e83dfac42e6470fea6",
+      "licenseFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "id": "nlohmann",
+      "version": "3.11.3",
+      "license": "MIT",
+      "url": "https://codeload.github.com/nlohmann/json/tar.gz/9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03",
+      "archive": "nlohmann-json-9cca280a.tar.gz",
+      "sha256": "0dbc5e40a01ff142e7e68c03e85247a4dcede2f592d12d3677dee3664d17975a",
+      "directory": "nlohmann",
+      "archiveRoot": "json-9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03",
+      "licenseFiles": [
+        "LICENSE.MIT"
+      ]
+    },
+    {
+      "id": "vst3sdk",
+      "version": "3.8.1",
+      "license": "MIT",
+      "url": "https://codeload.github.com/steinbergmedia/vst3sdk/tar.gz/3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96",
+      "archive": "vst3sdk-3cdf9ca5.tar.gz",
+      "sha256": "fbc6e6f713cd3644ab9440496a75ce714e2ad435dbdd38825fe8834f31456fb6",
+      "directory": "vst3sdk",
+      "archiveRoot": "vst3sdk-3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96",
+      "licenseFiles": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "id": "vst3base",
+      "version": "fcf9da0b",
+      "license": "MIT",
+      "url": "https://codeload.github.com/steinbergmedia/vst3_base/tar.gz/fcf9da0bd27a16f7f03773a3a39822f28f5c8477",
+      "archive": "vst3-base-fcf9da0b.tar.gz",
+      "sha256": "3753d45a79b5e324c2843d74a18c8f1117fe0b1118fa9312658aecf6360ec603",
+      "directory": "vst3sdk/base",
+      "archiveRoot": "vst3_base-fcf9da0bd27a16f7f03773a3a39822f28f5c8477",
+      "licenseFiles": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "id": "vst3interfaces",
+      "version": "4f547e8e",
+      "license": "MIT",
+      "url": "https://codeload.github.com/steinbergmedia/vst3_pluginterfaces/tar.gz/4f547e8e102b47de4a8b8aaf343c73b700786372",
+      "archive": "vst3-interfaces-4f547e8e.tar.gz",
+      "sha256": "ee70777eebb8450fc04fae2a6dd452f723d12bfb8222af443b8c1f8a9259089a",
+      "directory": "vst3sdk/pluginterfaces",
+      "archiveRoot": "vst3_pluginterfaces-4f547e8e102b47de4a8b8aaf343c73b700786372",
+      "licenseFiles": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "id": "vst3public",
+      "version": "586dc5e6",
+      "license": "MIT",
+      "url": "https://codeload.github.com/steinbergmedia/vst3_public_sdk/tar.gz/586dc5e6c8012c3e4b01c79389375cbe96bdb1da",
+      "archive": "vst3-public-586dc5e6.tar.gz",
+      "sha256": "71319491b771068b8e2c5374c22830a339677e9d54c4cd33af4a0aa210e4c838",
+      "directory": "vst3sdk/public.sdk",
+      "archiveRoot": "vst3_public_sdk-586dc5e6c8012c3e4b01c79389375cbe96bdb1da",
+      "licenseFiles": [
+        "LICENSE.txt"
+      ]
+    },
+    {
+      "id": "vst3cmake",
+      "version": "054c9143",
+      "license": "MIT",
+      "url": "https://codeload.github.com/steinbergmedia/vst3_cmake/tar.gz/054c9143cbb8d47fc4694e473f2ee3b4d951a8f5",
+      "archive": "vst3-cmake-054c9143.tar.gz",
+      "sha256": "d8bddb3d87d66b5078e803d271ef82ba51bc74f941e0ca8256e7145950db409e",
+      "directory": "vst3sdk/cmake",
+      "archiveRoot": "vst3_cmake-054c9143cbb8d47fc4694e473f2ee3b4d951a8f5",
+      "licenseFiles": [
+        "LICENSE.txt"
+      ]
+    }
+  ]
+}
