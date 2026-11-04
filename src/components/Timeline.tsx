@@ -10,6 +10,7 @@ import { snapToEdges } from '../core/edgeSnap'
 import { recordingDraftPlacement, type RecordingDraft } from '../core/recording'
 import { DEFAULT_HEADER_WIDTH, DRAG_MODES, DRAG_MODE_LABELS, HEADER_WIDTH_LIMITS, SNAP_MODE_LABELS, TRACK_ZOOM_LIMITS, resolveSnap, type DragMode, type SnapMode, type TrackHeaderConfig } from '../core/trackUi'
 import { Icon } from './Icon'
+import { HeaderMenus } from './HeaderMenus'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import { crossedDragThreshold, dragModifiers, isShortcutSuppressed, isUnmodified, shortcutLabel, shortcutPlatform, type ProjectShortcut } from '../core/input'
 import { ZOOM_LIMITS, zoomAround, zoomBy } from '../core/zoom'
@@ -75,7 +76,10 @@ export interface TimelineProps {
   onClipLoopEnd?(trackId:string,clipId:string,endBeat:number):void
   onAddClip(trackId:string,beat:number):void
   onAudioDrop(files:FileList,trackId?:string,beat?:number):void
+  onImportFiles?(trackId?:string,beat?:number):void
   onCommand(command:ProjectShortcut,ctx?:{trackIds?:string[];clipIds?:string[]}):void
+  onMenuFocus?():void
+  menusDisabled?:boolean
   onMarker(action:'add'|'move'|'rename'|'delete',payload:{id?:string;beat?:number;name?:string}):void
   /** Optional extras outside the §3.1 contract: clip double-click opens its editor; inline clip rename state. Without them a double-click only selects. */
   onClipOpen?(trackId:string,clipId:string):void
@@ -146,6 +150,7 @@ export function Timeline(props:TimelineProps){
   const sheetRef=useRef<HTMLDivElement>(null)
   const rulerPlayhead=useRef<HTMLDivElement>(null)
   const latest=useRef(props);latest.current=props
+  const viewMenuButton=useRef<HTMLButtonElement>(null)
   const [fileOver,setFileOver]=useState(false)
   const [drag,setDrag]=useState<DragState|null>(null)
   const [marquee,setMarquee]=useState<{x:number;y:number;w:number;h:number;ids:Set<string>;add:boolean}|null>(null)
@@ -158,6 +163,7 @@ export function Timeline(props:TimelineProps){
   const [markerDrag,setMarkerDrag]=useState<{id:string;beat:number}|null>(null)
   const [markerState,setMarkerState]=useState<{selected:string|null;renaming:string|null}>({selected:null,renaming:null})
   const [menu,setMenu]=useState<MenuState|null>(null)
+  useEffect(()=>{if(props.menusDisabled)setMenu(null)},[props.menusDisabled])
   const cancelGesture=useRef<(()=>void)|null>(null)
   const zoomAnchor=useRef<{beat:number;px:number}|null>(null)
   const prevPpb=useRef(ppb)
@@ -316,10 +322,10 @@ export function Timeline(props:TimelineProps){
   function laneMenu(e:React.MouseEvent,track:Track){
     const bar=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar
     if(!selectedTrackIds.has(track.id))props.onTrackClick(track.id,{...plainMods,trackOnly:true})
-    openMenu(e,[cmd('붙여넣기','paste',{},{trackIds:[track.id]}),SEP,track.kind==='audio'?{label:'오디오 가져오기…',icon:'upload',onSelect:()=>latest.current.onAddClip(track.id,bar)}:{label:'MIDI 클립 만들기',icon:'region',onSelect:()=>latest.current.onAddClip(track.id,bar)},SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:track.id})}],'레인 메뉴')
+    openMenu(e,[cmd('붙여넣기','paste',{},{trackIds:[track.id]}),SEP,track.kind==='audio'?{label:'오디오·MIDI 가져오기…',icon:'upload',onSelect:()=>latest.current.onAddClip(track.id,bar)}:{label:'MIDI 클립 만들기',icon:'region',onSelect:()=>latest.current.onAddClip(track.id,bar)},...(track.kind==='instrument'&&props.onImportFiles?[{label:'MIDI 파일 가져오기…',icon:'upload',onSelect:()=>latest.current.onImportFiles?.(track.id,bar)} as ContextMenuItem]:[]),SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:track.id})}],'레인 메뉴')
   }
   function emptyAreaMenu(e:React.MouseEvent){
-    openMenu(e,[{label:'새 오디오 트랙',icon:'wave',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:null})},{label:'새 소프트웨어 악기 트랙',icon:'keys',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:null})},SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:null})}],'트랙 추가 메뉴')
+    openMenu(e,[{label:'새 오디오 트랙',icon:'wave',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:null})},{label:'새 소프트웨어 악기 트랙',icon:'keys',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:null})},...(props.onImportFiles?[SEP,{label:'오디오·MIDI 가져오기…',icon:'upload',onSelect:()=>latest.current.onImportFiles?.()} as ContextMenuItem]:[]),SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:null})}],'트랙 추가 메뉴')
   }
   function markerMenu(e:React.MouseEvent,marker:Marker){
     setMarkerState({selected:marker.id,renaming:null})
@@ -335,7 +341,7 @@ export function Timeline(props:TimelineProps){
   const editMenu=():ContextMenuItem[]=>[cmd('실행 취소','undo'),cmd('다시 실행','redo'),SEP,cmd('잘라내기','cut',{},selCtx()),cmd('복사','copy',{},selCtx()),cmd('붙여넣기','paste',{},selCtx()),cmd('삭제','deleteClip',{},selCtx()),SEP,cmd('재생 위치에서 분할','split',{},selCtx()),cmd('합치기','join',{disabled:selectedClipIds.size<2},selCtx()),cmd('반복','repeat',{},selCtx()),SEP,cmd('모두 선택','selectAll')]
   const functionsMenu=():ContextMenuItem[]=>[cmd('리전 뮤트','muteClip',{disabled:!selectedClipIds.size},selCtx()),cmd('루프','loopClip',{disabled:!selectedClipIds.size},selCtx()),cmd('재생 위치로 이동','moveToPlayhead',{disabled:!selectedClipIds.size},selCtx()),cmd('이름 변경','renameClip',{disabled:!selectedClipIds.size},selCtx())]
   const uiToggle=(label:string,key:'globalTracks'|'hideView'|'scrollInPlay'|'gridLines'|'zoomFocused'|'catch',command?:ProjectShortcut):ContextMenuItem=>({label,checked:ui[key],shortcut:command?shortcutLabel(command)||undefined:undefined,onSelect:()=>latest.current.onUiChange({[key]:!latest.current.ui[key]} as Partial<TimelineUi>)})
-  const viewMenu=():ContextMenuItem[]=>[cmd('인스펙터 보기','toggleInspector'),cmd('라이브러리 보기','toggleLibrary'),cmd('브라우저 보기','toggleBrowser'),SEP,uiToggle('글로벌 트랙 보기','globalTracks','globalTracks'),uiToggle('보기 가리기 토글','hideView','toggleHideView'),{label:'트랙 헤더 구성…',icon:'inspector',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>{const b=document.querySelector('.tracks-menubar [data-menu="view"]')?.getBoundingClientRect();latest.current.onConfigureHeader({x:b?.left??0,y:b?.bottom??0})}},SEP,uiToggle('재생 중 스크롤','scrollInPlay'),uiToggle('그리드 선','gridLines'),uiToggle('포커스된 트랙 확대/축소','zoomFocused','zoomFocusedTrack')]
+  const viewMenu=():ContextMenuItem[]=>[cmd('인스펙터 보기','toggleInspector'),cmd('라이브러리 보기','toggleLibrary'),cmd('브라우저 보기','toggleBrowser'),SEP,uiToggle('글로벌 트랙 보기','globalTracks','globalTracks'),uiToggle('보기 가리기 토글','hideView','toggleHideView'),{label:'트랙 헤더 구성…',icon:'inspector',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>{const b=viewMenuButton.current?.getBoundingClientRect();latest.current.onConfigureHeader({x:b?.left??0,y:b?.bottom??0})}},SEP,uiToggle('재생 중 스크롤','scrollInPlay'),uiToggle('그리드 선','gridLines'),uiToggle('포커스된 트랙 확대/축소','zoomFocused','zoomFocusedTrack')]
   const snapMenu=():ContextMenuItem[]=>{
     const set=(patch:Partial<TimelineUi['snap']>)=>latest.current.onUiChange({snap:{...latest.current.ui.snap,...patch}})
     const modes:SnapMode[]=['smart','bar','beat','division','ticks']
@@ -633,12 +639,13 @@ export function Timeline(props:TimelineProps){
   const playheadUi=useRef({catch:ui.catch,scrollInPlay:ui.scrollInPlay,headerWidth});playheadUi.current={catch:ui.catch,scrollInPlay:ui.scrollInPlay,headerWidth}
 
   return <div className={`arrangement ${fileOver?'file-over':''} ${ui.gridLines?'':'no-grid'}`} data-keyboard-scope="timeline" tabIndex={-1} style={{'--header-width':`${headerWidth}px`} as React.CSSProperties} onPointerDown={e=>{if(e.target instanceof Element&&!e.target.closest('button,input,textarea,select,a[href]'))e.currentTarget.focus({preventScroll:true})}} onDragOver={e=>{if(e.dataTransfer.types.includes('Files')){e.preventDefault();setFileOver(true)}}} onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node))setFileOver(false)}} onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();setFileOver(false);props.onAudioDrop(e.dataTransfer.files)}}}>
-    <div className="arrangement-title tracks-menubar">
-      <div className="menubar-left">
+    <HeaderMenus><div className="workspace-header-menus" role="group" aria-label="프로젝트 편집 메뉴" inert={props.menusDisabled||undefined} onPointerDownCapture={()=>props.onMenuFocus?.()} onFocusCapture={()=>props.onMenuFocus?.()}>
         <button type="button" className="menubar-button" data-menu="edit" aria-haspopup="menu" aria-expanded={menu?.label==='편집'} onClick={e=>barMenu(e,editMenu(),'편집')}>편집 <Icon name="chevron" size={10}/></button>
         <button type="button" className="menubar-button" data-menu="functions" aria-haspopup="menu" aria-expanded={menu?.label==='기능'} onClick={e=>barMenu(e,functionsMenu(),'기능')}>기능 <Icon name="chevron" size={10}/></button>
-        <button type="button" className="menubar-button" data-menu="view" aria-haspopup="menu" aria-expanded={menu?.label==='보기'} onClick={e=>barMenu(e,viewMenu(),'보기')}>보기 <Icon name="chevron" size={10}/></button>
-        <span className="menubar-divider"/>
+        <button ref={viewMenuButton} type="button" className="menubar-button" data-menu="view" aria-haspopup="menu" aria-expanded={menu?.label==='보기'} onClick={e=>barMenu(e,viewMenu(),'보기')}>보기 <Icon name="chevron" size={10}/></button>
+    </div></HeaderMenus>
+    <div className="arrangement-title tracks-menubar">
+      <div className="menubar-left">
         <button type="button" className={`icon-button small follow-toggle catch-toggle ${ui.catch?'active':''}`} aria-pressed={ui.catch} onClick={e=>{props.onUiChange({catch:!ui.catch});if(e.detail)e.currentTarget.blur()}} title={`Catch · 재생 위치 따라가기${ui.scrollInPlay?' (재생 중 스크롤)':''}`} aria-label="재생 위치 따라가기"><Icon name="locate" size={14}/></button>
         <span className="menubar-divider"/>
         <button type="button" className={`menubar-button menubar-popup ${ui.snap.on?'':'off'}`} data-menu="snap" aria-haspopup="menu" aria-expanded={menu?.label==='스냅'} onClick={e=>barMenu(e,snapMenu(),'스냅')} title={`스냅 · ${ui.snap.on?SNAP_MODE_LABELS[ui.snap.mode]:'끔'} · ${ui.snap.relative?'상대값':'절대값'}`}><small>Snap:</small> {ui.snap.on?SNAP_MODE_LABELS[ui.snap.mode]:'끔'} <Icon name="chevron" size={10}/></button>
@@ -699,11 +706,11 @@ export function Timeline(props:TimelineProps){
             onContextMenu={e=>{if(e.target!==e.currentTarget)return;if(recordingTarget||temporary){e.preventDefault();return}laneMenu(e,track)}}
             onDoubleClick={e=>{if(e.target!==e.currentTarget||recordingTarget||temporary)return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/beatsPerBar)*beatsPerBar)}}
             onDragOver={e=>{if(e.dataTransfer.files||e.dataTransfer.types.includes('Files')){e.preventDefault();if(temporary){e.stopPropagation();e.dataTransfer.dropEffect='none'}}}}
-            onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);if(temporary)return;const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar;props.onAudioDrop(e.dataTransfer.files,track.kind==='audio'?track.id:undefined,Math.max(0,beat))}}}>
+            onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);if(temporary)return;const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar;props.onAudioDrop(e.dataTransfer.files,track.id,Math.max(0,beat))}}}>
             {drag?.copy&&track.clips.filter(c=>drag.ids.has(c.id)).map(c=><div key={`ghost-${c.id}`} className="clip-ghost" style={musicalSpan(c.startBeat,c.lengthBeats,ppb)}/>)}
             {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} beatsPerBar={beatsPerBar} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
             {recordingTarget&&recordingDraft&&recordingView&&<RecordingRegion key={recordingDraft.id} draft={recordingDraft} placement={recordingView} ppb={ppb}/>}
-            {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'더블 클릭하여 MIDI 클립 만들기'}</span>}
+            {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'MIDI 파일 놓기 · 더블 클릭하여 클립 만들기'}</span>}
           </div>
         </div>})}
         <div className="tracks-empty-area" title={`더블 클릭: ${focused?.kind==='audio'?'오디오':'소프트웨어 악기'} 트랙 추가 · 우클릭: 트랙 종류 선택`} onDoubleClick={e=>{if(!(e.target instanceof Element)||e.target.closest('button'))return;props.onNewTrack({sameAsFocused:true,afterId:null})}} onContextMenu={emptyAreaMenu}>
@@ -717,7 +724,7 @@ export function Timeline(props:TimelineProps){
     </div>
     <div className="header-resize-handle" role="separator" aria-orientation="vertical" aria-label="헤더 너비" title="드래그하여 헤더 너비 조절" onPointerDown={beginHeaderResize} onDoubleClick={()=>props.onUiChange({headerWidth:DEFAULT_HEADER_WIDTH})}/>
     </div>
-    {fileOver&&<div className="drop-overlay"><Icon name="wave" size={32}/><strong>오디오를 프로젝트에 추가합니다</strong><span>파일은 이 브라우저에 저장됩니다</span></div>}
+    {fileOver&&<div className="drop-overlay"><Icon name="wave" size={32}/><strong>오디오·MIDI를 프로젝트에 추가합니다</strong><span>MIDI는 편집 가능한 음표로 가져옵니다</span></div>}
     {menu&&<ContextMenu x={menu.x} y={menu.y} items={menu.items} label={menu.label} trigger={menu.trigger} onClose={()=>setMenu(null)}/>}
   </div>
 }

@@ -132,6 +132,28 @@ function requestClose(): void {
 }
 
 function installIpc(): void {
+  ipcMain.handle('garak:window-colors', (event, colors: unknown) => {
+    assertTrusted(event)
+    if (!colors || typeof colors !== 'object') throw new Error('Invalid window colors.')
+    const { background, foreground } = colors as Record<string, unknown>
+    if (typeof background !== 'string' || typeof foreground !== 'string'
+      || !/^#[0-9a-f]{6}$/i.test(background) || !/^#[0-9a-f]{6}$/i.test(foreground)) throw new Error('Invalid window colors.')
+    if (process.platform !== 'darwin') window?.setTitleBarOverlay({ color: background, symbolColor: foreground })
+  })
+  ipcMain.on('garak:window-menu', (event, anchor: unknown) => {
+    if (!trusted(event) || !window || pendingClose) return
+    let x = 12, y = 32
+    if (anchor !== undefined) {
+      if (!anchor || typeof anchor !== 'object') return
+      const point = anchor as Record<string, unknown>
+      if (typeof point.x !== 'number' || typeof point.y !== 'number' || !Number.isFinite(point.x)
+        || !Number.isFinite(point.y) || point.x < 0 || point.y < 0) return
+      const zoom = window.webContents.getZoomFactor(), [width, height] = window.getContentSize()
+      x = Math.round(Math.min(width, point.x * zoom))
+      y = Math.round(Math.min(height, point.y * zoom))
+    }
+    Menu.getApplicationMenu()?.popup({ window, x, y })
+  })
   ipcMain.handle('garak:audio-request', async (event, method: unknown, params: unknown) => {
     assertTrusted(event)
     if (!nativeAudio) throw new Error('네이티브 오디오 엔진을 사용할 수 없습니다.')
@@ -312,6 +334,9 @@ async function createWindow(): Promise<void> {
   window = new BrowserWindow({
     title: '가락이음', width: 1440, height: 940, minWidth: 960, minHeight: 640,
     backgroundColor: '#141719', show: false, icon: join(app.getAppPath(), 'dist/brand/garak-ieum-mark.png'),
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#303831', symbolColor: '#eee9dc', height: 32 },
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 12, y: 10 } } : { autoHideMenuBar: true }),
     webPreferences: {
       preload: join(directory, 'preload.cjs'),
       nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,

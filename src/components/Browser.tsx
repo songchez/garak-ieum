@@ -19,9 +19,9 @@ export function Browser({ assets, onAddAsset, onImport }: BrowserProps) {
   return <div className="file-browser" aria-label="브라우저">
     <div className="browser-search"><Icon name="search" size={14} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="파일 찾기…" aria-label="파일 검색" /></div>
     <div className="browser-content">
-      <div className="browser-section-title"><span>PROJECT AUDIO <small>{assets.size || ''}</small></span><button type="button" onClick={onImport} title="오디오 가져오기" aria-label="오디오 가져오기"><Icon name="plus" size={15} /></button></div>
+      <div className="browser-section-title"><span>PROJECT AUDIO <small>{assets.size || ''}</small></span><button type="button" onClick={onImport} title="오디오·MIDI 가져오기" aria-label="오디오·MIDI 가져오기"><Icon name="plus" size={15} /></button></div>
       {items.map(asset => <button type="button" className="audio-file-item" key={asset.id} onClick={() => onAddAsset(asset)} title="클릭하여 타임라인에 추가"><span><Icon name="wave" size={14} /><strong>{asset.name}</strong></span><Waveform peaks={asset.peaks} /><small>{asset.buffer.duration.toFixed(1)} s · {asset.buffer.numberOfChannels === 2 ? 'STEREO' : 'MONO'} <Icon name="plus" size={12} /></small></button>)}
-      {!items.length && <div className="file-browser-empty"><Icon name="folder" size={22} /><p>{assets.size ? '일치하는 파일이 없습니다' : '아직 가져온 오디오가 없습니다'}</p><button type="button" onClick={onImport}><Icon name="upload" size={13} />오디오 가져오기</button></div>}
+      {!items.length && <div className="file-browser-empty"><Icon name="folder" size={22} /><p>{assets.size ? '일치하는 파일이 없습니다' : '아직 가져온 오디오가 없습니다'}</p><button type="button" onClick={onImport}><Icon name="upload" size={13} />오디오·MIDI 가져오기</button></div>}
     </div>
   </div>
 }

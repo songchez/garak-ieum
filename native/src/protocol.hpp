@@ -88,6 +88,13 @@ inline TrackSource source(const Json& value, bool enabled = true) {
   else if (kind == "builtin-synth") result.kind = TrackSource::Kind::BuiltinSynth;
   else if (kind == "builtin-sampled") result.kind = TrackSource::Kind::BuiltinSampled;
   else if (kind == "vst3") { result.kind = TrackSource::Kind::Vst3; result.plugin = plugin(value.at("plugin"), true, enabled); }
+  else if (kind == "native-wavetable") {
+    result.kind = TrackSource::Kind::NativeWavetable;
+    result.instrumentId = string(value, "instrumentId");
+    if (result.instrumentId != "wavetable" || value.value("isKit", false)) throw std::runtime_error("Invalid IEUM WAVE source");
+    try { result.patchData = unbase64(string(value, "patchData", 4 * 1024 * 1024)); }
+    catch (const std::exception& error) { throw std::runtime_error(std::string("Invalid IEUM WAVE patch encoding: ") + error.what()); }
+  }
   else throw std::runtime_error("Unsupported native track source: " + kind);
   if (kind == "builtin-synth" || kind == "builtin-sampled") {
     result.instrumentId = string(value, "instrumentId"); result.isKit = value.value("isKit", false);

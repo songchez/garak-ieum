@@ -1,5 +1,5 @@
-// Real project/editor workflow. Audio is intentionally unavailable until a native
-// host registers the capability; the standalone C++ tests verify audio synthesis.
+// Browser project/editor workflow. The desktop's WAVE audio capability is
+// verified by native-smoke; a browser must continue to gate native-only playback.
 import assert from 'node:assert/strict'
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
@@ -35,7 +35,7 @@ try {
   await open.click()
   const editor = page.getByRole('dialog', { name: 'IEUM WAVE', exact: true })
   await editor.waitFor()
-  assert.match(await editor.locator('.iw-engine-status').innerText(), /연결 준비 중/)
+  assert.match(await editor.locator('.iw-engine-status').innerText(), /네이티브.*연결/)
   assert.equal(await editor.locator('.iw-keyboard button:not(:disabled)').count(), 0)
   assert.equal(await page.evaluate(() => window.__waveAudioRequests), 0)
 

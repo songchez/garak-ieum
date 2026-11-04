@@ -14,6 +14,10 @@ const bridge: DesktopBridge = {
   isDesktop: true,
   platform: process.platform,
   version,
+  windowChrome: {
+    setColors: colors => ipcRenderer.invoke('garak:window-colors', colors),
+    showMenu: anchor => { ipcRenderer.send('garak:window-menu', anchor) },
+  },
   audio: {
     request: (method, params) => ipcRenderer.invoke('garak:audio-request', method, params ?? {}),
     subscribe: callback => subscribe('garak:audio-state', callback),

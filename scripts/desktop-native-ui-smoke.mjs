@@ -1,19 +1,17 @@
 import assert from 'node:assert/strict'
+import { verifyMidiImportUI } from './desktop-midi-ui-smoke.mjs'
 
 /**
  * Real packaged UI + real native host. The caller launches with
- * GARAK_NATIVE_TEST_CLOCK=1; this is deliberately not hardware-ASIO validation.
+ * GARAK_NATIVE_TEST_CLOCK=1; this does not validate physical WASAPI/ASIO/Core Audio.
  * No bridge, output API, file picker, or plugin processor is mocked here.
  */
-export async function verifyNativeAudioUI(page) {
+export async function verifyNativeAudioUI(page, { screenshot } = {}) {
   const before = await page.evaluate(async () => ({
     platform: window.garakDesktop.platform,
     state: await window.garakDesktop.audio.request('engine.snapshot'),
   }))
   assert.equal(before.state.testClock, true, 'Native UI smoke requires the explicit test-clock harness')
-  assert.equal(before.state.device?.backend, 'test')
-  assert.equal(before.state.device?.testClock, true)
-  assert.ok(before.state.ready, 'Run native WAV export before native UI checks')
 
   await page.locator('button.audio-status').click()
   const dialog = page.getByRole('dialog', { name: '설정', exact: true })
@@ -22,6 +20,14 @@ export async function verifyNativeAudioUI(page) {
   const choices = await backend.locator('option').evaluateAll(options => options.map(option => option.value))
   assert.deepEqual(choices, before.platform === 'darwin' ? ['coreaudio'] : ['wasapi', 'asio'])
   assert.equal(await backend.inputValue(), before.platform === 'darwin' ? 'coreaudio' : 'wasapi')
+  if (!before.state.ready) {
+    await dialog.getByRole('button', { name: '적용', exact: true }).click()
+    await page.waitForFunction(async () => (await window.garakDesktop.audio.request('engine.snapshot')).ready === true)
+    before.state = await page.evaluate(() => window.garakDesktop.audio.request('engine.snapshot'))
+  }
+  assert.equal(before.state.device?.backend, 'test')
+  assert.equal(before.state.device?.testClock, true)
+  assert.ok(before.state.ready, 'Native device settings did not start the real host')
   const buffer = dialog.getByRole('spinbutton', { name: '오디오 I/O 버퍼 크기', exact: true })
   assert.ok(await buffer.isVisible(), 'Native I/O buffer control is missing')
   assert.ok(Number(await buffer.inputValue()) >= 16)
@@ -76,5 +82,53 @@ export async function verifyNativeAudioUI(page) {
   const geometry = await addPlugin.boundingBox(), viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
   assert.ok(geometry && geometry.width > 0 && geometry.x >= 0 && geometry.x + geometry.width <= viewport.width + 1, 'VST controls overflow the device panel')
 
-  return { backend: 'test', testClock: true, platform: before.platform, sampleRate: afterTest.sampleRate, bufferFrames: afterTest.device.bufferFrames, outputTestCanceled: true, vstPanelVisible: true }
+  const wave = await verifyWavetableUI(page, screenshot)
+  const midi = await verifyMidiImportUI(page, { waveTrackId: wave.trackId, screenshot })
+  return { backend: 'test', testClock: true, platform: before.platform, sampleRate: afterTest.sampleRate, bufferFrames: afterTest.device.bufferFrames, outputTestCanceled: true, vstPanelVisible: true, wave, midi }
+}
+
+/** Follow the real editor's bridge through Electron IPC into the native DSP. */
+async function verifyWavetableUI(page, screenshot) {
+  const previousTracks = await page.locator('.track-header[data-track-id]').evaluateAll(tracks => tracks.map(track => track.dataset.trackId))
+  await page.getByRole('button', { name: '트랙 추가', exact: true }).click()
+  const tracks = page.getByRole('dialog', { name: '새 트랙', exact: true })
+  await tracks.getByRole('radio', { name: /^MIDI/ }).click()
+  await tracks.getByRole('combobox', { name: '악기', exact: true }).selectOption('wavetable')
+  await tracks.getByRole('checkbox', { name: '라이브러리 열기', exact: true }).uncheck()
+  await tracks.getByRole('button', { name: '생성', exact: true }).click()
+  await tracks.waitFor({ state: 'hidden' })
+  const added = await page.locator('.track-header[data-track-id]').evaluateAll((tracks, previous) => tracks.map(track => track.dataset.trackId).filter(id => !previous.includes(id)), previousTracks)
+  assert.equal(added.length, 1)
+  const trackId = added[0]
+  await page.getByRole('button', { name: '디바이스', exact: true }).click()
+  await page.getByRole('button', { name: 'IEUM WAVE 편집기 열기', exact: true }).click()
+  const editor = page.getByRole('dialog', { name: 'IEUM WAVE', exact: true })
+  await editor.waitFor()
+  const key = editor.getByRole('button', { name: 'C3 미리 듣기', exact: true })
+  await page.waitForFunction(() => {
+    const button = document.querySelector('.iw-keyboard button[aria-label="C3 미리 듣기"]')
+    return button instanceof HTMLButtonElement && !button.disabled
+  })
+  const audible = () => page.waitForFunction(async id => {
+    const state = await window.garakDesktop.audio.request('engine.snapshot')
+    return state.playing === false && state.levels?.[id] > .005
+  }, trackId)
+  const released = () => page.waitForFunction(async id => {
+    const state = await window.garakDesktop.audio.request('engine.snapshot')
+    return state.playing === false && (state.levels?.[id] ?? 1) < .0001
+  }, trackId)
+  await key.focus(); await page.keyboard.down('Space')
+  await audible()
+  await screenshot?.('qa-native-wave-audible.png')
+  await page.keyboard.up('Space'); await released()
+  await editor.getByRole('combobox', { name: '프리셋 선택', exact: true }).selectOption('low-orbit')
+  await page.waitForFunction(() => {
+    const button = document.querySelector('.iw-keyboard button[aria-label="C3 미리 듣기"]')
+    return button instanceof HTMLButtonElement && !button.disabled
+  })
+  await key.focus(); await page.keyboard.down('Space'); await audible()
+  await editor.getByRole('button', { name: '이음 웨이브 닫기', exact: true }).click()
+  await page.keyboard.up('Space')
+  await editor.waitFor({ state: 'hidden' }); await released()
+  return { trackId, nativeKeyboardAudible: true, presetApplied: true, releasedOnClose: true }
 }

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
+import { createServer } from 'vite'
 import { NativeAudioService } from '../dist-desktop/native-audio.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -83,6 +84,34 @@ function wav(data) {
 }
 const peak = samples => samples.reduce((max, sample) => Math.max(max, Math.abs(sample)), 0)
 const rms = samples => Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / Math.max(1, samples.length))
+async function waveFixtures() {
+  // Exercise the production UI encoder, including schema validation/custom banks.
+  const server = await createServer({ root, configFile: false, appType: 'custom', logLevel: 'error',
+    optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null } })
+  try {
+    const { createDefaultWavetablePatch, getFactoryWavetableFrames } = await server.ssrLoadModule('/src/devices/wavetable-synth/model.ts')
+    const { encodeWavetablePatch } = await server.ssrLoadModule('/src/devices/wavetable-synth/bridge.ts')
+    const { WAVE_SCHEMA_FINGERPRINT } = await server.ssrLoadModule('/src/devices/wavetable-synth/schema.generated.ts')
+    const patch = createDefaultWavetablePatch()
+    Object.assign(patch.params, { env1Attack: .001, env1Release: .005, env1Sustain: .8, delayMix: 0, chorusMix: 0 })
+    const encode = value => ({ kind: 'native-wavetable', instrumentId: 'wavetable', isKit: false,
+      patchData: Buffer.from(encodeWavetablePatch(value)).toString('base64') })
+    const basic = encode(patch)
+    const quiet = encode({ ...patch, params: { ...patch.params, level: 0 } })
+    patch.customBanks = [{ slot: 4, name: 'Native IPC fixture', frames: getFactoryWavetableFrames(2).slice(0, 3) }]
+    Object.assign(patch.params, { osc1Bank: 4, osc1Position: .4 })
+    return { basic, quiet, custom: encode(patch), fingerprint: WAVE_SCHEMA_FINGERPRINT }
+  } finally { await server.close() }
+}
+async function waitForNativeState(description, predicate, timeout = 5000) {
+  const deadline = Date.now() + timeout
+  do {
+    const state = await service.request('engine.snapshot')
+    if (predicate(state)) return state
+    await delay(15)
+  } while (Date.now() < deadline)
+  assert.fail(description + ' did not become true')
+}
 try {
   await checked('native command boundary rejects arbitrary methods and paths', async () => {
     await assert.rejects(service.request('system.exec', {}), /허용되지/)
@@ -90,6 +119,16 @@ try {
     await assert.rejects(service.request('test.fault', {}), /허용되지/)
     await assert.rejects(service.request('transport.play', { path: '/untrusted' }), /파일 경로/)
     await assert.rejects(service.request('note.preview', { source: { kind: 'vst3', plugin: { path: '/untrusted.vst3' } } }), /내장 악기/)
+  })
+  const wave = await waveFixtures()
+  await checked('WAVE capability handshake does not open an audio device', async () => {
+    const capabilities = await service.request('engine.capabilities')
+    assert.equal(capabilities.protocol, 1)
+    assert.equal(capabilities.wavetable.protocolVersion, 1)
+    assert.equal(capabilities.wavetable.schemaFingerprint, wave.fingerprint)
+    assert.equal(capabilities.wavetable.minimumSampleRate, 22050)
+    assert.equal(capabilities.wavetable.maximumSampleRate, 192000)
+    assert.equal((await service.request('engine.snapshot')).ready, false)
   })
   await checked('native output opens only the explicitly requested test clock', async () => {
     const state = await service.request('engine.configure', { backend: process.platform === 'darwin' ? 'coreaudio' : 'wasapi', sampleRate: 48000, bufferFrames: 128, inputChannels: 0 })
@@ -113,6 +152,66 @@ try {
     assert.equal(peak(audio.samples.subarray(0, 1000 * 2)), 0)
     assert.ok(peak(audio.samples.subarray(1000 * 2, 6000 * 2)) > .005)
     assert.ok(peak(audio.samples) <= 1)
+  })
+  await checked('native WAVE timeline and custom banks render finite stereo at 44.1/48/96 kHz', async () => {
+    for (const sampleRate of [44100, 48000, 96000]) {
+      const rendered = []
+      for (const patch of [wave.basic, wave.custom]) {
+        const timeline = project([track('wave', patch)])
+        timeline.sampleRate = sampleRate
+        const audio = wav((await service.request('render.wav', { timeline })).data)
+        assert.equal(audio.rate, sampleRate); assert.equal(audio.channels, 2)
+        assert.equal(peak(audio.samples.subarray(0, 1000 * 2)), 0, 'WAVE must respect sample-accurate note onset')
+        assert.ok(peak(audio.samples.subarray(1000 * 2, 6000 * 2)) > .005, 'WAVE output must contain the synthesized note')
+        assert.ok(peak(audio.samples) <= 1)
+        rendered.push(audio.samples)
+      }
+      assert.ok(rendered[0].some((sample, index) => Math.abs(sample - rendered[1][index]) > .001), 'custom bank data must reach the native oscillator')
+    }
+  })
+  await checked('native WAVE rejects missing, corrupt and incompatible patches before project mutation', async () => {
+    const corrupted = Buffer.from(wave.basic.patchData, 'base64')
+    corrupted.writeUInt32LE((wave.fingerprint ^ 1) >>> 0, 12)
+    const { patchData: _missing, ...missingPatch } = wave.basic
+    for (const bad of [missingPatch, { ...wave.basic, patchData: '%%%invalid%%%' }, { ...wave.basic, patchData: corrupted.toString('base64') }]) {
+      await assert.rejects(service.request('project.set', { timeline: project([track('wave', bad)]) }), /patch|wave|binary|base64|fingerprint|schema|key/i)
+    }
+    const result = await service.request('project.set', { timeline: project([track('wave', wave.basic)], 100), awaitApplied: true })
+    assert.equal(result.revision, 100)
+    assert.equal((await service.request('engine.snapshot')).revision, 100, 'patch ack must follow callback application')
+  })
+  await checked('stopped WAVE audition releases only its track and applies held-voice patches', async () => {
+    await service.request('transport.stop')
+    const first = track('wave-a', wave.basic), second = track('wave-b', wave.basic)
+    first.notes = []; second.notes = []
+    await service.request('project.set', { timeline: project([first, second], 101), awaitApplied: true })
+    await service.request('note.on', { trackId: first.id, pitch: 60, velocity: .8, noteId: 10001 })
+    await service.request('note.on', { trackId: second.id, pitch: 67, velocity: .8, noteId: 10002 })
+    const audible = await waitForNativeState('both stopped WAVE auditions', state => state.levels['wave-a'] > .005 && state.levels['wave-b'] > .005)
+    assert.equal(audible.playing, false)
+    await service.request('note.allOff', { trackId: first.id })
+    await waitForNativeState('track-local WAVE all-notes-off', state => state.levels['wave-a'] < .0001 && state.levels['wave-b'] > .005)
+    second.source = wave.quiet
+    await service.request('project.set', { timeline: project([first, second], 102), awaitApplied: true })
+    await waitForNativeState('held WAVE voice gain update', state => state.levels['wave-b'] < .0001)
+    second.source = wave.basic
+    await service.request('project.set', { timeline: project([first, second], 103), awaitApplied: true })
+    await waitForNativeState('held WAVE voice survives patch updates', state => state.levels['wave-b'] > .005)
+    await service.request('note.off', { trackId: second.id, pitch: 67, noteId: 10002 })
+    await waitForNativeState('WAVE note release', state => state.masterLevel < .0001)
+  })
+  await checked('WAVE remains usable after output sample-rate reconfiguration', async () => {
+    for (const sampleRate of [44100, 48000]) {
+      const configured = await service.request('engine.configure', { backend: process.platform === 'darwin' ? 'coreaudio' : 'wasapi', sampleRate, bufferFrames: 128, inputChannels: 0 })
+      assert.equal(configured.backend, 'test', 'this check is the explicit test clock, not a physical WASAPI endpoint')
+      const waveTrack = track('wave-reconnected', wave.custom); waveTrack.notes = []
+      const timeline = project([waveTrack], 104 + sampleRate); timeline.sampleRate = sampleRate
+      await service.request('project.set', { timeline, awaitApplied: true })
+      await service.request('note.on', { trackId: waveTrack.id, pitch: 64, velocity: .8, noteId: 10003 })
+      const audible = await waitForNativeState('reconfigured WAVE output', state => state.levels[waveTrack.id] > .005)
+      assert.equal(audible.sampleRate, sampleRate)
+      await service.request('note.allOff', { trackId: waveTrack.id })
+    }
   })
   const pcm = new Float32Array(12000)
   for (let i = 0; i < pcm.length; i++) pcm[i] = Math.sin(i * 2 * Math.PI * 220 / 48000) * .2
@@ -311,7 +410,7 @@ try {
     assert.equal(fault.id, 2); assert.equal(fault.ok, false)
     assert.match(fault.error.message, /Test fault injection is not enabled/)
   })
-  console.log('Native smoke: ' + checks + ' checks passed. The test clock does not validate physical ASIO/Core Audio latency.')
+  console.log('Native smoke: ' + checks + ' checks passed. The test clock does not validate physical WASAPI/ASIO/Core Audio playback or latency.')
 } finally {
   await service.dispose()
   await rm(temporary, { recursive: true, force: true })

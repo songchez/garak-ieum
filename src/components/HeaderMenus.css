@@ -1,0 +1,23 @@
+.header-menu-slot { display: flex; align-items: center; flex-shrink: 0; }
+.header-menu-slot:empty { display: none; }
+.workspace-header-menus {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.workspace-header-menus .menubar-button { height: 26px; }
+.desktop-titlebar .header-menu-slot { margin-left: 8px; }
+.desktop-titlebar .workspace-header-menus .menubar-button { font-size: 11px; }
+
+/* The browser keeps project menus in its existing single header row. */
+.app-header:has(.header-menu-slot) { grid-template-columns: minmax(280px, 1fr) auto minmax(max-content, 1fr); }
+.app-header:has(.header-menu-slot) .header-project { gap: 6px; }
+.app-header:has(.header-menu-slot) .brand-wordmark { display: none; }
+.app-header:has(.header-menu-slot) .header-project > .header-divider { display: none; }
+@media (max-width: 1100px) {
+  .app-header:has(.header-menu-slot) { grid-template-columns: minmax(235px, 1fr) auto max-content; gap: 8px; }
+  .app-header .workspace-header-menus .menubar-button { padding-inline: 5px; }
+  .app-header .workspace-header-menus .menubar-button svg { display: none; }
+}
