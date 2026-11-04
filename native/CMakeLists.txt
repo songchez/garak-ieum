@@ -111,6 +111,12 @@ if(GARAK_ENABLE_VST3)
   target_sources(garak_platform PRIVATE "${GARAK_VST3_SDK_ROOT}/public.sdk/source/vst/hosting/plugprovider.cpp")
   if(WIN32)
     target_sources(garak_platform PRIVATE "${GARAK_VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_win32.cpp")
+    if(MSVC)
+      # This pinned SDK file expects path.u8string() to return std::string.
+      # Limit compatibility mode to this upstream source; our code stays C++20.
+      set_property(SOURCE "${GARAK_VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_win32.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS /Zc:char8_t-)
+    endif()
   elseif(APPLE)
     target_sources(garak_platform PRIVATE "${GARAK_VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_mac.mm")
   else()
