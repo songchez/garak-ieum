@@ -141,6 +141,15 @@ class Host {
     }
     if (method=="engine.configure") return configure(a);
     if (method=="engine.close") { close(); return Json::object(); }
+    if (method=="test.fault") {
+      if(!test_) throw std::runtime_error("Test fault injection is not enabled");
+      requireEngine();
+      // CLI smoke harness only: leave the capture ring intact while stopping
+      // the synthetic callback, just as a failed device leaves a partial take.
+      configured_=false; testState_.running=false; testState_.needsReconfigure=true;
+      testState_.error="Injected test device failure";
+      return snapshot();
+    }
     if (method=="asset.load") return loadAsset(a);
     if (method=="samples.register") { auto set=sampleSet(a); for(const auto& z:set.zones) if(!assets_.contains(z.assetId)) throw std::runtime_error("Sample asset is missing"); for(const auto& z:set.releaseZones) if(!assets_.contains(z.assetId)) throw std::runtime_error("Release sample asset is missing"); sets_[set.id]=std::move(set); return Json::object(); }
     if (method=="project.set") {
@@ -284,7 +293,7 @@ class Host {
   Json configure(const Json& a) {
     if(recording_) throw std::runtime_error("Stop recording before changing the audio device");
     const auto oldFrame=engine_?engine_->snapshot().frame:0;
-    closeDevice(); pluginError_.clear();
+    closeDevice(); pluginError_.clear(); recordingError_=false;
     DeviceConfig config;
     config.backend=string(a,"backend",32); config.sampleRate=std::uint32_t(integer(a,"sampleRate",8000,192000,48000)); config.bufferFrames=std::uint32_t(integer(a,"bufferFrames",16,test_?4096:16384,128));
     config.inputDeviceId=a.value("inputDeviceId",std::string{}); config.outputDeviceId=a.value("outputDeviceId",std::string{});
@@ -419,11 +428,11 @@ class Host {
     return result;
   }
   void closeDevice() {
-    if(!test_) device_.close(); configured_=false; testState_.running=false;
+    if(!test_) device_.close(); configured_=false; testState_={};
     preview_.store(nullptr); previewOwned_.reset(); retiredPreview_.clear(); toneRemaining_.store(0);
   }
   void close() noexcept {
-    try { closeDevice(); if(recording_) recording_->finish(); recording_.reset(); engine_.reset(); plugins_.clear(); assets_.clear(); sets_.clear(); project_={}; pluginError_.clear(); } catch(...) {}
+    try { closeDevice(); if(recording_) recording_->finish(); recording_.reset(); engine_.reset(); plugins_.clear(); assets_.clear(); sets_.clear(); project_={}; pluginError_.clear(); recordingError_=false; } catch(...) {}
   }
   bool test_=false,configured_=false,testTone_=false,recordingError_=false;
   std::string pluginError_;

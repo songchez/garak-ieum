@@ -4,7 +4,7 @@
 
 데스크톱은 **자체 C++20 오디오 엔진**을 별도 `garak-audio-host` 프로세스로 실행합니다. Windows는 **ASIO 또는 WASAPI**, Apple Silicon macOS는 **Core Audio**를 사용합니다. 내장 악기, 오디오 리전, 기타 앰프와 이펙트, VST3, 입력 모니터링, 녹음과 WAV 출력이 이 엔진에 연결됩니다. Electron/React는 편집과 제어를 맡습니다. [C++ 엔진](../native/include/garak/engine.hpp) · [장치 어댑터](../native/src/device.cpp) · [렌더러 연결](../src/audio/native/NativeAudioEngine.ts)
 
-이 문서의 구현 여부와 실제 하드웨어 검증은 구분합니다. 이 작업 환경에서는 **Linux에서 실제 VST3 SDK와 테스트 플러그인을 빌드·실행**했고, Windows 장치·VST3·창 소스는 MinGW로 문법 검사를 통과했습니다. 새 Windows MSVC 및 macOS arm64 CI의 실행 결과, 실제 인터페이스의 입출력·왕복 지연·타사 플러그인 창은 별도 확인 대상입니다. 이전 버전의 Web Audio 검사 결과를 새 장치 검증으로 대신하지 않습니다.
+이 문서의 구현 여부와 실제 하드웨어 검증은 구분합니다. **Linux의 실제 VST3 SDK 빌드·실행 검사와 Windows MSVC·macOS arm64의 설치물 CI가 통과**했습니다. CI에서 실제 네이티브 호스트와 VST3 테스트 모듈을 검사하고, Windows 설치 파일과 Mac DMG를 설치한 뒤 앱 화면의 네이티브 연결을 검사했습니다. CI는 명시적인 테스트 클록을 사용하므로 실제 인터페이스의 입출력·왕복 지연·타사 플러그인 창은 별도 실기 확인 대상입니다. [Windows CI](https://github.com/songchez/garak-ieum/actions/runs/41785545281) · [macOS CI](https://github.com/songchez/garak-ieum/actions/runs/41785545268) — 검사 대상 PR head `3075f9993ba3dcdf7e6d1f6872d7cf3e670e19ce`.
 
 ## 1. 오디오가 흐르는 경로
 
@@ -106,15 +106,16 @@ pnpm native:test
 
 Linux의 `pnpm native:build`는 장치 없이 실제 VST3/오프라인 엔진을 빌드하는 개발 검사입니다. `pnpm native:build --core-only`는 VST3·장치 지원을 끈 핵심 DSP 검사 용도이며 배포 엔진으로 사용하지 않습니다. Windows/macOS 배포 빌드는 VST3와 플랫폼 장치 지원을 요구하고 Windows는 ASIO를 필수로 요구합니다.
 
-| 검증 | 이번 로컬 결과 / 남은 확인 |
+| 검증 | 확인한 결과 / 남은 확인 |
 | --- | --- |
 | CMake 전체 Linux 빌드 | 실제 고정 SDK 사용, 성공 |
 | CTest `native-engine` | 프레임·믹싱·DSP·입력·지연 보상 등 코어 회귀 통과 |
 | CTest `native-asio-formats` | 모든 지원 PCM endian/유효 비트·clipping·비정상 값 변환 통과 |
 | CTest `native-vst3` | 실제 모듈 탐색, effect/instrument/processor-only, 이벤트 offset, 겹친 note ID/reset, 260개 초기 parameter, 상태 왕복·크기 한도 통과 |
 | CMake install | helper 및 8개 패키지의 고지·manifest 설치 확인 |
-| Windows 문법 검사 | 실제 miniaudio/ASIO/VST3 헤더를 사용한 MinGW 검사 통과. MSVC 링크·실행 검증과는 구분 |
-| Windows/macOS CI | workflow에 검사 연결. 이 변경 커밋의 원격 결과는 해당 Actions 실행에서 확인 |
+| Windows 문법 검사 | 실제 miniaudio/ASIO/VST3 헤더를 사용한 MinGW 검사 통과 |
+| Windows x64 CI | MSVC 빌드·실제 VST3 검사·설치 파일 생성·설치·`.garak` 연결·설치된 앱 스모크·대응 소스와 아티팩트 업로드 통과. 위 Windows CI 참조 |
+| macOS arm64 CI | 네이티브 빌드·실제 VST3 검사·ad-hoc 서명 DMG 생성·설치·설치된 앱 스모크·대응 소스와 아티팩트 업로드 통과. 위 macOS CI 참조 |
 | 실제 장치·타사 플러그인 | 이 환경에서 미검증. 장치·드라이버·OS·플러그인 버전과 레이트·블록·조건을 기록하여 실기 확인 필요 |
 
 장치 검증에서는 재생/정지/탐색, 마이크 채널·기타 모니터링·녹음 위치, buffer/rate 변경, 장치 분리·재연결, 장시간 부하, 플러그인 창·저장·복원과 물리 루프백 지연을 따로 확인합니다. CI 통과나 ASIO 드라이버 목록 표시만으로 이 검증이 끝난 것으로 기록하지 않습니다.

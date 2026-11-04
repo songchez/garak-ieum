@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { NativeAudioService } from '../dist-desktop/native-audio.js'
 
@@ -22,6 +23,41 @@ const service = new NativeAudioService({
 let checks = 0
 async function checked(name, operation) { await operation(); checks++; console.log('PASS ' + name) }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+async function within(promise, description, timeout = 5000) {
+  let timer
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(description + ' timed out')), timeout) })]) }
+  finally { clearTimeout(timer) }
+}
+/** Test-only CLI commands never pass through the renderer's method allowlist. */
+async function withTestHost(operation) {
+  const child = spawn(executable, ['--protocol', '--test-clock'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  let diagnostics = '', id = 0
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', value => { diagnostics = (diagnostics + value).slice(-8192) })
+  child.on('error', error => { diagnostics += error.message })
+  child.stdin.on('error', error => { diagnostics += error.message })
+  const exited = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))
+  const output = createInterface({ input: child.stdout })
+  const lines = output[Symbol.asyncIterator]()
+  const request = async (method, params = {}) => {
+    const requestId = ++id
+    child.stdin.write(JSON.stringify({ id: requestId, method, params }) + '\n')
+    const line = await within(lines.next(), 'Native test request ' + method)
+    assert.equal(line.done, false, 'Native test process closed: ' + diagnostics)
+    const response = JSON.parse(line.value)
+    assert.equal(response.id, requestId)
+    if (!response.ok) throw new Error(response.error?.message ?? 'Native test request failed')
+    return response.result
+  }
+  try { await operation(request) }
+  finally {
+    child.stdin.end()
+    try {
+      const result = await within(exited, 'Native test shutdown')
+      assert.equal(result.code, 0, diagnostics || String(result.signal))
+    } finally { if (child.exitCode === null) child.kill(); output.close() }
+  }
+}
 const source = instrumentId => ({ kind: 'builtin-synth', instrumentId, isKit: instrumentId === 'drums', params: {} })
 const track = (id, src = source('keys')) => ({
   id, source: src, gain: .7, pan: 0, enabled: true, mute: false, solo: false, soloSafe: false, audible: true, inserts: [],
@@ -50,6 +86,8 @@ const rms = samples => Math.sqrt(samples.reduce((sum, sample) => sum + sample * 
 try {
   await checked('native command boundary rejects arbitrary methods and paths', async () => {
     await assert.rejects(service.request('system.exec', {}), /허용되지/)
+    await assert.rejects(service.request('test.input', { active: true }), /허용되지/)
+    await assert.rejects(service.request('test.fault', {}), /허용되지/)
     await assert.rejects(service.request('transport.play', { path: '/untrusted' }), /파일 경로/)
     await assert.rejects(service.request('note.preview', { source: { kind: 'vst3', plugin: { path: '/untrusted.vst3' } } }), /내장 악기/)
   })
@@ -129,6 +167,71 @@ try {
     await assert.rejects(readFile(sourceFile), /ENOENT/)
     await service.request('transport.stop')
   })
+  await checked('nonzero native capture survives device failure and clears faults on reconnect or close', async () => {
+    await withTestHost(async request => {
+      assert.equal((await request('hello')).testClock, true)
+      const config = { backend: 'test', sampleRate: 48000, bufferFrames: 128, inputChannels: 1 }
+      await request('engine.configure', config)
+      const p = project([track('capture', { kind: 'audio' })]); p.lengthFrames = 48000 * 30
+      await request('project.set', { timeline: p })
+      await request('test.input', { active: true })
+      await request('transport.seek', { frame: 4096 })
+      for (const recovery of ['reconnect', 'close']) {
+        await request('transport.play')
+        const filename = path.join(temporary, 'partial-' + recovery + '.wav')
+        const start = await request('record.start', { trackId: 'capture', path: filename })
+        assert.ok(Number.isInteger(start.rawStartFrame) && start.rawStartFrame >= 4096)
+        assert.equal(start.startFrame, start.rawStartFrame - start.compensationFrames)
+        assert.equal(start.compensationKnown, false, 'the synthetic clock must not claim hardware latency measurements')
+        const deadline = Date.now() + 5000
+        let capturing
+        do {
+          await delay(10)
+          capturing = await request('engine.snapshot')
+          assert.equal(capturing.recording, true)
+          assert.ok(Date.now() < deadline, 'Native recording did not advance')
+        } while (capturing.recordedFrames < 1024)
+        const failed = await request('test.fault')
+        assert.equal(failed.ready, false); assert.equal(failed.playing, false)
+        assert.equal(failed.device.running, false); assert.equal(failed.device.needsReconfigure, true)
+        assert.match(failed.error, /Injected test device failure/)
+        await assert.rejects(request('engine.configure', config), /Stop recording/)
+        const stopped = await request('record.stop')
+        assert.match(stopped.error, /복구/)
+        assert.equal(stopped.path, filename)
+        assert.equal(stopped.rawStartFrame, start.rawStartFrame)
+        assert.equal(stopped.startFrame, start.startFrame)
+        assert.equal(stopped.compensationFrames, start.compensationFrames)
+        assert.equal(stopped.compensationKnown, false)
+        assert.equal(stopped.frames, failed.recordedFrames, 'stopping a failed device must not append synthetic input frames')
+        assert.equal(stopped.frames, failed.frame - stopped.rawStartFrame, 'recorded PCM must use the native timeline frame clock')
+        const audio = wav(await readFile(filename))
+        assert.equal(audio.format, 3); assert.equal(audio.channels, 1); assert.equal(audio.rate, 48000)
+        assert.equal(audio.frames, stopped.frames)
+        assert.ok(peak(audio.samples) > .1 && peak(audio.samples) <= .151, 'the partial take must retain the actual nonzero input')
+        assert.ok(rms(audio.samples) > .05, 'a zero-filled recovery file is not a successful recording')
+        const finalized = await request('engine.snapshot')
+        assert.equal(finalized.recording, false); assert.equal(finalized.frame, failed.frame)
+        assert.equal(finalized.recordedFrames, stopped.frames); assert.equal(finalized.recordingDroppedFrames, 0)
+        if (recovery === 'reconnect') {
+          const configured = await request('engine.configure', config)
+          assert.equal(configured.running, true)
+          const recovered = await request('engine.snapshot')
+          assert.equal(recovered.ready, true); assert.equal(recovered.recording, false)
+          assert.equal(recovered.error, undefined, 'reconnecting must clear the finalized recording fault')
+        } else {
+          await request('engine.close')
+          // Recreate the project without configure (which independently clears
+          // old faults), so this specifically verifies the explicit close path.
+          await request('project.set', { timeline: p })
+          const closed = await request('engine.snapshot')
+          assert.equal(closed.ready, false)
+          assert.equal(closed.error, undefined, 'closing must clear the finalized recording fault')
+          await request('engine.close')
+        }
+      }
+    })
+  })
   await checked('unknown and missing processors fail before silent substitution', async () => {
     const p = project()
     p.tracks[0].source.instrumentId = 'not-an-instrument'
@@ -190,13 +293,13 @@ try {
     let output = '', diagnostics = ''
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8')
     child.stdout.on('data', value => { output += value }); child.stderr.on('data', value => { diagnostics += value })
-    child.stdin.end(JSON.stringify({ id: 0, method: 'hello' }) + '\n' + JSON.stringify({ id: 1, method: 'engine.configure', params: { backend: 'not-a-backend', sampleRate: 48000, bufferFrames: 128, inputChannels: 0 } }) + '\n')
+    child.stdin.end(JSON.stringify({ id: 0, method: 'hello' }) + '\n' + JSON.stringify({ id: 1, method: 'engine.configure', params: { backend: 'not-a-backend', sampleRate: 48000, bufferFrames: 128, inputChannels: 0 } }) + '\n' + JSON.stringify({ id: 2, method: 'test.fault' }) + '\n')
     const code = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => { child.kill(); reject(new Error('Native EOF shutdown timed out')) }, 5000)
       child.on('error', error => { clearTimeout(timer); reject(error) }); child.on('exit', code => { clearTimeout(timer); resolve(code) })
     })
     assert.equal(code, 0, diagnostics)
-    const [hello, response] = output.trim().split('\n').map(line => JSON.parse(line))
+    const [hello, response, fault] = output.trim().split('\n').map(line => JSON.parse(line))
     assert.equal(hello.result.testClock, false)
     if (!flag('--core-only')) {
       assert.equal(hello.result.vst3, true, 'the distribution must contain the real VST3 host')
@@ -205,6 +308,8 @@ try {
     }
     assert.equal(response.id, 1); assert.equal(response.ok, false)
     assert.match(response.error.message, /unavailable|not available|Unknown|Unsupported/)
+    assert.equal(fault.id, 2); assert.equal(fault.ok, false)
+    assert.match(fault.error.message, /Test fault injection is not enabled/)
   })
   console.log('Native smoke: ' + checks + ' checks passed. The test clock does not validate physical ASIO/Core Audio latency.')
 } finally {
