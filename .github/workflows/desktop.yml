@@ -104,8 +104,24 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      # Validation builds reuse the native host when native sources, its build scripts and CMake
+      # are unchanged (most pushes only touch src/). Release builds always compile from scratch.
+      - name: Restore unchanged native engine build
+        if: ${{ !inputs.release_build }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/native-audio
+            build/native-work
+          key: native-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/**', 'scripts/build-native-audio.mjs', 'scripts/native-dependencies.mjs') }}
+
       - name: Build Windows installer
-        run: pnpm desktop:build
+        env:
+          GARAK_NATIVE_REUSE: ${{ inputs.release_build && '0' || '1' }}
+        run: |
+          # Validation installers skip LZMA so packaging is fast; the installed app is identical.
+          # Release installers keep the configured normal compression.
+          if ('${{ inputs.release_build }}' -eq 'true') { pnpm desktop:build } else { pnpm desktop:build -c.compression=store }
 
       - name: Verify native audio and actual VST3 host
         run: pnpm native:test
