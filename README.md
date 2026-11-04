@@ -3,13 +3,15 @@
 </p>
 
 <p align="center">
-  <a href="#development"><img src="https://img.shields.io/badge/version-0.1.1_Preview-DF5435?style=flat-square" alt="0.1.1 개발 프리뷰"></a>
+  <a href="#development"><img src="https://img.shields.io/badge/version-0.1.2_Preview-DF5435?style=flat-square" alt="0.1.2 개발 프리뷰"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/code-GPL--3.0--only-3D7865?style=flat-square" alt="GPL-3.0-only 코드 라이선스"></a>
   <a href="#pitch-editor"><img src="https://img.shields.io/badge/audio-Pitch_Editor-285973?style=flat-square" alt="오디오 피치 편집기"></a>
   <a href="#ai"><img src="https://img.shields.io/badge/AI-MCP_Ready-783645?style=flat-square" alt="로컬 MCP 연결 지원"></a>
 </p>
 
 <h1 align="center">가락이음 · Garak Ieum</h1>
+
+**[0.1.2 개발 프리뷰 다운로드](https://github.com/songchez/garak-ieum/releases/tag/v0.1.2)** — [Windows x64 설치 파일](https://github.com/songchez/garak-ieum/releases/download/v0.1.2/Garak-Ieum-Setup-0.1.2-x64.exe) · [Apple Silicon Mac 설치 파일](https://github.com/songchez/garak-ieum/releases/download/v0.1.2/Garak-Ieum-Setup-0.1.2-arm64.dmg)
 
 <p align="center">
   <strong>우리의 소리와 색을 담은, 100% 국산 DAW.</strong><br>
@@ -222,13 +224,13 @@ npx.cmd --yes pnpm@11.25.0 dev
 
 ## 함께 완성하는 음악 작업실
 
-가락이음은 **0.1.1 개발 프리뷰**입니다. 실제로 재생·편집할 수 있는 웹 DAW를 만들고 있으며, **1.0은 웹 편집기와 오디오 엔진**, **2.0은 로컬 네이티브 호스트를 통한 플러그인 연결**을 목표로 합니다.
+가락이음은 **0.1.2 개발 프리뷰**입니다. 실제로 재생·편집할 수 있는 웹 DAW를 만들고 있으며, **1.0은 웹 편집기와 오디오 엔진**, **2.0은 로컬 네이티브 호스트를 통한 플러그인 연결**을 목표로 합니다.
 
 <details>
 <summary><strong>현재 지원 범위와 앞으로의 방향</strong></summary>
 
-- **현재:** MIDI 피아노롤, 오디오 녹음·편집, 단선율 피치 편집, 내장 악기와 이펙트, 로컬 프로젝트 저장, 제한된 MCP 편집 명령을 제공합니다.
-- **다음 단계:** MIDI 파일 입출력·외부 MIDI 장치, 메트로놈·카운트인, 오토메이션·템포 맵, 작곡 코드 실행과 MCP 범위 확대를 다듬습니다.
+- **현재:** MIDI 파일 가져오기·피아노롤, 오디오 녹음·편집, 단선율 피치 편집, 이음웨이브 네이티브 재생, 내장 악기와 이펙트, 로컬 프로젝트 저장, 제한된 MCP 편집 명령을 제공합니다.
+- **다음 단계:** MIDI 파일 내보내기·외부 MIDI 장치, 메트로놈·카운트인, 오토메이션·템포 맵, 작곡 코드 실행과 MCP 범위 확대를 다듬습니다.
 - **장기 방향:** 네이티브 VST/AU/CLAP 연결을 위한 로컬 호스트를 연구합니다.
 - 다성음 분리, 타이밍·드리프트·비브라토 개별 보정, 실시간 피치 보정은 현재 제공하지 않습니다. 포먼트 도구는 실험 단계입니다.
 - 프로젝트 저장은 브라우저 로컬입니다. 클라우드 동기화·실시간 공동 편집·계정 기능은 현재 제공하지 않습니다.
