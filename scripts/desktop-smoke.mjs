@@ -250,8 +250,24 @@ async function pasteWithMacClipboard(locator, value) {
 }
 async function screenshot(name, width = 1280, height = 900) {
   const windowHandle = await session.application.browserWindow(session.page)
-  await windowHandle.evaluate((window, size) => window.setContentSize(size.width, size.height), { width, height })
-  await session.page.waitForFunction(size => innerWidth === size.width && innerHeight === size.height, { width, height })
+  const geometry = await windowHandle.evaluate((window, size) => {
+    window.setContentSize(size.width, size.height)
+    return { contentSize: window.getContentSize(), bounds: window.getBounds() }
+  }, { width, height })
+  const display = await session.application.evaluate(({ screen }, bounds) => {
+    const matching = screen.getDisplayMatching(bounds)
+    return { workArea: matching.workArea, scaleFactor: matching.scaleFactor }
+  }, geometry.bounds)
+  // macOS clamps native windows to the available desktop (the hosted runner
+  // currently provides 656 content pixels in height). Verify the renderer has
+  // reached the real native size, and retain both requested and actual sizes.
+  const target = process.platform === 'darwin'
+    ? { width: geometry.contentSize[0], height: geometry.contentSize[1] }
+    : { width, height }
+  assert.ok(target.width > 0 && target.height > 0, 'The screenshot window has no content area.')
+  report.screenshots ??= []
+  report.screenshots.push({ name, requested: { width, height }, ...geometry, ...display })
+  await session.page.waitForFunction(size => innerWidth === size.width && innerHeight === size.height, target)
   await session.page.screenshot({ path: path.join(artifacts, name) })
   report.artifacts.push(name)
 }
