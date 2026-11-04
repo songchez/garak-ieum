@@ -45,12 +45,6 @@ function DesktopTitleBar({ desktop }: { desktop: DesktopBridge }) {
   return <div className="desktop-titlebar" data-focused={focused} data-caption-visible={captionVisible} aria-label="창 제목 표시줄">
     <div className="desktop-titlebar-content">
       <div className="desktop-titlebar-leading">
-        {desktop.platform !== 'darwin' && <button className="desktop-app-menu" aria-label="앱 메뉴" aria-haspopup="menu" title="앱 메뉴 · Alt" onClick={event => {
-          const bounds = event.currentTarget.getBoundingClientRect()
-          desktop.windowChrome?.showMenu({ x: bounds.left, y: bounds.bottom })
-        }}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
-        </button>}
         <img src={BRAND.mark} width="16" height="16" alt=""/>
         <span className="desktop-titlebar-brand">{BRAND.name}</span>
         <HeaderMenuSlot location="desktop"/>

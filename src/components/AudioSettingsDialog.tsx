@@ -43,8 +43,11 @@ function SettingRow({ label, hint, children }: { label: string; hint?: string; c
 }
 function Fact({ name, value }: { name: string; value: ReactNode }) { return <><dt>{name}</dt><dd>{value}</dd></> }
 
-export default function AudioSettingsDialog(props: Omit<Props, 'engine'> & { engine: WebAudioEngine | NativeAudioEngine }) {
-  if (props.engine.kind === 'native') return <NativeAudioSettingsDialog engine={props.engine} settings={props.settings} project={props.project} blockedReason={props.blockedReason} onApply={props.onApply} onClose={props.onClose}/>
+/** `plugins` exists only in the desktop dialog; a browser falls back to its first tab. */
+export type SettingsTab = Tab | 'plugins'
+
+export default function AudioSettingsDialog({ initialTab, ...props }: Omit<Props, 'engine'> & { engine: WebAudioEngine | NativeAudioEngine; initialTab?: SettingsTab }) {
+  if (props.engine.kind === 'native') return <NativeAudioSettingsDialog engine={props.engine} settings={props.settings} project={props.project} blockedReason={props.blockedReason} onApply={props.onApply} onClose={props.onClose} initialTab={initialTab}/>
   return <BrowserAudioSettingsDialog {...props} engine={props.engine}/>
 }
 

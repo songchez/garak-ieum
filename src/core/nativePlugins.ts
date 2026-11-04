@@ -45,6 +45,6 @@ export function validateNativePlugin(input: unknown, path: string, editingId: (v
   }
 }
 
-export function cloneNativePlugin(plugin: NativePluginInstance, newId: string): NativePluginInstance {
+export function cloneNativePlugin<T extends NativePluginInstance>(plugin: T, newId: string): T {
   return { ...plugin, id: newId, parameters: { ...plugin.parameters }, ...(plugin.state ? { state: { ...plugin.state } } : {}) }
 }

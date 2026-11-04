@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createDevice, createEmptyProject, createTrack } from '../../core/project'
-import type { AudioClip, MidiClip, MidiNote, Project, Track } from '../../core/types'
+import type { AudioClip, MidiClip, MidiNote, PluginDevice, Project, Track } from '../../core/types'
 import { compileNativeTimeline, NATIVE_TIMELINE_LIMITS, planNativeSeek, type NativePcmAsset } from './timeline'
 import type { NativePluginInstance } from './contracts'
 
@@ -43,9 +43,10 @@ describe('native timeline preparation', () => {
   it('preserves WAVE and VST3 sources together, including plugin state, inserts and instrument bypass', () => {
     const plugin: NativePluginInstance = { id: 'instrument-instance', pluginId: 'catalog-instrument', classId: 'instrument-class', name: 'Native instrument',
       enabled: true, parameters: { '17': 0.25 }, state: { component: 'AQ==', controller: 'Ag==' } }
-    const insert: NativePluginInstance = { id: 'insert-instance', pluginId: 'catalog-effect', classId: 'effect-class', name: 'Native insert',
+    const insert: PluginDevice = { id: 'insert-instance', type: 'vst3', pluginId: 'catalog-effect', classId: 'effect-class', name: 'Native insert',
       enabled: false, parameters: { '31': 0.75 }, state: { component: 'Aw==', controller: 'BA==' } }
-    const wave = track('wave', { instrument: 'wavetable', pluginInserts: [insert], clips: [midi('wave-notes', { notes: [note(0)] })] })
+    const { type: _type, ...insertPlugin } = insert
+    const wave = track('wave', { instrument: 'wavetable', devices: [insert], clips: [midi('wave-notes', { notes: [note(0)] })] })
     wave.instrumentParams.macro1 = 0.4
     const vst = track('vst', { pluginInstrument: plugin, clips: [midi('vst-notes', { notes: [note(1)] })] })
     const bypassed = track('bypassed', { pluginInstrument: { ...plugin, id: 'bypassed-instance', enabled: false }, clips: [midi('bypassed-notes', { notes: [note(2)] })] })
@@ -53,7 +54,7 @@ describe('native timeline preparation', () => {
     const result = compileNativeTimeline(project([wave, vst, bypassed]))
     expect(result.tracks.map(item => item.source.kind)).toEqual(['native-wavetable', 'vst3', 'vst3'])
     expect(result.tracks[0].source).toMatchObject({ instrumentId: 'wavetable', patch: { params: { macro1: 0.4 } } })
-    expect(result.tracks[0].inserts[0]).toMatchObject({ id: insert.id, type: 'vst3', enabled: false, params: { '31': 0.75 }, plugin: insert })
+    expect(result.tracks[0].inserts[0]).toMatchObject({ id: insert.id, type: 'vst3', enabled: false, params: { '31': 0.75 }, plugin: { ...insertPlugin, state: { ...insert.state } } })
     expect(result.tracks[1]).toMatchObject({ enabled: true, audible: true, source: { kind: 'vst3', plugin, isKit: false } })
     expect(result.tracks[2]).toMatchObject({ enabled: false, audible: false, source: { kind: 'vst3', plugin: { id: 'bypassed-instance', enabled: false } } })
     expect(result.tracks.map(item => item.notes.length)).toEqual([1, 1, 1])

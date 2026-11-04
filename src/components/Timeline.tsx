@@ -80,6 +80,8 @@ export interface TimelineProps {
   onCommand(command:ProjectShortcut,ctx?:{trackIds?:string[];clipIds?:string[]}):void
   onMenuFocus?():void
   menusDisabled?:boolean
+  /** Window-level entries (zoom, full screen) appended to the 보기 menu by the host frame. */
+  viewMenuExtras?():ContextMenuItem[]
   onMarker(action:'add'|'move'|'rename'|'delete',payload:{id?:string;beat?:number;name?:string}):void
   /** Optional extras outside the §3.1 contract: clip double-click opens its editor; inline clip rename state. Without them a double-click only selects. */
   onClipOpen?(trackId:string,clipId:string):void
@@ -341,7 +343,7 @@ export function Timeline(props:TimelineProps){
   const editMenu=():ContextMenuItem[]=>[cmd('실행 취소','undo'),cmd('다시 실행','redo'),SEP,cmd('잘라내기','cut',{},selCtx()),cmd('복사','copy',{},selCtx()),cmd('붙여넣기','paste',{},selCtx()),cmd('삭제','deleteClip',{},selCtx()),SEP,cmd('재생 위치에서 분할','split',{},selCtx()),cmd('합치기','join',{disabled:selectedClipIds.size<2},selCtx()),cmd('반복','repeat',{},selCtx()),SEP,cmd('모두 선택','selectAll')]
   const functionsMenu=():ContextMenuItem[]=>[cmd('리전 뮤트','muteClip',{disabled:!selectedClipIds.size},selCtx()),cmd('루프','loopClip',{disabled:!selectedClipIds.size},selCtx()),cmd('재생 위치로 이동','moveToPlayhead',{disabled:!selectedClipIds.size},selCtx()),cmd('이름 변경','renameClip',{disabled:!selectedClipIds.size},selCtx())]
   const uiToggle=(label:string,key:'globalTracks'|'hideView'|'scrollInPlay'|'gridLines'|'zoomFocused'|'catch',command?:ProjectShortcut):ContextMenuItem=>({label,checked:ui[key],shortcut:command?shortcutLabel(command)||undefined:undefined,onSelect:()=>latest.current.onUiChange({[key]:!latest.current.ui[key]} as Partial<TimelineUi>)})
-  const viewMenu=():ContextMenuItem[]=>[cmd('인스펙터 보기','toggleInspector'),cmd('라이브러리 보기','toggleLibrary'),cmd('브라우저 보기','toggleBrowser'),SEP,uiToggle('글로벌 트랙 보기','globalTracks','globalTracks'),uiToggle('보기 가리기 토글','hideView','toggleHideView'),{label:'트랙 헤더 구성…',icon:'inspector',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>{const b=viewMenuButton.current?.getBoundingClientRect();latest.current.onConfigureHeader({x:b?.left??0,y:b?.bottom??0})}},SEP,uiToggle('재생 중 스크롤','scrollInPlay'),uiToggle('그리드 선','gridLines'),uiToggle('포커스된 트랙 확대/축소','zoomFocused','zoomFocusedTrack')]
+  const viewMenu=():ContextMenuItem[]=>[cmd('인스펙터 보기','toggleInspector'),cmd('라이브러리 보기','toggleLibrary'),cmd('브라우저 보기','toggleBrowser'),SEP,uiToggle('글로벌 트랙 보기','globalTracks','globalTracks'),uiToggle('보기 가리기 토글','hideView','toggleHideView'),{label:'트랙 헤더 구성…',icon:'inspector',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>{const b=viewMenuButton.current?.getBoundingClientRect();latest.current.onConfigureHeader({x:b?.left??0,y:b?.bottom??0})}},SEP,uiToggle('재생 중 스크롤','scrollInPlay'),uiToggle('그리드 선','gridLines'),uiToggle('포커스된 트랙 확대/축소','zoomFocused','zoomFocusedTrack'),...(latest.current.viewMenuExtras?.()??[])]
   const snapMenu=():ContextMenuItem[]=>{
     const set=(patch:Partial<TimelineUi['snap']>)=>latest.current.onUiChange({snap:{...latest.current.ui.snap,...patch}})
     const modes:SnapMode[]=['smart','bar','beat','division','ticks']

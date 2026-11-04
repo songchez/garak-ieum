@@ -22,7 +22,7 @@
 |---|---|---|
 | 삼색 북 형태의 마크 | 상단·마지막 장면의 브랜드 식별 | [브랜드 마크](../public/brand/garak-ieum-mark.png) |
 | 덕온공주체 워드마크 | 기존 이름의 인상 유지 | [워드마크](../public/brand/garak-ieum-wordmark.svg), [브랜드 정의](../src/brand.ts) |
-| `GiwaEave`의 처마 표현 | 처마의 비례·반복·경계감을 발전시키는 출발점 | [처마 컴포넌트](../src/components/GiwaEave.tsx) |
+| `GiwaEave`의 처마 표현 | 처마의 비례·반복·경계감을 발전시키는 출발점 | 앱 헤더에서는 2026-11-04에 제거. git 기록의 `src/components/GiwaEave.tsx` |
 | 새벽 한옥·백자와 수묵 테마 | 어두운 도입과 밝은 중간 장면의 색 기반 | [테마 정의](../src/core/theme.ts), [테마 스타일](../src/styles/themes.css) |
 | 내장 국악 악기와 현대적인 리듬 악기 | 제품 자체의 소리로 구성하는 듣기 예시 | [악기 정의](../src/core/instruments.ts) |
 | 샘플 프로젝트 〈마당의 결〉 | 랜딩의 중심 편곡과 공간 전개 | [샘플 카탈로그](../src/core/projectTemplates.ts), [편곡 설명](SAMPLE_PROJECTS.md) |

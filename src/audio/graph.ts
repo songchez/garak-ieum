@@ -2,7 +2,7 @@ import { SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, paramValue } from '../core/devices'
 import { instrumentDef } from '../core/instruments'
 import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../core/playback'
 import type { AudioWindow, PlaybackNote } from '../core/playback'
-import type { AudioAsset, AudioClip, InstrumentId, Project, Track } from '../core/types'
+import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track } from '../core/types'
 import { clamp, clipEnvelope, secondsPerBeat } from './math'
 import { pickZone, type LoadedSet, type SampleLibrary } from './samples'
 import type { DeviceGraph } from '../devices/contracts'
@@ -85,7 +85,7 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true)
     setParameter(channel.fader.gain, audible.has(track.id) ? clamp(track.volume, 0, 2) : 0, now, smooth)
     setParameter(channel.panner.pan, clamp(track.pan, -1, 1), now, smooth)
     for (const device of track.devices) {
-      if (device.enabled) channel.devices.get(device.id)?.update(device.params, project.bpm, now, smooth)
+      if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, project.bpm, now, smooth)
     }
   }
 }
@@ -99,7 +99,7 @@ export function renderTailSeconds(project: Project): number {
       tail = Math.max(tail, clamp(paramValue(def.params, track.instrumentParams, 'release'), 0, 30) + 0.2)
     } else if (track.kind === 'instrument' && def.kind === 'sampled') tail = Math.max(tail, 2)
     for (const device of track.devices) {
-      if (!device.enabled) continue
+      if (!device.enabled || !isEffectDevice(device)) continue
       tail = Math.max(tail, EFFECT_MODULES[device.type].tailSeconds(device.params, project.bpm))
     }
   }
@@ -153,6 +153,7 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
       const devices = new Map<string, DeviceGraph>()
       let tail: AudioNode = input
       for (const device of track.devices) {
+        if (!isEffectDevice(device)) continue
         const effect = EFFECT_MODULES[device.type]
         if (!device.enabled || !effect || devices.has(device.id)) continue
         const node = effect.create(context, remember)

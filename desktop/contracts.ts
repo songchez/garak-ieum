@@ -6,6 +6,9 @@ export interface DesktopFile {
 
 export type DesktopExportKind = 'project' | 'audio' | 'json'
 
+/** Window-level 보기 commands the in-app menu bar forwards to the native frame. */
+export type DesktopViewCommand = 'zoomIn' | 'zoomOut' | 'resetZoom' | 'toggleFullscreen'
+
 export interface DesktopSaveRequest extends DesktopFile {
   kind: DesktopExportKind
 }
@@ -22,8 +25,7 @@ export interface DesktopBridge {
   /** Native caption buttons remain OS-owned; only their appearance is exposed. */
   readonly windowChrome?: {
     setColors(colors: { background: string; foreground: string }): Promise<void>
-    /** CSS-pixel anchor from the menu button; the main process applies zoom. */
-    showMenu(anchor?: { x: number; y: number }): void
+    view(command: DesktopViewCommand): void
   }
   readonly audio: {
     request(method: string, params?: Record<string, unknown>): Promise<unknown>

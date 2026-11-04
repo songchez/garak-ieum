@@ -6,7 +6,7 @@ import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
-import { QUANTIZE_VALUES, type Clip, type Device, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
+import { QUANTIZE_VALUES, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
 
 let fallbackSequence = 0
 
@@ -40,10 +40,15 @@ export function withInstrument(track: Track, instrument: InstrumentId): Track {
     ? withWavetablePatch(next, createDefaultWavetablePatch()) : next
 }
 
-export function createDevice(type: EffectType, params: Partial<Record<string, number>> = {}): Device {
+export function createDevice(type: EffectType, params: Partial<Record<string, number>> = {}): EffectDevice {
   const values = defaultParams(EFFECT_DEFS[type].params)
   for (const [key, value] of Object.entries(params)) if (value !== undefined) values[key] = value
   return { id: uid(), type, enabled: true, params: values }
+}
+
+/** A copy with a new editing ID; VST3 state and parameters are copied, never shared. */
+export function cloneDevice(device: Device, newId = uid()): Device {
+  return device.type === 'vst3' ? cloneNativePlugin(device, newId) : { ...device, id: newId, params: { ...device.params } }
 }
 
 /** Moves a device by `offset` slots, clamped to the chain; returns the same track when nothing changes. */
@@ -89,7 +94,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -378,9 +383,8 @@ export function duplicateTrack(track: Track): Track {
     name: `${track.name} 복사본`.slice(0, 512),
     instrumentParams: { ...track.instrumentParams },
     ...(track.instrumentState ? { instrumentState: cloneWavetableState(track.instrumentState) } : {}),
-    devices: track.devices.map(device => ({ ...device, id: uid(), params: { ...device.params } })),
+    devices: track.devices.map(device => cloneDevice(device)),
     ...(track.pluginInstrument ? { pluginInstrument: cloneNativePlugin(track.pluginInstrument, uid()) } : {}),
-    ...(track.pluginInserts ? { pluginInserts: track.pluginInserts.map(plugin => cloneNativePlugin(plugin, uid())) } : {}),
     clips: track.clips.map(clip => duplicateClip(clip, clip.startBeat)),
   }
 }
@@ -396,9 +400,8 @@ export function duplicateTrackSettings(track: Track): Track {
     velocityLimit: [...track.velocityLimit],
     instrumentParams: { ...track.instrumentParams },
     ...(track.instrumentState ? { instrumentState: cloneWavetableState(track.instrumentState) } : {}),
-    devices: track.devices.map(device => ({ ...device, id: uid(), params: { ...device.params } })),
+    devices: track.devices.map(device => cloneDevice(device)),
     ...(track.pluginInstrument ? { pluginInstrument: cloneNativePlugin(track.pluginInstrument, uid()) } : {}),
-    ...(track.pluginInserts ? { pluginInserts: track.pluginInserts.map(plugin => cloneNativePlugin(plugin, uid())) } : {}),
     clips: [],
   }
 }
@@ -630,7 +633,7 @@ function params(value: unknown, defs: readonly ParamDef[], path: string): Record
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6) throw new Error('This project version is not supported. Expected schema version 1 through 6.')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) throw new Error('This project version is not supported. Expected schema version 1 through 7.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -669,7 +672,9 @@ export function validateProject(input: unknown): Project {
     if (version < 6 && (track.pluginInstrument !== undefined || track.pluginInserts !== undefined)) throw new Error('VST3 plugins require project schema version 6 or later.')
     if (track.kind !== 'instrument' && track.pluginInstrument !== undefined) throw new Error(`${path} cannot place a VST3 instrument on an audio track.`)
     const pluginInstrument = track.pluginInstrument === undefined ? undefined : validateNativePlugin(track.pluginInstrument, `${path} VST3 instrument`, id)
-    const pluginInserts = track.pluginInserts === undefined ? undefined : list(track.pluginInserts, `${path} VST3 inserts`, 64).map((plugin, index) => validateNativePlugin(plugin, `${path} VST3 insert ${index + 1}`, id))
+    if (version >= 7 && track.pluginInserts !== undefined) throw new Error(`${path} keeps VST3 effects in its device chain since schema version 7.`)
+    // Schema 6 processed its separate VST3 list after every builtin effect; that order becomes the chain.
+    const legacyPluginInserts = track.pluginInserts === undefined ? [] : list(track.pluginInserts, `${path} VST3 inserts`, 64).map((plugin, index): Device => ({ ...validateNativePlugin(plugin, `${path} VST3 insert ${index + 1}`, id), type: 'vst3' }))
     let devices: Device[]
     if (version === 1) {
       const effects = object(track.effects, `${path} effects`)
@@ -688,6 +693,10 @@ export function validateProject(input: unknown): Project {
       devices = list(track.devices, `${path} devices`, 64).map((deviceInput, deviceIndex): Device => {
         const devicePath = `${path}, device ${deviceIndex + 1}`
         const device = object(deviceInput, devicePath)
+        if (device.type === 'vst3' && version >= 7) {
+          const { type: _type, ...plugin } = device
+          return { ...validateNativePlugin(plugin, `${devicePath} VST3`, id), type: 'vst3' }
+        }
         const deviceId = id(device.id, `${devicePath} ID`)
         if (typeof device.type !== 'string' || !Object.hasOwn(EFFECT_DEFS, device.type)) {
           throw new Error(`${devicePath} has an unknown effect type.`)
@@ -701,7 +710,8 @@ export function validateProject(input: unknown): Project {
         }
       })
     }
-    if (devices.length + (pluginInserts?.length ?? 0) > 64) throw new Error(`${path} may contain at most 64 inserts including VST3.`)
+    devices.push(...legacyPluginInserts)
+    if (devices.length > 64) throw new Error(`${path} may contain at most 64 inserts including VST3.`)
     const clips = list(track.clips, `${path} clips`, 100_000).map((clipInput, clipIndex): Clip => {
       clipCount += 1
       if (clipCount > 100_000) throw new Error('The project contains too many clips.')
@@ -791,7 +801,6 @@ export function validateProject(input: unknown): Project {
       ...(instrumentState ? { instrumentState } : {}),
       devices,
       ...(pluginInstrument ? { pluginInstrument } : {}),
-      ...(pluginInserts ? { pluginInserts } : {}),
     }
   })
   const markers = sortMarkers(list(source.markers ?? [], 'Markers', 10_000).map((markerInput, markerIndex): Marker => {
@@ -804,7 +813,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

@@ -171,7 +171,7 @@ function prepareOccurrences(project: Project): Map<MidiClip, readonly Occurrence
   const prepared = new Map<MidiClip, readonly Occurrence[]>()
   for (const track of project.tracks) {
     unique(track.id)
-    limit(track.devices.length + (track.pluginInserts?.length ?? 0) <= NATIVE_TIMELINE_LIMITS.insertsPerTrack, 'inserts per track')
+    limit(track.devices.length <= NATIVE_TIMELINE_LIMITS.insertsPerTrack, 'inserts per track')
     let trackAudio = 0
     clips += track.clips.length
     limit(clips <= NATIVE_TIMELINE_LIMITS.clips, 'clips')
@@ -289,10 +289,15 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
     audio.sort((a, b) => a.startFrame - b.startFrame || a.id - b.id)
     return { id: track.id, source: source(track), gain: number(track.volume, 0, 2, 'track gain'), pan: number(track.pan, -1, 1, 'track pan'),
       enabled: isTrackEnabled(track) && track.pluginInstrument?.enabled !== false, mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, audible: audible.has(track.id) && track.pluginInstrument?.enabled !== false,
-      inserts: [...track.devices.map((device): NativeBuiltinInsert => {
+      // One ordered chain: builtin and VST3 inserts interleave exactly as the project lists them.
+      inserts: track.devices.map((device): NativeBuiltinInsert | NativePluginInsert => {
+        if (device.type === 'vst3') {
+          const { type: _type, ...plugin } = device
+          return { id: id(plugin.id), type: 'vst3', enabled: plugin.enabled, params: { ...plugin.parameters }, plugin: { ...plugin, parameters: { ...plugin.parameters }, ...(plugin.state ? { state: { ...plugin.state } } : {}) } }
+        }
         if (!Object.hasOwn(EFFECT_DEFS, device.type)) throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Unknown builtin insert.')
         return { id: id(device.id), type: device.type, enabled: device.enabled, params: parameters(EFFECT_DEFS[device.type].params, device.params) }
-      }), ...(track.pluginInserts ?? []).map((plugin): NativePluginInsert => ({ id: id(plugin.id), type: 'vst3', enabled: plugin.enabled, params: { ...plugin.parameters }, plugin: { ...plugin, parameters: { ...plugin.parameters }, ...(plugin.state ? { state: { ...plugin.state } } : {}) } }))], notes, audio }
+      }), notes, audio }
   })
   return { version: 1, projectId: project.id, revision, sampleRate, bpm, timeSignature, beatsPerBar: project.beatsPerBar,
     lengthFrames, cycle, masterGain: number(project.masterVolume, 0, 2, 'master gain'), assets: [...usedAssets.values()], tracks }

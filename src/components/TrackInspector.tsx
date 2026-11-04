@@ -44,7 +44,7 @@ export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, 
       <button type="button" className="insp-swatch" onClick={e => onOpenColorPalette(id, e)} aria-haspopup="dialog" title="트랙 색상 변경" aria-label="트랙 색상 변경" style={{ background: track.color }} />
     </span></div>
     {track.kind === 'instrument' && <>
-      <div className="insp-row"><span className="insp-label">악기</span><select className="insp-select" aria-label="악기 변경" value={track.instrument} onChange={e => onInstrumentChange(id, e.target.value)}><InstrumentOptions /></select></div>
+      <div className="insp-row"><span className="insp-label">악기</span><select className="insp-select" aria-label="악기 변경" value={track.pluginInstrument ? 'vst3' : track.instrument} onChange={e => { if (e.target.value !== 'vst3') onInstrumentChange(id, e.target.value) }}>{track.pluginInstrument && <optgroup label="VST3 악기"><option value="vst3">{track.pluginInstrument.name}</option></optgroup>}<InstrumentOptions /></select></div>
       <div className="insp-row"><span className="insp-label">트랜스포즈</span><ValueField value={track.transpose} min={-96} max={96} format={signed} ariaLabel="트랙 트랜스포즈" onChange={transpose => patch({ transpose }, 'transpose')} /></div>
       <div className="insp-row"><span className="insp-label">벨로시티 오프셋</span><ValueField value={track.velocityOffset} min={-99} max={99} format={signed} ariaLabel="트랙 벨로시티 오프셋" onChange={velocityOffset => patch({ velocityOffset }, 'velocityOffset')} /></div>
       {limit('키 제한', 'keyLimit', 0, 127, pitchName, parsePitchName)}

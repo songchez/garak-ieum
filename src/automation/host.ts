@@ -136,7 +136,7 @@ export function createDawRequestHandler(options: DawHostOptions) {
           const { notes, ...metadata } = clip
           return { ...metadata, noteCount: notes.length }
         })
-        return { ...context, scope: 'track', track: { ...trackSummary(track), transpose: track.transpose, velocityOffset: track.velocityOffset, keyLimit: [...track.keyLimit], velocityLimit: [...track.velocityLimit], delayTicks: track.delayTicks, instrumentParams: { ...track.instrumentParams }, ...instrumentStateSummary(track), devices: track.devices.map(device => ({ ...device, params: { ...device.params } })) }, clips, clipOffset: offset, nextClipOffset: offset + limit < track.clips.length ? offset + limit : null }
+        return { ...context, scope: 'track', track: { ...trackSummary(track), transpose: track.transpose, velocityOffset: track.velocityOffset, keyLimit: [...track.keyLimit], velocityLimit: [...track.velocityLimit], delayTicks: track.delayTicks, instrumentParams: { ...track.instrumentParams }, ...instrumentStateSummary(track), devices: track.devices.map(device => device.type === 'vst3' ? { id: device.id, type: device.type, name: device.name, enabled: device.enabled } : { ...device, params: { ...device.params } }) }, clips, clipOffset: offset, nextClipOffset: offset + limit < track.clips.length ? offset + limit : null }
       }
       const offset = page(query.trackOffset, 0, 0, Number.MAX_SAFE_INTEGER, 'trackOffset')
       const limit = page(query.trackLimit, 50, 1, 100, 'trackLimit')

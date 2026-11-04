@@ -57,11 +57,24 @@ describe('native and wavetable source cards', () => {
     }
     let markup = render(track)
     expect(markup).toContain('aria-label="VST3 악기 Merge test synth"')
-    expect(markup).toContain('VST3 설정 열기')
+    // One instrument picker: the VST3 source is the selected option among builtin instruments.
+    expect(markup).toMatch(/<optgroup label="VST3 악기"><option value="vst3:approved-plugin:0123456789ABCDEF0123456789ABCDEF" selected="">Merge test synth<\/option>/)
     expect(markup).not.toContain('aria-label="IEUM WAVE 편집기 열기"')
     expect(previewButton(markup)).not.toContain('disabled=')
     markup = render({ ...track, pluginInstrument: { ...track.pluginInstrument, enabled: false } })
     expect(previewButton(markup)).toContain('disabled=""')
     expect(markup).not.toContain('aria-label="IEUM WAVE 편집기 열기"')
+  })
+})
+
+describe('one device chain for builtin and VST3 effects', () => {
+  it('renders a VST3 effect as a card in its own chain position, between builtin effects', () => {
+    const track = createTrack('audio')
+    track.devices = [createDevice('eq'), { id: 'fx', type: 'vst3', pluginId: 'approved-fx', classId: '0123456789ABCDEF0123456789ABCDEF', name: 'Space Echo', enabled: false, parameters: {} }, createDevice('reverb')]
+    const markup = render(track)
+    const cards = [...markup.matchAll(/<section class="dc-card dc-effect[^"]*"[^>]*aria-label="([^"]+)"/g)].map(match => match[1])
+    expect(cards).toEqual(['1번 3밴드 EQ', '2번 Space Echo (VST3) (바이패스)', '3번 리버브'])
+    expect(markup).toContain('aria-label="Space Echo 왼쪽으로 이동"')
+    expect(markup).not.toContain('VST3 인서트')
   })
 })

@@ -65,13 +65,21 @@ export interface AudioClip extends ClipBase {
 }
 export type Clip = MidiClip | AudioClip
 export type EffectType = 'eq' | 'filter' | 'compressor' | 'drive' | 'delay' | 'reverb' | 'guitar-rig'
-/** One insert effect. Track.devices is processed left to right. Disabled devices are bypassed. */
-export interface Device {
+/** One builtin insert effect. */
+export interface EffectDevice {
   id: string
   type: EffectType
   enabled: boolean
   params: Record<string, number>
 }
+/** A native VST3 effect in the same chain as builtin effects (desktop engine only). */
+export interface PluginDevice extends NativePluginInstance {
+  type: 'vst3'
+}
+/** One insert. Track.devices is processed left to right, builtin and VST3 interleaved. Disabled devices are bypassed. */
+export type Device = EffectDevice | PluginDevice
+export const isPluginDevice = (device: Device): device is PluginDevice => device.type === 'vst3'
+export const isEffectDevice = (device: Device): device is EffectDevice => device.type !== 'vst3'
 export interface Track {
   id: string
   name: string
@@ -109,8 +117,6 @@ export interface Track {
   devices: Device[]
   /** Native VST3 source; the builtin instrument selection remains available when removed. */
   pluginInstrument?: NativePluginInstance
-  /** Ordered native VST3 inserts, processed after the builtin insert chain. */
-  pluginInserts?: NativePluginInstance[]
 }
 export interface Marker {
   id: string
@@ -123,7 +129,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  schemaVersion: 6
+  /** 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 7
   id: string
   name: string
   bpm: number

@@ -70,3 +70,13 @@
   .audio-settings-heading { padding-block: 10px; }
   .audio-settings-footer { min-height: 50px; padding-block: 8px; }
 }
+
+/* Settings › 플러그인 */
+.plugin-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:10px 0}
+.plugin-settings-group h4{display:flex;align-items:center;gap:6px;margin:0 0 6px;font-size:11px}
+.plugin-settings-group h4 small{color:var(--text-muted);font-weight:400}
+.plugin-settings-group ul{list-style:none;margin:0;padding:0;border:1px solid var(--border-subtle);border-radius:5px;max-height:220px;overflow:auto}
+.plugin-settings-group li{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:1px 7px;padding:7px 9px;border-bottom:1px solid var(--border-subtle);font-size:10px}
+.plugin-settings-group li:last-child{border-bottom:0}
+.plugin-settings-group li svg{grid-row:span 2;color:var(--text-muted)}
+.plugin-settings-group li span{font-size:9px;color:var(--text-muted)}

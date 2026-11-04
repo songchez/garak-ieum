@@ -13,7 +13,7 @@ import { instrumentDef } from './instruments'
 import { SAMPLE_RATES } from './audioSettings'
 import { visibleMidiNotes } from './midiRegions'
 import { exportProjectBundle, importProjectBundle } from './storage'
-import { QUANTIZE_VALUES, type AudioClip, type Clip, type MidiClip, type Project, type Track } from './types'
+import { QUANTIZE_VALUES, isEffectDevice, type AudioClip, type Clip, type EffectDevice, type MidiClip, type PluginDevice, type Project, type Track } from './types'
 
 function midi(): MidiClip {
   return {
@@ -92,42 +92,58 @@ describe('IEUM WAVE and native VST3 project coexistence', () => {
     patch.metadata.name = 'Preserved builtin sound'
     const track: Track = {
       ...withWavetablePatch(createTrack('instrument', 'wavetable'), patch),
-      devices: [createDevice('filter')],
-      pluginInstrument: plugin('vst-source'), pluginInserts: [plugin('vst-insert')],
+      // A VST3 effect sits between builtin effects: the chain order is the project's order.
+      devices: [createDevice('filter'), { ...plugin('vst-insert'), type: 'vst3' }, createDevice('reverb')],
+      pluginInstrument: plugin('vst-source'),
     }
     return { patch, track, project: { ...createEmptyProject(), tracks: [track] } }
   }
 
-  it('round-trips the custom wave and opaque VST3 source/insert states in the same schema 6 bundle', async () => {
+  it('round-trips the custom wave and opaque VST3 source/insert states in the same schema 7 bundle', async () => {
     const { patch, track, project } = fixture()
     const bundle = await exportProjectBundle(project, new Map())
     const loaded = (await importProjectBundle(bundle)).project
     expect(loaded).toEqual(project)
-    expect(loaded.schemaVersion).toBe(6)
+    expect(loaded.schemaVersion).toBe(7)
     expect(combineWavetablePatch(loaded.tracks[0].instrumentParams, loaded.tracks[0].instrumentState)).toEqual(patch)
     expect(loaded.tracks[0].pluginInstrument?.state).toEqual(track.pluginInstrument!.state)
-    expect(loaded.tracks[0].pluginInserts?.[0].state).toEqual(track.pluginInserts![0].state)
+    expect(loaded.tracks[0].devices.map(device => device.type)).toEqual(['filter', 'vst3', 'reverb'])
+    expect(loaded.tracks[0].devices[1]).toEqual(track.devices[1])
     expect(loaded.tracks[0].instrumentState).not.toHaveProperty('params')
     expect(loaded.tracks[0].instrumentState!.customBanks[0].frames[0]).not.toBe(track.instrumentState!.customBanks[0].frames[0])
   })
 
   it('migrates existing schema 5 WAVE projects before allowing native plugin data', () => {
     const { patch, track, project } = fixture()
-    const { pluginInstrument: _source, pluginInserts: _inserts, ...legacyTrack } = track
-    const migrated = validateProject({ ...project, schemaVersion: 5, tracks: [legacyTrack] })
-    expect(migrated.schemaVersion).toBe(6)
+    const { pluginInstrument: _source, ...legacyTrack } = track
+    const builtinOnly = { ...legacyTrack, devices: track.devices.filter(device => device.type !== 'vst3') }
+    const migrated = validateProject({ ...project, schemaVersion: 5, tracks: [builtinOnly] })
+    expect(migrated.schemaVersion).toBe(7)
     expect(combineWavetablePatch(migrated.tracks[0].instrumentParams, migrated.tracks[0].instrumentState)).toEqual(patch)
     expect(migrated.tracks[0]).not.toHaveProperty('pluginInstrument')
-    expect(() => validateProject({ ...project, schemaVersion: 5 })).toThrow('schema version 6')
-    const withPlugins = { ...migrated, tracks: [{ ...migrated.tracks[0], pluginInstrument: track.pluginInstrument, pluginInserts: track.pluginInserts }] }
-    expect(validateProject(JSON.parse(JSON.stringify(withPlugins)))).toEqual(project)
+    expect(() => validateProject({ ...project, schemaVersion: 5, tracks: [{ ...builtinOnly, pluginInstrument: track.pluginInstrument }] })).toThrow('schema version 6')
+    expect(() => validateProject({ ...project, schemaVersion: 6 })).toThrow('unknown effect type')
+  })
+
+  it('moves schema 6 VST3 inserts into the device chain after the builtin effects they used to follow', () => {
+    const { track, project } = fixture()
+    const builtin = track.devices.filter(device => device.type !== 'vst3')
+    const { type: _type, ...insert } = track.devices[1] as PluginDevice
+    const legacy = JSON.parse(JSON.stringify({ ...project, schemaVersion: 6, tracks: [{ ...track, devices: builtin, pluginInserts: [insert] }] }))
+    const migrated = validateProject(legacy)
+    expect(migrated.schemaVersion).toBe(7)
+    expect(migrated.tracks[0].devices.map(device => device.type)).toEqual(['filter', 'reverb', 'vst3'])
+    expect(migrated.tracks[0].devices[2]).toEqual(track.devices[1])
+    expect(migrated.tracks[0]).not.toHaveProperty('pluginInserts')
+    expect(() => validateProject({ ...legacy, schemaVersion: 7 })).toThrow('device chain since schema version 7')
   })
 
   it('validates both sound formats even when the VST3 source overrides the builtin wave', () => {
     const { track, project } = fixture()
     expect(() => validateProject({ ...project, tracks: [{ ...track, instrumentState: { ...track.instrumentState, customBanks: [] } }] })).toThrow(/데이터가 없습니다/)
     expect(() => validateProject({ ...project, tracks: [{ ...track, pluginInstrument: { ...track.pluginInstrument, path: '/untrusted/plugin.vst3' } }] })).toThrow('unsupported plugin field')
-    expect(() => validateProject({ ...project, tracks: [{ ...track, pluginInserts: [{ ...track.pluginInserts![0], state: { component: 'invalid!' } }] }] })).toThrow('base64')
+    expect(() => validateProject({ ...project, tracks: [{ ...track, devices: [{ ...track.devices[1], state: { component: 'invalid!' } }] }] })).toThrow('base64')
+    expect(() => validateProject({ ...project, tracks: [{ ...track, devices: [{ ...track.devices[1], path: '/untrusted/fx.vst3' }] }] })).toThrow('unsupported plugin field')
   })
 
   it.each([duplicateTrack, duplicateTrackSettings])('duplicates both editable states with independent data and fresh VST3 instance IDs', duplicate => {
@@ -135,19 +151,19 @@ describe('IEUM WAVE and native VST3 project coexistence', () => {
     const copied = duplicate(track)
     expect(validateProject({ ...project, tracks: [track, copied] }).tracks).toHaveLength(2)
     expect(copied.pluginInstrument?.id).not.toBe(track.pluginInstrument!.id)
-    expect(copied.pluginInserts?.[0].id).not.toBe(track.pluginInserts![0].id)
+    expect(copied.devices[1].id).not.toBe(track.devices[1].id)
     copied.instrumentParams.macro1 = 0.9
     copied.instrumentState!.customBanks[0].frames[0][0] = 0.8
     copied.instrumentState!.routes[0].amount = -0.3
     copied.pluginInstrument!.parameters['7'] = 1
     copied.pluginInstrument!.state!.component = 'BQ=='
-    copied.pluginInserts![0].state!.controller = 'Bg=='
+    ;(copied.devices[1] as PluginDevice).state!.controller = 'Bg=='
     expect(track.instrumentParams.macro1).toBe(0.3)
     expect(track.instrumentState!.customBanks[0].frames[0][0]).toBe(0)
     expect(track.instrumentState!.routes[0].amount).toBe(0.4)
     expect(track.pluginInstrument!.parameters['7']).toBe(0.375)
     expect(track.pluginInstrument!.state!.component).toBe('AAECA/8=')
-    expect(track.pluginInserts![0].state!.controller).toBe('BAUG')
+    expect((track.devices[1] as PluginDevice).state!.controller).toBe('BAUG')
   })
 
   it.each(['keys', 'wavetable'])('selecting builtin %s clears the VST3 source while retaining the insert chain', instrument => {
@@ -155,7 +171,6 @@ describe('IEUM WAVE and native VST3 project coexistence', () => {
     const changed = withInstrument(track, instrument)
     expect(changed.instrument).toBe(instrument)
     expect(changed).not.toHaveProperty('pluginInstrument')
-    expect(changed.pluginInserts).toEqual(track.pluginInserts)
     expect(changed.devices).toEqual(track.devices)
     expect(changed.instrumentParams).toEqual(defaultInstrumentParams(instrument))
     if (instrument === 'wavetable') {
@@ -361,7 +376,7 @@ describe('project validation', () => {
 
   it('rejects unsupported versions, duplicate IDs, and values that could break the engine', () => {
     const project = createEmptyProject()
-    expect(() => validateProject({ ...project, schemaVersion: 7 })).toThrow(/version/)
+    expect(() => validateProject({ ...project, schemaVersion: 8 })).toThrow(/version/)
     expect(() => validateProject({ ...project, bpm: Infinity })).toThrow(/Tempo/)
     expect(() => validateProject({ ...project, loop: { enabled: true, startBeat: 8, endBeat: 4 } })).toThrow(/Loop end/)
     const track = createTrack('instrument')
@@ -379,7 +394,7 @@ describe('project validation', () => {
     delete track.devices
     track.effects = { filter: 4200, reverb: 0.3, delay: 0 }
     const migrated = validateProject({ ...createEmptyProject(), schemaVersion: 1, tracks: [track] })
-    expect(migrated.schemaVersion).toBe(6)
+    expect(migrated.schemaVersion).toBe(7)
     expect(migrated.tracks[0].instrumentParams).toEqual(defaultInstrumentParams('pad'))
     expect(migrated.tracks[0].devices).toEqual([
       { id: 'old-pad/filter', type: 'filter', enabled: true, params: { cutoff: 4200, resonance: 0.65, mode: 0 } },
@@ -404,7 +419,7 @@ describe('project validation', () => {
     track.devices = EFFECT_TYPES.map(type => createDevice(type))
     const project = { ...createEmptyProject(), tracks: [track] }
     expect(validateProject(project)).toEqual(project)
-    for (const device of track.devices) expect(Object.keys(device.params).sort()).toEqual(EFFECT_DEFS[device.type].params.map(def => def.id).sort())
+    for (const device of track.devices.filter(isEffectDevice)) expect(Object.keys(device.params).sort()).toEqual(EFFECT_DEFS[device.type].params.map(def => def.id).sort())
   })
 
   it('validates instrument parameters, fills missing keys and drops unknown ones', () => {
@@ -601,7 +616,7 @@ describe('track list helpers', () => {
     expect(copy.instrumentParams).toEqual(track.instrumentParams)
     expect(copy.instrumentParams).not.toBe(track.instrumentParams)
     expect(copy.devices.map(device => device.type)).toEqual(['reverb', 'delay'])
-    expect(copy.devices[0].params).toEqual(track.devices[0].params)
+    expect(copy.devices[0]).toMatchObject({ params: (track.devices[0] as EffectDevice).params })
     expect(copy.devices.some(device => track.devices.some(original => original.id === device.id))).toBe(false)
     copy.keyLimit[0] = 50
     expect(track.keyLimit[0]).toBe(0)
