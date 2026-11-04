@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { copyFile, mkdir, readFile, chmod } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { access, copyFile, mkdir, readFile, readdir, chmod, writeFile } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
 import path from 'node:path'
 import { nativeRepository as root, nativeCache, prepareNativeDependencies } from './native-dependencies.mjs'
@@ -16,6 +17,37 @@ const { paths, archives } = await prepareNativeDependencies(cmake)
 const build = path.join(root, 'build/native-work')
 const output = path.join(root, 'build/native-audio')
 const run = (command, values) => execFileSync(command, values, { cwd: root, stdio: 'inherit', windowsHide: true })
+const executable = process.platform === 'win32' ? 'garak-audio-host.exe' : 'garak-audio-host'
+
+// CI validation builds set GARAK_NATIVE_REUSE=1 with a restored build/ cache. When every
+// input of the native host is byte-identical to the cached build, its configure, compile,
+// ctest and install are skipped. Release builds never set it and always build from scratch.
+async function filesUnder(directory) {
+  const entries = await readdir(directory, { withFileTypes: true })
+  const nested = await Promise.all(entries.map(entry => entry.isDirectory() ? filesUnder(path.join(directory, entry.name)) : [path.join(directory, entry.name)]))
+  return nested.flat()
+}
+async function inputsDigest() {
+  const hash = createHash('sha256')
+  hash.update(JSON.stringify({ args: [...args].sort(), platform: process.platform, arch: process.arch, cmake: execFileSync(cmake, ['--version'], { encoding: 'utf8' }) }))
+  const files = [...await filesUnder(path.join(root, 'native')), path.join(root, 'scripts/build-native-audio.mjs'), path.join(root, 'scripts/native-dependencies.mjs')]
+  for (const file of files.map(file => path.relative(root, file).split(path.sep).join('/')).sort()) {
+    hash.update(file + '\0'); hash.update(await readFile(path.join(root, file))); hash.update('\0')
+  }
+  return hash.digest('hex')
+}
+const stamp = path.join(output, '.garak-native-inputs')
+const digest = await inputsDigest()
+if (process.env.GARAK_NATIVE_REUSE === '1') {
+  const reusable = await readFile(stamp, 'utf8').then(value => value.trim() === digest, () => false)
+    && await access(path.join(output, executable)).then(() => true, () => false)
+    && (args.includes('--no-tests') || await access(path.join(build, 'vst3-fixture-Release.txt')).then(() => true, () => false))
+  if (reusable) {
+    console.log('Reusing the cached native audio host: native sources, build scripts, options and CMake are unchanged (' + digest.slice(0, 12) + ').')
+    process.exit(0)
+  }
+  console.log('Native host cache is missing or stale; building from source.')
+}
 const options = [
   '-S', path.join(root, 'native'), '-B', build, '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_INSTALL_PREFIX=' + output,
   '-DGARAK_ENABLE_DEVICES=' + (desktop && !coreOnly ? 'ON' : 'OFF'),
@@ -38,7 +70,6 @@ run(cmake, ['--install', build, '--config', 'Release'])
 // The packaging boundary is explicit: only the host and notices belong in the app.
 // Test plugins, SDK sources and build directories are never installed as plugins.
 await mkdir(output, { recursive: true })
-const executable = process.platform === 'win32' ? 'garak-audio-host.exe' : 'garak-audio-host'
 await copyFile(path.join(build, 'bin', executable), path.join(output, executable))
 await chmod(path.join(output, executable), 0o755)
 const licenseRoot = path.join(output, 'licenses')
@@ -51,5 +82,6 @@ for (const dependency of archives) {
 }
 await copyFile(path.join(root, 'native/dependencies.lock.json'), path.join(licenseRoot, 'dependencies.lock.json'))
 if (process.platform === 'darwin') run('/usr/bin/codesign', ['--force', '--sign', '-', path.join(output, executable)])
+await writeFile(stamp, digest + '\n')
 const manifest = JSON.parse(await readFile(path.join(root, 'native/dependencies.lock.json'), 'utf8'))
 console.log('Built native audio host with ' + (coreOnly ? 'offline core only (not distributable)' : 'VST3 and ' + (desktop ? 'platform audio devices' : 'offline Linux test support')) + '; ' + manifest.dependencies.length + ' pinned source packages.')
