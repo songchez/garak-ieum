@@ -1,7 +1,7 @@
 import { instrumentDef } from '../core/instruments'
 import { DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, normalizeAudioSettings, projectSampleRate, type AudioSettings, type AudioState, type RenderSizeHint, type SampleRate } from '../core/audioSettings'
 import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
-import type { AudioAsset, AudioEngine, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
+import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
 import {
   connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
   trackLayoutKey, updateGraph,
@@ -14,6 +14,7 @@ import { playOutputTest } from './OutputTest'
 import { assertWebAudioProjectSupported, unsupportedWebAudioInstruments, WAVETABLE_HOST_REQUIRED } from './instrumentSupport'
 import { prepareEffects } from './effectPreparation'
 import { assertGuitarRigHealthy } from '../devices/guitar-rig'
+import { streamInputChoices } from './native/deviceProfile'
 
 const SCHEDULER_INTERVAL_MS = 25
 const LOOKAHEAD_SECONDS = 0.12
@@ -499,6 +500,12 @@ export class WebAudioEngine implements AudioEngine {
     const loaded = def.set ? this.samples.get(def.set) : undefined
     if (loaded) scheduleSampled(this.graph, destination, loaded, def.isKit, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params, channel?.chokes)
     else scheduleInstrument(this.graph, destination, instrument, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params)
+  }
+
+  /** A browser exposes channels by count only: the live stream's actual count, else the requested one. */
+  getInputChoices(): InputChoice[] {
+    const actual = this.monitorStream?.getAudioTracks()[0]?.getSettings?.().channelCount
+    return streamInputChoices(typeof actual === 'number' && actual > 0 ? actual : this.settings.inputChannels === 2 ? 2 : 1)
   }
 
   /** One source node per stream, rewired to the current graph's track inputs; no context is opened without a stream. */

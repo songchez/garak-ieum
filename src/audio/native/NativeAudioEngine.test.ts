@@ -68,7 +68,7 @@ describe('desktop native runtime boundary', () => {
     vi.stubGlobal('AudioContext', forbidden); vi.stubGlobal('OfflineAudioContext', forbidden); vi.stubGlobal('MediaRecorder', forbidden)
     const h = managed()
     await h.engine.play()
-    expect(h.calls('engine.configure')[0]).toMatchObject({ backend: 'wasapi', inputChannels: 0, bufferFrames: 128 })
+    expect(h.calls('engine.configure')[0]).toMatchObject({ backend: 'wasapi', inputChannels: 0, inputChannelList: [], bufferFrames: 'driver' })
     expect(h.calls('project.set')).toHaveLength(1)
     expect(h.calls('transport.play')).toEqual([{ frame: 0 }])
     await h.engine.previewNote('keys', 64, .75)
@@ -668,5 +668,105 @@ describe('offline file decoding and sample transfer', () => {
     await canceled
     expect(h.calls('asset.put')).toHaveLength(0)
     expect(h.calls('samples.register')).toHaveLength(0)
+  })
+})
+
+describe('native device settings client', () => {
+  const profiled = { ...DEFAULT_AUDIO_SETTINGS, inputDeviceId: 'mic', nativeBufferFrames: 256, clockSource: 1, directMonitoring: true,
+    nativeDeviceProfiles: { 'wasapi:mic': { inputs: [0, 2, 3], stereoPairs: [2], inputNames: { 0: 'Vox' }, outputNames: {} } } }
+
+  it('opens the profile channels as inputChannelList and sends the driver options', async () => {
+    const p = audioProject(), h = managed(p), pcm = asset()
+    h.engine.setAssets(new Map([[pcm.id, pcm]]))
+    await h.engine.configure(profiled, 48000)
+    expect(h.calls('engine.configure')[0]).toMatchObject({ inputChannels: 0, inputChannelList: [], bufferFrames: 256, clockSource: 1, directMonitoring: true })
+    await h.engine.setNativeMonitoring(['audio'])
+    expect(h.calls('engine.configure')[1]).toMatchObject({ inputChannels: 3, inputChannelOffset: 0, inputChannelList: [0, 2, 3] })
+  })
+
+  it('reuses an open device that reports the same channel list and asks for an enabled input', async () => {
+    const p = audioProject(), h = managed(p), pcm = asset()
+    h.engine.setAssets(new Map([[pcm.id, pcm]]))
+    h.handlers.set('engine.configure', params => ({ backend: 'wasapi', inputDeviceId: 'mic', outputDeviceId: 'output', inputChannels: (params.inputChannelList as number[]).length, inputChannelList: params.inputChannelList, outputChannels: 2, sampleRate: 48000, bufferFrames: 128 }))
+    await h.engine.configure(profiled, 48000)
+    await h.engine.setNativeMonitoring(['audio'])
+    await h.engine.setNativeMonitoring(['audio'])
+    expect(h.calls('engine.configure')).toHaveLength(2)
+    await h.engine.setNativeMonitoring([])
+    const none = { ...profiled, nativeDeviceProfiles: { 'wasapi:mic': { inputs: [], stereoPairs: [], inputNames: {}, outputNames: {} } } }
+    await h.engine.configure(none, 48000)
+    await expect(h.engine.setNativeMonitoring(['audio'])).rejects.toThrow('입력을 하나 이상 켜 주세요')
+  })
+
+  it('lists input choices named by the user, then by the probed driver', async () => {
+    const h = managed()
+    h.handlers.set('devices.probe', () => ({ id: 'mic', name: 'Interface', backend: 'wasapi', inputs: [{ index: 0, name: 'Mic 1' }, { index: 1, name: 'Mic 2' }, { index: 2, name: 'Line 3' }, { index: 3, name: 'Line 4' }], outputs: [], sampleRates: [48000], buffer: {} }))
+    await h.engine.configure(profiled, 48000)
+    expect(h.engine.getInputChoices().map(choice => choice.label)).toEqual(['Vox', '입력 3', '입력 4', '입력 3-4'])
+    const probe = await h.engine.probeDevice('wasapi', 'mic')
+    expect(h.calls('devices.probe')).toEqual([{ backend: 'wasapi', deviceId: 'mic' }])
+    expect(probe.inputs).toHaveLength(4)
+    expect(h.engine.getInputChoices()).toEqual([
+      { channels: [0], label: 'Vox' }, { channels: [2], label: 'Line 3' }, { channels: [3], label: 'Line 4' }, { channels: [2, 3], label: 'Line 3 / Line 4' },
+    ])
+  })
+
+  it('throws relayed host errors with their code and details', async () => {
+    const h = managed()
+    h.handlers.set('engine.configure', () => { throw new Error(`Error invoking remote method 'garak:audio-request': Error: busy\n[garak-native-error]${JSON.stringify({ code: 'DEVICE_IN_USE', details: { app: 'other' } })}`) })
+    const failure = await h.engine.configure(DEFAULT_AUDIO_SETTINGS, 48000).catch(error => error)
+    expect(failure).toMatchObject({ message: 'busy', code: 'DEVICE_IN_USE', details: { app: 'other' } })
+    expect(h.engine.getAudioState()).toMatchObject({ status: 'error', error: 'busy' })
+  })
+
+  it('reports a device that applied another rate as SAMPLE_RATE_UNSUPPORTED with that rate', async () => {
+    const h = managed()
+    h.handlers.set('engine.configure', () => ({ backend: 'wasapi', inputDeviceId: '', outputDeviceId: 'output', inputChannels: 0, outputChannels: 2, sampleRate: 44100, bufferFrames: 128 }))
+    await expect(h.engine.configure(DEFAULT_AUDIO_SETTINGS, 48000)).rejects.toMatchObject({ code: 'SAMPLE_RATE_UNSUPPORTED', details: { supported: [44100] } })
+  })
+
+  it('suspends and resumes the driver, and reopens it before playback', async () => {
+    const h = managed()
+    await h.engine.configure(DEFAULT_AUDIO_SETTINGS, 48000)
+    expect(await h.engine.suspendDevice()).toBe(true)
+    expect(h.engine.suspended).toBe(true)
+    expect(h.calls('transport.pause')).toHaveLength(1)
+    expect(h.calls('device.suspend')).toHaveLength(1)
+    expect(await h.engine.suspendDevice()).toBe(false)
+    await h.engine.play()
+    expect(h.calls('device.resume')).toHaveLength(1)
+    expect(h.engine.suspended).toBe(false)
+    await h.engine.resumeDevice()
+    expect(h.calls('device.resume')).toHaveLength(1)
+  })
+
+  it('does not suspend before a device is configured or while recording is prepared', async () => {
+    const h = managed(audioProject()), pcm = asset()
+    h.engine.setAssets(new Map([[pcm.id, pcm]]))
+    expect(await h.engine.suspendDevice()).toBe(false)
+    await h.engine.prepareRecording()
+    expect(await h.engine.suspendDevice()).toBe(false)
+    expect(h.calls('device.suspend')).toHaveLength(0)
+  })
+
+  it('sends clock source, direct monitoring and a named control panel', async () => {
+    const h = managed()
+    await h.engine.setClockSource(2)
+    await h.engine.setDirectMonitoring(true)
+    await h.engine.openDriverPanel({ backend: 'asio', deviceId: 'drv' })
+    await h.engine.openDriverPanel()
+    expect(h.calls('device.clockSource')).toEqual([{ index: 2 }])
+    expect(h.calls('device.directMonitor')).toEqual([{ enabled: true }])
+    expect(h.calls('device.controlPanel')).toEqual([{ backend: 'asio', deviceId: 'drv' }, {}])
+    await expect(h.engine.setClockSource(-1)).rejects.toThrow('클럭 소스')
+  })
+
+  it('keeps running while the host recovers the device and shows the recovery state', async () => {
+    const h = managed()
+    await h.engine.configure(DEFAULT_AUDIO_SETTINGS, 48000)
+    h.emit({ type: 'state', generation: 1, device: { backend: 'wasapi', inputDeviceId: '', outputDeviceId: 'output', inputChannels: 0, outputChannels: 2, sampleRate: 0, bufferFrames: 0, needsReconfigure: true, recovering: true, overloads: 3 } })
+    expect(h.engine.getAudioState()).toMatchObject({ status: 'ready', nativeDevice: { recovering: true, overloads: 3, sampleRate: 48000, bufferFrames: 160 } })
+    h.emit({ type: 'state', generation: 1, device: { backend: 'wasapi', inputDeviceId: '', outputDeviceId: 'output', inputChannels: 0, outputChannels: 2, sampleRate: 48000, bufferFrames: 128, needsReconfigure: true } })
+    expect(h.engine.getAudioState().status).toBe('error')
   })
 })

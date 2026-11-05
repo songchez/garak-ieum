@@ -8,7 +8,9 @@ import { quarterNotesPerBeat, setProjectTimeSignature } from './core/meter'
 import { TempoInput } from './components/TempoInput'
 import { TimeSignatureControl } from './components/TimeSignatureControl'
 import { bindRecordingToTransport, pausePlaybackWithRecording, stopPlaybackWithRecording, togglePlaybackWithRecording } from './audio/recordingTransport'
-import { inputConstraints, loadAudioSettings, normalizeAudioSettings, saveAudioSettings, type AudioSettings, type SampleRate } from './core/audioSettings'
+import { inputConstraints, loadAudioSettings, normalizeAudioSettings, recordingOffsetMs, saveAudioSettings, type AudioSettings, type SampleRate } from './core/audioSettings'
+import { nativeErrorCode, supportedRatesOf } from './audio/native/deviceErrors'
+import { backgroundAction, nearestSampleRate, shouldAlertOverload } from './audio/native/deviceProfile'
 import { appendAudioRecording, recordingStartBeat, type RecordingDraft } from './core/recording'
 import { MEDIA_FILE_ACCEPT, planMediaImport, readMediaFile, type ImportedMedia } from './core/mediaImport'
 import type { AudioAsset, AudioClip, Clip, EffectType, InstrumentId, MidiClip, Project, Track } from './core/types'
@@ -63,6 +65,8 @@ if(import.meta.hot)import.meta.hot.dispose(()=>engine.dispose())
 const safeFilename=(name:string)=>name.replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').trim()||'Untitled'
 const db=(n:number)=>n<=0?'−∞':(20*Math.log10(n)).toFixed(1)
 type ClipEntry={clip:Clip;track:Track;row:number}
+/** A toast button; running it also dismisses the toast. */
+type NoticeAction={label:string;run:()=>void}
 type Clipboard={items:{clip:Clip;row:number;kind:Track['kind']}[];base:number;topRow:number}
 type TrackMods={range:boolean;toggle:boolean;trackOnly:boolean}
 type ClipMove={trackId:string;clipId:string;start:number;length?:number;toTrackId?:string}
@@ -159,8 +163,10 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const projectSaveAction=useRef<()=>Promise<void>>(async()=>{})
   const [saveStatus,setSaveStatus]=useState<'loading'|'saving'|'saved'|'error'>('loading')
   const [notice,setNotice]=useState('')
+  const [noticeActions,setNoticeActions]=useState<NoticeAction[]>([])
   const [busy,setBusy]=useState('')
   const [modal,setModal]=useState<'new'|'export'|'help'|'about'|'newTracks'|'settings'|'mcp'|null>(null)
+  const modalRef=useRef(modal);modalRef.current=modal
   const transportKeyState=useRef({held:false})
   const [instanceId]=useState(()=>uid())
   const [aiEditsAllowed,setAiEditsAllowed]=useState(true)
@@ -221,7 +227,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const snapStep=resolveSnap(view.snap,ppb,.25,project.beatsPerBar,quarterNotesPerBeat(project.timeSignature))
   const monitorIds=useMemo(()=>audioSettings.softwareMonitoring?monitorTargets(project,recording):[],[project,recording,audioSettings.softwareMonitoring])
 
-  const notify=useCallback((message:string)=>setNotice(message),[])
+  const notify=useCallback((message:string,actions:NoticeAction[]=[])=>{setNotice(message);setNoticeActions(actions)},[])
   useEffect(()=>{pitchDirtyChange(reconcilePitchDrafts(project.id,project.tracks.flatMap(track=>track.clips),project.bpm,notify))},[project,pitchDirtyChange,notify])
   const commit=commandSession.edit
   const breakHistoryMerge=commandSession.breakMerge
@@ -395,7 +401,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     if(!loaded||audioApplying||recording||recordPreparing||busy||state.sampleRate===null||state.sampleRate===project.sampleRate)return
     let cancelled=false
     engine.pause()
-    void engine.configure(audioSettingsRef.current,project.sampleRate).catch(error=>{if(!cancelled)notify(`프로젝트 오디오 설정을 적용하지 못했습니다: ${error instanceof Error?error.message:''}`)})
+    void engine.configure(audioSettingsRef.current,project.sampleRate).catch(error=>{if(!cancelled)notify(`프로젝트 오디오 설정을 적용하지 못했습니다: ${error instanceof Error?error.message:''}`,audioFailureActions(error))})
     return()=>{cancelled=true}
   },[project.sampleRate,loaded,audioApplying,recording,recordPreparing,busy,notify])
   useEffect(()=>{engine.setAssets(assets)},[assets])
@@ -513,6 +519,33 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     let previous:string|null=null
     return engine.subscribeAudioState(()=>{const state=engine.getAudioState();if(state.error&&state.error!==previous)notify(`오디오 장치를 확인해주세요: ${state.error}`);previous=state.error})
   },[notify])
+  // Overloads are cumulative host counters; alert on a rise while audio is actually running, at most every 30 s.
+  useEffect(()=>{
+    let previous=engine.getAudioState().nativeDevice?.overloads,last=-Infinity
+    return engine.subscribeAudioState(()=>{
+      const next=engine.getAudioState().nativeDevice?.overloads,now=performance.now()
+      if(shouldAlertOverload(previous,next,engine.getSnapshot().playing||!!recordRef.current,now,last)){last=now;notify('오디오 처리가 밀렸습니다 — 버퍼를 늘리거나 트랙을 줄여 보세요',[{label:'설정 열기',run:()=>openAudioSettings('devices')}])}
+      previous=next
+    })
+  },[notify])
+  // Release the driver for other apps while in the background. Blur waits briefly so a driver
+  // control panel or a quick Alt+Tab does not reopen the device; never while recording or applying.
+  useEffect(()=>{
+    if(engine.kind!=='native'||!audioSettings.releaseInBackground)return
+    const native=engine
+    let timer:number|null=null
+    const update=()=>{
+      const busy=!!recordRef.current||recordPreparingRef.current||audioApplyingRef.current||modalRef.current==='settings'
+      const action=backgroundAction({enabled:true,background:document.visibilityState==='hidden'||!document.hasFocus(),busy,suspended:native.suspended})
+      if(action==='suspend')void native.suspendDevice().catch(error=>notify(`오디오 드라이버를 해제하지 못했습니다: ${error instanceof Error?error.message:String(error)}`))
+      else if(action==='resume')void native.resumeDevice().catch(error=>notify(`오디오 장치를 다시 열지 못했습니다: ${error instanceof Error?error.message:String(error)}`,[{label:'설정 열기',run:()=>openAudioSettings('devices')}]))
+    }
+    const clear=()=>{if(timer!==null){window.clearTimeout(timer);timer=null}}
+    const later=()=>{clear();timer=window.setTimeout(()=>{timer=null;update()},1500)}
+    const now=()=>{clear();update()}
+    window.addEventListener('blur',later);window.addEventListener('focus',now);document.addEventListener('visibilitychange',now)
+    return()=>{window.removeEventListener('blur',later);window.removeEventListener('focus',now);document.removeEventListener('visibilitychange',now);clear();if(native.suspended)void native.resumeDevice().catch(()=>undefined)}
+  },[audioSettings.releaseInBackground,notify])
   const monitorKey=monitorIds.join('\n')
   useEffect(()=>{
     if(audioApplying)return
@@ -531,6 +564,18 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   },[monitorKey,inputCapture,inputRevision,audioApplying])
 
   const [settingsTab,setSettingsTab]=useState<SettingsTab|undefined>()
+  /** A device that cannot run the project rate offers an undoable project rate change instead of a dead end. */
+  function audioFailureActions(error:unknown):NoticeAction[]{
+    const code=nativeErrorCode(error)
+    if(code==='SAMPLE_RATE_UNSUPPORTED'){
+      const current=projectRef.current.sampleRate,rate=nearestSampleRate(supportedRatesOf(error).filter(value=>value!==current),current)
+      if(rate)return[{label:`프로젝트를 ${+(rate/1000).toFixed(1)} kHz로 변경`,run:()=>{
+        if(recordRef.current||recordPreparingRef.current||audioApplyingRef.current){notify('녹음이나 오디오 설정 적용이 끝난 뒤 샘플레이트를 바꿀 수 있습니다.');return}
+        breakHistoryMerge();commit(p=>({...p,sampleRate:rate}),'project-sample-rate','프로젝트 샘플레이트 변경')
+      }},{label:'설정 열기',run:()=>openAudioSettings('project')}]
+    }
+    return code?[{label:'설정 열기',run:()=>openAudioSettings('devices')}]:[]
+  }
   function openAudioSettings(tab?:SettingsTab|unknown){setHeaderMenu(null);setPalette(null);setHeaderConfig(null);setIconMenu(null);setSettingsTab(typeof tab==='string'?tab as SettingsTab:undefined);setModal('settings')}
   async function applyAudioSettings(value:AudioSettings,sampleRate:SampleRate):Promise<{persisted:boolean}>{
     if(pitchBusyRef.current)throw new Error('피치 분석·렌더가 끝나거나 취소된 뒤 오디오 설정을 적용해 주세요.')
@@ -580,7 +625,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     if(audioApplyingRef.current)return
     if(action==='start'&&(recordPreparingRef.current||recordRef.current))return
     try{if(action==='start')await engine.play();else await togglePlaybackWithRecording(engine,{cancelPreparation:cancelRecordPreparation,finishRecording})}
-    catch(e){notify(`오디오를 시작할 수 없습니다: ${e instanceof Error?e.message:''}`)}
+    catch(e){notify(`오디오를 시작할 수 없습니다: ${e instanceof Error?e.message:''}`,audioFailureActions(e))}
   }
   function cancelRecordPreparation():boolean{
     if(!recordPreparingRef.current||recordRef.current)return false
@@ -967,7 +1012,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       const track=source.tracks.find(item=>item.id===reservedTrack.id)??reservedTrack
       if(track.kind!=='audio')throw new Error('녹음 대상이 오디오 트랙이 아닙니다.')
       const name=`Recording ${new Date().toLocaleTimeString('ko-KR',{hour12:false})}`
-      const draft:RecordingDraft={id:uid(),name,trackId:track.id,track,startBeat:engine.getSnapshot().beat,bpm:source.bpm,offsetMs:audioSettingsRef.current.recordingOffsetMs,startedAtMs:performance.now(),status:'recording'}
+      const draft:RecordingDraft={id:uid(),name,trackId:track.id,track,startBeat:engine.getSnapshot().beat,bpm:source.bpm,offsetMs:recordingOffsetMs(audioSettingsRef.current,source.sampleRate),startedAtMs:performance.now(),status:'recording'}
       let capture:AudioRecording|NativeRecording
       const callbacks:AudioRecordingCallbacks={
         onError:error=>{if(current())notify(`녹음 입력 오류: ${error.message}. 수신된 오디오를 확인하고 있습니다.`)},
@@ -1200,7 +1245,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     {headerConfig&&<HeaderConfigPopover x={headerConfig.x} y={headerConfig.y} config={trackHeader.headerConfig} onChange={headerConfig=>setTrackHeader(h=>({...h,headerConfig}))} onClose={()=>setHeaderConfig(null)}/>}
     {iconMenu&&iconTrack&&<ContextMenu x={iconMenu.x} y={iconMenu.y} label="트랙 아이콘" onClose={()=>setIconMenu(null)} items={[{label:'기본',icon:iconTrack.kind==='audio'?'wave':instrumentDef(iconTrack.instrument).icon,checked:!iconTrack.icon,onSelect:()=>editTrack(iconTrack.id,t=>{const {icon:_i,...rest}=t;return rest})},{type:'separator'},...TRACK_ICON_OPTIONS.map(([name,label])=>({label,icon:name,checked:iconTrack.icon===name,onSelect:()=>changeTrack(iconTrack.id,{icon:name})}))]}/>}
     {!loaded&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="restore-title">{restoreError?<><h2 id="restore-title">저장된 작업을 확인해주세요</h2><p data-selectable-text="" tabIndex={0}>{restoreError}</p><p>자동 저장을 멈췄으며 기존 저장본은 그대로 보관됩니다. 프로젝트 목록으로 돌아가 다른 작업을 열 수 있습니다.</p><div className="modal-buttons"><button onClick={()=>window.location.reload()}>다시 시도</button><button className="primary" onClick={onHome}>프로젝트 목록</button></div></>:<><span className="spinner"/><h2 id="restore-title" style={{marginTop:20}}>작업 공간을 준비합니다</h2><p>저장된 프로젝트와 원본 음원을 불러오고 있습니다.</p></>}</section></div>}
-    {notice&&<div className="toast" role="status"><Icon name="info" size={17}/><span data-selectable-text="" tabIndex={0}>{notice}</span><button onClick={()=>setNotice('')} aria-label="알림 닫기"><Icon name="close" size={15}/></button></div>}
+    {notice&&<div className="toast" role="status"><Icon name="info" size={17}/><span data-selectable-text="" tabIndex={0}>{notice}</span>{noticeActions.map(action=><button key={action.label} className="toast-action" onClick={()=>{setNotice('');action.run()}}>{action.label}</button>)}<button onClick={()=>setNotice('')} aria-label="알림 닫기"><Icon name="close" size={15}/></button></div>}
     {busy&&<div className="busy-indicator" role="status"><span className="spinner"/>{busy}</div>}
     {modal==='newTracks'&&<NewTracksDialog focusedKind={focusedTrack?.kind} focusedInstrument={focusedTrack?.kind==='instrument'?focusedTrack.instrument:undefined} onCreate={createTracks} onClose={()=>setModal(null)}/>}
     {modal&&modal!=='newTracks'&&modal!=='settings'&&modal!=='mcp'&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><section className={`modal ${modal==='help'?'modal-help':''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" onClick={()=>setModal(null)} aria-label="창 닫기"><Icon name="close"/></button>
@@ -1231,7 +1276,7 @@ function PianoRollBridge(props:Omit<ComponentProps<typeof PianoRoll>,'playheadBe
 function AudioStatus({onOpen}:{onOpen:()=>void}){
   const audio=useSyncExternalStore(engine.subscribeAudioState,engine.getAudioState,engine.getAudioState)
   const problem=audio.status==='error'||audio.needsReconfiguration
-  const label=problem?'오디오 장치 확인':audio.status==='configuring'?'오디오 설정 적용 중':audio.contextState==='running'&&audio.sampleRate?`${+(audio.sampleRate/1000).toFixed(1)} kHz · ${audio.nativeDevice?.backend==='test'?'테스트 클록':audio.nativeDevice?.backend==='coreaudio'?'Core Audio':audio.nativeDevice?.backend.toUpperCase()??'Stereo'}`:'오디오 설정'
+  const label=audio.nativeDevice?.recovering?'장치를 다시 연결하는 중…':audio.nativeDevice?.suspended?'드라이버 해제됨 · 돌아오면 다시 열기':problem?'오디오 장치 확인':audio.status==='configuring'?'오디오 설정 적용 중':audio.contextState==='running'&&audio.sampleRate?`${+(audio.sampleRate/1000).toFixed(1)} kHz · ${audio.nativeDevice?.backend==='test'?'테스트 클록':audio.nativeDevice?.backend==='coreaudio'?'Core Audio':audio.nativeDevice?.backend.toUpperCase()??'Stereo'}`:'오디오 설정'
   return <button className={`audio-status${problem?' error':''}`} onClick={onOpen} title={`${audio.error??'오디오 설정'} · ${shortcutText('openSettings')}`} aria-label={`${label} · 설정 열기`}><Icon name="headphones" size={13}/>{label}<Icon name="settings" size={12}/></button>
 }
 function Transport({project,onChange,onPlay,onStop,onRecord,recording,recordPreparing,recordProcessing,canUndo,canRedo,undoLabel,redoLabel,onUndo,onRedo}:{project:Project;onChange:(fn:(p:Project)=>Project,key?:string,label?:string)=>void;onPlay:()=>void;onStop:()=>void;onRecord:()=>void;recording:boolean;recordPreparing:boolean;recordProcessing:boolean;canUndo:boolean;canRedo:boolean;undoLabel:string|null;redoLabel:string|null;onUndo:()=>void;onRedo:()=>void}){

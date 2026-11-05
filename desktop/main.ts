@@ -6,7 +6,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import type { DesktopFile, DesktopSaveResult, DesktopViewCommand } from './contracts.js'
-import { NativeAudioService } from './native-audio.js'
+import { ipcNativeError, NativeAudioService } from './native-audio.js'
 import { APP_URL, CONTENT_SECURITY_POLICY, MAX_PROJECT_BYTES, PROJECT_EXTENSIONS, assetRelativePath, desktopMcpStartupErrorMessage, exportExtension, isAppUrl, isBundledLicenseUrl, isExternalUrl, validateSaveRequest } from './policy.js'
 
 const directory = dirname(fileURLToPath(import.meta.url))
@@ -158,7 +158,8 @@ function installIpc(): void {
   ipcMain.handle('garak:audio-request', async (event, method: unknown, params: unknown) => {
     assertTrusted(event)
     if (!nativeAudio) throw new Error('네이티브 오디오 엔진을 사용할 수 없습니다.')
-    return nativeAudio.request(method, params)
+    try { return await nativeAudio.request(method, params) }
+    catch (error) { throw ipcNativeError(error) }
   })
   ipcMain.on('garak:text-focus', (event, value: unknown) => {
     if (process.platform === 'darwin' && trusted(event) && typeof value === 'boolean') textFocused = value

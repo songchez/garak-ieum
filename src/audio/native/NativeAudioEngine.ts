@@ -1,18 +1,18 @@
 import {
-  DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, normalizeAudioSettings, projectSampleRate,
+  DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, nativeInputChannelList, nativeInputDeviceId, nativeInputProfile, nativeProfileKey, normalizeAudioSettings, projectSampleRate,
   type AudioSettings, type AudioState, type InputState, type SampleRate,
 } from '../../core/audioSettings'
 import { defaultInstrumentParams } from '../../core/project'
 import { validateNativePluginState } from '../../core/nativePlugins'
 import { instrumentDef } from '../../core/instruments'
-import { isPluginDevice, type AudioAsset, type AudioEngine, type InstrumentId, type Project, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot } from '../../core/types'
+import { isPluginDevice, type AudioAsset, type AudioEngine, type InputChoice, type InstrumentId, type Project, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot } from '../../core/types'
 import type { AudioRecordingCallbacks } from '../AudioRecording'
 import { SampleLibrary } from '../samples'
 import { clamp, normalizedStart } from '../math'
 import { assertNativeInstrumentsSupported, canPlayInstrument, unsupportedNativeInstruments, WAVETABLE_HOST_REQUIRED } from '../instrumentSupport'
 import { compileNativeTimeline, type NativePcmAsset } from './timeline'
 import type {
-  NativeAudioBridge, NativeAudioFile, NativeBackend, NativeDevice, NativeDeviceState,
+  NativeAudioBridge, NativeAudioFile, NativeBackend, NativeDevice, NativeDeviceProbe, NativeDeviceState,
   NativeEngineEvent, NativePluginDescriptor, NativePluginInstance, NativePluginParameter, NativePluginState,
 } from './contracts'
 import { NativeRecording } from './NativeRecording'
@@ -21,6 +21,8 @@ import { combineWavetablePatch, type WavetablePatch } from '../../devices/waveta
 import { WAVE_SCHEMA_FINGERPRINT } from '../../devices/wavetable-synth/schema.generated'
 import type { NativeEngineCapabilities, NativeProjectApplied } from './contracts'
 import { ownAudioBytes } from '../assetBytes'
+import { nativeRequestError, withNativeCode } from './deviceErrors'
+import { inputChoices, namesByIndex, parseDeviceProbe } from './deviceProfile'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
@@ -70,6 +72,11 @@ export class NativeAudioEngine implements AudioEngine {
   private inputListeners = new Set<() => void>()
   private sampleListeners = new Set<() => void>()
   private bridgeRelease: (() => void) | null = null
+  private relay: NativeAudioBridge | null = null
+  /** Latest `devices.probe` per profile key: channel names for getInputChoices without reopening the driver. */
+  private probes = new Map<string, NativeDeviceProbe>()
+  /** Set by suspendDevice (`device.suspend`); the next transport/configure use reopens the driver first. */
+  private deviceSuspended = false
   private generation = 0
   private transportRequest = 0
   private pendingPlayRequest: number | null = null
@@ -151,7 +158,12 @@ export class NativeAudioEngine implements AudioEngine {
   private connect(): NativeAudioBridge {
     if (!this.bridge) throw new Error(this.audioSnapshot.error ?? '네이티브 오디오 연결부가 없습니다.')
     if (!this.bridgeRelease) this.bridgeRelease = this.bridge.subscribe(event => this.receive(event))
-    return this.bridge
+    // Every renderer request (NativeRecording included) gets host error codes back from the IPC relay.
+    const bridge = this.bridge
+    return this.relay ??= {
+      request: (method, params) => bridge.request(method, params).catch(error => { throw nativeRequestError(error) }),
+      subscribe: callback => bridge.subscribe(callback),
+    }
   }
 
   private async request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -303,7 +315,7 @@ export class NativeAudioEngine implements AudioEngine {
     this.generation++; this.transportRequest++; this.monitorRequest++
     this.pendingPlayRequest = null
     this.uploaded.clear(); this.uploadTasks.clear(); this.registeredSets.clear(); this.sampleTasks.clear(); this.sampleErrors.clear()
-    this.appliedRevision = -1; this.configured = false; this.syncTask = null
+    this.appliedRevision = -1; this.configured = false; this.syncTask = null; this.deviceSuspended = false
     this.clearWaveAudition(false); this.wavePatchRequests.clear(); this.wavePayloads.clear()
     this.waveCapability = undefined; this.waveCapabilityTask = null
     this.waveCapabilityReason = '네이티브 오디오 엔진 연결을 다시 확인해야 합니다. 오디오 설정을 다시 적용해 주세요.'
@@ -333,7 +345,8 @@ export class NativeAudioEngine implements AudioEngine {
     }
     if (event.type !== 'state') return
     if (event.device) {
-      if (event.device.needsReconfigure) { this.fail(event.device.error || '오디오 장치의 설정이 변경되었습니다. 장치 설정을 다시 적용해 주세요.'); return }
+      // While the host is recovering on its own (WP1 service()), a reset request is not a failure yet.
+      if (event.device.needsReconfigure && !event.device.recovering) { this.fail(event.device.error || '오디오 장치의 설정이 변경되었습니다. 장치 설정을 다시 적용해 주세요.'); return }
       try { this.setDevice(event.device) } catch (error) { this.fail(error); return }
     }
     if (event.levels && typeof event.levels === 'object') this.levels = new Map(Object.entries(event.levels).map(([id, value]) => [id, Math.max(0, finite(value))]))
@@ -359,6 +372,9 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   private setDevice(device: NativeDeviceState): void {
+    const previous = this.nativeDevice
+    // A released or reconnecting driver may report no block yet; keep the last real one meanwhile.
+    if (device && (device.suspended || device.recovering) && previous && !(device.sampleRate > 0 && device.bufferFrames > 0)) device = { ...device, sampleRate: previous.sampleRate, bufferFrames: previous.bufferFrames }
     if (!device || !Number.isFinite(device.sampleRate) || device.sampleRate <= 0 || !Number.isInteger(device.bufferFrames) || device.bufferFrames < 1) {
       throw new Error('오디오 드라이버가 유효한 실제 샘플레이트와 버퍼 크기를 반환하지 않았습니다.')
     }
@@ -383,6 +399,24 @@ export class NativeAudioEngine implements AudioEngine {
     const devices = Array.isArray(value) ? value : (value as { devices?: unknown })?.devices
     if (!Array.isArray(devices)) throw new Error('오디오 장치 목록을 읽지 못했습니다.')
     return devices.filter((device): device is NativeDevice => !!device && typeof device.id === 'string' && typeof device.name === 'string' && device.backend === backend)
+  }
+
+  /** `devices.probe`: opens the driver briefly (or reads the running one) for channels, buffers, rates and clocks. */
+  async probeDevice(backend: NativeBackend, deviceId: string): Promise<NativeDeviceProbe> {
+    const probe = parseDeviceProbe(await this.request('devices.probe', { backend, deviceId }), backend, deviceId)
+    this.probes.set(nativeProfileKey(backend, deviceId), probe)
+    return probe
+  }
+
+  /** Mono/stereo inputs built from the applied device profile, named by the user or else by the driver. */
+  getInputChoices(): InputChoice[] {
+    let backend: NativeBackend
+    try { backend = nativeBackendForPlatform(this.settings, this.platform) } catch { return [] }
+    const deviceId = nativeInputDeviceId(this.settings, backend)
+    const probe = this.probes.get(nativeProfileKey(backend, deviceId))
+    const device = this.nativeDevice?.backend === backend ? this.nativeDevice : null
+    const names = probe?.inputs.length ? namesByIndex(probe.inputs) : device?.inputNames
+    return inputChoices(nativeInputProfile(this.settings, backend), names, probe?.inputs.length || undefined)
   }
 
   configure(settings: AudioSettings, sampleRate: SampleRate): Promise<void> {
@@ -412,22 +446,29 @@ export class NativeAudioEngine implements AudioEngine {
     if (this.syncTimer !== null) { clearTimeout(this.syncTimer); this.syncTimer = null }
     this.updateTransport({ playing: false, ready: false })
     this.updateAudio({ status: 'configuring', error: null })
+    // engine.configure reopens a released driver with the new settings.
+    this.deviceSuspended = false
     try {
       await this.ensureWaveCapability()
       if (generation !== this.generation) throw abortError()
-      // This is a requested device block, independent of the browser renderSizeHint.
+      const backend = nativeBackendForPlatform(next, this.platform)
+      // Inputs open only for an explicit record/monitor action. The list is authoritative for
+      // current hosts; count + first channel keep an older host on the same (contiguous) inputs.
+      const inputs = this.captureWanted || (next.softwareMonitoring && this.monitorIds.length) ? nativeInputChannelList(next, backend) : []
+      // This is a requested device block ('driver' = the driver's preferred size), independent of the browser renderSizeHint.
       const result = await this.request<NativeDeviceState | { device: NativeDeviceState }>('engine.configure', {
-        backend: nativeBackendForPlatform(next, this.platform),
+        backend,
         inputDeviceId: next.inputDeviceId, outputDeviceId: next.outputDeviceId,
         sampleRate: rate, bufferFrames: next.nativeBufferFrames,
-        inputChannels: this.captureWanted || (next.softwareMonitoring && this.monitorIds.length) ? next.inputChannels === 'default' ? 1 : next.inputChannels : 0,
-        inputChannelOffset: next.nativeInputChannel, lowLatencyMonitoring: next.lowLatencyMonitoring,
+        inputChannels: inputs.length, inputChannelOffset: inputs[0] ?? next.nativeInputChannel, inputChannelList: inputs,
+        lowLatencyMonitoring: next.lowLatencyMonitoring,
+        ...(next.clockSource === undefined ? {} : { clockSource: next.clockSource }), directMonitoring: next.directMonitoring,
       })
       if (generation !== this.generation) throw abortError()
       await this.ensureWaveCapability()
       if (generation !== this.generation) throw abortError()
       const device = 'device' in result ? result.device : result
-      if (device.sampleRate !== rate) throw new Error(`장치가 ${rate} Hz 요청 대신 ${device.sampleRate} Hz를 적용했습니다. 프로젝트와 장치의 샘플레이트를 맞춰 주세요.`)
+      if (device.sampleRate !== rate) throw withNativeCode(new Error(`장치가 ${rate} Hz 요청 대신 ${device.sampleRate} Hz를 적용했습니다. 프로젝트와 장치의 샘플레이트를 맞춰 주세요.`), 'SAMPLE_RATE_UNSUPPORTED', { supported: [device.sampleRate], actual: device.sampleRate })
       if (!(device.backend === 'test' && device.testClock === true)) {
         if (device.backend !== nativeBackendForPlatform(next, this.platform)) throw new Error('선택한 오디오 드라이버와 실제 열린 드라이버가 다릅니다.')
         if (next.outputDeviceId && device.outputDeviceId !== next.outputDeviceId) throw new Error('선택한 출력 장치와 실제 열린 장치가 다릅니다.')
@@ -584,6 +625,7 @@ export class NativeAudioEngine implements AudioEngine {
     if (this.configurationTask) await this.configurationTask
     if (generation !== this.generation) throw abortError()
     if (this.audioSnapshot.status === 'error') throw new Error(this.audioSnapshot.error ?? '오디오 장치를 다시 적용해 주세요.')
+    if (this.deviceSuspended) await this.resumeDevice()
     if (!this.configured || this.nativeDevice?.sampleRate !== this.desiredSampleRate) await this.beginConfiguration(this.settings, this.desiredSampleRate)
     else await this.syncProject()
   }
@@ -689,8 +731,7 @@ export class NativeAudioEngine implements AudioEngine {
 
   /** Called only by a user recording/monitoring action, never by ordinary playback. */
   private async ensureInput(): Promise<void> {
-    const count = this.settings.inputChannels === 'default' ? 1 : this.settings.inputChannels
-    if (this.nativeDevice && this.nativeDevice.inputChannels >= count && (this.nativeDevice.inputChannelOffset ?? 0) === this.settings.nativeInputChannel) return
+    if (this.inputOpen()) return
     if (!this.captureWanted && !this.monitorIds.length) return
     const playing = this.snapshot.playing, beat = this.snapshot.beat, request = this.transportRequest, generation = this.generation
     await this.beginConfiguration(this.settings, this.desiredSampleRate)
@@ -778,8 +819,47 @@ export class NativeAudioEngine implements AudioEngine {
     return new Blob([new Uint8Array(result.data)], { type: 'audio/wav' })
   }
 
+  /** The enabled profile channels are the ones the running device has open. */
+  private inputOpen(): boolean {
+    const device = this.nativeDevice
+    if (!device) return false
+    let wanted: number[]
+    try { wanted = nativeInputChannelList(this.settings, nativeBackendForPlatform(this.settings, this.platform)) } catch { return false }
+    if (!wanted.length) throw new Error('입출력 채널 설정에서 사용할 입력을 하나 이상 켜 주세요.')
+    if (Array.isArray(device.inputChannelList)) return device.inputChannelList.length === wanted.length && wanted.every((channel, index) => device.inputChannelList![index] === channel)
+    // Hosts before inputChannelList report only a contiguous block.
+    return device.inputChannels >= wanted.length && (device.inputChannelOffset ?? 0) === wanted[0] && wanted.every((channel, index) => channel === wanted[0] + index)
+  }
+
+  /** `target` names the driver to open when it is not the running one (after a failed configure). */
+  async openDriverPanel(target?: { backend: NativeBackend; deviceId: string }): Promise<void> { await this.request('device.controlPanel', target ? { backend: target.backend, deviceId: target.deviceId } : {}) }
+  async setClockSource(index: number): Promise<void> {
+    if (!Number.isInteger(index) || index < 0) throw new Error('클럭 소스 번호가 유효하지 않습니다.')
+    await this.request('device.clockSource', { index })
+  }
+  async setDirectMonitoring(enabled: boolean): Promise<void> { await this.request('device.directMonitor', { enabled }) }
+
+  /** Releases the driver for other apps and remembers its settings. False when there was nothing to release. */
+  async suspendDevice(): Promise<boolean> {
+    if (!this.configured || this.deviceSuspended || this.captureWanted) return false
+    const generation = this.generation
+    await this.pauseAndWait()
+    if (generation !== this.generation || !this.configured) return false
+    await this.request('device.suspend')
+    if (generation === this.generation) this.deviceSuspended = true
+    return true
+  }
+
+  /** Reopens a driver released by suspendDevice with the same settings. */
+  async resumeDevice(): Promise<void> {
+    if (!this.deviceSuspended) return
+    this.deviceSuspended = false
+    try { await this.request('device.resume') }
+    catch (error) { this.fail(error); throw error }
+  }
+  get suspended(): boolean { return this.deviceSuspended }
+
   async listPlugins(): Promise<NativePluginDescriptor[]> { return this.request('plugins.list') }
-  async openDriverPanel(): Promise<void> { await this.request('device.controlPanel') }
   async scanPlugins(): Promise<NativePluginDescriptor[]> { return this.request('plugins.scan') }
   async pluginParameters(instanceId: string): Promise<NativePluginParameter[]> {
     await this.resume()
@@ -849,7 +929,7 @@ export class NativeAudioEngine implements AudioEngine {
     if (hostWasUsed && bridge) this.closingTask = bridge.request('engine.close').then(() => undefined)
     if (this.closingTask) void this.closingTask.catch(() => undefined)
     this.bridgeRelease?.(); this.bridgeRelease = null
-    this.configured = false; this.nativeDevice = null; this.monitorIds = []; this.captureWanted = false; this.appliedRevision = -1
+    this.configured = false; this.nativeDevice = null; this.monitorIds = []; this.captureWanted = false; this.appliedRevision = -1; this.deviceSuspended = false
     this.waveCapability = undefined; this.waveCapabilityTask = null; this.waveCapabilityReason = WAVETABLE_UNAVAILABLE_STATUS.reason!
     this.wavePatchRequests.clear(); this.wavePayloads.clear()
     this.project = null; this.assets = new Map(); this.decodeContext = null

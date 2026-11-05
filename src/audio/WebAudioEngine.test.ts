@@ -839,3 +839,10 @@ describe('guitar graph changes and recovery', () => {
     expect(ContextSpy.instances).toHaveLength(0)
   })
 })
+
+describe('browser input choices', () => {
+  it('offers mono and stereo inputs from the requested channel count', () => {
+    expect(new WebAudioEngine(undefined, { ...DEFAULT_AUDIO_SETTINGS, inputChannels: 2 }).getInputChoices().map(choice => choice.label)).toEqual(['입력 1', '입력 2', '입력 1-2'])
+    expect(new WebAudioEngine(undefined, DEFAULT_AUDIO_SETTINGS).getInputChoices()).toEqual([{ channels: [0], label: '입력 1' }])
+  })
+})
