@@ -1,5 +1,7 @@
 # 오디오 코어 개선 계획과 작업 계약 (2026-11-05)
 
+> **상태:** 17개 항목 모두 구현해 `feat/audio-core`에 합쳤습니다. 계약과 실제 구현의 차이는 아래 각 절의 "구현 메모"와 [NATIVE_AUDIO](NATIVE_AUDIO.md)를 따릅니다. 실제 ASIO·Core Audio 장치 검증은 남아 있습니다.
+
 Logic Pro·Ableton Live·Cubase의 장치 처리와 비교해 정한 17개 항목을 구현합니다. 이 문서는 병렬 작업자(WP) 사이의 **공통 계약**입니다. 계약을 바꿔야 하면 작업자가 혼자 바꾸지 말고 보고서에 "계약 변경 제안"으로 적습니다.
 
 ## 항목과 작업 묶음
@@ -126,3 +128,17 @@ Logic Pro·Ableton Live·Cubase의 장치 처리와 비교해 정한 17개 항�
 - TS: `npx vitest run`, `npx tsc -b`.
 - 네이티브(로컬 MinGW): `node <scratchpad>/toolchain/native-local.mjs <worktree> <build-dir> --asio --no-vst3 --test`. MSVC 배포 빌드와 VST3, 실제 장치는 CI·실기에서만 확인됩니다.
 - 실제 ASIO·WASAPI 장치 동작은 이 환경에서 확인할 수 없습니다. 장치 API 호출이 필요한 로직은 순수 함수로 분리해 단위 테스트합니다(버퍼 맞춤, 오류 분류, 복구 백오프, 채널 대응).
+
+## 구현 메모 (계약과 다른 점)
+
+- **오류 형식:** 호스트는 원래 `error`를 `{ code: "NATIVE_AUDIO_ERROR", message }` 객체로 보냈습니다. 이를 유지하면서 장치 오류의 `code`·`details`를 최상위와 `error` 안에 함께 둡니다. Electron IPC는 `message`만 전달하므로 데스크톱이 `\n[garak-native-error]{json}` 꼬리표로 코드를 실어 보내고 렌더러가 되살립니다.
+- **`buffer.fixed`:** 허용 크기가 하나뿐일 때 true입니다(granularity 0 포함).
+- **`engine.configure`의 관대한 처리:** 알 수 없는 `clockSource`는 현재 클럭을 유지하고, 지원하지 않는 장치의 `directMonitoring: true`는 무시합니다. `device.clockSource`·`device.directMonitor`는 오류를 냅니다.
+- **`inputNames`:** 열린 채널 순서입니다. 렌더러가 `inputChannelList`로 물리 채널 번호에 다시 매핑합니다.
+- **`device.controlPanel {backend, deviceId}`:** 설정이 거절된 ASIO 드라이버도 제어판만을 위해 열고, 다음 설정·probe·close까지 유지합니다.
+- **녹음 시작:** 열리지 않은 트랙 입력은 무음 녹음 대신 `CHANNELS_UNAVAILABLE`로 거절합니다. `tracksMissingInput`은 명시적 입력이 있는 오디오 트랙만, 입력이 열려 있을 때만 나열합니다.
+- **`latency.measure`:** `outputChannelOffset`·`sampleRate`는 현재 장치 설정과 같아야 합니다. 응답에 `detected`, `sampleRate`, `message`가 더 있습니다.
+- **다중 녹음 한도:** `maxSimultaneousRecordings`는 엔진 객체에 둡니다(네이티브 64, 브라우저 1). 데스크톱은 테이크당 512 MiB, 정지 한 번에 2 GiB까지 전달하고 넘는 테이크는 복구 폴더에 남깁니다.
+- **모니터 모드:** `monitorMode`는 프로젝트에 저장하지만 실행 취소 단계를 만들지 않습니다. 형식 7 이하 프로젝트에서 I가 꺼져 있던 트랙은 `auto`가 됩니다.
+- **녹음 위치 보정:** `recordingOffsetFrames`(프레임)로 바뀌었습니다. 예전 ms 값은 48 kHz 기준으로 변환합니다.
+- **미리 처리 기본값:** 실기 검증 전이므로 `off`입니다. VST3가 있는 트랙은 미리 처리하지 않습니다.
