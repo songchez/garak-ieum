@@ -80,6 +80,20 @@ export interface PluginDevice extends NativePluginInstance {
 export type Device = EffectDevice | PluginDevice
 export const isPluginDevice = (device: Device): device is PluginDevice => device.type === 'vst3'
 export const isEffectDevice = (device: Device): device is EffectDevice => device.type !== 'vst3'
+/** Physical device input channels (zero based) a track records and monitors. See docs/AUDIO_CORE_PLAN.md. */
+export interface TrackInput {
+  channels: [number] | [number, number]
+  /** Channel name when chosen, used to re-find the input on another computer or interface. */
+  label?: string
+}
+/** Ableton-style monitoring: `auto` hears the input while armed unless clips are playing back without recording. */
+export type TrackMonitorMode = 'off' | 'auto' | 'in'
+/** One selectable track input built from the enabled device channels. */
+export interface InputChoice {
+  channels: [number] | [number, number]
+  label: string
+}
+
 export interface Track {
   id: string
   name: string
@@ -117,6 +131,10 @@ export interface Track {
   devices: Device[]
   /** Native VST3 source; the builtin instrument selection remains available when removed. */
   pluginInstrument?: NativePluginInstance
+  /** Absent: the engine's default input (first enabled channel or pair). Schema 8 (WP4 validates). */
+  input?: TrackInput
+  /** Absent: legacy behavior from `monitor`. Schema 8 (WP4 validates). */
+  monitorMode?: TrackMonitorMode
 }
 export interface Marker {
   id: string
@@ -187,5 +205,9 @@ export interface AudioEngine {
   getMasterLevel(): number
   /** Routes a live input stream into the given audio tracks' chains (input monitoring). null releases it. */
   setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void
+  /** Mono/stereo inputs a track can choose, from the enabled device channels (WP3 implements). */
+  getInputChoices?(): InputChoice[]
+  /** How many tracks can record at once: 1 in a browser, more on the native engine (WP2 implements). */
+  readonly maxSimultaneousRecordings?: number
   dispose(): void
 }
