@@ -87,13 +87,41 @@ class RecordingFile {
   std::ofstream file_; std::thread thread_; std::atomic<bool> stopping_{false},failed_{false}; std::atomic<std::uint64_t> frames_{0};
 };
 
+template<class T> Json optionalJson(const std::optional<T>& value) { return value?Json(*value):Json(nullptr); }
 Json deviceJson(const DeviceState& s) {
   return {{"configured",s.configured},{"running",s.running},{"backend",s.backend},{"inputDeviceId",s.inputDeviceId},{"outputDeviceId",s.outputDeviceId},
     {"inputName",s.name},{"outputName",s.name},{"sampleRate",s.sampleRate},{"bufferFrames",s.bufferFrames},{"inputChannels",s.inputChannels},{"outputChannels",s.outputChannels},
     {"inputChannelOffset",s.inputChannelOffset},{"outputChannelOffset",s.outputChannelOffset},
-    {"inputDeviceSampleRate",s.inputDeviceSampleRate},{"outputDeviceSampleRate",s.outputDeviceSampleRate},{"inputLatencyFrames",s.inputLatencyFrames?Json(*s.inputLatencyFrames):Json(nullptr)},
-    {"outputLatencyFrames",s.outputLatencyFrames?Json(*s.outputLatencyFrames):Json(nullptr)},{"underruns",s.discontinuities},{"needsReconfigure",s.needsReconfigure},{"resampling",s.resampling},{"error",s.error}};
+    {"inputDeviceSampleRate",s.inputDeviceSampleRate},{"outputDeviceSampleRate",s.outputDeviceSampleRate},{"inputLatencyFrames",optionalJson(s.inputLatencyFrames)},
+    {"outputLatencyFrames",optionalJson(s.outputLatencyFrames)},{"underruns",s.discontinuities},{"needsReconfigure",s.needsReconfigure},{"resampling",s.resampling},{"error",s.error},
+    {"errorCode",s.errorCode.empty()?Json(nullptr):Json(s.errorCode)},{"inputChannelList",s.inputChannelList},{"inputNames",s.inputNames},{"outputNames",s.outputNames},
+    {"bufferAdjusted",s.bufferAdjusted},{"recovering",s.recovering},{"recoveries",s.recoveries},{"suspended",s.suspended},
+    {"clockSource",optionalJson(s.clockSource)},{"directMonitoring",s.directMonitoring}};
 }
+Json bufferJson(const std::optional<BufferCaps>& caps,const std::vector<std::uint32_t>& sizes) {
+  return {{"min",caps?Json(caps->minimum):Json(nullptr)},{"max",caps?Json(caps->maximum):Json(nullptr)},{"preferred",caps?Json(caps->preferred):Json(nullptr)},
+    {"granularity",caps?Json(caps->granularity):Json(nullptr)},{"sizes",sizes},{"fixed",caps.has_value()&&sizes.size()==1}};
+}
+Json probeJson(const DeviceProbe& p) {
+  Json inputs=Json::array(),outputs=Json::array(),clocks=Json::array();
+  for(const auto& c:p.inputs) inputs.push_back({{"index",c.index},{"name",c.name}});
+  for(const auto& c:p.outputs) outputs.push_back({{"index",c.index},{"name",c.name}});
+  for(const auto& c:p.clockSources) clocks.push_back({{"index",c.index},{"name",c.name},{"current",c.current}});
+  return {{"id",p.id},{"name",p.name},{"backend",p.backend},{"inputs",inputs},{"outputs",outputs},{"sampleRates",p.sampleRates},
+    {"currentSampleRate",optionalJson(p.currentSampleRate)},{"buffer",bufferJson(p.buffer,p.bufferSizes)},{"clockSources",clocks},
+    {"canDirectMonitor",p.canDirectMonitor},{"inputLatencyFrames",optionalJson(p.inputLatencyFrames)},{"outputLatencyFrames",optionalJson(p.outputLatencyFrames)}};
+}
+Json errorDetailsJson(const DeviceErrorDetails& d) {
+  Json result=Json::object();
+  if(!d.supportedSampleRates.empty()) result["supported"]=d.supportedSampleRates;
+  if(d.buffer) result["buffer"]=bufferJson(d.buffer,device_logic::allowedBufferSizes(*d.buffer));
+  if(d.availableInputs) result["availableInputs"]=*d.availableInputs;
+  if(d.availableOutputs) result["availableOutputs"]=*d.availableOutputs;
+  return result;
+}
+// The synthetic clock behaves like a fixed two-in/two-out interface so CI can
+// exercise probing, buffer snapping, channel lists and suspend/resume.
+constexpr BufferCaps testBufferCaps{16,4096,128,16};
 Json descriptorJson(const PluginDescriptor& p) { return {{"classId",p.classId},{"name",p.name},{"vendor",p.vendor},{"version",p.version},{"category",p.category},{"isInstrument",p.isInstrument}}; }
 
 class Host {
@@ -101,12 +129,12 @@ class Host {
   explicit Host(bool testClock):test_(testClock) {}
   ~Host() { close(); }
   void service() {
-    if (test_ && configured_ && engine_) {
+    if (test_ && configured_ && engine_ && testState_.running) {
       const auto now=Clock::now(); int count=0;
       while (now>=nextTest_ && count++<8) {
         const auto frames=testState_.bufferFrames;
         if (testState_.inputChannels) {
-          for (std::uint32_t i=0;i<frames;++i) { const float v=testTone_?float(.15*std::sin(testPhase_)):0; testPhase_+=6.283185307179586*220/testState_.sampleRate; for(std::uint32_t c=0;c<testState_.inputChannels;++c) testInput_[i*testState_.inputChannels+c]=v; }
+          for (std::uint32_t i=0;i<frames;++i) { const float v=testTone_?float(.15*std::sin(testPhase_)):0; testPhase_+=6.283185307179586*220/testState_.sampleRate; for(std::uint32_t c=0;c<testState_.inputChannels;++c) testInput_[std::size_t(i)*testState_.inputChannels+c]=v; }
         }
         callback(this,testOutput_.data(),testState_.inputChannels?testInput_.data():nullptr,frames,testState_.inputChannels);
         nextTest_+=std::chrono::nanoseconds(std::int64_t(1e9*frames/testState_.sampleRate));
@@ -166,6 +194,8 @@ class Host {
     }
     if (method=="render.wav") return render(a);
     if (method=="device.controlPanel" || method=="devices.controlPanel") { if(test_) return Json::object(); device_.showControlPanel(); return Json::object(); }
+    if (method=="devices.probe") return probeJson(test_?testProbe():device_.probe(string(a,"backend",32),a.value("deviceId",std::string{})));
+    if (method.rfind("device.",0)==0) return deviceRequest(method,a);
     // A device/plugin fault must not prevent a captured take being finalized.
     if(method!="record.stop") requireEngine();
     if (method=="transport.play") { awaitApplied(engine_->play()); return snapshot(); }
@@ -288,6 +318,37 @@ class Host {
     }
     throw std::runtime_error("Unknown plugin operation");
   }
+  [[nodiscard]] bool recordingActive() const { return recording_!=nullptr; }
+  DeviceProbe testProbe() const {
+    DeviceProbe p; p.id="test-device"; p.name="Test clock (no audio hardware)"; p.backend="test";
+    p.inputs={{0,"Input 1"},{1,"Input 2"}}; p.outputs={{0,"Output 1"},{1,"Output 2"}};
+    p.sampleRates.assign(std::begin(device_logic::kProbeSampleRates),std::end(device_logic::kProbeSampleRates));
+    p.currentSampleRate=testState_.configured?testState_.sampleRate:48000;
+    p.buffer=testBufferCaps; p.bufferSizes=device_logic::allowedBufferSizes(testBufferCaps);
+    p.clockSources={{0,"Internal",true}};
+    return p;
+  }
+  // device.clockSource/directMonitor/suspend/resume. Each answers the device state.
+  Json deviceRequest(const std::string& method,const Json& a) {
+    requireEngine();
+    if(method=="device.clockSource") {
+      const auto index=static_cast<std::int32_t>(integer(a,"index",0,255,0));
+      if(test_) { if(index!=0) throw std::invalid_argument("The test clock has no clock source "+std::to_string(index)+"."); }
+      else device_.setClockSource(index);
+    } else if(method=="device.directMonitor") {
+      if(!a.contains("enabled") || !a.at("enabled").is_boolean()) throw std::runtime_error("Missing boolean: enabled");
+      if(test_) throw std::runtime_error("The test clock does not offer direct monitoring control.");
+      device_.setDirectMonitoring(a.at("enabled").get<bool>());
+    } else if(method=="device.suspend" || method=="device.resume") {
+      if(recordingActive()) throw std::runtime_error("Stop recording before releasing or reopening the audio device");
+      const bool suspend=method=="device.suspend";
+      if(test_) {
+        if(testState_.suspended!=suspend) { testState_.suspended=suspend; testState_.running=!suspend; nextTest_=Clock::now(); }
+      } else if(suspend) device_.suspend();
+      else device_.resume();
+    } else throw std::runtime_error("Unknown native audio method: "+method);
+    auto result=deviceJson(currentDevice()); result["testClock"]=test_; return result;
+  }
   DeviceState currentDevice() const { return test_?testState_:device_.state(); }
   void requireEngine() const { if(!engine_ || !configured_) throw std::runtime_error("Configure a native audio device first"); }
   std::uint32_t trackIndex(const std::string& id) const {
@@ -295,20 +356,58 @@ class Host {
     if(found==project_.tracks.end()) throw std::runtime_error("Track is missing");
     return static_cast<std::uint32_t>(std::distance(project_.tracks.begin(),found));
   }
+  static DeviceConfig deviceConfig(const Json& a) {
+    DeviceConfig config;
+    config.backend=string(a,"backend",32); config.sampleRate=std::uint32_t(integer(a,"sampleRate",8000,192000,48000));
+    if(a.contains("bufferFrames") && a.at("bufferFrames").is_string()) {
+      if(a.at("bufferFrames").get<std::string>()!="driver") throw std::runtime_error("Invalid bufferFrames");
+      config.bufferFrames=device_logic::kDriverBuffer;
+    } else config.bufferFrames=std::uint32_t(integer(a,"bufferFrames",16,16384,128));
+    config.inputDeviceId=a.value("inputDeviceId",std::string{}); config.outputDeviceId=a.value("outputDeviceId",std::string{});
+    // inputChannelList wins over the legacy contiguous 0..2-channel selection.
+    if(a.contains("inputChannelList") && !a.at("inputChannelList").is_null()) {
+      const auto& list=a.at("inputChannelList");
+      if(!list.is_array() || list.size()>device_logic::kMaxInputChannels) throw std::runtime_error("Invalid inputChannelList");
+      for(const auto& item:list) {
+        if(!item.is_number_integer() || item.get<std::int64_t>()<0 || item.get<std::int64_t>()>device_logic::kMaxPhysicalChannel) throw std::runtime_error("Invalid input channel index");
+        config.inputChannelList.push_back(item.get<std::uint32_t>());
+      }
+      device_logic::validateInputList(config.inputChannelList);
+      config.inputChannels=std::uint32_t(config.inputChannelList.size()); config.inputChannelOffset=config.inputChannelList.empty()?0:config.inputChannelList.front();
+    } else {
+      config.inputChannels=std::uint32_t(integer(a,"inputChannels",0,2,0)); config.inputChannelOffset=std::uint32_t(integer(a,"inputChannelOffset",0,255,0));
+    }
+    config.outputChannelOffset=std::uint32_t(integer(a,"outputChannelOffset",0,255,0)); config.lowLatencyMonitoring=a.value("lowLatencyMonitoring",true); config.exclusive=a.value("exclusive",false);
+    if(a.contains("clockSource") && !a.at("clockSource").is_null()) config.clockSource=static_cast<std::int32_t>(integer(a,"clockSource",0,255,0));
+    config.directMonitoring=a.value("directMonitoring",false);
+    return config;
+  }
+  void configureTestClock(const DeviceConfig& config) {
+    const auto probe=testProbe(); const auto inputs=resolvedInputList(config);
+    device_logic::validateInputList(inputs);
+    if(!device_logic::inputsAvailable(inputs,2) || !device_logic::outputPairAvailable(config.outputChannelOffset,2)) {
+      DeviceErrorDetails details; details.availableInputs=2; details.availableOutputs=2;
+      throw DeviceError(DeviceErrorCode::ChannelsUnavailable,"The test clock has two inputs and one stereo output pair.",details);
+    }
+    if(std::find(probe.sampleRates.begin(),probe.sampleRates.end(),config.sampleRate)==probe.sampleRates.end()) {
+      DeviceErrorDetails details; details.supportedSampleRates=probe.sampleRates;
+      throw DeviceError(DeviceErrorCode::SampleRateUnsupported,"The test clock cannot run at "+std::to_string(config.sampleRate)+" Hz.",details);
+    }
+    const auto buffer=device_logic::snapBufferSize(testBufferCaps,config.bufferFrames);
+    testState_={}; testState_.configured=true; testState_.running=true; testState_.backend="test"; testState_.name=probe.name;
+    testState_.sampleRate=config.sampleRate; testState_.bufferFrames=buffer.frames; testState_.bufferAdjusted=buffer.adjusted;
+    testState_.inputChannelList=inputs; testState_.inputChannels=std::uint32_t(inputs.size()); testState_.inputChannelOffset=inputs.empty()?0:inputs.front();
+    for(const auto c:inputs) testState_.inputNames.push_back(probe.inputs[c].name);
+    testState_.outputNames={"Output 1","Output 2"}; testState_.outputChannels=2; testState_.inputDeviceId="test-device"; testState_.outputDeviceId="test-device";
+    testState_.outputChannelOffset=config.outputChannelOffset; testState_.clockSource=0;
+  }
   Json configure(const Json& a) {
     if(recording_) throw std::runtime_error("Stop recording before changing the audio device");
     const auto oldFrame=engine_?engine_->snapshot().frame:0;
     closeDevice(); pluginError_.clear(); recordingError_=false;
-    DeviceConfig config;
-    config.backend=string(a,"backend",32); config.sampleRate=std::uint32_t(integer(a,"sampleRate",8000,192000,48000)); config.bufferFrames=std::uint32_t(integer(a,"bufferFrames",16,test_?4096:16384,128));
-    config.inputDeviceId=a.value("inputDeviceId",std::string{}); config.outputDeviceId=a.value("outputDeviceId",std::string{});
-    config.inputChannels=std::uint32_t(integer(a,"inputChannels",0,2,0)); config.inputChannelOffset=std::uint32_t(integer(a,"inputChannelOffset",0,255,0));
-    config.outputChannelOffset=std::uint32_t(integer(a,"outputChannelOffset",0,255,0)); config.lowLatencyMonitoring=a.value("lowLatencyMonitoring",true); config.exclusive=a.value("exclusive",false);
-    if(test_) {
-      testState_={}; testState_.configured=true; testState_.running=true; testState_.backend="test"; testState_.name="Test clock (no audio hardware)";
-      testState_.sampleRate=config.sampleRate; testState_.bufferFrames=config.bufferFrames; testState_.inputChannels=config.inputChannels; testState_.outputChannels=2; testState_.inputDeviceId="test-device"; testState_.outputDeviceId="test-device";
-      testState_.inputChannelOffset=config.inputChannelOffset; testState_.outputChannelOffset=config.outputChannelOffset;
-    } else device_.configure(config,callback,this);
+    const auto config=deviceConfig(a);
+    if(test_) configureTestClock(config);
+    else device_.configure(config,callback,this);
     const auto state=currentDevice();
     if(!state.sampleRate || !state.bufferFrames) { device_.close(); throw std::runtime_error("Audio driver did not report a usable configuration"); }
     engine_=std::make_unique<RenderEngine>(state.sampleRate,scratchFrames); plugins_.clear();
@@ -445,7 +544,9 @@ class Host {
   AssetStore assets_; SampleSetStore sets_; std::map<std::string,PluginEntry> plugins_;
   std::unique_ptr<RecordingFile> recording_; Clock::time_point nextTest_{};
   std::int64_t recordingRawStart_=0; std::uint64_t recordingCompensation_=0; bool recordingCompensationKnown_=false;
-  std::array<float,scratchFrames*2> testInput_{},testOutput_{},previewScratch_{};
+  // Heap-allocated: up to 32 interleaved test inputs would crowd the main stack.
+  std::vector<float> testInput_=std::vector<float>(std::size_t(scratchFrames)*device_logic::kMaxInputChannels);
+  std::array<float,scratchFrames*2> testOutput_{},previewScratch_{};
   double testPhase_=0,outputPhase_=0; std::atomic<std::uint32_t> toneRemaining_{0};
   std::atomic<std::uint64_t> callbacks_{0}; std::atomic<RenderEngine*> preview_{nullptr}; std::unique_ptr<RenderEngine> previewOwned_;
   std::vector<std::pair<std::uint64_t,std::unique_ptr<RenderEngine>>> retiredPreview_;
@@ -532,6 +633,16 @@ int run(const std::vector<std::string>& args) {
       if(line.empty()) continue;
       Json id=nullptr;
       try { const auto request=Json::parse(line); id=request.at("id"); if(!id.is_number_unsigned()&&!id.is_number_integer()) throw std::runtime_error("Invalid request ID"); const auto method=string(request,"method",128); const auto params=request.value("params",Json::object()); if(!params.is_object()) throw std::runtime_error("Invalid params"); emit(output,{{"id",id},{"ok",true},{"result",host.request(method,params)}}); }
+      catch(const DeviceError& error) {
+        // Classified device failures carry `code` (and `details`) both at the top
+        // level (docs/AUDIO_CORE_PLAN.md) and inside the existing error object.
+        const std::string code=deviceErrorCodeName(error.code()); const auto details=errorDetailsJson(error.details());
+        Json problem={{"code",code.empty()?std::string("NATIVE_AUDIO_ERROR"):code},{"message",error.what()}};
+        Json response={{"id",id},{"ok",false},{"error",problem}};
+        if(!code.empty()) response["code"]=code;
+        if(!details.empty()) { response["error"]["details"]=details; response["details"]=details; }
+        emit(output,response);
+      }
       catch(const std::exception& error) { emit(output,{{"id",id},{"ok",false},{"error",{{"code","NATIVE_AUDIO_ERROR"},{"message",error.what()}}}}); }
     }
     if(failed) { std::cerr<<queue.error<<"\n"; return 1; }
