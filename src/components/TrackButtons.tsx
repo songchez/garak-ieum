@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { Track } from '../core/types'
-import type { ArmState, TrackButtonKind as Kind } from '../core/trackActions'
+import { monitorModeOf, type ArmState, type TrackButtonKind as Kind } from '../core/trackActions'
 import { shortcutPlatform } from '../core/input'
 import { Icon } from './Icon'
 import './TrackHeader.css'
@@ -16,7 +16,7 @@ const HELP: Record<Kind, string> = {
   mute: `${ALT}클릭: 이 트랙만 · ${MOD}클릭: 같은 상태 전부 반전 · 드래그: 연속 전환`,
   solo: `${ALT}클릭: 이 트랙만 · ${MOD}클릭: 전부 · ${SAFE}: Solo Safe · 드래그: 연속 전환`,
   arm: `${ALT}클릭: 이 트랙만(이미 켜져 있으면 전부 해제) · 드래그: 연속 전환`,
-  monitor: '녹음 대기 없이 입력을 듣습니다 · 드래그: 연속 전환',
+  monitor: '켜면 항상 입력을 듣고, 끄면 듣지 않습니다(자동은 인스펙터에서) · 드래그: 연속 전환',
   enabled: `${MOD}클릭: 전부 · 드래그: 연속 전환`,
   hidden: '가리기 보기를 끄면 숨겨집니다 · 드래그: 연속 전환',
 }
@@ -26,7 +26,7 @@ export function trackButtonValue(track: Track, kind: Kind, arm: ArmState): boole
     case 'mute': return track.mute
     case 'solo': return track.solo
     case 'arm': return arm === 'armed'
-    case 'monitor': return track.monitor
+    case 'monitor': return monitorModeOf(track) === 'in'
     case 'enabled': return track.enabled
     default: return track.hidden
   }
@@ -89,7 +89,8 @@ export function TrackButtons({ track, kinds, arm, recording, implicitMute, onPre
     if (kind === 'solo' && track.soloSafe) cls.push('safe')
     if (kind === 'arm') { if (arm === 'auto') cls.push('auto'); if (arm === 'armed' && recording) cls.push('recording') }
     if (kind === 'enabled' && !track.enabled) cls.push('off')
-    const state = kind === 'arm' ? arm === 'armed' ? recording ? '녹음 중' : '대기' : arm === 'auto' ? '자동(포커스 트랙)' : '끔' : kind === 'solo' && track.soloSafe ? 'Solo Safe' : on ? '켬' : '끔'
+    if (kind === 'monitor') { const mode = monitorModeOf(track); if (mode === 'auto' && track.armed) cls.push('auto'); if (mode === 'off') cls.push('mode-off') }
+    const state = kind === 'arm' ? arm === 'armed' ? recording ? '녹음 중' : '대기' : arm === 'auto' ? '자동(포커스 트랙)' : '끔' : kind === 'solo' && track.soloSafe ? 'Solo Safe' : kind === 'monitor' && monitorModeOf(track) === 'auto' ? '자동(녹음 대기 중에 들림)' : on ? '켬' : '끔'
     return <button key={kind} type="button" className={cls.join(' ')} data-track-button={kind} data-track-id={track.id}
       aria-pressed={on} aria-label={`${track.name} ${LABEL[kind]}`} title={`${LABEL[kind]}: ${state}\n${HELP[kind]}`}
       onPointerDown={e => pointerDown(e, kind)}

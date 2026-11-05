@@ -6,7 +6,7 @@ import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
-import { QUANTIZE_VALUES, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track } from './types'
+import { QUANTIZE_VALUES, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track, type TrackInput, type TrackMonitorMode } from './types'
 
 let fallbackSequence = 0
 
@@ -94,7 +94,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -375,12 +375,16 @@ export function joinClips(clips: Clip[], bpm: number): Clip | null {
     ...(first.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(endBeat - startBeat, first.loopLengthBeats) }) }
 }
 
+/** Fresh arrays so a copy never shares the channel list with its source. */
+export const copyTrackInput = (input: TrackInput): TrackInput => ({ channels: [...input.channels] as TrackInput['channels'], ...(input.label === undefined ? {} : { label: input.label }) })
+
 /** A deep copy with new track, clip, note and device IDs; audio assets stay shared. */
 export function duplicateTrack(track: Track): Track {
   return {
     ...track,
     id: uid(),
     name: `${track.name} 복사본`.slice(0, 512),
+    ...(track.input ? { input: copyTrackInput(track.input) } : {}),
     instrumentParams: { ...track.instrumentParams },
     ...(track.instrumentState ? { instrumentState: cloneWavetableState(track.instrumentState) } : {}),
     devices: track.devices.map(device => cloneDevice(device)),
@@ -389,13 +393,16 @@ export function duplicateTrack(track: Track): Track {
   }
 }
 
-/** Logic "New Track With Duplicate Settings": every setting but no clips; arm and monitor stay off. */
+/** Logic "New Track With Duplicate Settings": every setting but no clips; arm and monitor stay off.
+ * The input and monitor mode are settings and carry over, except that `in` (the I flag) becomes `off`. */
 export function duplicateTrackSettings(track: Track): Track {
   return {
     ...track,
     id: uid(),
     armed: false,
     monitor: false,
+    ...(track.monitorMode === 'in' ? { monitorMode: 'off' as const } : {}),
+    ...(track.input ? { input: copyTrackInput(track.input) } : {}),
     keyLimit: [...track.keyLimit],
     velocityLimit: [...track.velocityLimit],
     instrumentParams: { ...track.instrumentParams },
@@ -597,6 +604,26 @@ function range(value: unknown, path: string, min: number, max: number): [number,
   return [low, high]
 }
 
+const MONITOR_MODES: readonly TrackMonitorMode[] = ['off', 'auto', 'in']
+
+/** Physical channels are device indices: one (mono) or two distinct ones (stereo, not necessarily adjacent). */
+function parseTrackInput(value: unknown, path: string): TrackInput {
+  const source = object(value, path)
+  const channels = source.channels
+  if (!Array.isArray(channels) || channels.length < 1 || channels.length > 2) throw new Error(`${path} channels must list one or two input channels.`)
+  const parsed = channels.map((channel, index) => integer(channel, `${path} channel ${index + 1}`, 0, 255))
+  if (parsed.length === 2 && parsed[0] === parsed[1]) throw new Error(`${path} channels must be two different channels.`)
+  return {
+    channels: parsed as TrackInput['channels'],
+    ...(source.label === undefined ? {} : { label: text(source.label, `${path} label`, 128) }),
+  }
+}
+
+function monitorMode(value: unknown, path: string): TrackMonitorMode {
+  if (!MONITOR_MODES.includes(value as TrackMonitorMode)) throw new Error(`${path} must be off, auto or in.`)
+  return value as TrackMonitorMode
+}
+
 function quantize(value: unknown, path: string): number {
   const parsed = number(value, path, 0, 4)
   const match = QUANTIZE_VALUES.find(grid => Math.abs(grid - parsed) <= 1e-6)
@@ -633,7 +660,7 @@ function params(value: unknown, defs: readonly ParamDef[], path: string): Record
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) throw new Error('This project version is not supported. Expected schema version 1 through 7.')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8) throw new Error('This project version is not supported. Expected schema version 1 through 8.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -712,6 +739,12 @@ export function validateProject(input: unknown): Project {
     }
     devices.push(...legacyPluginInserts)
     if (devices.length > 64) throw new Error(`${path} may contain at most 64 inserts including VST3.`)
+    if (version < 8 && (track.input !== undefined || track.monitorMode !== undefined)) throw new Error('Track inputs and monitor modes require project schema version 8 or later.')
+    if (track.kind !== 'audio' && track.input !== undefined) throw new Error(`${path} input requires an audio track.`)
+    const input = track.input === undefined ? undefined : parseTrackInput(track.input, `${path} input`)
+    const mode = track.monitorMode === undefined ? undefined : monitorMode(track.monitorMode, `${path} monitor mode`)
+    // Schema ≤7 has only the I flag, and an absent mode keeps deriving from it. A saved mode is authoritative.
+    const monitor = mode === undefined ? optional(track.monitor, false, value => flag(value, `${path} monitor`)) : mode === 'in'
     const clips = list(track.clips, `${path} clips`, 100_000).map((clipInput, clipIndex): Clip => {
       clipCount += 1
       if (clipCount > 100_000) throw new Error('The project contains too many clips.')
@@ -788,7 +821,8 @@ export function validateProject(input: unknown): Project {
       soloSafe: optional(track.soloSafe, false, value => flag(value, `${path} solo safe`)),
       enabled: optional(track.enabled, true, value => flag(value, `${path} enabled`)),
       armed: optional(track.armed, false, value => flag(value, `${path} armed`)),
-      monitor: optional(track.monitor, false, value => flag(value, `${path} monitor`)),
+      monitor,
+      ...(mode ? { monitorMode: mode } : {}),
       hidden: optional(track.hidden, false, value => flag(value, `${path} hidden`)),
       transpose: optional(track.transpose, 0, value => integer(value, `${path} transpose`, -96, 96)),
       velocityOffset: optional(track.velocityOffset, 0, value => integer(value, `${path} velocity offset`, -99, 99)),
@@ -801,6 +835,7 @@ export function validateProject(input: unknown): Project {
       ...(instrumentState ? { instrumentState } : {}),
       devices,
       ...(pluginInstrument ? { pluginInstrument } : {}),
+      ...(input ? { input } : {}),
     }
   })
   const markers = sortMarkers(list(source.markers ?? [], 'Markers', 10_000).map((markerInput, markerIndex): Marker => {
@@ -813,7 +848,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

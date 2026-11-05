@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Project, Track } from './types'
-import { anySolo, audibleTracks, clearRecallSolo, effectiveArm, implicitlyMuted, monitorTargets, pressTrackButton, recordTarget, sweepTrackButton } from './trackActions'
+import { anySolo, audibleTracks, clearRecallSolo, effectiveArm, implicitlyMuted, monitorModeOf, monitorTargets, pressTrackButton, recordTakeTrackIds, recordTarget, sweepTrackButton } from './trackActions'
 
 const track = (id: string, patch: Partial<Track> = {}): Track => ({
   id, name: id, kind: 'instrument', instrument: 'keys', color: '#66d666', volume: 1, pan: 0,
@@ -10,7 +10,7 @@ const track = (id: string, patch: Partial<Track> = {}): Track => ({
 })
 
 const project = (...tracks: Track[]): Project => ({
-  schemaVersion: 7, id: 'p', name: 'p', bpm: 120, sampleRate: 48000, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4, lengthBeats: 64, masterVolume: 1,
+  schemaVersion: 8, id: 'p', name: 'p', bpm: 120, sampleRate: 48000, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4, lengthBeats: 64, masterVolume: 1,
   loop: { enabled: false, startBeat: 0, endBeat: 4 }, tracks, markers: [],
 })
 
@@ -225,7 +225,53 @@ describe('monitorTargets', () => {
       track('c', { kind: 'audio', monitor: true, enabled: false }),
       track('d', { kind: 'audio' }),
     )
-    expect(monitorTargets(p, false)).toEqual(['a'])
-    expect(monitorTargets(p, true)).toEqual(['a', 'b'])
+    // b has no saved mode, so it derives Auto: armed tracks hear the input unless playback runs without recording.
+    expect(monitorTargets(p, false, true)).toEqual(['a'])
+    expect(monitorTargets(p, false, false)).toEqual(['a', 'b'])
+    expect(monitorTargets(p, true, true)).toEqual(['a', 'b'])
+  })
+
+  it('follows In/Auto/Off (Ableton)', () => {
+    const p = project(
+      track('in', { kind: 'audio', monitorMode: 'in', monitor: true }),
+      track('auto', { kind: 'audio', monitorMode: 'auto', armed: true }),
+      track('auto-idle', { kind: 'audio', monitorMode: 'auto' }),
+      track('off', { kind: 'audio', monitorMode: 'off', armed: true }),
+    )
+    expect(monitorTargets(p, false, false)).toEqual(['in', 'auto'])
+    expect(monitorTargets(p, false, true)).toEqual(['in'])
+    expect(monitorTargets(p, true, true)).toEqual(['in', 'auto'])
+  })
+})
+
+describe('monitor mode and the I button', () => {
+  it('derives the mode of schema 7 tracks from the I flag', () => {
+    expect(monitorModeOf(track('a', { monitor: true }))).toBe('in')
+    expect(monitorModeOf(track('a'))).toBe('auto')
+    expect(monitorModeOf(track('a', { monitorMode: 'off' }))).toBe('off')
+  })
+
+  it('toggles In/Off and keeps the I flag in step, including sweeps', () => {
+    const base = project(track('a', { kind: 'audio', monitorMode: 'auto' }), track('b', { kind: 'audio', monitorMode: 'in', monitor: true }))
+    const pressed = pressTrackButton(base, 'a', 'monitor')
+    expect(pressed.tracks[0]).toMatchObject({ monitor: true, monitorMode: 'in' })
+    expect(pressTrackButton(pressed, 'a', 'monitor').tracks[0]).toMatchObject({ monitor: false, monitorMode: 'off' })
+    expect(pressTrackButton(base, 'b', 'monitor').tracks[1]).toMatchObject({ monitor: false, monitorMode: 'off' })
+    expect(sweepTrackButton(base, 'a', 'monitor', true).tracks[0]).toMatchObject({ monitor: true, monitorMode: 'in' })
+    expect(sweepTrackButton(base, 'b', 'monitor', true)).toBe(base)
+  })
+})
+
+describe('recordTakeTrackIds', () => {
+  const p = project(track('a', { kind: 'audio', armed: true }), track('b', { kind: 'audio', armed: true }), track('c', { kind: 'audio', armed: true }))
+  it('records every armed audio track when the engine can, up to its limit', () => {
+    expect(recordTakeTrackIds(recordTarget(p, null), 64)).toEqual(['a', 'b', 'c'])
+    expect(recordTakeTrackIds(recordTarget(p, null), 2)).toEqual(['a', 'b'])
+  })
+  it('keeps the single target in a browser (limit 1) and for focus-based targets', () => {
+    expect(recordTakeTrackIds(recordTarget(p, null), 1)).toEqual(['a'])
+    const focused = project(track('x', { kind: 'audio' }))
+    expect(recordTakeTrackIds(recordTarget(focused, 'x'), 64)).toEqual(['x'])
+    expect(recordTakeTrackIds(recordTarget(focused, null), 64)).toEqual([])
   })
 })

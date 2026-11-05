@@ -1,4 +1,4 @@
-import type { EffectType } from './types'
+import type { EffectType, TrackInput } from './types'
 import { EFFECT_TYPES } from '../devices/effects/registry.js'
 
 /** The browser and Node MCP server share this contract and the side-effect-free built-in registry. */
@@ -38,6 +38,7 @@ export type DawCommand =
   | { type: 'track.setPan'; trackId: string; pan: number }
   | { type: 'track.setMute'; trackId: string; mute: boolean }
   | { type: 'track.setSolo'; trackId: string; solo: boolean }
+  | { type: 'track.setInput'; trackId: string; input: TrackInput | null }
   | { type: 'instrument.setParam'; trackId: string; paramId: string; value: number }
   | { type: 'clip.addMidi'; trackId: string } & MidiClipInput
   | { type: 'clip.rename'; clipId: string; name: string }
@@ -131,6 +132,12 @@ export const COMMAND_METADATA = [
   descriptor('track.setPan', 'Set pan from -1 (left) through 0 (center) to 1 (right).', { trackId: idSchema, pan: { type: 'number', minimum: -1, maximum: 1 } }),
   descriptor('track.setMute', 'Set mute explicitly; this is not a toggle.', { trackId: idSchema, mute: boolSchema }),
   descriptor('track.setSolo', 'Set solo explicitly; other tracks are not modified.', { trackId: idSchema, solo: boolSchema }),
+  descriptor('track.setInput', 'Choose the physical input an audio track records and monitors: zero-based device channels, one (mono) or two different ones (stereo), with the channel name as label so another computer can re-find it. null = the engine default input. Monitoring and record-enable stay user-only.', {
+    trackId: idSchema, input: { anyOf: [{ type: 'null' }, objectSchema({
+      channels: { type: 'array', minItems: 1, maxItems: 2, items: { type: 'integer', minimum: 0, maximum: 255 } },
+      label: { type: 'string', minLength: 1, maxLength: 128 },
+    }, ['channels'])] },
+  }),
   descriptor('instrument.setParam', 'Set an instrument parameter in its catalog unit. Waveform banks and modulation routes are preserved; native instruments still require a connected native audio host to sound.', { trackId: idSchema, paramId: idSchema, value: { type: 'number' } }),
   descriptor('clip.addMidi', 'Add editable MIDI notes to an instrument track. Note starts are clip-relative beats; pitch is MIDI 0–127 (60=C3).', { trackId: idSchema, ...clipProperties }, ['trackId', 'startBeat', 'lengthBeats', 'notes']),
   descriptor('clip.rename', 'Rename the explicit clip.', { clipId: idSchema, name: nameSchema }),
@@ -226,6 +233,14 @@ export function parseCommand(value: unknown, index = 0): DawCommand {
     case 'track.setPan': return { type: c.type, trackId: trackId(), pan: numeric(c.pan, `${path}.pan`, -1, 1) }
     case 'track.setMute': return { type: c.type, trackId: trackId(), mute: boolean(c.mute, `${path}.mute`) }
     case 'track.setSolo': return { type: c.type, trackId: trackId(), solo: boolean(c.solo, `${path}.solo`) }
+    case 'track.setInput': {
+      if (c.input === null) return { type: c.type, trackId: trackId(), input: null }
+      const input = record(c.input, `${path}.input`, ['channels', 'label'])
+      if (!Array.isArray(input.channels) || input.channels.length < 1 || input.channels.length > 2) fail(`${path}.input.channels`, 'must list one or two channels')
+      const channels = input.channels.map((channel, index) => numeric(channel, `${path}.input.channels[${index}]`, 0, 255, true))
+      if (channels.length === 2 && channels[0] === channels[1]) fail(`${path}.input.channels`, 'must be two different channels')
+      return { type: c.type, trackId: trackId(), input: { channels: channels as TrackInput['channels'], ...(input.label === undefined ? {} : { label: string(input.label, `${path}.input.label`, 128) }) } }
+    }
     case 'instrument.setParam': return { type: c.type, trackId: trackId(), paramId: string(c.paramId, `${path}.paramId`), value: numeric(c.value, `${path}.value`, -Number.MAX_VALUE, Number.MAX_VALUE) }
     case 'clip.addMidi': return { type: c.type, trackId: trackId(), ...parseMidiClip(c, path, fields) }
     case 'clip.rename': return { type: c.type, clipId: clipId(), name: name() }

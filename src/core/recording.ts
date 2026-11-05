@@ -1,4 +1,5 @@
 import { loopRange, normalizedStart } from '../audio/math'
+import type { AudioRecordingCallbacks, AudioRecordingResult } from '../audio/AudioRecording'
 import { recordingPlacement } from './recordingOffset'
 import type { AudioClip, Project, Track } from './types'
 
@@ -77,4 +78,104 @@ export function appendAudioRecording(project: Project, draft: RecordingDraft, as
     },
     clip,
   }
+}
+
+export interface FinishedTake { draft: RecordingDraft; assetId: string; durationSeconds: number }
+
+/** Several takes enter the project (and Undo) together; takes placed wholly before beat 0 are skipped. */
+export function appendAudioRecordings(project: Project, takes: readonly FinishedTake[]): { project: Project; clips: AudioClip[]; skipped: RecordingDraft[] } {
+  let next = project
+  const clips: AudioClip[] = [], skipped: RecordingDraft[] = []
+  for (const take of takes) {
+    const completed = appendAudioRecording(next, take.draft, take.assetId, take.durationSeconds)
+    if (!completed) { skipped.push(take.draft); continue }
+    next = completed.project
+    clips.push(completed.clip)
+  }
+  return { project: next, clips, skipped }
+}
+
+/** One finished take of a multi-track pass (docs/AUDIO_CORE_PLAN.md: `{ trackId, ...existing result }`). */
+export interface TakeResult extends AudioRecordingResult { trackId: string }
+export interface TakeCallbacks {
+  /** Every take of the pass at once, so they can be committed as one Undo step. */
+  onComplete(results: TakeResult[]): void
+  onError?(error: Error): void
+}
+/** The single-take recorders (AudioRecording, NativeRecording) as the take flow uses them. */
+export interface SingleCapture {
+  start(): void | Promise<void>
+  stop(): void
+  dispose(): void
+  readonly startedAtMs: number
+  readonly elapsedSeconds: number
+  /** Native only: the compensated project frame where the take starts. */
+  readonly startFrame?: number | null
+  readonly compensationKnown?: boolean | null
+}
+/** WP2's `createRecordings` session: NativeRecording's lifecycle over all takes of one `record.start`. */
+export interface RecordingSession extends SingleCapture {
+  /** Per-take start frame; takes share `startFrame` when absent. */
+  startFrameOf?(trackId: string): number | null
+}
+export interface MultiTakeEngine {
+  readonly maxSimultaneousRecordings?: number
+  createRecordings?(trackIds: string[], callbacks: TakeCallbacks): RecordingSession
+}
+/** What App.tsx drives, whichever recorder is underneath. */
+export interface TakeCapture {
+  start(): Promise<void>
+  stop(): void
+  dispose(): void
+  readonly startedAtMs: number
+  readonly elapsedSeconds: number
+  readonly compensationKnown: boolean | null
+  startFrameOf(trackId: string): number | null
+}
+
+/** Takes the engine can capture in one pass: 1 unless it implements createRecordings. */
+export const simultaneousTakeLimit = (engine: MultiTakeEngine): number =>
+  typeof engine.createRecordings === 'function' && (engine.maxSimultaneousRecordings ?? 1) > 1 ? Math.floor(engine.maxSimultaneousRecordings!) : 1
+
+/**
+ * Several tracks go through the engine's multi-take session; one track keeps the existing single recorder
+ * (MediaRecorder in a browser, NativeRecording on desktop) and reports through the same take callbacks.
+ */
+export function createTakeCapture(engine: MultiTakeEngine, trackIds: readonly string[], callbacks: TakeCallbacks, single: (trackId: string, callbacks: AudioRecordingCallbacks) => SingleCapture): TakeCapture {
+  if (!trackIds.length) throw new Error('녹음할 트랙이 없습니다.')
+  if (trackIds.length > 1) {
+    if (trackIds.length > simultaneousTakeLimit(engine)) throw new Error('이 오디오 엔진은 여러 트랙을 동시에 녹음할 수 없습니다.')
+    const session = engine.createRecordings!([...trackIds], callbacks)
+    return {
+      start: async () => { await session.start() },
+      stop: () => session.stop(),
+      dispose: () => session.dispose(),
+      get startedAtMs() { return session.startedAtMs },
+      get elapsedSeconds() { return session.elapsedSeconds },
+      get compensationKnown() { return session.compensationKnown ?? null },
+      startFrameOf: trackId => session.startFrameOf?.(trackId) ?? session.startFrame ?? null,
+    }
+  }
+  const trackId = trackIds[0]
+  const capture = single(trackId, { onError: callbacks.onError, onComplete: result => callbacks.onComplete([{ ...result, trackId }]) })
+  return {
+    start: async () => { await capture.start() },
+    stop: () => capture.stop(),
+    dispose: () => capture.dispose(),
+    get startedAtMs() { return capture.startedAtMs },
+    get elapsedSeconds() { return capture.elapsedSeconds },
+    get compensationKnown() { return capture.compensationKnown ?? null },
+    startFrameOf: () => capture.startFrame ?? null,
+  }
+}
+
+/**
+ * A browser MediaRecorder records the whole input stream; the track's chosen channel(s) are taken out
+ * after decoding. Returns null when nothing needs to change or the recording lacks a chosen channel
+ * (the browser or codec may deliver fewer channels than the device has; the full take is kept then).
+ */
+export function selectInputChannels(buffer: Pick<AudioBuffer, 'numberOfChannels' | 'getChannelData'>, channels: readonly number[] | undefined): Float32Array[] | null {
+  if (!channels?.length || channels.some(channel => channel >= buffer.numberOfChannels)) return null
+  if (channels.length === buffer.numberOfChannels && channels.every((channel, index) => channel === index)) return null
+  return channels.map(channel => buffer.getChannelData(channel).slice())
 }

@@ -251,7 +251,9 @@
 |---|---|---|---|---|---|
 | `enabled` | boolean | true | flag | **예**: false면 스케줄·페이더·미리 듣기 제외 | 예 |
 | `armed` | boolean | false | flag | 녹음 대상 결정(App) | **아니오**(live) |
-| `monitor` | boolean | false | flag | 오디오 트랙 입력 모니터링 연결 | **아니오**(live) |
+| `monitor` | boolean | false | flag | I 버튼. 스키마 8부터 `monitorMode === 'in'`과 항상 같음 | **아니오**(live) |
+| `monitorMode` | `'off'\|'auto'\|'in'`? (스키마 8) | 없음 = `monitor`에서 유도(켜짐 `in`, 꺼짐 `auto`) | 세 값 중 하나. 있으면 `monitor`를 덮어씀 | 오디오 트랙 입력 모니터링(아래 2.5) | **아니오**(live). 단 프로젝트에 **저장**(Ableton처럼 세션 설정) |
+| `input` | `{ channels: [p] \| [p, q]; label? }`? (스키마 8, 오디오 트랙만) | 없음 = 엔진 기본 입력 | 채널 1–2개, 0–255 정수, 두 채널은 서로 달라야 함, `label` 1–128자 | 녹음·모니터링할 물리 입력 채널 | 예(`트랙 입력 변경`, 다시 연결은 한 단계) |
 | `hidden` | boolean | false | flag | 없음(숨겨도 재생) | 예 |
 | `soloSafe` | boolean | false | flag | 예: 다른 솔로가 있어도 들림 | 예 |
 | `transpose` | integer | 0 | −96…96 정수 | 예(악기 트랙) | 예 |
@@ -261,7 +263,7 @@
 | `delayTicks` | integer | 0 | −1920…1920 정수(960 PPQ = ±2박) | 예: 노트/오디오 시작 이동 | 예 |
 | `icon` | string? (선택) | 없음 = 기본 아이콘 | 1–40자, `Icon` 이름 목록에 없으면 버림 | 없음 | 예 |
 
-- `createTrack`: 위 기본값 + 기본 색(C-02). `duplicateTrack`/`duplicateTrackSettings`: 필드 복사하되 `armed`/`monitor`는 호출 측이 이동(R-32).
+- `createTrack`: 위 기본값 + 기본 색(C-02). `duplicateTrack`/`duplicateTrackSettings`: 필드 복사하되 `armed`/`monitor`는 호출 측이 이동(R-32). `input`은 새 배열로 복사하고, 설정 복제는 `monitorMode: 'in'`을 `'off'`로 바꿈(I 버튼과 함께 이동).
 - 오디오 트랙의 `transpose`/`velocityOffset`/`keyLimit`/`velocityLimit`은 저장은 하되 무시.
 
 ### 2.2 Clip (`ClipBase` / `MidiClip`)
@@ -295,7 +297,7 @@
   - mute: 기본 토글 · alt = 대상만 true, 나머지 false · mod = 대상의 현재 값 s와 같은 트랙 전부 !s.
   - solo: 기본 토글 · alt = 대상만 true, 나머지 false · mod = 전부 대상의 새 값 · soloSafe = `soloSafe` 토글(켜면 `solo=false`).
   - arm: 기본 토글 · alt = 대상이 armed면 전부 false, 아니면 대상만 true.
-  - monitor / hidden: 토글(수정 키 무시 ⚠️).
+  - monitor / hidden: 토글(수정 키 무시 ⚠️). monitor는 `monitorMode`를 In ↔ Off로 바꾸고 `monitor`를 함께 맞춤(Auto는 인스펙터에서만 고름).
   - enabled: 기본·alt 토글 · mod = 전부 대상의 새 값.
 - `sweepTrackButton(project, trackId, kind, value): Project`
 - `clearRecallSolo(project, recall: string[] | null): { project; recall }` (H-16)
@@ -307,9 +309,9 @@
 
 ### 2.5 녹음 활성·모니터링 (App + 엔진)
 
-- App `historyReducer`에 `{type:'live', edit}` 추가: `present`만 바꾸고 past/future에 넣지 않음. undo/redo 결과에 현재 `present`의 `armed`/`monitor`를 같은 id 트랙에 덮어씀(`carryLiveState`). arm/monitor 변경은 항상 live. 저장(자동 저장)에는 포함.
-- 녹음 대상(`toggleRecord`): ① armed 오디오 트랙 중 가장 위 → ② 없으면 포커스 트랙이 오디오면 그 트랙(로직 자동 활성) → ③ 포커스가 악기 트랙(auto/armed)이고 armed 오디오 없음 → 알림 `MIDI 녹음은 아직 지원하지 않습니다` 후 중단 → ④ 트랙이 없으면 기존처럼 새 오디오 트랙. armed 오디오 트랙이 2개 이상이면 첫 트랙에 녹음 + 알림 `한 번에 한 트랙만 녹음합니다`.
-- 엔진 `AudioEngine.setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void` (types.ts 인터페이스 + WebAudioEngine): `MediaStreamAudioSourceNode` 1개를 대상 트랙 `channel.input`마다 연결, `replaceGraph` 후 재연결, `null`이면 해제. 대상 = `kind==='audio' && enabled && (monitor || (armed && recording))`. App은 대상이 생길 때 `getUserMedia` 1회(녹음과 같은 옵션), 대상이 없어지면 스트림 정지. 첫 사용 시 알림 `피드백을 막으려면 헤드폰을 사용하세요`.
+- App `historyReducer`에 `{type:'live', edit}` 추가: `present`만 바꾸고 past/future에 넣지 않음. undo/redo 결과에 현재 `present`의 `armed`/`monitor`/`monitorMode`를 같은 id 트랙에 덮어씀(`carryLiveState`). arm/monitor/모니터 모드 변경은 항상 live. 저장(자동 저장)에는 포함.
+- 녹음 대상(`toggleRecord`): ① armed 오디오 트랙 중 가장 위 → ② 없으면 포커스 트랙이 오디오면 그 트랙(로직 자동 활성) → ③ 포커스가 악기 트랙(auto/armed)이고 armed 오디오 없음 → 알림 `MIDI 녹음은 아직 지원하지 않습니다` 후 중단 → ④ 트랙이 없으면 기존처럼 새 오디오 트랙. armed 오디오 트랙이 2개 이상이면, 엔진이 여러 테이크를 동시에 받을 수 있을 때(`maxSimultaneousRecordings > 1`이고 `createRecordings` 제공, 데스크톱) **armed 오디오 트랙 전부**(위에서부터 최대 한도)를 한 번에 녹음하고, 테이크마다 자기 트랙의 리전이 되며 전체가 Undo 한 단계(`오디오 녹음 (N개 트랙)`). 브라우저는 첫 트랙에만 녹음 + 알림 `한 번에 한 트랙만 녹음합니다`.
+- 엔진 `AudioEngine.setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void` (types.ts 인터페이스 + WebAudioEngine): `MediaStreamAudioSourceNode` 1개를 대상 트랙 `channel.input`마다 연결, `replaceGraph` 후 재연결, `null`이면 해제. 대상 = `kind==='audio' && enabled`이고 모니터 모드가 `in`이거나, `auto`이면서 armed이고 (녹음·녹음 준비 중이거나 재생 중이 아님)(Ableton). `off`는 듣지 않음. 트랙에 `input`이 있으면 스트림의 그 채널(모노 1개, 스테레오 2개)만 연결하고 스트림에 없는 채널은 무음. 브라우저 녹음은 스트림 전체를 받은 뒤 디코딩 단계에서 고른 채널만 남김(브라우저가 그 채널을 넘기지 않으면 전체를 유지). App은 대상이 생길 때 `getUserMedia` 1회(녹음과 같은 옵션), 대상이 없어지면 스트림 정지. 첫 사용 시 알림 `피드백을 막으려면 헤드폰을 사용하세요`.
 
 ### 2.6 엔진 반영 (`graph.ts`, `WebAudioEngine.ts`, 신규 `src/core/playback.ts`)
 

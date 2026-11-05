@@ -30,7 +30,7 @@ describe('recoverable MIDI source windows', () => {
       const legacy = { ...current, schemaVersion, tracks: current.tracks.map(track => ({ ...track, effects: { filter: 20000, reverb: 0, delay: 0 } })) }
       const loaded = validateProject(legacy)
       expect(loaded).toEqual(current)
-      expect(loaded.schemaVersion).toBe(7)
+      expect(loaded.schemaVersion).toBe(8)
       expect(events(asMidi(loaded.tracks[0].clips[0]))).toEqual(events(phrase()))
     }
   })
@@ -125,7 +125,7 @@ describe('recoverable MIDI source windows', () => {
     const project = projectWith(clip)
     const bundle = await exportProjectBundle(project, new Map())
     const serialized = JSON.parse(await bundle.text())
-    expect(serialized).toMatchObject({ schemaVersion: 1, project: { schemaVersion: 7 } })
+    expect(serialized).toMatchObject({ schemaVersion: 1, project: { schemaVersion: 8 } })
     const restored = await importProjectBundle(bundle)
     expect(restored.project).toEqual(project)
     expect(asMidi(trimClipStart(restored.project.tracks[0].clips[0], 8, 120)).notes).toEqual(phrase().notes)
