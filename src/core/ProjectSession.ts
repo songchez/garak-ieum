@@ -1,7 +1,8 @@
 import { EFFECT_DEFS } from './devices'
 import { instrumentDef, isInstrumentId } from './instruments'
-import { createDevice, createTrack, fitProjectLength, validateProject } from './project'
+import { copyTrackInput, createDevice, createTrack, fitProjectLength, validateProject } from './project'
 import type { Clip, Device, EffectType, MidiClip, Project, Track } from './types'
+import { sameTrackInput } from './trackInputs'
 import {
   COMMAND_LIMITS, DomainError, parseCommandRequest, parseHistoryRequest, requestFingerprint,
   type CommandRequest, type CommandResponse, type CommandResult, type CommandSummary,
@@ -25,15 +26,16 @@ export type SessionAction =
   | { type: 'redo' }
   | { type: 'reset'; project: Project }
 
-/** Live record/monitor flags survive history changes exactly as they do in the UI. */
+/** Live record/monitor state (arm, I flag, monitor mode) survives history changes exactly as it does in the UI. */
 function carryLiveState(from: Project, to: Project): Project {
   const live = new Map(from.tracks.map(track => [track.id, track]))
   let changed = false
   const tracks = to.tracks.map(track => {
     const current = live.get(track.id)
-    if (!current || (current.armed === track.armed && current.monitor === track.monitor)) return track
+    if (!current || (current.armed === track.armed && current.monitor === track.monitor && current.monitorMode === track.monitorMode)) return track
     changed = true
-    return { ...track, armed: current.armed, monitor: current.monitor }
+    const { monitorMode: _mode, ...rest } = track
+    return { ...rest, armed: current.armed, monitor: current.monitor, ...(current.monitorMode ? { monitorMode: current.monitorMode } : {}) }
   })
   return changed ? { ...to, tracks } : to
 }
@@ -175,6 +177,17 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
           } else {
             result.before = { solo: track.solo }; result.after = { solo: command.solo }
             if (track.solo !== command.solo) replaceTrack({ ...track, solo: command.solo })
+          }
+          break
+        }
+        case 'track.setInput': {
+          const track = knownTrack(next, command.trackId)
+          if (track.kind !== 'audio') throw new DomainError('TYPE_MISMATCH', '입력은 오디오 트랙에만 지정할 수 있습니다.', { trackId: track.id })
+          result.targetId = track.id; result.trackId = track.id
+          result.before = { input: track.input ? copyTrackInput(track.input) : null }; result.after = { input: command.input }
+          if (!sameTrackInput(track.input, command.input ?? undefined)) {
+            const { input: _previous, ...rest } = track
+            replaceTrack(command.input ? { ...rest, input: copyTrackInput(command.input) } : rest)
           }
           break
         }

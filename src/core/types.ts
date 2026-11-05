@@ -80,6 +80,20 @@ export interface PluginDevice extends NativePluginInstance {
 export type Device = EffectDevice | PluginDevice
 export const isPluginDevice = (device: Device): device is PluginDevice => device.type === 'vst3'
 export const isEffectDevice = (device: Device): device is EffectDevice => device.type !== 'vst3'
+/** Physical device input channels (zero based) a track records and monitors. See docs/AUDIO_CORE_PLAN.md. */
+export interface TrackInput {
+  channels: [number] | [number, number]
+  /** Channel name when chosen, used to re-find the input on another computer or interface. */
+  label?: string
+}
+/** Ableton-style monitoring: `auto` hears the input while armed unless clips are playing back without recording. */
+export type TrackMonitorMode = 'off' | 'auto' | 'in'
+/** One selectable track input built from the enabled device channels. */
+export interface InputChoice {
+  channels: [number] | [number, number]
+  label: string
+}
+
 export interface Track {
   id: string
   name: string
@@ -96,7 +110,8 @@ export interface Track {
   enabled: boolean
   /** Record-enabled. Live state: never enters undo history. */
   armed: boolean
-  /** Input monitoring for audio tracks. Live state: never enters undo history. */
+  /** The I button: true exactly when monitorMode is `in`. Kept for schema ≤7 files and older readers.
+   * Live state: never enters undo history. */
   monitor: boolean
   /** Hidden in the Tracks area while hide view is off; still plays. */
   hidden: boolean
@@ -117,6 +132,12 @@ export interface Track {
   devices: Device[]
   /** Native VST3 source; the builtin instrument selection remains available when removed. */
   pluginInstrument?: NativePluginInstance
+  /** Audio tracks only. Absent: the engine's default input (first enabled channel or pair). A saved,
+   * undoable setting (schema 8). */
+  input?: TrackInput
+  /** Absent: derived from `monitor` (`in` when on, else `auto`). Saved with the project like Ableton's
+   * monitor switch, but live like arm/monitor: it never enters undo history (schema 8). */
+  monitorMode?: TrackMonitorMode
 }
 export interface Marker {
   id: string
@@ -129,8 +150,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  /** 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 7
+  /** 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 8
   id: string
   name: string
   bpm: number
@@ -187,5 +208,9 @@ export interface AudioEngine {
   getMasterLevel(): number
   /** Routes a live input stream into the given audio tracks' chains (input monitoring). null releases it. */
   setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void
+  /** Mono/stereo inputs a track can choose, from the enabled device channels (WP3 implements). */
+  getInputChoices?(): InputChoice[]
+  /** How many tracks can record at once: 1 in a browser, more on the native engine (WP2 implements). */
+  readonly maxSimultaneousRecordings?: number
   dispose(): void
 }

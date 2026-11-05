@@ -5,10 +5,12 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <iomanip>
 #include <limits>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <sstream>
 #include <string>
@@ -24,17 +26,21 @@
 namespace {
 thread_local bool watchAllocations=false;
 thread_local std::size_t allocations=0,deallocations=0;
+// Engine worker threads watch themselves for their whole loop (onWorkerThread).
+thread_local bool watchWorker=false;
+std::atomic<std::size_t> workerHeapOperations{0};
+void countWorker()noexcept{if(watchWorker)workerHeapOperations.fetch_add(1,std::memory_order_relaxed);}
 void check(bool condition,const char*message){if(!condition)throw std::runtime_error(message);}
 void near(double a,double b,double tolerance,const char*message){if(!std::isfinite(a)||!std::isfinite(b)||std::abs(a-b)>tolerance){std::ostringstream detail;detail<<message<<" (actual "<<std::setprecision(17)<<a<<", expected "<<b<<", tolerance "<<tolerance<<")";throw std::runtime_error(detail.str());}}
 template<class F>void rejects(F&&fn,const char*message){try{fn();}catch(const std::exception&){return;}throw std::runtime_error(message);}
 }
 // Cover nothrow and over-aligned forms as well: SPSC queues themselves are
 // cache-line aligned, and std::stable_sort uses the nothrow allocation form.
-GARAK_NOINLINE void*operator new(std::size_t size){if(watchAllocations)++allocations;if(void*p=std::malloc(size?size:1))return p;throw std::bad_alloc();}
+GARAK_NOINLINE void*operator new(std::size_t size){if(watchAllocations)++allocations;countWorker();if(void*p=std::malloc(size?size:1))return p;throw std::bad_alloc();}
 GARAK_NOINLINE void*operator new[](std::size_t size){return ::operator new(size);}
 GARAK_NOINLINE void*operator new(std::size_t size,const std::nothrow_t&)noexcept{try{return ::operator new(size);}catch(...){return nullptr;}}
 GARAK_NOINLINE void*operator new[](std::size_t size,const std::nothrow_t&n)noexcept{return ::operator new(size,n);}
-GARAK_NOINLINE void operator delete(void*p)noexcept{if(watchAllocations&&p)++deallocations;std::free(p);}
+GARAK_NOINLINE void operator delete(void*p)noexcept{if(watchAllocations&&p)++deallocations;if(p)countWorker();std::free(p);}
 GARAK_NOINLINE void operator delete[](void*p)noexcept{::operator delete(p);}
 GARAK_NOINLINE void operator delete(void*p,std::size_t)noexcept{::operator delete(p);}
 GARAK_NOINLINE void operator delete[](void*p,std::size_t)noexcept{::operator delete(p);}
@@ -42,6 +48,7 @@ GARAK_NOINLINE void operator delete(void*p,const std::nothrow_t&)noexcept{::oper
 GARAK_NOINLINE void operator delete[](void*p,const std::nothrow_t&)noexcept{::operator delete(p);}
 GARAK_NOINLINE void*operator new(std::size_t size,std::align_val_t alignment){
   if(watchAllocations)++allocations;
+  countWorker();
   const auto a=static_cast<std::size_t>(alignment);
   if(size>std::numeric_limits<std::size_t>::max()-a)throw std::bad_alloc();
 #if defined(_WIN32)
@@ -57,6 +64,7 @@ GARAK_NOINLINE void*operator new(std::size_t size,std::align_val_t a,const std::
 GARAK_NOINLINE void*operator new[](std::size_t size,std::align_val_t a,const std::nothrow_t&n)noexcept{return ::operator new(size,a,n);}
 GARAK_NOINLINE void operator delete(void*p,std::align_val_t)noexcept{
   if(watchAllocations&&p)++deallocations;
+  if(p)countWorker();
 #if defined(_WIN32)
   _aligned_free(p);
 #else
@@ -158,6 +166,99 @@ void monitoringAndRecording(){
   check(e.startRecording(),"Second take failed");rt(e,out.data(),in.data(),8,1);rt(e,out.data(),in.data(),8,1);rt(e,out.data(),in.data(),8,1);
   check(!e.snapshot().recording&&e.snapshot().recordingDroppedFrames==8,"Capture ring overflow was not exposed and stopped");
   check(e.drainRecording(recorded.data(),16)==16,"Capture ring lost already-buffered PCM on overflow");
+}
+
+// Device opens physical inputs 4, 7 and 9, interleaved as indices 0, 1, 2.
+ProjectTimeline inputProject(){
+  auto p=project(48000,10000);
+  const auto audio=[](const char*id,std::optional<TrackInput>input){TrackTimeline t;t.id=id;t.input=input;return t;};
+  p.tracks={audio("mono9",TrackInput{{9,-1}}),audio("pair47",TrackInput{{4,7}}),audio("absent5",TrackInput{{5,-1}}),audio("default",std::nullopt)};
+  return p;
+}
+void perTrackInputRouting(){
+  const std::array<std::uint8_t,3>layout{4,7,9};
+  const auto mono=routeInput(TrackInput{{9,-1}},layout,3,0,1),pair=routeInput(TrackInput{{4,7}},layout,3,0,1),absent=routeInput(TrackInput{{5,-1}},layout,3,0,1);
+  check(mono.left==2&&mono.right==-1&&mono.channels==1&&!mono.missing,"Physical mono input did not map to its interleaved index");
+  check(pair.left==0&&pair.right==1&&pair.channels==2,"Physical stereo input did not map to its interleaved pair");
+  check(absent.missing&&absent.left==-1&&absent.channels==1,"An unopened input was not reported missing");
+  check(routeInput(TrackInput{{4,5}},layout,3,0,1).missing,"A half-open stereo pair recorded only one side");
+  check(routeInput(TrackInput{{9,-1}},layout,2,0,1).missing,"A layout channel beyond the delivered count was treated as open");
+  const auto fallback=routeInput(std::nullopt,layout,1,0,1);check(fallback.left==0&&fallback.right==-1&&fallback.channels==1,"Default input on a mono device is not its first channel");
+  check(routeInput(std::nullopt,layout,0,0,1).missing,"Default input without any device input is not missing");
+
+  auto p=inputProject();RenderEngine e(48000,8,64);e.submit(e.prepare(p,{}));
+  const std::array<std::uint32_t,3>physical{4,7,9};check(e.setInputLayout(physical),"Input layout command failed");
+  std::array<float,24>in{};for(std::size_t i=0;i<8;++i){in[i*3]=.1f;in[i*3+1]=.2f;in[i*3+2]=.3f;}
+  std::array<float,16>out{};
+  const auto monitorOnly=[&](std::uint32_t index){const std::array<std::uint32_t,1>ids{index};check(e.setMonitoring(ids),"Monitor command failed");rt(e,out.data(),in.data(),8,3);};
+  monitorOnly(0);for(std::size_t i=0;i<8;++i){near(out[2*i],.3/std::sqrt(2.0),1e-6,"Mono track did not monitor its own physical input");near(out[2*i+1],out[2*i],1e-7,"Mono track input was not centered");}
+  monitorOnly(1);for(std::size_t i=0;i<8;++i){near(out[2*i],.1,1e-6,"Stereo track left is not its first physical channel");near(out[2*i+1],.2,1e-6,"Stereo track right is not its second physical channel");}
+  monitorOnly(2);for(const auto v:out)near(v,0,0,"A track with an unopened input heard another channel");
+  monitorOnly(3);near(out[0],.1,1e-6,"Default input is not the first enabled pair");near(out[1],.2,1e-6,"Default input is not the first enabled pair");
+  // Reconfigured device: the same tracks follow their physical channels to new indices.
+  const std::array<std::uint32_t,2>swapped{9,4};check(e.setInputLayout(swapped),"Input layout swap failed");
+  std::array<float,16>two{};for(std::size_t i=0;i<8;++i){two[i*2]=.5f;two[i*2+1]=.6f;}
+  {const std::array<std::uint32_t,1>ids{0};check(e.setMonitoring(ids),"Monitor command failed");rt(e,out.data(),two.data(),8,2);}
+  near(out[0],.5/std::sqrt(2.0),1e-6,"Input layout swap did not remap the physical channel");
+  {const std::array<std::uint32_t,1>ids{1};check(e.setMonitoring(ids),"Monitor command failed");rt(e,out.data(),two.data(),8,2);}
+  for(const auto v:out)near(v,0,0,"A stereo input whose pair closed still produced sound");
+  rejects([&]{const std::array<std::uint32_t,2>dup{3,3};(void)e.setInputLayout(dup);},"Duplicate physical input channels were accepted");
+  rejects([&]{const std::array<std::uint32_t,1>big{256};(void)e.setInputLayout(big);},"Out-of-range physical input channel was accepted");
+}
+
+void simultaneousTakes(){
+  auto p=inputProject();RenderEngine e(48000,8,64);e.submit(e.prepare(p,{}));
+  const std::array<std::uint32_t,3>physical{4,7,9};check(e.setInputLayout(physical),"Input layout command failed");
+  const std::array<std::uint32_t,4>tracks{0,1,2,3};const auto plan=e.planRecording(tracks);
+  check(plan.size()==4&&plan[0].route.channels==1&&plan[1].route.channels==2&&plan[2].route.missing&&plan[3].route.channels==2,"Take plan does not follow each track input");
+  rejects([&]{const std::array<std::uint32_t,2>dup{1,1};(void)e.planRecording(dup);},"A track was planned to record twice");
+  rejects([&]{const std::array<std::uint32_t,1>bad{9};(void)e.planRecording(bad);},"An unknown track was planned");
+  rejects([&]{std::vector<std::uint32_t>many(65);for(std::uint32_t i=0;i<65;++i)many[i]=i;(void)e.planRecording(many);},"More than 64 takes were planned");
+  check(e.seek(40),"Seek failed");check(e.startRecording(plan),"Multi-take start failed");check(e.play(),"Play failed");
+  check(e.recordingChannels()==6,"Capture frame does not hold every take's channels");
+  rejects([&]{(void)e.startRecording(plan);},"A second capture replaced one the callback still owns");
+  std::array<float,24>in{};std::array<float,16>out{};
+  for(int block=0;block<2;++block){for(std::size_t i=0;i<8;++i)for(std::size_t c=0;c<3;++c)in[i*3+c]=static_cast<float>(block*8+i)+static_cast<float>(c)/10;rt(e,out.data(),in.data(),8,3);}
+  check(e.snapshot().recordingStartFrame==40&&e.snapshot().recordedFrames==16,"Takes did not start on one shared transport frame");
+  const auto stop=e.stopRecording();rt(e,out.data(),in.data(),8,3);check(e.snapshot().lastAppliedCommand>=stop,"Multi-take stop was not acknowledged");
+  std::vector<float>frames(16*6);check(e.drainRecording(frames.data(),16)==16,"Multi-take capture lost frames");
+  for(std::size_t f=0;f<16;++f){
+    const float*x=frames.data()+f*6;const auto base=static_cast<float>(f);
+    near(x[0],base+.2f,0,"Mono take did not record physical channel 9");
+    near(x[1],base,0,"Stereo take left is not physical channel 4");near(x[2],base+.1f,0,"Stereo take right is not physical channel 7");
+    near(x[3],0,0,"A take with an unopened input recorded another channel");
+    near(x[4],base,0,"Default take left is not the first pair");near(x[5],base+.1f,0,"Default take right is not the first pair");
+  }
+  // The released ring can be replaced by the next recording.
+  const std::array<std::uint32_t,1>one{0};check(e.startRecording(e.planRecording(one)),"Next take after a drained stop failed");check(e.recordingChannels()==1,"Next take kept the previous capture layout");
+}
+
+void latencyDetection(){
+  const auto pulse=latencyPulse(48000);check(pulse.size()==192,"Latency pulse is not 4 ms");
+  std::vector<std::int64_t>emitted;for(int k=0;k<5;++k)emitted.push_back(k*20000);
+  std::uint32_t seed=12345;const auto noise=[&]{seed=seed*1664525u+1013904223u;return (static_cast<float>(seed>>8)/16777216.f-.5f);};
+  const auto loop=[&](std::int64_t delay,float gain,float noiseLevel,int skip){
+    std::vector<float>x(100000);for(auto&v:x)v=noise()*noiseLevel+.01f; // DC offset from a cheap converter.
+    for(std::size_t k=0;k<emitted.size();++k)if(static_cast<int>(k)!=skip)for(std::size_t i=0;i<pulse.size();++i)x[static_cast<std::size_t>(emitted[k]+delay)+i]+=gain*pulse[i];
+    return x;
+  };
+  auto found=detectLatency(loop(777,-.3f,.02f,-1),pulse,emitted,16800);
+  check(found.roundTripFrames&&*found.roundTripFrames==777,"Inverted, quiet loopback was not found at the exact frame");
+  check(found.attempts==5&&found.detected==5&&found.confidence>.8,"Clean loopback reported low confidence");
+  auto partial=detectLatency(loop(4096,.8f,.05f,2),pulse,emitted,16800);
+  check(partial.roundTripFrames&&*partial.roundTripFrames==4096&&partial.detected==4,"A missed pulse changed the measured latency");
+  check(partial.confidence<found.confidence&&partial.confidence>.5,"A missed pulse did not reduce confidence");
+  auto silent=detectLatency(loop(500,0,.05f,-1),pulse,emitted,16800);
+  check(!silent.roundTripFrames&&silent.confidence==0&&silent.attempts==5,"Noise without a loopback reported a latency");
+  auto late=detectLatency(loop(17000,.5f,.01f,-1),pulse,emitted,16800);
+  check(!late.roundTripFrames||late.confidence<.5,"A return beyond the search window was reported as certain");
+}
+
+void overloadCounting(){
+  LoadMeter meter;meter.record(.0005,.001);check(meter.overloads()==0,"Half a buffer of work was counted as an overload");near(meter.lastLoad(),.5,1e-6,"Callback load is not processing/buffer time");
+  meter.record(.00091,.001);meter.record(.002,.001);check(meter.overloads()==2,"Callbacks above 90% of the buffer were not counted");near(meter.lastLoad(),2,1e-6,"A late callback load was clamped");
+  meter.record(.001,0);check(meter.overloads()==2,"A zero-length buffer was counted");
+  meter.reset();check(meter.overloads()==0&&meter.lastLoad()==0,"Load meter reset failed");
 }
 
 void builtinEffectsAndGuitar(){
@@ -272,10 +373,200 @@ void concurrentControlAndRender(){
   for(unsigned i=0;i<50;++i){p.revision=i+1;p.tracks[0].gain=(i%10)/10.f;e.submit(e.prepare(p,{}));(void)e.snapshot();e.collectRetired();}
   done.store(true);audio.join();e.collectRetired();check(!bad.load(),"Concurrent graph replacement broke callback safety");
 }
+
+// ---- Multi-core processing and render-ahead ----
+ProcessingOptions processing(std::uint32_t threads,RenderAhead ahead=RenderAhead::Off,std::uint32_t block=128){
+  ProcessingOptions o;o.threads=threads;o.renderAhead=ahead;o.deviceBlockFrames=block;
+  // Workers watch their own heap use from start to exit.
+  o.onWorkerThread=[](bool started){watchWorker=started;};
+  return o;
+}
+void bitIdentical(const std::vector<float>&a,const std::vector<float>&b,const char*message,std::size_t fromFrame=0,std::size_t toFrame=std::numeric_limits<std::size_t>::max()/4){
+  check(a.size()==b.size(),"Different rendered lengths");
+  for(std::size_t i=fromFrame*2;i<std::min(toFrame*2,a.size());++i)if(std::memcmp(&a[i],&b[i],sizeof(float))!=0) {
+    std::ostringstream detail;detail<<message<<" (frame "<<i/2<<", channel "<<i%2<<": "<<std::setprecision(9)<<a[i]<<" vs "<<b[i]<<")";
+    throw std::runtime_error(detail.str());
+  }
+}
+double maxDifference(const std::vector<float>&a,const std::vector<float>&b){double d=0;for(std::size_t i=0;i<a.size();++i){check(std::isfinite(a[i])&&std::isfinite(b[i]),"Non-finite rendered PCM");d=std::max(d,std::abs(double(a[i])-b[i]));}return d;}
+struct Busy { ProjectTimeline project; AssetStore assets; SampleSetStore sets; };
+// Synths with delay/compressor/drive/filter/reverb inserts, drums, a sampled
+// kit, audio regions and optionally a plug-in instrument, inside a cycle.
+Busy busyProject(std::size_t tracks,std::uint32_t seed,bool plugin){
+  Busy b;b.project=project(48000,96000);b.project.cycle=std::array<std::int64_t,2>{12000,60000};
+  std::vector<float>loop(48000*2);for(std::size_t i=0;i<loop.size();++i)loop[i]=static_cast<float>(.2*std::sin(.013*static_cast<double>(i))*std::cos(.0007*static_cast<double>(i)));
+  b.assets["loop"]=asset("loop",48000,std::move(loop),2);b.assets["hit"]=asset("hit",48000,std::vector<float>(3000,.05f));
+  SampleSet kit;kit.id="kit";kit.isKit=true;kit.zones={{"hit",36,36,36,0,1,0,0,{},-1},{"hit",38,38,38,0,1,-3,0,{},1}};b.sets["kit"]=kit;
+  std::uint32_t rng=seed;const auto next=[&]{rng=rng*1664525u+1013904223u;return rng>>8;};
+  const char*synths[]={"keys","drums","pad","bass","pluck"};
+  for(std::size_t i=0;i<tracks;++i) {
+    TrackTimeline t;t.id="t"+std::to_string(i);t.gain=.25f;t.pan=static_cast<float>(static_cast<int>(i%5)-2)/2.f;
+    const auto kind=i%7;
+    if(kind==6){t.audio={{static_cast<std::int32_t>(i+1),"loop",static_cast<std::int64_t>(next()%20000),static_cast<std::int64_t>(50000+next()%40000),0,48000,0,90000,.6f,200,200}};t.inserts={{"eq"+t.id,"eq",true,{},{}}};}
+    else if(kind==5){t.source.kind=TrackSource::Kind::BuiltinSampled;t.source.instrumentId="kit-test";t.source.sampleSetId="kit";t.source.isKit=true;}
+    else {t.source.kind=TrackSource::Kind::BuiltinSynth;t.source.instrumentId=synths[kind];t.source.isKit=kind==1;}
+    if(kind==0)t.inserts={{"d"+t.id,"delay",true,{{"amount",.3},{"time",.25},{"feedback",.3}},{}}};
+    if(kind==2)t.inserts={{"c"+t.id,"compressor",true,{},{}},{"x"+t.id,"drive",true,{},{}}};
+    if(kind==3)t.inserts={{"f"+t.id,"filter",true,{},{}}};
+    if(kind==4&&i%3==0)t.inserts={{"r"+t.id,"reverb",true,{},{}}};
+    if(kind!=6)for(std::int32_t n=0;n<14;++n) {
+      const auto on=static_cast<std::int64_t>(next()%92000),off=std::min<std::int64_t>(96000,on+1000+static_cast<std::int64_t>(next()%15000));
+      const int pitch=kind==1||kind==5?(n%2?38:36):48+static_cast<int>(next()%24);
+      t.notes.push_back({n+1,on,off,off,pitch,.4f+static_cast<float>(next()%60)/100.f});
+    }
+    b.project.tracks.push_back(std::move(t));
+  }
+  if(plugin){TrackTimeline t;t.id="plugin";t.gain=.3f;t.source.kind=TrackSource::Kind::Vst3;t.source.plugin.instanceId="plugin";t.source.plugin.isInstrument=true;t.notes={{1,1000,30000,30000,60,.8f},{2,40000,58000,58000,64,.8f}};b.project.tracks.push_back(std::move(t));}
+  return b;
+}
+PluginResolver testInstruments(){return [](const PluginSpec&,double,std::uint32_t){auto p=std::make_shared<TestPlugin>();p->instrument=true;return p;};}
+std::unique_ptr<RenderEngine> busyEngine(const Busy&b,const ProcessingOptions&options,bool offline=false,std::uint32_t maxBlock=512){
+  auto e=std::make_unique<RenderEngine>(48000,maxBlock);if(offline)e->setOffline(true);e->setProcessing(options);
+  e->submit(e->prepare(b.project,b.assets,b.sets,testInstruments()));return e;
+}
+// The same callbacks and commands on every engine, block by block.
+template<class Sizes,class Commands>
+std::vector<std::vector<float>> drive(const std::vector<RenderEngine*>&engines,std::size_t blocks,Sizes&&sizes,Commands&&commands,const float*input=nullptr){
+  std::vector<std::vector<float>>outs(engines.size());std::vector<float>buffer;
+  for(std::size_t k=0;k<blocks;++k) {
+    const std::uint32_t frames=sizes(k);
+    for(std::size_t i=0;i<engines.size();++i) {
+      commands(*engines[i],k);buffer.assign(static_cast<std::size_t>(frames)*2,0.f);
+      rt(*engines[i],buffer.data(),input,frames,2);outs[i].insert(outs[i].end(),buffer.begin(),buffer.end());
+    }
+  }
+  return outs;
+}
+
+void multicoreBitIdentical(){
+  workerHeapOperations=0;
+  const auto b=busyProject(20,11,true);
+  const auto automatic=std::max(1u,autoProcessingThreads());
+  std::vector<float>input(1024*2);for(std::size_t i=0;i<input.size();++i)input[i]=static_cast<float>(.05*std::sin(.01*static_cast<double>(i)));
+  for(const bool offline:{false,true}) {
+    auto single=busyEngine(b,processing(0),offline),two=busyEngine(b,processing(2),offline),many=busyEngine(b,processing(automatic),offline);
+    check(single->snapshot().workerThreads==0&&two->snapshot().workerThreads==2&&many->snapshot().workerThreads==automatic,"Worker thread count was not reported");
+    std::uint32_t rng=99;
+    const auto sizes=[&](std::size_t k)->std::uint32_t{if(k%3)return 128;rng=rng*1664525u+1013904223u;return 1+(rng>>8)%1024;};
+    const auto commands=[&](RenderEngine&e,std::size_t k) {
+      if(k==0)check(e.play(),"Play failed");
+      if(k==30){const std::array<std::uint32_t,2>ids{2,9};check(e.setMonitoring(ids),"Monitor failed");check(e.noteOn(0,67,.9f,500),"Live note failed");}
+      if(k==60)check(e.noteOff(0,67,500),"Live note off failed");
+      if(k==90)check(e.seek(30000),"Seek failed");
+      if(k==140)check(e.setMonitoring({}),"Monitor clear failed");
+    };
+    const auto outs=drive({single.get(),two.get(),many.get()},420,sizes,commands,input.data());
+    check(energy(outs[0])>1,"The busy project rendered silence");
+    bitIdentical(outs[0],outs[1],offline?"Two worker threads changed the offline mix":"Two worker threads changed the mix");
+    bitIdentical(outs[0],outs[2],offline?"Automatic worker threads changed the offline mix":"Automatic worker threads changed the mix");
+    const auto a=single->snapshot(),c=two->snapshot(),d=many->snapshot();
+    check(a.voiceOverflows==c.voiceOverflows&&a.voiceOverflows==d.voiceOverflows&&a.invalidSamples==c.invalidSamples&&a.invalidSamples==d.invalidSamples,"Per-track counters were not summed after the join");
+    check(std::equal(a.trackPeaks.begin(),a.trackPeaks.end(),c.trackPeaks.begin())&&std::equal(a.trackPeaks.begin(),a.trackPeaks.end(),d.trackPeaks.begin()),"Track meters differ between thread counts");
+  }
+  check(workerHeapOperations.load()==0,"An engine worker allocated or freed heap storage");
+  RenderEngine late;late.submit(late.prepare(project(),{}));
+  rejects([&]{late.setProcessing(processing(2));},"Processing changed after a project was submitted");
+  rejects([&]{RenderEngine e;e.setProcessing(processing(maxProcessingThreads+1));},"More than 16 processing threads were accepted");
+}
+
+void renderAheadMatchesCallback(){
+  workerHeapOperations=0;
+  constexpr std::uint32_t block=128;
+  const auto b=busyProject(12,23,true);
+  auto reference=busyEngine(b,processing(0)),normal=busyEngine(b,processing(2,RenderAhead::Normal,block)),high=busyEngine(b,processing(0,RenderAhead::High,block));
+  check(high->snapshot().workerThreads==1,"Render-ahead without processing threads has no worker");
+  auto edited=b.project;edited.revision=5;edited.tracks[4].notes.pop_back(); // Structural: every engine resets every track.
+  auto other=b.project;other.projectId="other";
+  std::uint32_t mostAhead=0;
+  const auto commands=[&](RenderEngine&e,std::size_t k) {
+    switch(k) {
+      case 0:check(e.play(),"Play failed");break;
+      case 150:check(e.seek(20000),"Seek failed");break;
+      case 300:{const std::array<std::uint32_t,1>ids{2};check(e.setMonitoring(ids),"Monitor failed");break;}
+      case 400:check(e.setMonitoring({}),"Monitor clear failed");break;
+      case 500:e.submit(e.prepare(edited,b.assets,b.sets,testInstruments()));break;
+      case 700:check(e.pause(),"Pause failed");break;
+      case 705:check(e.play(),"Play failed");break;
+      case 706:check(e.seek(15000),"Seek failed");break;
+      case 800:e.submit(e.prepare(other,b.assets,b.sets,testInstruments()));break;
+      case 801:check(e.play(),"Play failed");break;
+      default:break;
+    }
+    if(k%50==0)e.collectRetired();
+    if(&e!=reference.get())mostAhead=std::max(mostAhead,e.snapshot().renderAheadTracks);
+  };
+  // 1100 buffers cross several cycle wraps (every 375 buffers), before and after each edit.
+  const auto outs=drive({reference.get(),normal.get(),high.get()},1100,[](std::size_t){return block;},commands);
+  check(mostAhead>=10,"Non-live tracks did not render ahead");
+  for(std::size_t i=1;i<3;++i) {
+    // A newly monitored track joins the callback after its ring drains (<= 1 + 4 buffers);
+    // a pause cuts the tails ahead tracks had already rendered until the next seek.
+    bitIdentical(outs[0],outs[i],"Render-ahead differs from callback rendering",0,300*block);
+    bitIdentical(outs[0],outs[i],"Render-ahead differs after a track became monitored",306*block,700*block);
+    bitIdentical(outs[0],outs[i],"Render-ahead differs after pause and seek",706*block);
+  }
+  check(normal->snapshot().renderAheadResyncs==0&&high->snapshot().renderAheadResyncs==0,"A render-ahead ring lost sync");
+  check(workerHeapOperations.load()==0,"A render-ahead worker allocated or freed heap storage");
+
+  // A mix edit keeps voices and rings: it is heard up to the ahead window late, then converges.
+  auto mix=b.project;mix.revision=9;mix.tracks[0].gain=.6f;mix.tracks[3].pan=.5f;
+  auto plain=busyEngine(b,processing(0)),ahead=busyEngine(b,processing(2,RenderAhead::High,block));
+  const auto edits=drive({plain.get(),ahead.get()},600,[](std::size_t){return block;},[&](RenderEngine&e,std::size_t k) {
+    if(k==0)check(e.play(),"Play failed");
+    if(k==200)e.submit(e.prepare(mix,b.assets,b.sets,testInstruments()));
+  });
+  bitIdentical(edits[0],edits[1],"Render-ahead differs before a mix edit",0,200*block);
+  const std::vector<float>lateA(edits[0].begin()+static_cast<std::ptrdiff_t>(400*block*2),edits[0].end()),lateB(edits[1].begin()+static_cast<std::ptrdiff_t>(400*block*2),edits[1].end());
+  check(maxDifference(lateA,lateB)<1e-5,"A mix edit on an ahead track did not converge to the callback result");
+  check(ahead->snapshot().renderAheadTracks>0,"A mix edit stopped render-ahead");
+}
+
+void renderAheadLiveTracks(){
+  constexpr std::uint32_t block=128;
+  const auto b=busyProject(6,5,false);
+  auto e=busyEngine(b,processing(2,RenderAhead::Normal,block));check(e->play(),"Play failed");
+  std::vector<float>out(block*2);std::vector<float>input(block*2,.1f);
+  const auto run=[&](int blocks){for(int k=0;k<blocks;++k)rt(*e,out.data(),input.data(),block,2);};
+  const auto applied=[&](std::uint64_t ticket){int waited=0;while(e->snapshot().lastAppliedCommand<ticket){run(1);check(++waited<=4,"A live command waited longer than the ahead window");}};
+  run(20);const auto ahead=e->snapshot().renderAheadTracks;check(ahead==6,"Eligible playing tracks did not render ahead");
+  applied(e->noteOn(0,72,1,900));check(e->snapshot().renderAheadTracks==ahead-1,"A played track kept rendering ahead");
+  run(150);check(e->snapshot().renderAheadTracks==ahead-1,"A played track rendered ahead again within its two-second hold");
+  {const std::array<std::uint32_t,1>ids{3};applied(e->setMonitoring(ids));}
+  check(e->snapshot().renderAheadTracks==ahead-2,"A monitored track kept rendering ahead");
+  const std::array<std::uint32_t,1>armed{4};applied(e->startRecording(e->planRecording(armed)));
+  check(e->snapshot().recording&&e->snapshot().renderAheadTracks==ahead-3,"A recording track kept rendering ahead");
+  applied(e->stopRecording());std::vector<float>drain(4096);while(e->drainRecording(drain.data(),4096)){}
+  applied(e->noteOff(0,72,900));run(800); // Past the two-second hold: the played track renders ahead again.
+  check(e->snapshot().renderAheadTracks==ahead-1,"Tracks did not return to render-ahead once no longer live");
+  applied(e->pause());check(e->snapshot().renderAheadTracks==0,"Paused tracks still render ahead");
+  check(e->snapshot().renderAheadResyncs==0,"A render-ahead ring lost sync");
+}
+
+void processingStress(){
+  workerHeapOperations=0;
+  const auto b=busyProject(64,31,true);
+  auto single=busyEngine(b,processing(0),false,256),four=busyEngine(b,processing(4),false,256),ahead=busyEngine(b,processing(3,RenderAhead::High,128),false,256);
+  std::uint32_t rng=4242;
+  const auto sizes=[&](std::size_t)->std::uint32_t{rng=rng*1664525u+1013904223u;const auto r=rng>>8;return r%4?1+r%300:1+r%900;};
+  const auto commands=[&](RenderEngine&e,std::size_t k) {
+    if(k==0)check(e.play(),"Play failed");
+    if(k==250)check(e.seek(50000),"Seek failed");
+    if(k%40==0)e.collectRetired();
+  };
+  const auto outs=drive({single.get(),four.get(),ahead.get()},700,sizes,commands);
+  bitIdentical(outs[0],outs[1],"Four worker threads changed the mix under random buffer sizes");
+  // Render-ahead keeps whole blocks of the previous buffer size, so varying
+  // buffers split blocks differently: equal up to block-size rounding only.
+  check(maxDifference(outs[0],outs[2])<1e-4,"Render-ahead under random buffer sizes diverged from callback rendering");
+  check(ahead->snapshot().renderAheadResyncs==0,"A render-ahead ring lost sync under random buffer sizes");
+  check(workerHeapOperations.load()==0,"An engine worker allocated or freed heap storage under stress");
+}
 } // namespace
 
 int main(){
-  const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"native monitoring and capture ring",monitoringAndRecording},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender}};
+  const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
+    {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

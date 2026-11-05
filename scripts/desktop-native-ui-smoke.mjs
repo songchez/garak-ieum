@@ -28,10 +28,12 @@ export async function verifyNativeAudioUI(page, { screenshot } = {}) {
   assert.equal(before.state.device?.backend, 'test')
   assert.equal(before.state.device?.testClock, true)
   assert.ok(before.state.ready, 'Native device settings did not start the real host')
-  const buffer = dialog.getByRole('spinbutton', { name: '오디오 I/O 버퍼 크기', exact: true })
+  // The buffer list comes from the driver probe: its recommended value plus allowed sizes only.
+  const buffer = dialog.getByRole('combobox', { name: '오디오 I/O 버퍼 크기', exact: true })
   assert.ok(await buffer.isVisible(), 'Native I/O buffer control is missing')
-  assert.ok(Number(await buffer.inputValue()) >= 16)
-  assert.equal(await buffer.getAttribute('max'), '8192')
+  const bufferValues = await buffer.locator('option').evaluateAll(options => options.map(option => option.value))
+  assert.ok(bufferValues.includes('driver'), 'The driver-recommended buffer choice is missing')
+  assert.ok(bufferValues.filter(value => value !== 'driver').every(value => Number(value) >= 16 && Number(value) <= 8192), 'Buffer choices escaped the driver range')
   assert.equal(await dialog.getByRole('combobox', { name: '오디오 출력 장치', exact: true }).count(), 1)
   assert.equal(await dialog.getByRole('button', { name: '입력 테스트', exact: true }).count(), 0, 'Desktop mounted the browser capture probe')
 
@@ -44,9 +46,17 @@ export async function verifyNativeAudioUI(page, { screenshot } = {}) {
 
   await dialog.getByRole('button', { name: '녹음·모니터링', exact: true }).click()
   assert.ok(await dialog.getByRole('checkbox', { name: /^저지연 모니터링/ }).isVisible())
-  assert.ok(await dialog.getByRole('spinbutton', { name: '첫 번째 물리 입력', exact: true }).isVisible())
-  assert.ok(await dialog.getByText(/물리 왕복을 측정한 값은 아니며/).isVisible())
+  // Input channels moved to their own tab; the recording tab now measures a real loopback.
+  assert.ok(await dialog.getByRole('combobox', { name: '측정 입력', exact: true }).isVisible(), 'Latency wizard input is missing')
+  assert.ok(await dialog.getByRole('button', { name: /^측정 시작/ }).isVisible(), 'Latency wizard is missing')
+  assert.ok(await dialog.getByRole('textbox', { name: '녹음 위치 보정 프레임', exact: true }).isVisible())
   assert.equal(await dialog.getByRole('checkbox', { name: /에코 제거|노이즈 제거|자동 게인/ }).count(), 0)
+
+  await dialog.getByRole('button', { name: '입출력 채널', exact: true }).click()
+  const channels = dialog.getByRole('group', { name: '입력 채널', exact: true })
+  await channels.waitFor()
+  assert.ok(await channels.getByRole('checkbox').count() >= 2, 'Probed input channels are not offered')
+  assert.ok(await dialog.getByRole('textbox', { name: '입력 1 이름', exact: true }).isVisible(), 'Input channels cannot be renamed')
 
   await dialog.getByRole('button', { name: '오디오 장치', exact: true }).click()
   await dialog.getByRole('button', { name: '출력 테스트', exact: true }).click()

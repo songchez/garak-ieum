@@ -8,6 +8,50 @@ export interface NativeAudioBridge {
 
 export type NativeBackend = 'asio' | 'wasapi' | 'coreaudio'
 
+/** Host error codes (docs/AUDIO_CORE_PLAN.md). The request Error carries `code` and optional `details`. */
+export type NativeErrorCode = 'DEVICE_NOT_FOUND' | 'DEVICE_IN_USE' | 'DRIVER_INIT_FAILED' | 'SAMPLE_RATE_UNSUPPORTED'
+  | 'BUFFER_UNSUPPORTED' | 'CHANNELS_UNAVAILABLE' | 'DEVICE_LOST'
+export interface NativeRequestError extends Error {
+  code?: NativeErrorCode
+  details?: unknown
+}
+
+/** `devices.probe`: what a driver reports after it is opened. Unknown values are empty or null. */
+export interface NativeDeviceProbe {
+  id: string
+  name: string
+  backend: NativeBackend | 'test'
+  inputs: { index: number; name: string }[]
+  outputs: { index: number; name: string }[]
+  sampleRates: number[]
+  currentSampleRate: number | null
+  buffer: { min: number | null; max: number | null; preferred: number | null; granularity: number | null; sizes: number[]; fixed: boolean }
+  clockSources: { index: number; name: string; current: boolean }[]
+  canDirectMonitor: boolean
+  inputLatencyFrames: number | null
+  outputLatencyFrames: number | null
+}
+
+/** One take of a multi-track recording (`record.start` / `record.stop` with `takes`). */
+export interface NativeRecordingTake {
+  trackId: string
+  takeId: string
+  channels: number
+  startFrame: number
+  rawStartFrame: number
+  compensationFrames: number
+  compensationKnown: boolean
+}
+
+/** `latency.measure`: a physical output→input loopback, not a driver report. */
+export interface NativeLatencyMeasurement {
+  roundTripFrames: number | null
+  reportedFrames: number | null
+  extraFrames: number | null
+  confidence: number
+  attempts: number
+}
+
 /** Advertised by the loaded host, independently of opening an audio device. */
 export interface NativeEngineCapabilities {
   protocol: number
@@ -57,6 +101,18 @@ export interface NativeDeviceState {
   inputLatencyFrames?: number | null
   outputLatencyFrames?: number | null
   underruns?: number
+  /** docs/AUDIO_CORE_PLAN.md additions (WP1/WP2). */
+  inputChannelList?: number[]
+  inputNames?: string[]
+  outputNames?: string[]
+  bufferAdjusted?: boolean
+  recovering?: boolean
+  recoveries?: number
+  suspended?: boolean
+  clockSource?: number | null
+  directMonitoring?: boolean
+  overloads?: number
+  lastCallbackLoad?: number
 }
 
 export interface NativeEngineEvent {

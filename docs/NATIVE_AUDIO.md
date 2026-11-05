@@ -35,25 +35,27 @@ flowchart TD
 
 | 대상 | 구현 | 실제 값과 실패 처리 |
 | --- | --- | --- |
-| Windows ASIO | Steinberg ASIO SDK의 `IASIO`로 드라이버 생성, rate/buffer/channel 설정, 두 버퍼 callback, PCM 변환과 teardown | 입력·출력은 같은 ASIO 드라이버와 시계를 사용. 지원하지 않는 레이트·블록은 거절. reset·clock change·resync 요청은 출력을 멈추고 재설정 요구 |
+| Windows ASIO | Steinberg ASIO SDK의 `IASIO`로 드라이버 생성, rate/buffer/channel 설정, 두 버퍼 callback, PCM 변환과 teardown | 입력·출력은 같은 ASIO 드라이버와 시계를 사용. 지원하지 않는 레이트는 `SAMPLE_RATE_UNSUPPORTED`로 거절하고, 버퍼는 가장 가까운 허용값으로 맞춤(`bufferAdjusted`). reset·버퍼 변경·rate 변경·resync 요청은 같은 설정으로 자동 재연결(제어판에서 바꾼 권장 버퍼를 따름) |
 | Windows WASAPI | miniaudio의 WASAPI backend만 명시적으로 초기화 | 기본 장치 또는 선택한 endpoint 사용. 공유 모드 등에서 실제 블록과 물리 장치 레이트가 요청과 다르면 실제 값·리샘플링 여부 보고 |
-| Apple Silicon Core Audio | miniaudio의 Core Audio backend만 명시적으로 초기화 | 선택한 장치와 입력 채널을 사용. 중단·경로 변경 시 명시적 재설정 요구 |
+| Apple Silicon Core Audio | miniaudio의 Core Audio backend만 명시적으로 초기화 | 선택한 장치와 입력 채널을 사용. 중단·경로 변경 시 자동 재연결 |
 
-입력은 끔 또는 선택한 1/2채널, 출력은 선택한 스테레오 쌍입니다. 채널 오프셋은 0부터 시작하며 장치의 실제 채널 수를 확인한 뒤 적용합니다. `DeviceState.inputChannels`는 선택된 채널 수이고 `inputChannelOffset`은 시작 채널입니다. 장치 목록의 채널 수는 장치 용량입니다. ASIO 목록을 만들 때 모든 드라이버를 임의로 열지 않으므로, 선택 전에는 채널·레이트·버퍼 목록을 알 수 없을 수 있습니다.
+입력은 설정의 **입출력 채널**에서 켠 물리 채널 목록(`inputChannelList`, 최대 32개)이고, 출력은 선택한 스테레오 쌍입니다. 장치 callback은 켠 채널을 목록 순서대로 인터리브해 넘기고, 엔진이 트랙마다 고른 물리 채널(`Track.input`)을 그 위치로 찾습니다. 열리지 않은 채널을 고른 트랙은 무음을 받고 `tracksMissingInput`에 나타납니다. 예전 `inputChannels`+`inputChannelOffset` 설정도 목록으로 바꿔 받습니다. 장치 목록을 만들 때는 드라이버를 열지 않고, 드라이버를 고르면 `devices.probe`가 잠깐 열어 채널 이름·개수, 허용 버퍼(`buffer.sizes`, 고정 여부), 지원 레이트, 클럭 소스, 직접 모니터링 지원, 지연을 읽습니다.
 
-선택한 드라이버나 장치가 실패했을 때 다른 backend나 장치로 자동 대체하지 않습니다. ASIO control panel도 호스트에서 열 수 있습니다. WASAPI/Core Audio는 요청 버퍼 크기가 실제 callback 크기와 다를 수 있으므로 상태에는 실제 관찰값을 표시합니다. [장치 계약](../native/include/garak/device.hpp)
+선택한 드라이버나 장치가 실패했을 때 다른 backend나 장치로 자동 대체하지 않습니다. 대신 실패 원인을 코드(`DEVICE_NOT_FOUND`, `DEVICE_IN_USE`, `DRIVER_INIT_FAILED`, `SAMPLE_RATE_UNSUPPORTED`, `BUFFER_UNSUPPORTED`, `CHANNELS_UNAVAILABLE`, `DEVICE_LOST`)와 `details`로 알리고, 화면이 원인별 해결 동작을 보여 줍니다. 실행 중 장치가 멈추거나 경로가 바뀌거나 사라지면 0.25·0.5·1·2초, 이후 2초 간격으로 같은 설정을 다시 엽니다(`recovering`, `recoveries`). 재생 위치와 엔진 상태는 유지하며, 30초 안에 돌아오지 않으면 재설정을 요구하고 사라진 장치는 다시 나타날 때까지 계속 확인합니다. ASIO control panel은 실행 중인 장치뿐 아니라 설정이 거절된 드라이버에서도 엽니다(`device.controlPanel {backend, deviceId}`). `device.suspend`/`device.resume`은 다른 앱이 장치를 쓰도록 닫았다가 같은 설정으로 다시 엽니다(설정의 **백그라운드에서 드라이버 해제**). ASIO의 클럭 소스와 하드웨어 직접 모니터링은 `device.clockSource`, `device.directMonitor`로 바꿉니다. WASAPI callback 스레드는 MMCSS "Pro Audio"와 실시간 우선순위로 실행합니다. WASAPI/Core Audio는 요청 버퍼 크기가 실제 callback 크기와 다를 수 있으므로 상태에는 실제 관찰값을 표시합니다. [장치 계약](../native/include/garak/device.hpp)
 
 지연 정보는 다음처럼 나눕니다.
 
 - **플러그인 지연:** `getLatencySamples()`와 내장 DSP의 처리 지연으로 트랙별 보상량을 계산합니다. 오프라인 출력은 보상용 앞부분을 제거합니다. 낮은 지연 입력 모니터링 모드는 녹음 중인 입력에 다른 트랙을 맞추기 위한 추가 보상을 넣지 않는 정책입니다.
 - **드라이버 지연:** ASIO의 입력·출력 지연 보고값을 각각 표시합니다. miniaudio의 공통 API에서 정확한 별도 값을 얻을 수 없는 WASAPI/Core Audio 항목은 미보고로 둡니다. 블록 크기의 두 배를 임의의 왕복 지연으로 표시하지 않습니다.
-- **실측 왕복 지연:** 인터페이스 루프백 측정이 필요합니다. 이번 작업에서는 실측하지 않았습니다. 녹음 위치에는 보고된 입력/출력 지연과 그래프 지연을 보정하고 원시 시작 frame과 보정 frame, 보고값의 완전성(`compensationKnown`)을 별도로 전달합니다. 미보고 값은 측정한 0으로 표시하지 않습니다. 수동 녹음 위치 보정은 자동 왕복 지연 측정과 별개입니다.
+- **실측 왕복 지연:** `latency.measure { inputChannel, outputChannelOffset? }`가 재생이 멈춘 상태에서 현재 출력 쌍으로 4 ms 처프를 5번 내보내고 고른 입력에서 상호상관으로 찾습니다(케이블 루프백 필요). 결과는 `roundTripFrames`, 드라이버 보고 합 `reportedFrames`, 차이 `extraFrames`, `confidence`(0~1), `attempts`입니다. 측정 중에는 다른 출력을 끕니다. 녹음 위치에는 보고된 입력/출력 지연과 그래프 지연을 보정하고 원시 시작 frame과 보정 frame, 보고값의 완전성(`compensationKnown`)을 별도로 전달합니다. 미보고 값은 측정한 0으로 표시하지 않습니다. 수동 녹음 위치 보정은 자동 왕복 지연 측정과 별개입니다.
 
-프리앰프 게인, 팬텀 파워, 외부 클럭 설정, 인터페이스 자체 직접 모니터링, 다중 트랙 동시 입력 녹음은 이 장치 API가 제공하지 않습니다.
+여러 트랙을 동시에 녹음할 수 있습니다(`record.start { takes }`, 최대 64개). 모든 테이크가 같은 시작 frame에서 하나의 캡처 링을 공유하고, 파일 작성 스레드가 트랙마다 고른 1·2채널 WAV를 따로 씁니다. 과부하는 callback 처리 시간이 버퍼 시간의 90%를 넘거나 드라이버가 overload/xrun을 알릴 때 `overloads`로 셉니다. 프리앰프 게인, 팬텀 파워처럼 인터페이스 고유 기능은 이 장치 API가 제공하지 않습니다.
 
 ## 4. DSP, 녹음과 오프라인 출력
 
-`native/src/engine.cpp`가 준비된 타임라인, 음표의 샘플 offset, 루프·탐색, 샘플 존·벨로시티·choke, 믹서와 트랙별 지연 보상을 처리합니다. `native/src/dsp.cpp`가 내장 합성 악기와 EQ·필터·컴프레서·드라이브·딜레이·리버브·기타 앰프를 처리합니다. 녹음은 장치 입력을 한정된 링 버퍼에 넣고 별도 스레드가 Float32 WAV를 작성합니다. 디스크/큐 오류와 실제 시작 프레임은 제어 응답으로 전달합니다. [엔진](../native/src/engine.cpp) · [DSP](../native/src/dsp.cpp) · [녹음 연결](../src/audio/native/NativeRecording.ts)
+**멀티코어 처리와 미리 처리.** `processingThreads`(`auto` = 하드웨어 스레드 − 1, 최대 8 / `0` = 끔 / 1–16)만큼 작업 스레드를 만들어 블록마다 트랙을 나눠 처리하고, callback 스레드가 트랙 순서대로 합산합니다. 그래서 스레드 수와 관계없이 출력이 비트 단위로 같습니다. 작업 스레드는 Windows MMCSS "Pro Audio"·시간 임계 우선순위, macOS 시간 제약 정책으로 실행합니다(macOS `os_workgroup` 합류는 남은 작업). `renderAhead`(`off` 기본 / `normal` = 장치 버퍼 2개 / `high` = 4개)는 VST3가 없고, 모니터링·녹음 중이 아니며, 최근 2초 안에 실시간 음표가 없는 트랙을 작업 스레드가 미리 계산해 두는 기능입니다(Cubase ASIO-Guard 방식). 실시간 음표·모니터링·녹음 시작이 생기면 그 트랙은 미리 계산된 부분을 다 쓴 뒤(최대 창 + 1 버퍼 늦게) 끊김 없이 callback 처리로 돌아갑니다. 탐색·정지·프로젝트 변경·템포 변경에서는 미리 계산을 버리고, 일시 정지에서는 아직 재생하지 않은 미리 계산 구간이 있던 트랙의 음성·꼬리를 초기화합니다. 믹스·파라미터 변경은 창 길이만큼 늦게 들릴 수 있습니다. 상태에는 `workerThreads`, `renderAheadTracks`, `renderAheadResyncs`를 보고합니다.
+
+`native/src/engine.cpp`가 준비된 타임라인, 음표의 샘플 offset, 루프·탐색, 샘플 존·벨로시티·choke, 믹서와 트랙별 지연 보상을 처리합니다. `native/src/dsp.cpp`가 내장 합성 악기와 EQ·필터·컴프레서·드라이브·딜레이·리버브·기타 앰프를 처리합니다. 녹음은 장치 입력을 한정된 링 버퍼에 넣고 별도 스레드가 Float32 WAV를 작성합니다. 트랙은 물리 입력 채널(`input.channels`, 모노 또는 쌍)을 가지며 호스트가 열린 채널 목록으로 콜백의 인터리브 위치를 찾습니다. 열리지 않은 채널을 고른 트랙은 무음이고 `tracksMissingInput`에 표시됩니다. `record.start { takes }`는 최대 64개 트랙을 같은 프레임에서 함께 시작하고 트랙마다 1·2채널 파일을 씁니다. 콜백 처리 시간이 버퍼 시간의 90%를 넘거나 드라이버가 overload를 알리면 `device.overloads`가 늘고, 최근 비율은 `device.lastCallbackLoad`입니다. 디스크/큐 오류와 실제 시작 프레임은 제어 응답으로 전달합니다. [엔진](../native/src/engine.cpp) · [DSP](../native/src/dsp.cpp) · [녹음 연결](../src/audio/native/NativeRecording.ts)
 
 WAV 내보내기는 같은 C++ 그래프와 **새 플러그인 인스턴스**를 오프라인 모드로 실행합니다. 실시간 플러그인 상태를 읽을 때는 callback을 정지시켜 경쟁을 피합니다. VST3와 내장 효과의 tail을 포함하되 전체 tail은 30초로 제한합니다. 출력은 프로젝트 레이트의 스테레오 PCM 16-bit WAV이며, 처리는 블록 단위로 파일에 기록합니다. 피치 렌더 자산도 이 출력에 포함됩니다.
 

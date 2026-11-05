@@ -14,7 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#if defined(_MSC_VER)
+#if defined(_WIN32)  // MSVC and MinGW: no posix_memalign
 #include <malloc.h>
 #endif
 
@@ -35,7 +35,7 @@ void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 void* operator new(std::size_t size, std::align_val_t alignment) {
   allocation_guard::count();
-#if defined(_MSC_VER)
+#if defined(_WIN32)  // MSVC and MinGW: no posix_memalign
   if (void* p = _aligned_malloc(size, static_cast<std::size_t>(alignment))) return p;
 #else
   void* p = nullptr;
@@ -45,7 +45,7 @@ void* operator new(std::size_t size, std::align_val_t alignment) {
 }
 void* operator new[](std::size_t size, std::align_val_t alignment) { return ::operator new(size, alignment); }
 void operator delete(void* p, std::align_val_t) noexcept {
-#if defined(_MSC_VER)
+#if defined(_WIN32)  // MSVC and MinGW: no posix_memalign
   _aligned_free(p);
 #else
   std::free(p);

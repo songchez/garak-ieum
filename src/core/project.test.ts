@@ -104,7 +104,7 @@ describe('IEUM WAVE and native VST3 project coexistence', () => {
     const bundle = await exportProjectBundle(project, new Map())
     const loaded = (await importProjectBundle(bundle)).project
     expect(loaded).toEqual(project)
-    expect(loaded.schemaVersion).toBe(7)
+    expect(loaded.schemaVersion).toBe(8)
     expect(combineWavetablePatch(loaded.tracks[0].instrumentParams, loaded.tracks[0].instrumentState)).toEqual(patch)
     expect(loaded.tracks[0].pluginInstrument?.state).toEqual(track.pluginInstrument!.state)
     expect(loaded.tracks[0].devices.map(device => device.type)).toEqual(['filter', 'vst3', 'reverb'])
@@ -118,7 +118,7 @@ describe('IEUM WAVE and native VST3 project coexistence', () => {
     const { pluginInstrument: _source, ...legacyTrack } = track
     const builtinOnly = { ...legacyTrack, devices: track.devices.filter(device => device.type !== 'vst3') }
     const migrated = validateProject({ ...project, schemaVersion: 5, tracks: [builtinOnly] })
-    expect(migrated.schemaVersion).toBe(7)
+    expect(migrated.schemaVersion).toBe(8)
     expect(combineWavetablePatch(migrated.tracks[0].instrumentParams, migrated.tracks[0].instrumentState)).toEqual(patch)
     expect(migrated.tracks[0]).not.toHaveProperty('pluginInstrument')
     expect(() => validateProject({ ...project, schemaVersion: 5, tracks: [{ ...builtinOnly, pluginInstrument: track.pluginInstrument }] })).toThrow('schema version 6')
@@ -131,7 +131,7 @@ describe('IEUM WAVE and native VST3 project coexistence', () => {
     const { type: _type, ...insert } = track.devices[1] as PluginDevice
     const legacy = JSON.parse(JSON.stringify({ ...project, schemaVersion: 6, tracks: [{ ...track, devices: builtin, pluginInserts: [insert] }] }))
     const migrated = validateProject(legacy)
-    expect(migrated.schemaVersion).toBe(7)
+    expect(migrated.schemaVersion).toBe(8)
     expect(migrated.tracks[0].devices.map(device => device.type)).toEqual(['filter', 'reverb', 'vst3'])
     expect(migrated.tracks[0].devices[2]).toEqual(track.devices[1])
     expect(migrated.tracks[0]).not.toHaveProperty('pluginInserts')
@@ -376,7 +376,7 @@ describe('project validation', () => {
 
   it('rejects unsupported versions, duplicate IDs, and values that could break the engine', () => {
     const project = createEmptyProject()
-    expect(() => validateProject({ ...project, schemaVersion: 8 })).toThrow(/version/)
+    expect(() => validateProject({ ...project, schemaVersion: 9 })).toThrow(/version/)
     expect(() => validateProject({ ...project, bpm: Infinity })).toThrow(/Tempo/)
     expect(() => validateProject({ ...project, loop: { enabled: true, startBeat: 8, endBeat: 4 } })).toThrow(/Loop end/)
     const track = createTrack('instrument')
@@ -394,7 +394,7 @@ describe('project validation', () => {
     delete track.devices
     track.effects = { filter: 4200, reverb: 0.3, delay: 0 }
     const migrated = validateProject({ ...createEmptyProject(), schemaVersion: 1, tracks: [track] })
-    expect(migrated.schemaVersion).toBe(7)
+    expect(migrated.schemaVersion).toBe(8)
     expect(migrated.tracks[0].instrumentParams).toEqual(defaultInstrumentParams('pad'))
     expect(migrated.tracks[0].devices).toEqual([
       { id: 'old-pad/filter', type: 'filter', enabled: true, params: { cutoff: 4200, resonance: 0.65, mode: 0 } },

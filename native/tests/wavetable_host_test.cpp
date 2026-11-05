@@ -292,6 +292,43 @@ void previewExpiresWithoutTransport() {
   silent(render(engine,4096),2200,"WAVE note-off left a stuck audition voice");
 }
 
+// WAVE tracks render ahead on a worker. With equal device buffers the output is
+// bit-identical across cycle wraps; a patch edit (table crossfade, preserved
+// voices) is heard up to the ahead window late, and a seek realigns exactly.
+void renderAheadMatchesCallback() {
+  auto patch = complexPatch(); set(patch,ParameterId::Osc1Bank,4); auto p = project(patch,48000,{bank(4,1)}); p.bpm = 128;
+  p.cycle = std::array<std::int64_t,2>{4000,30000};
+  p.tracks[0].notes = {{0, 100, 9000, p.lengthFrames, 60, .8f}, {1, 6001, 20017, p.lengthFrames, 67, .6f}, {2, 21000, 29990, p.lengthFrames, 64, .7f}};
+  RenderEngine reference(48000,512), ahead(48000,512);
+  ProcessingOptions options; options.threads = 1; options.renderAhead = RenderAhead::High; options.deviceBlockFrames = 128;
+  ahead.setProcessing(options);
+  for (auto* engine : {&reference, &ahead}) { engine->submit(engine->prepare(p, {})); check(engine->play(), "WAVE play queue failed"); }
+  std::uint32_t mostAhead = 0;
+  const auto both = [&](std::uint32_t frames) {
+    std::vector<float> a, b;
+    for (std::uint32_t at = 0; at < frames; at += 128) {
+      const auto x = render(reference, 128, 128, true), y = render(ahead, 128, 128, true);
+      a.insert(a.end(), x.begin(), x.end()); b.insert(b.end(), y.begin(), y.end());
+      mostAhead = std::max(mostAhead, ahead.snapshot().renderAheadTracks);
+    }
+    return std::pair{a, b};
+  };
+  const auto exact = [](const std::vector<float>& a, const std::vector<float>& b, const char* message) {
+    check(a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](float x, float y) { return std::memcmp(&x, &y, sizeof x) == 0; }), message);
+  };
+  const auto [a, b] = both(128 * 600); // Three cycle wraps.
+  check(energy(a) > .01 && mostAhead == 1, "WAVE track did not render ahead");
+  exact(a, b, "Render-ahead WAVE differs from callback rendering");
+  set(patch,ParameterId::Osc1Bank,5); set(patch,ParameterId::Level,.12f); ++p.revision; p.tracks[0].source.patchData = pack(patch,{bank(5,2)});
+  for (auto* engine : {&reference, &ahead}) engine->submit(engine->prepare(p, {}));
+  const auto [c, d] = both(128 * 100);
+  check(energy(d) > .001 && ahead.snapshot().revision == p.revision, "A WAVE patch edit on an ahead track was lost");
+  for (auto* engine : {&reference, &ahead}) check(engine->seek(5000), "WAVE seek failed");
+  const auto [e, f] = both(128 * 400);
+  exact(e, f, "Render-ahead WAVE differs after a patch edit and seek");
+  check(ahead.snapshot().renderAheadResyncs == 0, "A WAVE render-ahead ring lost sync");
+}
+
 void patchUpdatesPreserveHeldVoiceAndPhase() {
   auto patch = dryPatch(); set(patch,ParameterId::Env1Attack,1); auto p = project(patch);
   RenderEngine engine(48000,512); engine.submit(engine.prepare(p,{})); check(engine.noteOn(0,60,.8f,0),"WAVE sustained note failed");
@@ -426,6 +463,7 @@ int main() {
   const std::pair<const char*,void(*)()> tests[] = {
     {"WAVE sample rates, exact onset and release",timelineRatesAndExactOnsets},
     {"WAVE callback partitions and offline agreement",callbackPartitionsAndOfflineAgreement},
+    {"WAVE render-ahead equals callback rendering",renderAheadMatchesCallback},
     {"WAVE velocity times clip gain in every note path",velocityAboveOneReachesEveryNotePath},
     {"WAVE audition release isolation and note IDs",auditionReleaseIsTrackScoped},
     {"WAVE stopped preview duration and live release",previewExpiresWithoutTransport},

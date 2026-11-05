@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { AudioAsset, AudioEngine, Clip, Marker, Project, Track } from '../core/types'
+import type { AudioAsset, AudioEngine, Clip, InputChoice, Marker, Project, Track, TrackInput } from '../core/types'
 import { MIN_CLIP_BEATS, setClipLoopEnd, trimClipEnd, trimClipStart, visibleTracks, type ClipStartTrim } from '../core/project'
 import { audibleTracks, effectiveArm, type TrackButtonKind } from '../core/trackActions'
 import { isTrackEnabled, loopEnd } from '../core/playback'
@@ -46,7 +46,10 @@ export interface TimelineUi {
 }
 export interface TimelineProps {
   project:Project; assets:Map<string,AudioAsset>; engine:AudioEngine
-  recordingDraft?:RecordingDraft|null
+  /** One draft per take; a multi-track pass shows a growing region on every recording track. */
+  recordingDrafts?:readonly RecordingDraft[]
+  inputChoices?:readonly InputChoice[]
+  onTrackInput?(trackId:string,input:TrackInput|null):void
   focusedTrackId:string; selectedTrackIds:ReadonlySet<string>; selectedClipIds:ReadonlySet<string>; anchorClipId:string|null
   ui:TimelineUi
   zoom:{ppb:number;rowHeight:number}
@@ -184,8 +187,10 @@ export function Timeline(props:TimelineProps){
 
   // A final region with the same ID replaces its preview even if the parent's
   // project and draft updates arrive in separate renders.
-  const pendingTake=props.recordingDraft
-  const recordingDraft=pendingTake&&!project.tracks.some(t=>t.clips.some(c=>c.id===pendingTake.id))?pendingTake:null
+  const pendingTakes=props.recordingDrafts??[]
+  const recordingDrafts=pendingTakes.length?pendingTakes.filter(d=>!project.tracks.some(t=>t.clips.some(c=>c.id===d.id))):pendingTakes
+  // Takes of one pass share their clock and status; the first drives the status line and the reveal.
+  const recordingDraft=recordingDrafts[0]??null
   useEffect(()=>{
     if(recordingDraft?.status!=='recording')return
     const tick=()=>setRecordingNow(performance.now())
@@ -193,12 +198,13 @@ export function Timeline(props:TimelineProps){
     return()=>window.clearInterval(timer)
   },[recordingDraft?.id,recordingDraft?.status])
   const recordingView=recordingDraft?recordingDraftPlacement(recordingDraft,recordingNow):null
+  const recordingTakes=new Map(recordingDrafts.map(d=>[d.trackId,{draft:d,view:d===recordingDraft?recordingView!:recordingDraftPlacement(d,recordingNow)}]))
   const snapBeats=resolveSnap(ui.snap,ppb,.25,beatsPerBar,beatUnit)
   const projectTrackIds=new Set(project.tracks.map(t=>t.id))
-  const rows=recordingDraft?project.tracks.filter(t=>ui.hideView||!t.hidden||t.id===recordingDraft.trackId):visibleTracks(project,ui.hideView)
+  const rows=recordingDraft?project.tracks.filter(t=>ui.hideView||!t.hidden||recordingTakes.has(t.id)):visibleTracks(project,ui.hideView)
   // A reserved track is only a display row until capture has been decoded.
   // If its original was deleted mid-take, do not resurrect the old regions.
-  if(recordingDraft&&!projectTrackIds.has(recordingDraft.trackId))rows.push({...recordingDraft.track,id:recordingDraft.trackId,clips:[]})
+  for(const d of recordingDrafts)if(!projectTrackIds.has(d.trackId))rows.push({...d.track,id:d.trackId,clips:[]})
   const rowIndex=new Map(rows.map((t,i)=>[t.id,i]))
   const trackNumber=new Map(project.tracks.map((t,i)=>[t.id,i+1]))
   const clipTrack=new Map(rows.flatMap(t=>t.clips.map(c=>[c.id,t] as const)))
@@ -688,7 +694,7 @@ export function Timeline(props:TimelineProps){
             {!markers.length&&<span className="marker-hint">더블 클릭하여 마커 추가</span>}
           </div>
         </div>}
-        {rows.map(track=>{const temporary=!projectTrackIds.has(track.id),recordingTarget=track.id===recordingDraft?.trackId
+        {rows.map(track=>{const temporary=!projectTrackIds.has(track.id),take=recordingTakes.get(track.id),recordingTarget=!!take
           const h=heightOf(track),selected=selectedTrackIds.has(track.id),isFocused=track.id===focusedTrackId,enabled=isTrackEnabled(track),silent=!temporary&&!audible.has(track.id)&&enabled,hiddenNow=track.hidden&&ui.hideView&&!recordingTarget
           const cls=['track-row',h<48?'row-compact':h>=110?'row-large':'']
           if(selected)cls.push('selected','selected-track');if(isFocused)cls.push('focused');if(silent)cls.push('track-silent');if(!enabled)cls.push('track-off');if(hiddenNow)cls.push('track-hidden');if(trackDrop?.ids.has(track.id))cls.push('track-dragging')
@@ -701,7 +707,7 @@ export function Timeline(props:TimelineProps){
             {ui.headerConfig.trackNumber&&<span className="track-number">{project.tracks.length+1}</span>}
             {ui.headerConfig.icon&&<span className="track-icon"><Icon name="wave" size={16}/></span>}
             <div className="track-main"><span className="track-name">{track.name}</span><span className="recording-track-caption">{recordingDraft?.status==='processing'?'녹음 처리 중':'새 트랙에 녹음 중'}</span></div>
-          </div>:<TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine}
+          </div>:<TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine} inputChoices={props.inputChoices} onInputChange={props.onTrackInput&&(input=>props.onTrackInput!(track.id,input))}
             onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}/>}
           <div className={`track-lane ${ui.gridLines?'':'no-grid'}`} style={{width,...laneGrid}}
             onPointerDown={e=>{if(!recordingTarget&&!temporary)beginMarquee(e,track)}}
@@ -711,7 +717,7 @@ export function Timeline(props:TimelineProps){
             onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);if(temporary)return;const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar;props.onAudioDrop(e.dataTransfer.files,track.id,Math.max(0,beat))}}}>
             {drag?.copy&&track.clips.filter(c=>drag.ids.has(c.id)).map(c=><div key={`ghost-${c.id}`} className="clip-ghost" style={musicalSpan(c.startBeat,c.lengthBeats,ppb)}/>)}
             {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} beatsPerBar={beatsPerBar} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
-            {recordingTarget&&recordingDraft&&recordingView&&<RecordingRegion key={recordingDraft.id} draft={recordingDraft} placement={recordingView} ppb={ppb}/>}
+            {take&&<RecordingRegion key={take.draft.id} draft={take.draft} placement={take.view} ppb={ppb}/>}
             {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'MIDI 파일 놓기 · 더블 클릭하여 클립 만들기'}</span>}
           </div>
         </div>})}

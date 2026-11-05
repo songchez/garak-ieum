@@ -154,12 +154,14 @@ AI 연결 창의 **닫기**는 창만 닫습니다. 접속을 끝내려면 **연
 
 앱을 새로고침하면 새로운 `instanceId`가 생깁니다. 이전 ID로 재시도한 편집은 `INSTANCE_NOT_FOUND`로 거절되어 새 탭에 자동 적용되지 않습니다. `projectId`와 revision 숫자가 우연히 같아도 새 탭은 이전 작업의 중복 방지 캐시를 이어받지 않으므로, **과거 요청의 `instanceId`만 새 값으로 바꿔 재전송하지 않습니다.**
 
-### 현재 적용 가능한 명령 19개
+### 현재 적용 가능한 명령 21개
 
 | 그룹 | 명령 |
 |---|---|
 | 트랙 생성·이름·삭제 | `track.create`, `track.rename`, `track.delete` |
 | 트랙 믹싱·상태 | `track.setVolumeDb`, `track.adjustVolumeDb`, `track.setPan`, `track.setMute`, `track.setSolo` |
+| 트랙 입력 | `track.setInput` (오디오 트랙, 물리 채널 1–2개와 채널 이름 `label`, `null` = 기본 입력) |
+| 악기 파라미터 | `instrument.setParam` |
 | MIDI 생성 | `clip.addMidi` |
 | 리전 편집·상태 | `clip.rename`, `clip.move`, `clip.delete`, `clip.repeat`, `clip.setMute`, `clip.setTranspose` |
 | 내장 인서트 이펙트 | `effect.add`, `effect.setParam`, `effect.remove`, `effect.setEnabled` |

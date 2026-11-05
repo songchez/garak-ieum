@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -124,9 +125,17 @@ struct AudioWindow {
   std::int64_t fadeInFrames = 0, fadeOutFrames = 0;
   bool operator==(const AudioWindow&) const = default;
 };
+// Physical device input channels (zero based) a track records and monitors.
+// channels[1] < 0 is mono. A track without one uses the device default input.
+struct TrackInput {
+  std::array<std::int16_t, 2> channels{0, -1};
+  [[nodiscard]] std::uint32_t count() const noexcept { return channels[1] >= 0 ? 2u : 1u; }
+  bool operator==(const TrackInput&) const = default;
+};
 struct TrackTimeline {
   std::string id;
   TrackSource source;
+  std::optional<TrackInput> input;
   float gain = 1, pan = 0;
   bool enabled = true, mute = false, solo = false, soloSafe = false, audible = true;
   std::vector<BuiltinInsert> inserts;
@@ -158,6 +167,89 @@ struct EngineSnapshot {
   bool recording = false;
   std::int64_t recordingStartFrame = 0;
   std::uint64_t recordedFrames = 0, recordingDroppedFrames = 0;
+  // Multi-core processing: worker threads running beside the callback, tracks
+  // the callback currently consumes from render-ahead rings, and the times a
+  // ring had to be dropped mid-playback because it lost sync (never expected).
+  std::uint32_t workerThreads = 0, renderAheadTracks = 0;
+  std::uint64_t renderAheadResyncs = 0;
+};
+
+// Multi-core track processing (Logic "Processing Threads") and render-ahead of
+// non-live tracks (Cubase ASIO-Guard). `threads` workers join the callback for
+// each block: tracks render in parallel and are summed in track order, so the
+// mix is bit-identical to threads = 0 (the single-threaded path).
+// Render-ahead pre-renders playing tracks that are not live (not monitored,
+// not recording, no recent live/preview notes, no VST3) into per-track rings,
+// `renderAheadBlocks` device buffers ahead of the callback.
+enum class RenderAhead : std::uint8_t { Off, Normal, High };
+[[nodiscard]] constexpr std::uint32_t renderAheadBlocks(RenderAhead mode) noexcept {
+  return mode == RenderAhead::High ? 4u : mode == RenderAhead::Normal ? 2u : 0u;
+}
+constexpr std::uint32_t maxProcessingThreads = 16;
+// 'auto': hardware threads minus the callback's own, at most 8.
+[[nodiscard]] std::uint32_t autoProcessingThreads() noexcept;
+struct ProcessingOptions {
+  std::uint32_t threads = 0; // 0..maxProcessingThreads worker threads besides the callback.
+  RenderAhead renderAhead = RenderAhead::Off; // Ignored by offline engines.
+  // Expected device buffer; sizes the render-ahead rings. 0 assumes 512 frames.
+  std::uint32_t deviceBlockFrames = 0;
+  // Runs on each worker thread as it starts (true) and just before it exits
+  // (false): real-time scheduling, OS audio workgroups, test instrumentation.
+  std::function<void(bool started)> onWorkerThread;
+};
+
+// Indices into the interleaved callback input. The device opens K physical
+// channels in a list; a track names physical channels, so the host and the
+// callback must map through the same list. -1 is silence.
+struct InputRoute {
+  std::int32_t left = -1, right = -1;
+  std::uint32_t channels = 1; // Samples a recording of this route writes per frame.
+  bool missing = false;        // An explicit channel is not open: silent, never another channel.
+};
+constexpr std::size_t maxInputLayout = 32;
+// Pure and noexcept: used by the control thread (take planning, missing-input
+// reports) and the callback (per-track monitoring) so both agree exactly.
+// `layout` lists physical channel numbers in interleaved order; `delivered` is
+// how many interleaved channels the callback actually receives. A track without
+// an input uses (defaultLeft, defaultRight), the legacy setInputChannels pair.
+[[nodiscard]] InputRoute routeInput(const std::optional<TrackInput>& input, std::span<const std::uint8_t> layout,
+                                    std::uint32_t delivered, int defaultLeft, int defaultRight) noexcept;
+
+struct RecordingTake {
+  std::uint32_t track = 0; // Graph track index; informational for the legacy whole-device take.
+  InputRoute route;
+};
+constexpr std::size_t maxRecordingTakes = 64;
+
+// Loopback latency detection (latency.measure). `captured` is the input channel
+// recorded from the frame the first pulse was emitted; `emitted` lists each
+// pulse's start frame in that clock. Each attempt searches [emit, emit+maxLag]
+// by normalized cross-correlation, so polarity, gain and DC do not matter.
+struct LatencyDetection {
+  std::optional<std::int64_t> roundTripFrames;
+  double confidence = 0;       // 0..1: agreement of the attempts times their peak clarity.
+  std::uint32_t attempts = 0;  // Pulses emitted.
+  std::uint32_t detected = 0;  // Pulses found and consistent with the median.
+};
+[[nodiscard]] LatencyDetection detectLatency(std::span<const float> captured, std::span<const float> pulse,
+                                             std::span<const std::int64_t> emitted, std::int64_t maxLag);
+// The short band-limited click emitted by latency.measure: steep enough for a
+// sharp correlation peak, without DC that AC-coupled converters would smear.
+[[nodiscard]] std::vector<float> latencyPulse(std::uint32_t sampleRate);
+
+// Real-time callback load. One writer (the device callback), atomics only.
+// A callback that used more than 90% of its buffer time is an overload: the
+// next one is at risk of missing its deadline even if this one did not.
+class LoadMeter {
+ public:
+  static constexpr double overloadThreshold = .9;
+  void record(double processingSeconds, double bufferSeconds) noexcept;
+  void reset() noexcept;
+  [[nodiscard]] std::uint64_t overloads() const noexcept { return overloads_.load(std::memory_order_relaxed); }
+  [[nodiscard]] float lastLoad() const noexcept { return last_.load(std::memory_order_relaxed); }
+ private:
+  std::atomic<std::uint64_t> overloads_{0};
+  std::atomic<float> last_{0};
 };
 
 class PreparedProject {
@@ -201,8 +293,21 @@ class RenderEngine {
   // Release audition/live notes on this track without touching timeline notes.
   [[nodiscard]] std::uint64_t allNotesOff(std::uint32_t trackIndex);
   [[nodiscard]] std::uint64_t setMonitoring(std::span<const std::uint32_t> tracks);
+  // Physical channel numbers the device interleaves into the callback, in
+  // order (<= 32, each < 256, distinct). Swapped atomically by the callback.
+  // Until called, physical channel n is interleaved index n.
+  [[nodiscard]] std::uint64_t setInputLayout(std::span<const std::uint32_t> physicalChannels);
+  // Control thread: resolve each graph track's take against the last submitted
+  // graph and input layout. Throws on duplicates, > 64 takes or unknown tracks.
+  [[nodiscard]] std::vector<RecordingTake> planRecording(std::span<const std::uint32_t> tracks) const;
+  // All takes start on the same callback frame and share one capture ring; each
+  // frame holds every take's channels in order (recordingChannels() samples).
+  // The previous capture must be stopped (acknowledged) and drained.
+  [[nodiscard]] std::uint64_t startRecording(std::span<const RecordingTake> takes);
+  // Legacy whole-device take: one stereo take of the default input pair.
   [[nodiscard]] std::uint64_t startRecording();
   [[nodiscard]] std::uint64_t stopRecording();
+  [[nodiscard]] std::uint32_t recordingChannels() const noexcept;
   [[nodiscard]] std::uint64_t setMasterGain(float gain);
   // Input selection is zero-based; -1 for right duplicates the left channel.
   [[nodiscard]] std::uint64_t setInputChannels(int left, int right = -1);
@@ -210,11 +315,16 @@ class RenderEngine {
   void render(float* stereoOutput, const float* input, std::uint32_t frames,
               std::uint32_t inputChannels = 2) noexcept;
   [[nodiscard]] EngineSnapshot snapshot() const noexcept;
-  // Returns frames written, always stereo interleaved. One control-thread consumer.
+  // Returns frames written; each frame holds recordingChannels() samples
+  // (stereo for the legacy take). One control-thread consumer.
   std::uint32_t drainRecording(float* destination, std::uint32_t capacityFrames) noexcept;
   // Offline instances ignore the audition cycle, and allow tails beyond project end.
   // Set only while stopped, before submitting/playing a project.
   void setOffline(bool offline) noexcept;
+  // Control thread, before the first submit and before the device starts:
+  // creates the worker pool (threads > 0, or 1 when only rendering ahead).
+  // Graphs prepared afterwards carry render-ahead rings within a memory budget.
+  void setProcessing(const ProcessingOptions& options);
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
