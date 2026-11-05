@@ -9,8 +9,12 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h>
+#endif
 
 namespace garak {
 namespace {
@@ -43,6 +47,133 @@ template<class T, std::size_t N> class SpscQueue {
   alignas(64) std::atomic<std::size_t> write_{0};
   alignas(64) std::atomic<std::size_t> read_{0};
 };
+
+inline void cpuRelax() noexcept {
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+  _mm_pause();
+#elif (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
+  __builtin_ia32_pause();
+#elif (defined(__GNUC__) || defined(__clang__)) && defined(__aarch64__)
+  __asm__ __volatile__("yield");
+#endif
+}
+// Waits for another running thread to finish a bounded piece of work (at most
+// one track block). Real-time safe: no lock, no allocation, no kernel wait.
+template<class Done> void spinUntil(Done&& done) noexcept {
+  for(unsigned spins=0;!done();++spins){if(spins<4096)cpuRelax();else std::this_thread::yield();}
+}
+
+// Fixed worker threads, created and joined on the control thread only. The
+// callback forks one job per block and participates in it; workers sleep on
+// an atomic between jobs and render ahead when the engine has such work.
+class WorkerPool {
+ public:
+  using Task=void(*)(void*,std::uint32_t index,std::uint32_t slot)noexcept;
+  using Background=bool(*)(void*,std::uint32_t slot)noexcept;
+  WorkerPool(std::uint32_t threads,Background background,void*context,std::function<void(bool)> hook)
+      :background_(background),context_(context),hook_(std::move(hook)) {
+    threads_.reserve(threads);
+    try{for(std::uint32_t i=0;i<threads;++i)threads_.emplace_back([this,i]{loop(i+1);});}
+    catch(...){shutdown();throw;}
+  }
+  ~WorkerPool(){shutdown();}
+  WorkerPool(const WorkerPool&)=delete;
+  WorkerPool& operator=(const WorkerPool&)=delete;
+  [[nodiscard]] std::uint32_t size()const noexcept{return static_cast<std::uint32_t>(threads_.size());}
+  // Callback thread: task(index, slot) for every index; slot 0 is the caller.
+  // Returns when all completed. One job at a time; count < 65536.
+  void run(std::uint32_t count,Task task,void*context)noexcept {
+    task_=task;taskContext_=context;done_.store(0,std::memory_order_relaxed);
+    // Epoch, count and next index share one word: a worker that was late for
+    // the previous job can never claim an index of this one under stale fields.
+    claim_.store((std::uint64_t{++epoch_}<<32)|(std::uint64_t{count}<<16),std::memory_order_release);
+    wake();
+    (void)work(0);
+    spinUntil([&]{return done_.load(std::memory_order_acquire)==count;});
+  }
+  // Callback thread: new background work may be available.
+  void wake()noexcept {
+    wake_.fetch_add(1,std::memory_order_seq_cst);
+    if(sleepers_.load(std::memory_order_seq_cst))wake_.notify_all();
+  }
+ private:
+  bool work(std::uint32_t slot)noexcept {
+    bool any=false;auto c=claim_.load(std::memory_order_acquire);
+    for(;;) {
+      const auto next=c&0xffffu,count=(c>>16)&0xffffu;
+      if(next>=count)return any;
+      if(!claim_.compare_exchange_weak(c,c+1,std::memory_order_acq_rel,std::memory_order_acquire))continue;
+      // This job cannot finish before this index does, so its fields are current.
+      task_(taskContext_,static_cast<std::uint32_t>(next),slot);
+      done_.fetch_add(1,std::memory_order_acq_rel);
+      any=true;c=claim_.load(std::memory_order_acquire);
+    }
+  }
+  void loop(std::uint32_t slot)noexcept {
+    try{if(hook_)hook_(true);}catch(...){}
+    while(!stop_.load(std::memory_order_acquire)) {
+      const auto seen=wake_.load(std::memory_order_seq_cst);
+      if(work(slot))continue;
+      if(background_&&background_(context_,slot))continue;
+      // Spin briefly: the next block usually arrives within a buffer period.
+      bool changed=false;
+      for(unsigned i=0;i<2048&&!changed;++i){cpuRelax();changed=wake_.load(std::memory_order_relaxed)!=seen;}
+      if(changed)continue;
+      sleepers_.fetch_add(1,std::memory_order_seq_cst);
+      if(!stop_.load(std::memory_order_seq_cst))wake_.wait(seen,std::memory_order_seq_cst);
+      sleepers_.fetch_sub(1,std::memory_order_seq_cst);
+    }
+    try{if(hook_)hook_(false);}catch(...){}
+  }
+  void shutdown()noexcept {
+    stop_.store(true,std::memory_order_seq_cst);wake_.fetch_add(1,std::memory_order_seq_cst);wake_.notify_all();
+    for(auto&t:threads_)if(t.joinable())t.join();
+    threads_.clear();
+  }
+  Background background_;void*context_;std::function<void(bool)> hook_;
+  std::vector<std::thread> threads_;
+  Task task_=nullptr;void*taskContext_=nullptr;std::uint32_t epoch_=0;
+  alignas(64) std::atomic<std::uint64_t> claim_{0};
+  alignas(64) std::atomic<std::uint32_t> done_{0};
+  alignas(64) std::atomic<std::uint32_t> wake_{0};
+  std::atomic<std::uint32_t> sleepers_{0};
+  std::atomic<bool> stop_{false};
+};
+
+// One track's render-ahead ring. The holder of `busy` produces (a worker, or the
+// callback helping when the ring runs dry); the callback alone consumes.
+struct AheadState {
+  enum Mode:int { Off, Active, Draining };
+  enum class Produce { Done, Full, Ended, Inactive };
+  static constexpr std::size_t chunkSlots=128;
+  struct Chunk { std::int64_t start=0; std::uint32_t frames=0; float peak=0; std::uint64_t overflows=0,invalid=0; };
+  AheadState(std::uint32_t frames,std::uint32_t maxBlock):capacity(frames),ring(static_cast<std::size_t>(frames)*2),out(static_cast<std::size_t>(maxBlock)*2){}
+  const std::uint32_t capacity;
+  std::vector<float> ring,out; // `out`: the callback's copy for this block's mix.
+  std::array<Chunk,chunkSlots> chunks{};
+  // Producer state (busy holder). `phase`/`block` mirror the callback's split
+  // of each device buffer so equal buffers render bit-identically.
+  std::int64_t nextFrame=0,continuous=0;
+  std::uint32_t phase=0,block=0;
+  std::uint64_t pendingOverflows=0;
+  // Consumer state (callback).
+  std::uint32_t chunkOffset=0;
+  alignas(64) std::atomic<std::uint64_t> written{0},writtenChunks{0};
+  alignas(64) std::atomic<std::uint64_t> read{0},readChunks{0};
+  alignas(64) std::atomic<int> mode{Off};
+  std::atomic<bool> busy{false};
+  void lock()noexcept{spinUntil([&]{return !busy.exchange(true,std::memory_order_acquire);});}
+  void unlock()noexcept{busy.store(false,std::memory_order_release);}
+  [[nodiscard]] bool empty()const noexcept{return written.load(std::memory_order_acquire)==read.load(std::memory_order_relaxed);}
+  // Only while no producer can run: mode Off under the lock, or quiesced.
+  void clear()noexcept {
+    written.store(0,std::memory_order_relaxed);read.store(0,std::memory_order_relaxed);
+    writtenChunks.store(0,std::memory_order_relaxed);readChunks.store(0,std::memory_order_relaxed);
+    chunkOffset=0;pendingOverflows=0;phase=0;
+  }
+};
+// Rings for one graph never exceed this; later tracks then render in the callback.
+constexpr std::size_t aheadMemoryBudget=64u*1024u*1024u;
 
 struct Synth {
   enum class Kind { Keys, Bass, Pad, Pluck, Rhodes, Drums, Sampled } kind = Kind::Keys;
@@ -215,8 +346,19 @@ struct TrackRuntime {
   float peak=0;
   double fader=1,panValue=0;
   bool stereoSource=false,stereoEffects=false;
+  // Multi-core bookkeeping. A block task writes only its own track: counters
+  // are summed and `mix` read by the callback after the join, in track order.
+  std::unique_ptr<AheadState> ahead; // Render-ahead ring when eligible (no VST3).
+  const float* mix=nullptr;          // This block's output: buffer or ahead->out.
+  float meter=0;                     // Callback-published peak.
+  std::uint64_t taskOverflows=0,taskInvalid=0,taskResyncs=0;
+  // Continuous frame until which live input/notes keep this track in the callback.
+  std::int64_t liveUntil=std::numeric_limits<std::int64_t>::min();
 
   void takeStateFrom(TrackRuntime& previous)noexcept {
+    meter=previous.meter;liveUntil=previous.liveUntil;
+    // The ring and its producer position belong with the voice/effect state.
+    if(ahead&&previous.ahead&&ahead->capacity==previous.ahead->capacity)ahead.swap(previous.ahead);
     voices.swap(previous.voices);std::swap(samples,previous.samples);
     nextNote=previous.nextNote;nextEvent=previous.nextEvent;pendingCount=previous.pendingCount;
     pendingEvents=previous.pendingEvents;pluginNotes=previous.pluginNotes;
@@ -735,21 +877,278 @@ struct RenderEngine::Impl {
   std::uint64_t recordedFrames=0,droppedFrames=0;
   std::int64_t recordingStart=0;
   struct AtomicSnapshot {
-    std::atomic<std::uint64_t>revision{0},ticket{0},voiceOverflows{0},invalidSamples{0},recorded{0},dropped{0};
+    std::atomic<std::uint64_t>revision{0},ticket{0},voiceOverflows{0},invalidSamples{0},recorded{0},dropped{0},aheadResyncs{0};
     std::atomic<std::int64_t>frame{0},recordingStart{0};
-    std::atomic<std::uint32_t>trackCount{0},latency{0};
+    std::atomic<std::uint32_t>trackCount{0},latency{0},aheadTracks{0};
     std::atomic<bool>ready{false},playing{false},recording{false};
     std::atomic<float>masterPeak{0};std::array<std::atomic<float>,256>trackPeaks{};
   }published;
+
+  // Multi-core processing. Configured on the control thread before the device
+  // starts (setProcessing); the pool's workers live as long as this engine.
+  std::unique_ptr<WorkerPool> pool;
+  std::uint32_t workerCount=0,aheadBlocks=0,aheadHint=512;
+  bool forkEnabled=false;
+  // Render-ahead shared with workers. `aheadGraph` is the graph workers may
+  // enter; each announces it in its hazard slot first, so the callback can
+  // wait until none is inside before moving or retiring that graph's state.
+  std::atomic<PreparedProject::Impl*> aheadGraph{nullptr};
+  std::array<std::atomic<PreparedProject::Impl*>,maxProcessingThreads+1> hazards{};
+  std::atomic<std::uint32_t> deviceBlock{0};
+  std::atomic<bool> recordingNow{false};
+  std::uint32_t aheadTracks=0; // Callback: tracks not Off (an upper bound between blocks).
+  std::uint64_t aheadResyncs=0;
+  // The sub-block every track task of one fork renders.
+  struct Block {
+    PreparedProject::Impl* graph=nullptr;const ProcessContext* context=nullptr;const float* input=nullptr;
+    std::int64_t position=0;std::uint32_t count=0,cursor=0,channels=0;bool playing=false;
+  } block;
+
   Impl(std::uint32_t r,std::uint32_t b,std::uint32_t capacity):rate(r),maxBlock(b),inputScratch(static_cast<std::size_t>(b)*2),recordingCapacity(capacity){
     for(std::size_t i=0;i<maxInputLayout;++i){layout[i]=static_cast<std::uint8_t>(i);controlLayout[i]=layout[i];}
   }
-  ~Impl(){Command c;while(commands.pop(c))if(c.kind==Kind::Graph)delete c.graph;if(deferred&&deferred->kind==Kind::Graph)delete deferred->graph;PreparedProject*p=nullptr;while(retired.pop(p))delete p;delete active;}
+  ~Impl(){pool.reset();Command c;while(commands.pop(c))if(c.kind==Kind::Graph)delete c.graph;if(deferred&&deferred->kind==Kind::Graph)delete deferred->graph;PreparedProject*p=nullptr;while(retired.pop(p))delete p;delete active;}
   std::uint64_t enqueue(Command command) {
     command.ticket=nextTicket++;
     if(!commands.push(command)){commandOverflows.fetch_add(1,std::memory_order_relaxed);return 0;}return command.ticket;
   }
-  void reset(bool chase,bool effects)noexcept{if(active)active->impl_->reset(position,chase,effects,voiceOverflows);}
+  // Tracks rendering ahead are skipped: their producer applies the same cycle
+  // wrap at the same frame. Every other caller first reclaims them.
+  void reset(bool chase,bool effects)noexcept {
+    if(!active)return;
+    auto&p=*active->impl_;
+    for(auto&t:p.tracks)if(!t.ahead||t.ahead->mode.load(std::memory_order_relaxed)==AheadState::Off)t.reset(position,chase,effects,voiceOverflows);
+    if(effects)p.master.reset();
+  }
+
+  // ---- Render-ahead -------------------------------------------------------
+  // Callback: after this no worker is inside any graph or holds a track lock.
+  void quiesce()noexcept {
+    if(!pool||!aheadGraph.load(std::memory_order_relaxed))return;
+    aheadGraph.store(nullptr,std::memory_order_seq_cst);
+    for(std::uint32_t s=1;s<=pool->size();++s)spinUntil([&]{return hazards[s].load(std::memory_order_seq_cst)==nullptr;});
+  }
+  [[nodiscard]] std::int64_t boundaryOf(const ProjectTimeline&p)const noexcept{return p.cycle?p.cycle->at(1):p.lengthFrames;}
+  [[nodiscard]] std::uint64_t aheadTarget(const AheadState&a)const noexcept {
+    const auto b=std::max<std::uint32_t>(1,deviceBlock.load(std::memory_order_relaxed));
+    return std::min<std::uint64_t>(a.capacity,std::uint64_t{b}*(1+aheadBlocks));
+  }
+  // Busy holder: render this track's next block exactly as the callback would.
+  AheadState::Produce produce(const PreparedProject::Impl&g,TrackRuntime&t,bool helping)noexcept {
+    auto&a=*t.ahead;const auto&p=g.timeline;const auto boundary=boundaryOf(p);
+    if(a.nextFrame>=boundary) {
+      if(!p.cycle)return AheadState::Produce::Ended;
+      a.nextFrame=p.cycle->at(0);t.reset(a.nextFrame,true,false,a.pendingOverflows);
+    }
+    if(a.phase==0){a.block=std::max<std::uint32_t>(1,deviceBlock.load(std::memory_order_relaxed));}
+    auto count=static_cast<std::uint32_t>(std::min<std::int64_t>({static_cast<std::int64_t>(maxBlock),static_cast<std::int64_t>(a.block-a.phase),boundary-a.nextFrame}));
+    const auto written=a.written.load(std::memory_order_relaxed),fill=written-a.read.load(std::memory_order_acquire);
+    const auto chunkIndex=a.writtenChunks.load(std::memory_order_relaxed);
+    if(chunkIndex-a.readChunks.load(std::memory_order_acquire)>=AheadState::chunkSlots)return AheadState::Produce::Full;
+    const auto limit=helping?std::uint64_t{a.capacity}:aheadTarget(a);
+    if(fill+count>limit) {
+      // Workers keep whole blocks (equal partitions render bit-identically).
+      // The callback, short of audio after the device buffer grew, takes what fits.
+      if(!helping||fill>=limit)return AheadState::Produce::Full;
+      count=static_cast<std::uint32_t>(limit-fill);
+    }
+    ProcessContext context{static_cast<double>(rate),p.bpm,a.nextFrame,true,false,p.timeSigNumerator,p.timeSigDenominator};
+    context.recording=recordingNow.load(std::memory_order_relaxed);context.continuousFrame=a.continuous;
+    if(p.cycle){context.cycleActive=true;context.cycleStartFrame=p.cycle->at(0);context.cycleEndFrame=p.cycle->at(1);}
+    std::uint64_t overflows=a.pendingOverflows,invalid=0;a.pendingOverflows=0;
+    t.render(a.nextFrame,count,true,nullptr,false,false,context,overflows,invalid);
+    const auto at=static_cast<std::size_t>(written%a.capacity),first=std::min<std::size_t>(count,a.capacity-at);
+    std::copy_n(t.buffer.data(),first*2,a.ring.data()+at*2);
+    std::copy_n(t.buffer.data()+first*2,(count-first)*2,a.ring.data());
+    a.chunks[chunkIndex%AheadState::chunkSlots]={a.nextFrame,count,t.peak,overflows,invalid};
+    a.nextFrame+=count;a.continuous+=count;a.phase+=count;if(a.phase>=a.block)a.phase=0;
+    a.writtenChunks.store(chunkIndex+1,std::memory_order_release);
+    a.written.store(written+count,std::memory_order_release);
+    return AheadState::Produce::Done;
+  }
+  static bool background(void*self,std::uint32_t slot)noexcept{return static_cast<Impl*>(self)->produceAhead(slot);}
+  // Worker: produce one block for the active track with the least audio ahead.
+  bool produceAhead(std::uint32_t slot)noexcept {
+    auto*g=aheadGraph.load(std::memory_order_seq_cst);
+    if(!g)return false;
+    hazards[slot].store(g,std::memory_order_seq_cst);
+    if(aheadGraph.load(std::memory_order_seq_cst)!=g){hazards[slot].store(nullptr,std::memory_order_release);return true;}
+    TrackRuntime*best=nullptr;std::uint64_t bestFill=std::numeric_limits<std::uint64_t>::max();
+    for(auto&t:g->tracks) {
+      if(!t.ahead)continue;
+      auto&a=*t.ahead;
+      if(a.mode.load(std::memory_order_acquire)!=AheadState::Active||a.busy.load(std::memory_order_relaxed))continue;
+      const auto fill=a.written.load(std::memory_order_relaxed)-a.read.load(std::memory_order_acquire);
+      if(fill<bestFill&&fill<aheadTarget(a)){best=&t;bestFill=fill;}
+    }
+    bool did=false;
+    if(best) {
+      auto&a=*best->ahead;
+      if(!a.busy.exchange(true,std::memory_order_acquire)) {
+        if(a.mode.load(std::memory_order_acquire)==AheadState::Active)did=produce(*g,*best,false)==AheadState::Produce::Done;
+        a.unlock();
+      } else did=true; // Another worker took it; look again.
+    }
+    hazards[slot].store(nullptr,std::memory_order_release);
+    return did;
+  }
+  // Whether a track returning from render-ahead is exactly at `frame`. The
+  // producer applies a cycle wrap lazily: if it stopped at the cycle end and the
+  // callback already wrapped (skipping this track), apply that reset here. If
+  // the producer wrapped first, the callback's own wrap repeats the same reset
+  // at the same frame, which is idempotent.
+  bool catchUp(const PreparedProject::Impl&g,TrackRuntime&t,std::int64_t frame,std::uint64_t&overflows)noexcept {
+    auto&a=*t.ahead;const auto&p=g.timeline;
+    overflows+=a.pendingOverflows;a.pendingOverflows=0;
+    if(a.nextFrame==frame)return true;
+    if(!p.cycle)return false;
+    if(a.nextFrame>=p.cycle->at(1)&&frame==p.cycle->at(0)){a.nextFrame=frame;t.reset(frame,true,false,overflows);return true;}
+    return a.nextFrame==p.cycle->at(0)&&frame>=p.cycle->at(1);
+  }
+  // Callback (transport change): every ahead track returns to the callback. A
+  // drained ring hands over seamlessly; otherwise its state is ahead of the
+  // playhead and is reset here (voices and tails) unless the caller resets all.
+  void reclaimAll(bool resetFollows)noexcept {
+    if(!active||!aheadTracks)return;
+    quiesce();
+    auto&g=*active->impl_;
+    for(auto&t:g.tracks) {
+      if(!t.ahead||t.ahead->mode.load(std::memory_order_relaxed)==AheadState::Off)continue;
+      auto&a=*t.ahead;
+      const bool seamless=a.empty()&&catchUp(g,t,position,voiceOverflows);
+      a.mode.store(AheadState::Off,std::memory_order_relaxed);a.clear();
+      if(!seamless&&!resetFollows)t.reset(position,false,true,voiceOverflows);
+    }
+    aheadTracks=0;
+  }
+  // Callback, preserving graph swap after quiesce: a track whose ring cannot
+  // move into the new graph comes back first.
+  void handOverAhead(PreparedProject::Impl&previous,PreparedProject::Impl&next)noexcept {
+    for(std::size_t i=0;i<previous.tracks.size()&&i<next.tracks.size();++i) {
+      auto&t=previous.tracks[i];
+      if(!t.ahead||t.ahead->mode.load(std::memory_order_relaxed)==AheadState::Off)continue;
+      if(next.tracks[i].ahead&&next.tracks[i].ahead->capacity==t.ahead->capacity)continue;
+      auto&a=*t.ahead;
+      const bool seamless=a.empty()&&catchUp(previous,t,position,voiceOverflows);
+      a.mode.store(AheadState::Off,std::memory_order_relaxed);a.clear();
+      if(!seamless)t.reset(position,playing,true,voiceOverflows);
+    }
+  }
+  // Callback, before a live command: true when the callback owns the track.
+  // Otherwise it stops rendering ahead and drains; the command waits.
+  bool own(TrackRuntime&t)noexcept {
+    if(!t.ahead)return true;
+    const auto mode=t.ahead->mode.load(std::memory_order_relaxed);
+    if(mode==AheadState::Off)return true;
+    if(mode==AheadState::Active)t.ahead->mode.store(AheadState::Draining,std::memory_order_release);
+    return false;
+  }
+  void markLive(TrackRuntime&t)noexcept{t.liveUntil=continuousFrame+static_cast<std::int64_t>(rate)*2;}
+  // Block task: this track's audio for `block` from its ring into ahead->out.
+  // False when the ring lost sync; the caller then resets and renders here.
+  bool consumeAhead(PreparedProject::Impl&g,TrackRuntime&t)noexcept {
+    auto&a=*t.ahead;const auto count=block.count;std::uint32_t got=0;
+    while(got<count) {
+      const auto read=a.read.load(std::memory_order_relaxed),avail=a.written.load(std::memory_order_acquire)-read;
+      if(!avail) {
+        if(a.mode.load(std::memory_order_relaxed)==AheadState::Draining) {
+          a.lock();const bool drained=a.empty();
+          if(drained)a.mode.store(AheadState::Off,std::memory_order_relaxed);
+          a.unlock();
+          if(!drained)continue;
+          // Seamless hand-back: the track's state is exactly at this frame.
+          const bool synced=catchUp(g,t,block.position+got,t.taskOverflows);a.clear();
+          if(!synced)return false;
+          auto context=*block.context;context.projectFrame+=got;context.continuousFrame+=got;
+          t.render(block.position+got,count-got,block.playing,nullptr,false,false,context,t.taskOverflows,t.taskInvalid);
+          std::copy_n(t.buffer.data(),static_cast<std::size_t>(count-got)*2,a.out.data()+static_cast<std::size_t>(got)*2);
+          t.meter=t.peak;t.mix=a.out.data();
+          return true;
+        }
+        if(a.busy.exchange(true,std::memory_order_acquire)){cpuRelax();continue;} // A worker is rendering it.
+        const auto result=produce(g,t,true);a.unlock();
+        if(result!=AheadState::Produce::Done&&a.empty())return false;
+        continue;
+      }
+      const auto readChunk=a.readChunks.load(std::memory_order_relaxed);
+      const auto&chunk=a.chunks[readChunk%AheadState::chunkSlots];
+      if(chunk.start+a.chunkOffset!=block.position+got)return false;
+      const auto n=static_cast<std::uint32_t>(std::min<std::uint64_t>({avail,std::uint64_t{count-got},std::uint64_t{chunk.frames-a.chunkOffset}}));
+      const auto at=static_cast<std::size_t>(read%a.capacity),first=std::min<std::size_t>(n,a.capacity-at);
+      float*dst=a.out.data()+static_cast<std::size_t>(got)*2;
+      std::copy_n(a.ring.data()+at*2,first*2,dst);std::copy_n(a.ring.data(),(n-first)*2,dst+first*2);
+      a.chunkOffset+=n;got+=n;
+      if(a.chunkOffset==chunk.frames) {
+        t.meter=chunk.peak;t.taskOverflows+=chunk.overflows;t.taskInvalid+=chunk.invalid;
+        a.chunkOffset=0;a.readChunks.store(readChunk+1,std::memory_order_release);
+      }
+      a.read.store(read+n,std::memory_order_release);
+    }
+    t.mix=a.out.data();
+    if(a.mode.load(std::memory_order_relaxed)==AheadState::Draining&&a.empty()) {
+      // Drained exactly at this block's end: the next block renders here.
+      a.lock();const bool drained=a.empty();
+      if(drained)a.mode.store(AheadState::Off,std::memory_order_relaxed);
+      a.unlock();
+      if(drained) {
+        if(!catchUp(g,t,block.position+count,t.taskOverflows)){t.reset(block.position+count,block.playing,true,t.taskOverflows);++t.taskResyncs;}
+        a.clear();
+      }
+    }
+    return true;
+  }
+  static void trackTask(void*self,std::uint32_t index,std::uint32_t slot)noexcept{static_cast<Impl*>(self)->renderTrack(index,slot);}
+  void renderTrack(std::uint32_t index,std::uint32_t slot)noexcept {
+    auto&g=*block.graph;auto&t=g.tracks[index];
+    t.taskOverflows=0;t.taskInvalid=0;
+    if(t.ahead&&t.ahead->mode.load(std::memory_order_acquire)!=AheadState::Off) {
+      if(consumeAhead(g,t))return;
+      // Lost sync (never expected): the documented per-track reset.
+      auto&a=*t.ahead;a.lock();a.mode.store(AheadState::Off,std::memory_order_relaxed);a.clear();a.unlock();
+      t.reset(block.position,block.playing,true,t.taskOverflows);++t.taskResyncs;
+    }
+    const bool monitored=(monitor[index/64]&(std::uint64_t{1}<<(index%64)))!=0;
+    // Each monitored track hears its own input; an unopened one hears silence.
+    const float*trackInput=nullptr;bool stereoInput=false;
+    if(monitored) {
+      const auto route=routeInput(t.timeline.input,std::span(layout.data(),layoutCount),block.channels,inputLeft,inputRight);
+      if(!route.missing) {
+        float*scratch=inputScratch.data()+static_cast<std::size_t>(slot)*maxBlock*2;
+        for(std::uint32_t i=0;i<block.count;++i) {
+          const float left=inputSample(block.input,block.channels,block.cursor+i,route.left,t.taskInvalid);
+          scratch[2*i]=left;scratch[2*i+1]=route.right>=0?inputSample(block.input,block.channels,block.cursor+i,route.right,t.taskInvalid):left;
+        }
+        trackInput=scratch;stereoInput=route.right>=0;
+      }
+    }
+    t.render(block.position,block.count,block.playing,trackInput,monitored,stereoInput,*block.context,t.taskOverflows,t.taskInvalid);
+    t.meter=t.peak;t.mix=t.buffer.data();
+  }
+  // Callback, end of a device buffer: hand eligible tracks to the workers.
+  void promote()noexcept {
+    std::uint32_t count=0;
+    if(pool&&aheadBlocks&&!offline&&active&&playing) {
+      auto&g=*active->impl_;
+      const auto blockFrames=deviceBlock.load(std::memory_order_relaxed);
+      const bool open=!deferred&&blockFrames&&position<boundaryOf(g.timeline);
+      for(std::size_t i=0;i<g.tracks.size();++i) {
+        auto&t=g.tracks[i];
+        if(!t.ahead)continue;
+        auto&a=*t.ahead;
+        if(a.mode.load(std::memory_order_relaxed)!=AheadState::Off){++count;continue;}
+        if(!open||a.capacity<std::uint64_t{blockFrames}*2||continuousFrame<t.liveUntil)continue;
+        if((monitor[i/64]&(std::uint64_t{1}<<(i%64)))||t.pendingCount||t.releaseAudition)continue;
+        if(capture&&std::any_of(capture->takes.begin(),capture->takes.end(),[&](const RecordingTake&take){return take.track==i;}))continue;
+        a.clear();a.nextFrame=position;a.continuous=continuousFrame;a.block=blockFrames;
+        a.mode.store(AheadState::Active,std::memory_order_release);++count;
+      }
+      if(count) {
+        if(aheadGraph.load(std::memory_order_relaxed)!=&g)aheadGraph.store(&g,std::memory_order_seq_cst);
+        pool->wake();
+      }
+    }
+    aheadTracks=count;
+  }
   void normalize(bool starting=false)noexcept {
     if(!active){position=0;return;}
     const auto&p=active->impl_->timeline;position=std::clamp<std::int64_t>(position,0,p.lengthFrames);
@@ -768,30 +1167,47 @@ struct RenderEngine::Impl {
           // Keep at most two immutable table sets in one running synth. A
           // rapid edit waits for the current 20 ms table crossfade, then moves
           // completed ownership into the graph retired on the control thread.
+          // No worker may be inside either graph while its state is read, moved
+          // or retired (the next block's promote() lets them back in).
+          quiesce();
           if(preserve&&!previous->impl_->readyToPreserve()){deferred=c;return;}
+          if(preserve)handOverAhead(*previous->impl_,*c.graph->impl_);
           active=c.graph;targetMasterGain=active->impl_->timeline.masterGain;
           if(preserve)active->impl_->takeStateFrom(*previous->impl_);
-          else masterGain=targetMasterGain;
+          else {masterGain=targetMasterGain;aheadTracks=0;}
           if(projectChanged){position=0;playing=false;monitor={};}
           normalize();if(!preserve)reset(playing,true);
           if(previous){const bool accepted=retired.push(previous);(void)accepted;}
           break;
         }
         case Kind::Play:if(!playing){normalize(true);playing=active!=nullptr;reset(playing,false);}break;
-        case Kind::Pause:playing=false;reset(false,false);break;
-        case Kind::Stop:playing=false;position=0;reset(false,true);break;
-        case Kind::Seek:position=c.frame;normalize();reset(playing,true);break;
-        case Kind::Preview:case Kind::NoteOn:
-          if(active&&c.track<active->impl_->tracks.size()) active->impl_->tracks[c.track].spawn(c.pitch,c.value,c.frame,c.frame,c.noteId,true,voiceOverflows);
+        case Kind::Pause:reclaimAll(false);playing=false;reset(false,false);break;
+        case Kind::Stop:reclaimAll(true);playing=false;position=0;reset(false,true);break;
+        case Kind::Seek:reclaimAll(true);position=c.frame;normalize();reset(playing,true);break;
+        case Kind::Preview:case Kind::NoteOn:case Kind::NoteOff:case Kind::AllNotesOff: {
+          if(!active||c.track>=active->impl_->tracks.size())break;
+          auto&t=active->impl_->tracks[c.track];
+          // A track rendering ahead finishes its ring first (a few buffers):
+          // live notes then start on time from the callback-owned state.
+          if(!own(t)){deferred=c;return;}
+          markLive(t);
+          if(c.kind==Kind::NoteOff)t.noteOff(c.pitch,c.noteId,voiceOverflows);
+          else if(c.kind==Kind::AllNotesOff)t.allNotesOff(voiceOverflows);
+          else t.spawn(c.pitch,c.value,c.frame,c.frame,c.noteId,true,voiceOverflows);
           break;
-        case Kind::NoteOff:
-          if(active&&c.track<active->impl_->tracks.size()) active->impl_->tracks[c.track].noteOff(c.pitch,c.noteId,voiceOverflows);
-          break;
-        case Kind::AllNotesOff:
-          if(active&&c.track<active->impl_->tracks.size())active->impl_->tracks[c.track].allNotesOff(voiceOverflows);
-          break;
-        case Kind::Monitor:monitor=c.mask;break;
-        case Kind::RecordStart:capture=c.capture;recording=capture!=nullptr;recordingStart=position;recordedFrames=0;droppedFrames=0;break;
+        }
+        case Kind::Monitor: {
+          bool wait=false;
+          if(active)for(std::size_t i=0;i<active->impl_->tracks.size();++i)if((c.mask[i/64]&(std::uint64_t{1}<<(i%64)))&&!own(active->impl_->tracks[i]))wait=true;
+          if(wait){deferred=c;return;}
+          monitor=c.mask;break;
+        }
+        case Kind::RecordStart: {
+          bool wait=false;
+          if(active&&c.capture)for(const auto&take:c.capture->takes)if(take.track<active->impl_->tracks.size()&&!own(active->impl_->tracks[take.track]))wait=true;
+          if(wait){deferred=c;return;}
+          capture=c.capture;recording=capture!=nullptr;recordingStart=position;recordedFrames=0;droppedFrames=0;break;
+        }
         case Kind::RecordStop:recording=false;capture=nullptr;break;
         case Kind::Master:targetMasterGain=c.value;break;
         case Kind::Input:inputLeft=c.pitch;inputRight=static_cast<int>(c.frame);break;
@@ -806,7 +1222,8 @@ struct RenderEngine::Impl {
     published.trackCount.store(static_cast<std::uint32_t>(count),std::memory_order_relaxed);
     published.revision.store(active?active->impl_->timeline.revision:0,std::memory_order_relaxed);
     published.latency.store(active?active->impl_->latency:0,std::memory_order_relaxed);
-    for(std::size_t i=0;i<count;++i)published.trackPeaks[i].store(active->impl_->tracks[i].peak,std::memory_order_relaxed);
+    for(std::size_t i=0;i<count;++i)published.trackPeaks[i].store(active->impl_->tracks[i].meter,std::memory_order_relaxed);
+    published.aheadTracks.store(aheadTracks,std::memory_order_relaxed);published.aheadResyncs.store(aheadResyncs,std::memory_order_relaxed);
     published.masterPeak.store(masterPeak,std::memory_order_relaxed);published.voiceOverflows.store(voiceOverflows,std::memory_order_relaxed);published.invalidSamples.store(invalidSamples,std::memory_order_relaxed);
     published.recording.store(recording,std::memory_order_relaxed);published.recordingStart.store(recordingStart,std::memory_order_relaxed);
     published.recorded.store(recordedFrames,std::memory_order_relaxed);published.dropped.store(droppedFrames,std::memory_order_relaxed);
@@ -908,6 +1325,19 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
   estimated+=static_cast<std::size_t>(result->latency)*p.tracks.size()*16;
   require(estimated<=memoryLimit,"Plugin compensation exceeds native memory budget");
   for(auto&t:result->tracks)t.compensation=CompensationDelay(result->latency-t.latency);
+  if(impl_->aheadBlocks&&!impl_->offline) {
+    // Rings hold the current device buffer plus the ahead window. VST3 tracks
+    // stay in the callback: their editors feed parameters that must be heard now.
+    const auto capacity=std::min<std::uint32_t>(65536,std::max<std::uint32_t>(64,impl_->aheadHint)*(1+impl_->aheadBlocks));
+    const auto bytes=(static_cast<std::size_t>(capacity)+impl_->maxBlock)*2*sizeof(float);
+    std::size_t budget=aheadMemoryBudget;
+    for(auto&t:result->tracks) {
+      const bool vst3=(t.instrument&&!t.wavetable)||std::any_of(t.inserts.begin(),t.inserts.end(),[](const InsertRuntime&i){return i.plugin!=nullptr;});
+      if(!t.timeline.enabled||vst3)continue;
+      if(bytes>budget)break;
+      budget-=bytes;t.ahead=std::make_unique<AheadState>(capacity,impl_->maxBlock);
+    }
+  }
   result->recipe=std::move(recipe);
   return std::unique_ptr<PreparedProject>(new PreparedProject(std::move(result)));
 }
@@ -992,10 +1422,31 @@ std::uint64_t RenderEngine::setInputLayout(std::span<const std::uint32_t> channe
 std::uint64_t RenderEngine::setMasterGain(float gain){checked(gain,0,2,"Invalid master gain");Impl::Command c;c.kind=Impl::Kind::Master;c.value=gain;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::setInputChannels(int left,int right){require(left>=0&&left<64&&right>=-1&&right<64,"Invalid native input channel");Impl::Command c;c.kind=Impl::Kind::Input;c.pitch=left;c.frame=right;impl_->controlLeft=left;impl_->controlRight=right;return impl_->enqueue(c);}
 void RenderEngine::setOffline(bool value)noexcept{impl_->offline=value;}
+std::uint32_t autoProcessingThreads()noexcept {
+  const auto hardware=std::thread::hardware_concurrency();
+  return hardware>1?std::min(hardware-1,8u):0u;
+}
+void RenderEngine::setProcessing(const ProcessingOptions& options){
+  auto&e=*impl_;
+  require(options.threads<=maxProcessingThreads,"Invalid native processing thread count");
+  require(!e.lastSubmittedRecipe&&!e.active,"Configure native processing before submitting a project");
+  e.pool.reset();e.workerCount=0;e.forkEnabled=false;
+  e.aheadBlocks=e.offline?0:renderAheadBlocks(options.renderAhead);
+  e.aheadHint=options.deviceBlockFrames?std::clamp<std::uint32_t>(options.deviceBlockFrames,16,16384):512;
+  // Rendering ahead needs at least one worker even when blocks are not forked.
+  const auto workers=options.threads?options.threads:(e.aheadBlocks?1u:0u);
+  e.inputScratch.assign(static_cast<std::size_t>(workers+1)*e.maxBlock*2,0.f);
+  if(!workers)return;
+  e.pool=std::make_unique<WorkerPool>(workers,&Impl::background,&e,options.onWorkerThread);
+  e.workerCount=workers;e.forkEnabled=options.threads>0;
+}
 
 void RenderEngine::render(float* output,const float* input,std::uint32_t frames,std::uint32_t channels)noexcept {
   if(!output)return;
-  auto& e=*impl_;e.consume();
+  auto& e=*impl_;
+  if(frames)e.deviceBlock.store(frames,std::memory_order_relaxed);
+  e.consume();
+  e.recordingNow.store(e.recording,std::memory_order_relaxed);
   std::uint32_t cursor=0;float masterPeak=0;
   while(cursor<frames) {
     auto count=std::min(e.maxBlock,frames-cursor);
@@ -1004,7 +1455,7 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       const auto boundary=!e.offline&&p.cycle?p.cycle->at(1):p.lengthFrames;
       if(e.position>=boundary) {
         if(!e.offline&&p.cycle){e.position=p.cycle->at(0);e.reset(true,false);}
-        else if(!e.offline){e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
+        else if(!e.offline){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
       }
       if(e.playing&&e.position<boundary)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,boundary-e.position));
     }
@@ -1030,22 +1481,18 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       ProcessContext context{static_cast<double>(e.rate),p.timeline.bpm,e.position,e.playing&&e.position<p.timeline.lengthFrames,e.offline,p.timeline.timeSigNumerator,p.timeline.timeSigDenominator};
       context.recording=e.recording;context.continuousFrame=e.continuousFrame;
       if(p.timeline.cycle&&!e.offline){context.cycleActive=true;context.cycleStartFrame=p.timeline.cycle->at(0);context.cycleEndFrame=p.timeline.cycle->at(1);}
-      for(std::size_t index=0;index<p.tracks.size();++index) {
-        auto&t=p.tracks[index];const bool monitor=(e.monitor[index/64]&(std::uint64_t{1}<<(index%64)))!=0;
-        // Each monitored track hears its own input; an unopened one hears silence.
-        const float*trackInput=nullptr;bool stereoInput=false;
-        if(monitor) {
-          const auto route=routeInput(t.timeline.input,std::span(e.layout.data(),e.layoutCount),channels,e.inputLeft,e.inputRight);
-          if(!route.missing) {
-            for(std::uint32_t i=0;i<count;++i) {
-              const float left=inputSample(input,channels,cursor+i,route.left,e.invalidSamples);
-              e.inputScratch[2*i]=left;e.inputScratch[2*i+1]=route.right>=0?inputSample(input,channels,cursor+i,route.right,e.invalidSamples):left;
-            }
-            trackInput=e.inputScratch.data();stereoInput=route.right>=0;
-          }
-        }
-        t.render(e.position,count,e.playing&&e.position<p.timeline.lengthFrames,trackInput,monitor,stereoInput,context,e.voiceOverflows,e.invalidSamples);
-        for(std::size_t sample=0;sample<static_cast<std::size_t>(count)*2;++sample)out[sample]+=t.buffer[sample];
+      e.block={&p,&context,input,e.position,count,cursor,channels,e.playing&&e.position<p.timeline.lengthFrames};
+      // Tracks render independently (in parallel when there is a pool and at
+      // least two tracks to render here), then mix in track order, so the sum
+      // is bit-identical to the single-threaded path.
+      std::uint32_t callbackTracks=0;
+      if(e.forkEnabled)for(const auto&t:p.tracks)if(t.timeline.enabled&&(!t.ahead||t.ahead->mode.load(std::memory_order_relaxed)==AheadState::Off))++callbackTracks;
+      const auto trackCount=static_cast<std::uint32_t>(p.tracks.size());
+      if(e.pool&&e.forkEnabled&&callbackTracks>=2)e.pool->run(trackCount,&Impl::trackTask,&e);
+      else for(std::uint32_t index=0;index<trackCount;++index)e.renderTrack(index,0);
+      for(auto&t:p.tracks) {
+        for(std::size_t sample=0;sample<static_cast<std::size_t>(count)*2;++sample)out[sample]+=t.mix[sample];
+        e.voiceOverflows+=t.taskOverflows;e.invalidSamples+=t.taskInvalid;e.aheadResyncs+=t.taskResyncs;t.taskResyncs=0;
       }
       const float smoothing=static_cast<float>(1-std::exp(-1/(e.rate*.012)));
       for(std::uint32_t i=0;i<count;++i){e.masterGain+=(e.targetMasterGain-e.masterGain)*smoothing;out[2*i]*=e.masterGain;out[2*i+1]*=e.masterGain;}
@@ -1059,8 +1506,9 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
   if(e.active&&e.playing&&!e.offline) {
     const auto&p=e.active->impl_->timeline;
     if(p.cycle&&e.position>=p.cycle->at(1)){e.position=p.cycle->at(0);e.reset(true,false);}
-    else if(!p.cycle&&e.position>=p.lengthFrames){e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
+    else if(!p.cycle&&e.position>=p.lengthFrames){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
   }
+  e.promote();
   e.publish(masterPeak);
 }
 
@@ -1070,7 +1518,8 @@ EngineSnapshot RenderEngine::snapshot()const noexcept {
   s.trackCount=p.trackCount.load(std::memory_order_relaxed);s.latencyFrames=p.latency.load(std::memory_order_relaxed);s.ready=p.ready.load(std::memory_order_relaxed);s.playing=p.playing.load(std::memory_order_relaxed);
   s.masterPeak=p.masterPeak.load(std::memory_order_relaxed);for(std::uint32_t i=0;i<std::min(256u,s.trackCount);++i)s.trackPeaks[i]=p.trackPeaks[i].load(std::memory_order_relaxed);
   s.commandOverflows=e.commandOverflows.load(std::memory_order_relaxed);s.voiceOverflows=p.voiceOverflows.load(std::memory_order_relaxed);s.invalidSamples=p.invalidSamples.load(std::memory_order_relaxed);
-  s.recording=p.recording.load(std::memory_order_relaxed);s.recordingStartFrame=p.recordingStart.load(std::memory_order_relaxed);s.recordedFrames=p.recorded.load(std::memory_order_relaxed);s.recordingDroppedFrames=p.dropped.load(std::memory_order_relaxed);return s;
+  s.recording=p.recording.load(std::memory_order_relaxed);s.recordingStartFrame=p.recordingStart.load(std::memory_order_relaxed);s.recordedFrames=p.recorded.load(std::memory_order_relaxed);s.recordingDroppedFrames=p.dropped.load(std::memory_order_relaxed);
+  s.workerThreads=e.workerCount;s.renderAheadTracks=p.aheadTracks.load(std::memory_order_relaxed);s.renderAheadResyncs=p.aheadResyncs.load(std::memory_order_relaxed);return s;
 }
 std::uint32_t RenderEngine::drainRecording(float* destination,std::uint32_t capacity)noexcept {
   if(!destination||!capacity||!impl_->ownedCapture)return 0;

@@ -465,6 +465,7 @@ export class NativeAudioEngine implements AudioEngine {
         inputChannels: inputs.length, inputChannelOffset: inputs[0] ?? next.nativeInputChannel, inputChannelList: inputs,
         lowLatencyMonitoring: next.lowLatencyMonitoring,
         ...(next.clockSource === undefined ? {} : { clockSource: next.clockSource }), directMonitoring: next.directMonitoring,
+        processingThreads: next.processingThreads, renderAhead: next.renderAhead,
       })
       if (generation !== this.generation) throw abortError()
       await this.ensureWaveCapability()

@@ -377,6 +377,36 @@ try {
       await request('engine.close')
     })
   })
+  await checked('processing threads and render-ahead reach the engine; exports match single-threaded', async () => {
+    await withTestHost(async request => {
+      const base = { backend: 'test', sampleRate: 48000, bufferFrames: 128, inputChannels: 0 }
+      await assert.rejects(request('engine.configure', { ...base, processingThreads: 17 }), /processingThreads/)
+      await assert.rejects(request('engine.configure', { ...base, renderAhead: 'max' }), /renderAhead/)
+      const p = project([track('keys'), track('bass', source('bass')), track('pad', source('pad')), track('drums', source('drums'))])
+      p.lengthFrames = 48000 * 20
+      const exported = []
+      for (const processingThreads of [0, 2]) {
+        await request('engine.configure', { ...base, processingThreads, renderAhead: 'off' })
+        const file = path.join(temporary, `threads-${processingThreads}.wav`)
+        await request('render.wav', { timeline: { ...p, lengthFrames: 24000 }, path: file })
+        exported.push(await readFile(file))
+      }
+      assert.ok(exported[0].equals(exported[1]), 'a two-thread export differs from the single-threaded export')
+      await request('engine.configure', { ...base, processingThreads: 'auto', renderAhead: 'normal' })
+      await request('project.set', { timeline: p })
+      const configured = await request('engine.snapshot')
+      assert.equal(configured.processingThreads, 'auto'); assert.equal(configured.renderAhead, 'normal')
+      assert.ok(Number.isInteger(configured.workerThreads) && configured.workerThreads >= 1, 'render-ahead needs a worker')
+      await request('transport.play')
+      const deadline = Date.now() + 5000
+      let state = await request('engine.snapshot')
+      while (state.renderAheadTracks < 4) { assert.ok(Date.now() < deadline, 'playing tracks did not render ahead'); await delay(10); state = await request('engine.snapshot') }
+      assert.equal(state.renderAheadResyncs, 0)
+      await request('transport.pause')
+      assert.equal((await request('engine.snapshot')).renderAheadTracks, 0, 'a paused engine still renders ahead')
+      await request('engine.close')
+    })
+  })
   await checked('unknown and missing processors fail before silent substitution', async () => {
     const p = project()
     p.tracks[0].source.instrumentId = 'not-an-instrument'

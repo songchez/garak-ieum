@@ -222,7 +222,7 @@ class Host {
     if (method=="project.set") {
       auto project=timeline(a.at("timeline"));
       if (engine_ && configured_ && project.sampleRate!=engine_->snapshot().sampleRate) throw std::runtime_error("Project and device sample rates differ; configure the device first");
-      if (!engine_) engine_=std::make_unique<RenderEngine>(project.sampleRate,scratchFrames);
+      if (!engine_) { engine_=std::make_unique<RenderEngine>(project.sampleRate,scratchFrames); engine_->setProcessing(processingOptions(true)); }
       auto prepared=engine_->prepare(project,assets_,sets_,resolver(false));
       if(a.value("awaitApplied",false))requireEngine();
       const auto ticket=engine_->submit(std::move(prepared)); project_=std::move(project); prunePlugins();
@@ -522,16 +522,49 @@ class Host {
     testState_.outputNames={"Output 1","Output 2"}; testState_.outputChannels=2; testState_.inputDeviceId="test-device"; testState_.outputDeviceId="test-device";
     testState_.outputChannelOffset=config.outputChannelOffset; testState_.clockSource=0;
   }
+  /** processingThreads: "auto" | 0..16; renderAhead: "off" | "normal" | "high". Absent keeps the current value. */
+  void readProcessing(const Json& a) {
+    if(a.contains("processingThreads") && !a.at("processingThreads").is_null()) {
+      const auto& value=a.at("processingThreads");
+      if(value.is_string()) {
+        if(value.get<std::string>()!="auto") throw std::runtime_error("Invalid processingThreads");
+        processingThreads_.reset();
+      } else processingThreads_=std::uint32_t(integer(a,"processingThreads",0,maxProcessingThreads,0));
+    }
+    if(a.contains("renderAhead") && !a.at("renderAhead").is_null()) {
+      const auto mode=string(a,"renderAhead",16);
+      if(mode=="off") renderAhead_=RenderAhead::Off;
+      else if(mode=="normal") renderAhead_=RenderAhead::Normal;
+      else if(mode=="high") renderAhead_=RenderAhead::High;
+      else throw std::runtime_error("Invalid renderAhead");
+    }
+  }
+  std::uint32_t resolvedThreads() const { return processingThreads_ ? *processingThreads_ : autoProcessingThreads(); }
+  /** Device engines render ahead and run workers at real-time priority; WAV export does neither. */
+  ProcessingOptions processingOptions(bool device) const {
+    ProcessingOptions options; options.threads=resolvedThreads();
+    if(!device) return options;
+    const auto state=currentDevice();
+    options.renderAhead=renderAhead_; options.deviceBlockFrames=state.bufferFrames;
+    if(state.configured && state.sampleRate && state.bufferFrames) {
+      const auto rate=state.sampleRate,frames=state.bufferFrames;
+      options.onWorkerThread=[rate,frames](bool started){ promoteAudioWorkerThread(started,rate,frames); };
+    }
+    return options;
+  }
   Json configure(const Json& a) {
     if(recording_) throw std::runtime_error("Stop recording before changing the audio device");
     const auto oldFrame=engine_?engine_->snapshot().frame:0;
+    readProcessing(a);
     closeDevice(); pluginError_.clear(); recordingError_=false;
     const auto config=deviceConfig(a);
     if(test_) configureTestClock(config);
     else device_.configure(config,callback,this);
     const auto state=currentDevice();
     if(!state.sampleRate || !state.bufferFrames) { device_.close(); throw std::runtime_error("Audio driver did not report a usable configuration"); }
-    engine_=std::make_unique<RenderEngine>(state.sampleRate,scratchFrames); plugins_.clear();
+    // The previous engine and its workers are destroyed here, after the device closed.
+    engine_.reset(); engine_=std::make_unique<RenderEngine>(state.sampleRate,scratchFrames); plugins_.clear();
+    engine_->setProcessing(processingOptions(true));
     project_.lowLatencyMonitoring=config.lowLatencyMonitoring;
     if(project_.projectId.empty()) { project_.projectId="empty"; project_.sampleRate=state.sampleRate; project_.lengthFrames=state.sampleRate; }
     if(project_.sampleRate!=state.sampleRate) { project_={}; project_.projectId="empty"; project_.sampleRate=state.sampleRate; project_.lengthFrames=state.sampleRate; }
@@ -630,7 +663,7 @@ class Host {
   }
   Json renderStopped(const Json& a) {
     auto project=timeline(a.at("timeline")); project.cycle.reset();
-    RenderEngine offline(project.sampleRate,scratchFrames); offline.setOffline(true);
+    RenderEngine offline(project.sampleRate,scratchFrames); offline.setOffline(true); offline.setProcessing(processingOptions(false));
     std::vector<std::shared_ptr<Vst3Processor>> renderedPlugins;
     auto prepared=offline.prepare(project,assets_,sets_,resolver(true,&renderedPlugins)); const auto tail=std::min(30.0,prepared->tailSeconds());
     const std::uint64_t latency=prepared->latencyFrames();
@@ -662,10 +695,14 @@ class Host {
       // Callback deadlines this host measured, plus driver-reported overload/xrun events.
       result["device"]["overloads"]=load_.overloads()+device.discontinuities; result["device"]["lastCallbackLoad"]=load_.lastLoad(); }
     if(!device.error.empty()) result["error"]=device.error;
+    // Settings as requested; workerThreads/renderAheadTracks below are what runs.
+    result["processingThreads"]=processingThreads_?Json(*processingThreads_):Json("auto");
+    result["renderAhead"]=renderAhead_==RenderAhead::High?"high":renderAhead_==RenderAhead::Normal?"normal":"off";
     if(engine_) {
       const auto s=engine_->snapshot();
       result.update({{"revision",s.revision},{"ready",configured_&&s.ready&&device.running},{"playing",s.playing&&device.running},{"frame",s.frame},{"sampleRate",s.sampleRate},{"masterLevel",s.masterPeak},
-        {"recording",s.recording},{"recordingStartFrame",s.recordingStartFrame},{"recordedFrames",s.recordedFrames},{"recordingDroppedFrames",s.recordingDroppedFrames},{"latencyFrames",s.latencyFrames},{"commandOverflows",s.commandOverflows},{"voiceOverflows",s.voiceOverflows},{"invalidSamples",s.invalidSamples}});
+        {"recording",s.recording},{"recordingStartFrame",s.recordingStartFrame},{"recordedFrames",s.recordedFrames},{"recordingDroppedFrames",s.recordingDroppedFrames},{"latencyFrames",s.latencyFrames},{"commandOverflows",s.commandOverflows},{"voiceOverflows",s.voiceOverflows},{"invalidSamples",s.invalidSamples},
+        {"workerThreads",s.workerThreads},{"renderAheadTracks",s.renderAheadTracks},{"renderAheadResyncs",s.renderAheadResyncs}});
       for(std::size_t i=0;i<std::min(project_.tracks.size(),std::size_t(s.trackCount));++i) result["levels"][project_.tracks[i].id]=s.trackPeaks[i];
       result["tracksMissingInput"]=tracksMissingInput(device);
       if(recordingError_) result["error"]="녹음 데이터가 손실되었습니다. 녹음을 중지하고 복구 파일을 확인해주세요.";
@@ -682,6 +719,8 @@ class Host {
     try { closeDevice(); if(recording_) recording_->finish(); recording_.reset(); engine_.reset(); plugins_.clear(); assets_.clear(); sets_.clear(); project_={}; pluginError_.clear(); recordingError_=false; } catch(...) {}
   }
   bool test_=false,configured_=false,testTone_=false,recordingError_=false;
+  std::optional<std::uint32_t> processingThreads_; // Empty: 'auto'.
+  RenderAhead renderAhead_=RenderAhead::Off;
   std::string pluginError_;
   DeviceHost device_; DeviceState testState_; std::unique_ptr<RenderEngine> engine_; ProjectTimeline project_;
   AssetStore assets_; SampleSetStore sets_; std::map<std::string,PluginEntry> plugins_;

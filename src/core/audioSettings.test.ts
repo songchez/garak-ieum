@@ -68,6 +68,14 @@ describe('native device settings', () => {
     expect(DEFAULT_AUDIO_SETTINGS).toMatchObject({ directMonitoring: false, releaseInBackground: false, nativeDeviceProfiles: {} })
   })
 
+  it('normalizes processing threads and render-ahead', () => {
+    expect(DEFAULT_AUDIO_SETTINGS).toMatchObject({ processingThreads: 'auto', renderAhead: 'off' })
+    for (const value of ['auto', 0, 1, 2, 16] as const) expect(normalizeAudioSettings({ processingThreads: value }).processingThreads).toBe(value)
+    for (const value of [-1, 17, 2.5, '4', null]) expect(normalizeAudioSettings({ processingThreads: value }).processingThreads).toBe('auto')
+    for (const value of ['off', 'normal', 'high'] as const) expect(normalizeAudioSettings({ renderAhead: value }).renderAhead).toBe(value)
+    for (const value of ['max', true, 2]) expect(normalizeAudioSettings({ renderAhead: value }).renderAhead).toBe('off')
+  })
+
   it('normalizes device profiles: sorted bounded inputs, valid non-overlapping pairs, trimmed names', () => {
     expect(normalizeDeviceProfile({
       inputs: [3, 1, 1, 0, -1, 300, 2.5, 2], stereoPairs: [2, 0, 1, 5], inputNames: { 0: ' Vox ', 1: '', 999: 'x', a: 'y', 2: 7 }, outputNames: { 0: 'M'.repeat(80) },

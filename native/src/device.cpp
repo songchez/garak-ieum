@@ -24,6 +24,12 @@
 #endif
 #include <windows.h>
 #include <objbase.h>
+#include <avrt.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#include <pthread.h>
 #endif
 
 #if GARAK_ENABLE_DEVICES
@@ -870,7 +876,50 @@ std::unique_ptr<Adapter> openAdapter(const DeviceConfig& config, DeviceCallback 
   throw std::runtime_error("Requested audio backend is unavailable in this build: " + config.backend);
 }
 
+#if defined(_WIN32)
+thread_local HANDLE workerTask = nullptr;
+#endif
+
 } // namespace
+
+void promoteAudioWorkerThread(bool started, std::uint32_t sampleRate, std::uint32_t bufferFrames) noexcept {
+#if defined(_WIN32)
+  (void)sampleRate; (void)bufferFrames;
+  if (started) {
+    // Same MMCSS class as the WASAPI callback (miniaudio "Pro Audio" usage), so
+    // workers are scheduled like the device thread they serve. ASIO drivers
+    // pick their own callback priority; workers still get Pro Audio.
+    DWORD index = 0;
+    workerTask = AvSetMmThreadCharacteristicsW(L"Pro Audio", &index);
+    if (workerTask) AvSetMmThreadPriority(workerTask, AVRT_PRIORITY_HIGH);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+  } else if (workerTask) {
+    AvRevertMmThreadCharacteristics(workerTask);
+    workerTask = nullptr;
+  }
+#elif defined(__APPLE__)
+  if (!started || !sampleRate || !bufferFrames) return;
+  // The Core Audio IOProc runs with a time-constraint policy for one buffer
+  // period; give workers the same deadline so their fork/join share fits.
+  // Follow-up: also os_workgroup_join() the device's IO workgroup
+  // (kAudioDevicePropertyIOThreadOSWorkgroup, macOS 11+) so the scheduler
+  // accounts workers inside the IOProc's deadline on Apple Silicon P-cores.
+  mach_timebase_info_data_t timebase{};
+  if (mach_timebase_info(&timebase) != KERN_SUCCESS || !timebase.numer) return;
+  const double periodNanos = 1e9 * bufferFrames / sampleRate;
+  const auto ticks = [&](double nanos) { return static_cast<std::uint32_t>(nanos * timebase.denom / timebase.numer); };
+  thread_time_constraint_policy_data_t policy{};
+  policy.period = ticks(periodNanos);
+  policy.computation = ticks(std::max(50000.0, periodNanos * .5));
+  policy.constraint = ticks(periodNanos);
+  if (policy.computation > policy.constraint) policy.computation = policy.constraint;
+  policy.preemptible = 1;
+  (void)thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
+                          reinterpret_cast<thread_policy_t>(&policy), THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+#else
+  (void)started; (void)sampleRate; (void)bufferFrames;
+#endif
+}
 
 struct DeviceHost::Impl {
   using Clock = std::chrono::steady_clock;

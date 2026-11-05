@@ -127,7 +127,7 @@ if(GARAK_ENABLE_VST3)
   target_link_libraries(garak_platform PUBLIC sdk_hosting ${CMAKE_DL_LIBS})
 endif()
 if(WIN32)
-  target_link_libraries(garak_platform PUBLIC ole32 oleaut32 uuid user32 advapi32 shell32 shlwapi winmm)
+  target_link_libraries(garak_platform PUBLIC ole32 oleaut32 uuid user32 advapi32 shell32 shlwapi winmm avrt)
 elseif(APPLE)
   target_sources(garak_platform PRIVATE src/vst3_window_mac.mm)
   # Steinberg's module_mac.mm explicitly requires ARC as well as our editor.

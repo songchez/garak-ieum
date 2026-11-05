@@ -167,6 +167,35 @@ struct EngineSnapshot {
   bool recording = false;
   std::int64_t recordingStartFrame = 0;
   std::uint64_t recordedFrames = 0, recordingDroppedFrames = 0;
+  // Multi-core processing: worker threads running beside the callback, tracks
+  // the callback currently consumes from render-ahead rings, and the times a
+  // ring had to be dropped mid-playback because it lost sync (never expected).
+  std::uint32_t workerThreads = 0, renderAheadTracks = 0;
+  std::uint64_t renderAheadResyncs = 0;
+};
+
+// Multi-core track processing (Logic "Processing Threads") and render-ahead of
+// non-live tracks (Cubase ASIO-Guard). `threads` workers join the callback for
+// each block: tracks render in parallel and are summed in track order, so the
+// mix is bit-identical to threads = 0 (the single-threaded path).
+// Render-ahead pre-renders playing tracks that are not live (not monitored,
+// not recording, no recent live/preview notes, no VST3) into per-track rings,
+// `renderAheadBlocks` device buffers ahead of the callback.
+enum class RenderAhead : std::uint8_t { Off, Normal, High };
+[[nodiscard]] constexpr std::uint32_t renderAheadBlocks(RenderAhead mode) noexcept {
+  return mode == RenderAhead::High ? 4u : mode == RenderAhead::Normal ? 2u : 0u;
+}
+constexpr std::uint32_t maxProcessingThreads = 16;
+// 'auto': hardware threads minus the callback's own, at most 8.
+[[nodiscard]] std::uint32_t autoProcessingThreads() noexcept;
+struct ProcessingOptions {
+  std::uint32_t threads = 0; // 0..maxProcessingThreads worker threads besides the callback.
+  RenderAhead renderAhead = RenderAhead::Off; // Ignored by offline engines.
+  // Expected device buffer; sizes the render-ahead rings. 0 assumes 512 frames.
+  std::uint32_t deviceBlockFrames = 0;
+  // Runs on each worker thread as it starts (true) and just before it exits
+  // (false): real-time scheduling, OS audio workgroups, test instrumentation.
+  std::function<void(bool started)> onWorkerThread;
 };
 
 // Indices into the interleaved callback input. The device opens K physical
@@ -292,6 +321,10 @@ class RenderEngine {
   // Offline instances ignore the audition cycle, and allow tails beyond project end.
   // Set only while stopped, before submitting/playing a project.
   void setOffline(bool offline) noexcept;
+  // Control thread, before the first submit and before the device starts:
+  // creates the worker pool (threads > 0, or 1 when only rendering ahead).
+  // Graphs prepared afterwards carry render-ahead rings within a memory budget.
+  void setProcessing(const ProcessingOptions& options);
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
