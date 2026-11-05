@@ -4,7 +4,7 @@ import type { NativeAudioEngine } from '../audio/native/NativeAudioEngine'
 import { nativeBackendForPlatform } from '../audio/native/NativeAudioEngine'
 import type { NativeBackend, NativeDevice, NativeDeviceProbe } from '../audio/native/contracts'
 import { describeNativeError, NATIVE_ACTION_LABELS, type NativeErrorAction, type NativeErrorAdvice } from '../audio/native/deviceErrors'
-import { bufferPlan, driverChannelName, inputChoices, namesByIndex, nearestSampleRate } from '../audio/native/deviceProfile'
+import { bufferPlan, driverChannelName, inputChoices, namesByIndex, nearestSampleRate, snapshotInputNames } from '../audio/native/deviceProfile'
 import {
   DEFAULT_AUDIO_SETTINGS, MAX_RECORDING_OFFSET_FRAMES, SAMPLE_RATES, nativeInputDeviceId, nativeInputProfile, nativeOutputProfile,
   nativeProfileKey, normalizeAudioSettings, parseRecordingOffsetFrames, type AudioSettings, type NativeDeviceProfile, type SampleRate,
@@ -145,7 +145,7 @@ export default function NativeAudioSettingsDialog({ engine, settings, project, b
   // The latency wizard measures the applied, running device.
   const appliedBackend = actual?.backend === 'test' ? backend : actual?.backend ?? backend
   const appliedProfile = nativeInputProfile(settings, appliedBackend)
-  const appliedNames = runningHere && inputProbe.probe ? namesByIndex(inputProbe.probe.inputs) : actual?.inputNames
+  const appliedNames = runningHere && inputProbe.probe ? namesByIndex(inputProbe.probe.inputs) : snapshotInputNames(actual)
   const wizardInputs = inputChoices(appliedProfile, appliedNames).filter(choice => choice.channels.length === 1)
   const outputCount = actual?.outputChannels || probe?.outputs.length || 2
   const wizardOutputs = Array.from({ length: Math.max(1, Math.floor(outputCount / 2)) }, (_, pair) => ({ offset: pair * 2, label: `출력 ${pair * 2 + 1}-${pair * 2 + 2}` }))

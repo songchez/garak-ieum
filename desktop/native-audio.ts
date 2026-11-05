@@ -305,7 +305,9 @@ export class NativeAudioService {
     if (method === 'engine.capabilities') return this.send('hello', {})
     if (method === 'engine.close') { const result = await this.send(method, params); this.activeTakes = null; return result }
     if (method === 'asset.put') return this.pcmAsset(params)
-    if (method === 'engine.configure' && Number(params.inputChannels) > 0 && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
+    // Either form opens physical inputs: the channel count or the explicit channel list.
+    const opensInput = Number(params.inputChannels) > 0 || (Array.isArray(params.inputChannelList) && params.inputChannelList.length > 0)
+    if (method === 'engine.configure' && opensInput && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
     if ((method === 'latency.measure' || (method === 'monitor.set' && params.enabled === true)) && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
     if (method === 'project.set') return this.send(method, { ...params, timeline: await this.resolveTimeline(params.timeline) })
     if (method === 'record.start') {

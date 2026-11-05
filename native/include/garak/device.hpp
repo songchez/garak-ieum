@@ -117,7 +117,9 @@ class DeviceHost {
   void setClockSource(std::int32_t index);
   void setDirectMonitoring(bool enabled);
   [[nodiscard]] DeviceState state() const;
-  void showControlPanel();
+  // Without an id: the running device. With an ASIO id that is not running (e.g. its
+  // configure was just refused), the driver is opened only to show its panel.
+  void showControlPanel(const std::string& backend = {}, const std::string& deviceId = {});
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -22,7 +22,7 @@ import { WAVE_SCHEMA_FINGERPRINT } from '../../devices/wavetable-synth/schema.ge
 import type { NativeEngineCapabilities, NativeProjectApplied } from './contracts'
 import { ownAudioBytes } from '../assetBytes'
 import { nativeRequestError, withNativeCode } from './deviceErrors'
-import { inputChoices, namesByIndex, parseDeviceProbe } from './deviceProfile'
+import { inputChoices, namesByIndex, parseDeviceProbe, snapshotInputNames } from './deviceProfile'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
@@ -417,7 +417,7 @@ export class NativeAudioEngine implements AudioEngine {
     const deviceId = nativeInputDeviceId(this.settings, backend)
     const probe = this.probes.get(nativeProfileKey(backend, deviceId))
     const device = this.nativeDevice?.backend === backend ? this.nativeDevice : null
-    const names = probe?.inputs.length ? namesByIndex(probe.inputs) : device?.inputNames
+    const names = probe?.inputs.length ? namesByIndex(probe.inputs) : snapshotInputNames(device)
     return inputChoices(nativeInputProfile(this.settings, backend), names, probe?.inputs.length || undefined)
   }
 

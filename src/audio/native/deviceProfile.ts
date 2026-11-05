@@ -42,6 +42,14 @@ export const namesByIndex = (list: readonly { index: number; name: string }[] | 
   return result
 }
 
+/** The host lists `inputNames` in open-channel order (`inputChannelList`); index them by physical channel. */
+export function snapshotInputNames(device: { inputNames?: readonly string[]; inputChannelList?: readonly number[]; inputChannelOffset?: number } | null | undefined): string[] {
+  const result: string[] = []
+  const list = device?.inputChannelList ?? device?.inputNames?.map((_, index) => (device.inputChannelOffset ?? 0) + index) ?? []
+  device?.inputNames?.forEach((name, index) => { if (list[index] !== undefined) result[list[index]] = name })
+  return result
+}
+
 /** Generic driver names ("Input 3") read better in the app's language; real names are kept as is. */
 export function driverChannelName(name: string | undefined, index: number, kind: 'input' | 'output'): string {
   const generic = name?.match(/^\s*(?:Input|Output|In|Out|Channel|Ch)\s*(\d+)\s*$/i)

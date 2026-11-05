@@ -886,6 +886,9 @@ struct DeviceHost::Impl {
   DeviceState last;
   std::string faultText, recoveryError;
   DeviceErrorCode recoveryCode = DeviceErrorCode::None;
+  // A driver opened only for its control panel. Many ASIO drivers close the panel
+  // with their instance, so it lives until the next configure, probe or close.
+  std::shared_ptr<void> panelDriver;
   Clock::time_point epoch = Clock::now();
   [[nodiscard]] std::int64_t nowMs() const {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - epoch).count();
@@ -960,6 +963,7 @@ DeviceProbe DeviceHost::probe(const std::string& backend, const std::string& dev
   if (std::find(backends.begin(), backends.end(), backend) == backends.end())
     throw std::runtime_error("Audio backend is unavailable in this build: " + backend);
   auto& d = *impl_;
+  d.panelDriver.reset();
   const auto current = d.device ? d.device->state() : DeviceState{};
   const bool open = d.device && current.backend == backend &&
       (deviceId == current.outputDeviceId || (!current.inputDeviceId.empty() && deviceId == current.inputDeviceId));
@@ -1013,6 +1017,7 @@ void DeviceHost::stop() {
 }
 void DeviceHost::close() noexcept {
   auto& d = *impl_;
+  d.panelDriver.reset();
   d.device.reset();
   d.config = {};
   d.callback = nullptr; d.user = nullptr;
@@ -1095,9 +1100,22 @@ DeviceState DeviceHost::state() const {
   result.suspended = d.suspended;
   return result;
 }
-void DeviceHost::showControlPanel() {
-  if (!impl_->device) throw std::runtime_error("Open an ASIO device first.");
-  impl_->device->panel();
+void DeviceHost::showControlPanel(const std::string& backend, const std::string& deviceId) {
+  auto& d = *impl_;
+  const auto current = d.device ? d.device->state() : DeviceState{};
+  if (d.device && (deviceId.empty() || deviceId == current.outputDeviceId)) { d.device->panel(); return; }
+#if GARAK_ENABLE_ASIO && defined(_WIN32)
+  if (backend == "asio" && !deviceId.empty()) {
+    // One ASIO driver per process: a different running driver must be released first.
+    if (d.device) throw DeviceError(DeviceErrorCode::InUse, "Another audio device is open. Close it before opening this driver's control panel.");
+    d.panelDriver.reset();
+    auto driver = std::make_shared<AsioDriver>(findAsio(deviceId));
+    if (driver->get()->controlPanel() != ASE_OK) throw std::runtime_error("This ASIO driver has no control panel.");
+    d.panelDriver = std::move(driver);
+    return;
+  }
+#endif
+  throw std::runtime_error(d.device ? "This audio device has no control panel." : "Open an ASIO device first.");
 }
 
 } // namespace garak

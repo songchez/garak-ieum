@@ -3,7 +3,7 @@ import type { NativeDeviceProfile } from '../../core/audioSettings'
 import type { NativeDevice, NativeDeviceProbe } from './contracts'
 import {
   backgroundAction, bufferPlan, driverChannelName, inputChoices, latencyOffsetFrames, nearestSampleRate, parseDeviceProbe,
-  shouldAlertOverload, toggleInput, toggleStereoPair,
+  shouldAlertOverload, snapshotInputNames, toggleInput, toggleStereoPair,
 } from './deviceProfile'
 
 const profile = (value: Partial<NativeDeviceProfile> = {}): NativeDeviceProfile => ({ inputs: [], stereoPairs: [], inputNames: {}, outputNames: {}, ...value })
@@ -139,5 +139,13 @@ describe('background release and overload alerts', () => {
     expect(shouldAlertOverload(3, 3, true, 40_000, 0)).toBe(false)
     expect(shouldAlertOverload(undefined, 3, true, 40_000, 0)).toBe(false)
     expect(shouldAlertOverload(3, 4, true, 40_000, 20_000)).toBe(false)
+  })
+})
+
+describe('snapshot input names', () => {
+  it('re-indexes host names from open-channel order to physical channels', () => {
+    expect(snapshotInputNames({ inputNames: ['Guitar', 'Vox'], inputChannelList: [2, 5] })).toEqual([undefined, undefined, 'Guitar', undefined, undefined, 'Vox'])
+    expect(snapshotInputNames({ inputNames: ['A', 'B'], inputChannelOffset: 2 })).toEqual([undefined, undefined, 'A', 'B'])
+    expect(snapshotInputNames(null)).toEqual([])
   })
 })

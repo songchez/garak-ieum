@@ -230,7 +230,7 @@ class Host {
       return {{"revision",project_.revision}};
     }
     if (method=="render.wav") return render(a);
-    if (method=="device.controlPanel" || method=="devices.controlPanel") { if(test_) return Json::object(); device_.showControlPanel(); return Json::object(); }
+    if (method=="device.controlPanel" || method=="devices.controlPanel") { if(test_) return Json::object(); device_.showControlPanel(a.value("backend",std::string{}),a.value("deviceId",std::string{})); return Json::object(); }
     if (method=="devices.probe") return probeJson(test_?testProbe():device_.probe(string(a,"backend",32),a.value("deviceId",std::string{})));
     if (method.rfind("device.",0)==0) return deviceRequest(method,a);
     // A device/plugin fault must not prevent a captured take being finalized.
@@ -409,7 +409,7 @@ class Host {
     const auto plan=engine_->planRecording(indices);
     for(std::size_t i=0;i<plan.size();++i) {
       // Recording silence from an unopened channel would look like a successful take.
-      if(plan[i].route.missing) throw std::runtime_error("The input selected for track "+takes[i].trackId+" is not open on this audio device");
+      if(plan[i].route.missing) throw DeviceError(DeviceErrorCode::ChannelsUnavailable,"The input selected for track "+takes[i].trackId+" is not open on this audio device");
       takes[i].channels=std::uint16_t(plan[i].route.channels);
     }
     recordingError_=false;
