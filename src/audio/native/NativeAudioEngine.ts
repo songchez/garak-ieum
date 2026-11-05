@@ -400,7 +400,9 @@ export class NativeAudioEngine implements AudioEngine {
     const value = await this.request<unknown>('devices.list', { backend })
     const devices = Array.isArray(value) ? value : (value as { devices?: unknown })?.devices
     if (!Array.isArray(devices)) throw new Error('오디오 장치 목록을 읽지 못했습니다.')
-    return devices.filter((device): device is NativeDevice => !!device && typeof device.id === 'string' && typeof device.name === 'string' && device.backend === backend)
+    // The explicit test-clock harness reports one `test` device for every backend; keep it so the
+    // settings flow (probe, channels) runs end to end. A real host never reports `test`.
+    return devices.filter((device): device is NativeDevice => !!device && typeof device.id === 'string' && typeof device.name === 'string' && (device.backend === backend || device.backend === 'test'))
   }
 
   /** `devices.probe`: opens the driver briefly (or reads the running one) for channels, buffers, rates and clocks. */

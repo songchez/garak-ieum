@@ -706,6 +706,16 @@ describe('offline file decoding and sample transfer', () => {
 })
 
 describe('native device settings client', () => {
+  it('lists only the requested backend, plus the explicit test-clock device', async () => {
+    const h = managed()
+    h.handlers.set('devices.list', () => [
+      { id: 'mic', name: 'Mic', backend: 'wasapi', inputChannels: 2, outputChannels: 0 },
+      { id: 'drv', name: 'Driver', backend: 'asio', inputChannels: 8, outputChannels: 8 },
+      { id: 'test-device', name: 'Test clock', backend: 'test', inputChannels: 2, outputChannels: 2, isDefault: true },
+    ])
+    expect((await h.engine.listDevices('wasapi')).map(device => device.id)).toEqual(['mic', 'test-device'])
+  })
+
   const profiled = { ...DEFAULT_AUDIO_SETTINGS, inputDeviceId: 'mic', nativeBufferFrames: 256, clockSource: 1, directMonitoring: true,
     nativeDeviceProfiles: { 'wasapi:mic': { inputs: [0, 2, 3], stereoPairs: [2], inputNames: { 0: 'Vox' }, outputNames: {} } } }
 
