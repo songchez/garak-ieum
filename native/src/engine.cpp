@@ -566,7 +566,107 @@ bool sameStructure(const ControlRecipe& a,const ControlRecipe& b) {
   return true;
 }
 
+// One recording's capture ring: allocated on the control thread, handed to the
+// callback by pointer in RecordStart and dropped by it in RecordStop. The
+// control thread frees it only after that stop is acknowledged and drained.
+struct Capture {
+  std::vector<RecordingTake> takes;
+  std::vector<float> ring;
+  std::uint64_t capacity = 0;  // Frames.
+  std::uint32_t channels = 0;  // Samples per frame: every take's channels in order.
+  alignas(64) std::atomic<std::uint64_t> write{0};
+  alignas(64) std::atomic<std::uint64_t> read{0};
+};
+// 64 stereo takes at the default ring length would pin 128 MiB. Bound the ring
+// in samples instead; ~2.7 s at 48 kHz for 128 channels still covers disk stalls.
+constexpr std::uint64_t captureSampleBudget = 16u * 1024u * 1024u;
+
+inline float inputSample(const float* input,std::uint32_t channels,std::uint32_t frame,std::int32_t index,std::uint64_t& invalid)noexcept {
+  float value=input&&index>=0&&static_cast<std::uint32_t>(index)<channels?input[static_cast<std::size_t>(frame)*channels+static_cast<std::uint32_t>(index)]:0.f;
+  if(!std::isfinite(value)){value=0;++invalid;}
+  return value;
+}
+
 } // namespace
+
+InputRoute routeInput(const std::optional<TrackInput>& input,std::span<const std::uint8_t> layout,std::uint32_t delivered,int defaultLeft,int defaultRight)noexcept {
+  InputRoute route;
+  const auto open=[&](int index){return index>=0&&static_cast<std::uint32_t>(index)<delivered;};
+  if(!input) {
+    route.left=open(defaultLeft)?defaultLeft:-1;
+    route.right=route.left>=0&&defaultRight!=defaultLeft&&open(defaultRight)?defaultRight:-1;
+    route.channels=route.right>=0?2:1;route.missing=route.left<0;
+    return route;
+  }
+  const auto find=[&](int physical)->std::int32_t{
+    for(std::size_t i=0;i<layout.size()&&i<delivered;++i)if(layout[i]==physical)return static_cast<std::int32_t>(i);
+    return -1;
+  };
+  route.channels=input->count();route.left=find(input->channels[0]);
+  if(route.channels==2)route.right=find(input->channels[1]);
+  // A half-open stereo pair is not silently recorded as mono of the other side.
+  route.missing=route.left<0||(route.channels==2&&route.right<0);
+  if(route.missing)route.left=route.right=-1;
+  return route;
+}
+
+std::vector<float> latencyPulse(std::uint32_t sampleRate) {
+  require(sampleRate>=8000&&sampleRate<=192000,"Invalid latency pulse rate");
+  // A 4 ms windowed chirp: pulse compression gives a one-sample correlation
+  // peak even when the loopback is quiet, band-limited or polarity inverted.
+  const auto length=std::max<std::uint32_t>(32,sampleRate/250);
+  const double low=500,high=std::min(16000.0,sampleRate*.4),duration=static_cast<double>(length)/sampleRate;
+  std::vector<float> pulse(length);
+  for(std::uint32_t i=0;i<length;++i) {
+    const double t=static_cast<double>(i)/sampleRate,window=.5-.5*std::cos(2*dsp::pi*i/(length-1));
+    pulse[i]=static_cast<float>(.5*window*std::sin(2*dsp::pi*(low*t+(high-low)*t*t/(2*duration))));
+  }
+  return pulse;
+}
+
+LatencyDetection detectLatency(std::span<const float> captured,std::span<const float> pulse,std::span<const std::int64_t> emitted,std::int64_t maxLag) {
+  LatencyDetection result;result.attempts=static_cast<std::uint32_t>(emitted.size());
+  double pulseEnergy=0;for(const auto v:pulse)pulseEnergy+=double(v)*v;
+  if(pulse.empty()||pulseEnergy<=0||maxLag<0)return result;
+  constexpr double threshold=.5; // Cosine similarity; white noise over a 4 ms window stays near 0.1.
+  struct Found { std::int64_t lag; double clarity; };
+  std::vector<Found> found;
+  const auto length=static_cast<std::int64_t>(pulse.size()),size=static_cast<std::int64_t>(captured.size());
+  for(const auto emit:emitted) {
+    double best=0;std::int64_t bestLag=-1;
+    for(std::int64_t lag=0;lag<=maxLag&&emit+lag+length<=size;++lag) {
+      if(emit+lag<0)continue;
+      const auto* x=captured.data()+emit+lag;double dot=0,energy=0;
+      for(std::int64_t k=0;k<length;++k){dot+=double(pulse[static_cast<std::size_t>(k)])*x[k];energy+=double(x[k])*x[k];}
+      // Ignore converter noise far below any usable loopback level.
+      if(energy<pulseEnergy*1e-8)continue;
+      const double similarity=std::abs(dot)/std::sqrt(pulseEnergy*energy);
+      if(similarity>best){best=similarity;bestLag=lag;}
+    }
+    if(bestLag>=0&&best>=threshold)found.push_back({bestLag,std::min(1.0,best)});
+  }
+  if(found.empty())return result;
+  std::vector<std::int64_t> lags;for(const auto& f:found)lags.push_back(f.lag);
+  std::nth_element(lags.begin(),lags.begin()+static_cast<std::ptrdiff_t>(lags.size()/2),lags.end());
+  const auto median=lags[lags.size()/2];
+  // Hardware loopback is deterministic; a different lag is a false hit (noise,
+  // a monitor echo), not jitter to average in.
+  double clarity=0;std::vector<std::int64_t> consistent;
+  for(const auto& f:found)if(std::abs(f.lag-median)<=2){consistent.push_back(f.lag);clarity+=f.clarity;}
+  std::sort(consistent.begin(),consistent.end());
+  result.detected=static_cast<std::uint32_t>(consistent.size());
+  result.roundTripFrames=consistent[consistent.size()/2];
+  result.confidence=std::clamp(clarity/static_cast<double>(std::max<std::size_t>(1,emitted.size())),0.0,1.0);
+  return result;
+}
+
+void LoadMeter::record(double processing,double buffer)noexcept {
+  if(!(buffer>0)||!std::isfinite(processing))return;
+  const auto load=static_cast<float>(std::max(0.0,processing/buffer));
+  last_.store(load,std::memory_order_relaxed);
+  if(load>overloadThreshold)overloads_.fetch_add(1,std::memory_order_relaxed);
+}
+void LoadMeter::reset()noexcept{overloads_.store(0,std::memory_order_relaxed);last_.store(0,std::memory_order_relaxed);}
 
 struct PreparedProject::Impl {
   ProjectTimeline timeline;
@@ -600,8 +700,8 @@ double PreparedProject::tailSeconds()const noexcept{return impl_->tail;}
 std::uint32_t PreparedProject::latencyFrames()const noexcept{return impl_->latency;}
 
 struct RenderEngine::Impl {
-  enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Monitor,RecordStart,RecordStop,Master,Input };
-  struct Command {Kind kind=Kind::Stop;std::uint64_t ticket=0;PreparedProject*graph=nullptr;std::uint32_t track=0;std::int64_t frame=0;int pitch=60;std::int32_t noteId=-1;float value=1;std::array<std::uint64_t,4>mask{};};
+  enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Monitor,RecordStart,RecordStop,Master,Input,Layout };
+  struct Command {Kind kind=Kind::Stop;std::uint64_t ticket=0;PreparedProject*graph=nullptr;Capture*capture=nullptr;std::uint32_t track=0;std::int64_t frame=0;int pitch=60;std::int32_t noteId=-1;float value=1;std::array<std::uint64_t,4>mask{};std::array<std::uint8_t,maxInputLayout>layout{};};
   std::uint32_t rate,maxBlock;
   PreparedProject*active=nullptr;
   SpscQueue<Command,1024> commands;
@@ -621,10 +721,17 @@ struct RenderEngine::Impl {
   float targetMasterGain=1;
   std::array<std::uint64_t,4>monitor{};
   int inputLeft=0,inputRight=1;
+  // Callback copy of the device's physical channel order. Identity until set.
+  std::array<std::uint8_t,maxInputLayout>layout{};std::uint32_t layoutCount=maxInputLayout;
   std::vector<float>inputScratch;
-  std::vector<float>recordingRing;
+  Capture*capture=nullptr; // Callback-owned view of ownedCapture while recording.
   std::uint32_t recordingCapacity;
-  alignas(64) std::atomic<std::uint64_t>recordingWrite{0},recordingRead{0};
+  // Control-thread state: the capture it owns, the stop that releases it, and
+  // its own copies of the routing inputs used to plan takes before they start.
+  std::unique_ptr<Capture>ownedCapture;
+  std::uint64_t captureStopTicket=0;
+  int controlLeft=0,controlRight=1;
+  std::array<std::uint8_t,maxInputLayout>controlLayout{};std::uint32_t controlLayoutCount=maxInputLayout;
   std::uint64_t recordedFrames=0,droppedFrames=0;
   std::int64_t recordingStart=0;
   struct AtomicSnapshot {
@@ -634,7 +741,9 @@ struct RenderEngine::Impl {
     std::atomic<bool>ready{false},playing{false},recording{false};
     std::atomic<float>masterPeak{0};std::array<std::atomic<float>,256>trackPeaks{};
   }published;
-  Impl(std::uint32_t r,std::uint32_t b,std::uint32_t capacity):rate(r),maxBlock(b),inputScratch(static_cast<std::size_t>(b)*2),recordingRing(static_cast<std::size_t>(capacity)*2),recordingCapacity(capacity){}
+  Impl(std::uint32_t r,std::uint32_t b,std::uint32_t capacity):rate(r),maxBlock(b),inputScratch(static_cast<std::size_t>(b)*2),recordingCapacity(capacity){
+    for(std::size_t i=0;i<maxInputLayout;++i){layout[i]=static_cast<std::uint8_t>(i);controlLayout[i]=layout[i];}
+  }
   ~Impl(){Command c;while(commands.pop(c))if(c.kind==Kind::Graph)delete c.graph;if(deferred&&deferred->kind==Kind::Graph)delete deferred->graph;PreparedProject*p=nullptr;while(retired.pop(p))delete p;delete active;}
   std::uint64_t enqueue(Command command) {
     command.ticket=nextTicket++;
@@ -682,10 +791,11 @@ struct RenderEngine::Impl {
           if(active&&c.track<active->impl_->tracks.size())active->impl_->tracks[c.track].allNotesOff(voiceOverflows);
           break;
         case Kind::Monitor:monitor=c.mask;break;
-        case Kind::RecordStart:recording=true;recordingStart=position;recordedFrames=0;droppedFrames=0;break;
-        case Kind::RecordStop:recording=false;break;
+        case Kind::RecordStart:capture=c.capture;recording=capture!=nullptr;recordingStart=position;recordedFrames=0;droppedFrames=0;break;
+        case Kind::RecordStop:recording=false;capture=nullptr;break;
         case Kind::Master:targetMasterGain=c.value;break;
         case Kind::Input:inputLeft=c.pitch;inputRight=static_cast<int>(c.frame);break;
+        case Kind::Layout:layout=c.layout;layoutCount=c.track;break;
       }
       lastTicket=c.ticket;
     }
@@ -832,10 +942,55 @@ std::uint64_t RenderEngine::noteOn(std::uint32_t track,int pitch,float velocity,
 std::uint64_t RenderEngine::noteOff(std::uint32_t track,int pitch,std::int32_t id){require(track<256&&pitch>=0&&pitch<=127,"Invalid MIDI note off");Impl::Command c;c.kind=Impl::Kind::NoteOff;c.track=track;c.pitch=pitch;c.noteId=id;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::allNotesOff(std::uint32_t track){require(track<256,"Invalid audition track index");Impl::Command c;c.kind=Impl::Kind::AllNotesOff;c.track=track;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::setMonitoring(std::span<const std::uint32_t> tracks){Impl::Command c;c.kind=Impl::Kind::Monitor;for(const auto t:tracks){require(t<256,"Invalid monitor track index");c.mask[t/64]|=std::uint64_t{1}<<(t%64);}return impl_->enqueue(c);}
-std::uint64_t RenderEngine::startRecording(){require(impl_->recordingRead.load(std::memory_order_acquire)==impl_->recordingWrite.load(std::memory_order_acquire),"Previous recording must be drained before starting a take");Impl::Command c;c.kind=Impl::Kind::RecordStart;return impl_->enqueue(c);}
-std::uint64_t RenderEngine::stopRecording(){Impl::Command c;c.kind=Impl::Kind::RecordStop;return impl_->enqueue(c);}
+std::vector<RecordingTake> RenderEngine::planRecording(std::span<const std::uint32_t> tracks)const {
+  const auto&e=*impl_;require(e.lastSubmittedRecipe!=nullptr,"Submit a project before recording");
+  require(!tracks.empty()&&tracks.size()<=maxRecordingTakes,"Invalid recording take count");
+  const auto&timeline=e.lastSubmittedRecipe->timeline;std::set<std::uint32_t>seen;std::vector<RecordingTake>takes;
+  for(const auto track:tracks) {
+    require(track<timeline.tracks.size()&&seen.insert(track).second,"Invalid or duplicate recording track");
+    takes.push_back({track,routeInput(timeline.tracks[track].input,std::span(e.controlLayout.data(),e.controlLayoutCount),e.controlLayoutCount,e.controlLeft,e.controlRight)});
+  }
+  return takes;
+}
+std::uint64_t RenderEngine::startRecording(std::span<const RecordingTake> takes){
+  auto&e=*impl_;
+  require(!takes.empty()&&takes.size()<=maxRecordingTakes,"Invalid recording take count");
+  if(e.ownedCapture) {
+    // The callback may still hold the previous capture until its stop is consumed.
+    require(e.captureStopTicket&&e.published.ticket.load(std::memory_order_acquire)>=e.captureStopTicket,"Stop the previous recording before starting a take");
+    require(e.ownedCapture->read.load(std::memory_order_acquire)==e.ownedCapture->write.load(std::memory_order_acquire),"Previous recording must be drained before starting a take");
+  }
+  auto capture=std::make_unique<Capture>();
+  for(const auto&take:takes) {
+    const auto&r=take.route;
+    require(r.channels>=1&&r.channels<=2&&r.left>=-1&&r.left<64&&r.right>=-1&&r.right<64,"Invalid recording input route");
+    capture->channels+=r.channels;capture->takes.push_back(take);
+  }
+  capture->capacity=std::max<std::uint64_t>(e.maxBlock,std::min<std::uint64_t>(e.recordingCapacity,captureSampleBudget/capture->channels));
+  capture->ring.resize(static_cast<std::size_t>(capture->capacity*capture->channels));
+  Impl::Command c;c.kind=Impl::Kind::RecordStart;c.capture=capture.get();
+  e.ownedCapture=std::move(capture);e.captureStopTicket=0;
+  const auto ticket=e.enqueue(c);
+  if(!ticket)e.ownedCapture.reset(); // Never reached the callback.
+  return ticket;
+}
+std::uint64_t RenderEngine::startRecording(){
+  // The former whole-device take: the default pair, mono duplicated to stereo.
+  RecordingTake take;take.track=std::numeric_limits<std::uint32_t>::max();
+  take.route.left=impl_->controlLeft;take.route.right=impl_->controlRight;take.route.channels=2;
+  return startRecording(std::span(&take,1));
+}
+std::uint64_t RenderEngine::stopRecording(){Impl::Command c;c.kind=Impl::Kind::RecordStop;const auto ticket=impl_->enqueue(c);if(ticket)impl_->captureStopTicket=ticket;return ticket;}
+std::uint32_t RenderEngine::recordingChannels()const noexcept{return impl_->ownedCapture?impl_->ownedCapture->channels:2;}
+std::uint64_t RenderEngine::setInputLayout(std::span<const std::uint32_t> channels){
+  require(channels.size()<=maxInputLayout,"Too many native input channels");
+  Impl::Command c;c.kind=Impl::Kind::Layout;c.track=static_cast<std::uint32_t>(channels.size());std::set<std::uint32_t>seen;
+  for(std::size_t i=0;i<channels.size();++i){require(channels[i]<256&&seen.insert(channels[i]).second,"Invalid or duplicate native input channel");c.layout[i]=static_cast<std::uint8_t>(channels[i]);}
+  impl_->controlLayout=c.layout;impl_->controlLayoutCount=c.track;
+  return impl_->enqueue(c);
+}
 std::uint64_t RenderEngine::setMasterGain(float gain){checked(gain,0,2,"Invalid master gain");Impl::Command c;c.kind=Impl::Kind::Master;c.value=gain;return impl_->enqueue(c);}
-std::uint64_t RenderEngine::setInputChannels(int left,int right){require(left>=0&&left<64&&right>=-1&&right<64,"Invalid native input channel");Impl::Command c;c.kind=Impl::Kind::Input;c.pitch=left;c.frame=right;return impl_->enqueue(c);}
+std::uint64_t RenderEngine::setInputChannels(int left,int right){require(left>=0&&left<64&&right>=-1&&right<64,"Invalid native input channel");Impl::Command c;c.kind=Impl::Kind::Input;c.pitch=left;c.frame=right;impl_->controlLeft=left;impl_->controlRight=right;return impl_->enqueue(c);}
 void RenderEngine::setOffline(bool value)noexcept{impl_->offline=value;}
 
 void RenderEngine::render(float* output,const float* input,std::uint32_t frames,std::uint32_t channels)noexcept {
@@ -853,19 +1008,20 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       }
       if(e.playing&&e.position<boundary)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,boundary-e.position));
     }
-    for(std::uint32_t i=0;i<count;++i) {
-      for(unsigned c=0;c<2;++c) {
-        const int channel=c?(e.inputRight<0?e.inputLeft:e.inputRight):e.inputLeft;
-        float value=input&&channel>=0&&static_cast<std::uint32_t>(channel)<channels?input[static_cast<std::size_t>(cursor+i)*channels+channel]:0;
-        if(!std::isfinite(value)){value=0;++e.invalidSamples;}
-        e.inputScratch[2*i+c]=value;
+    if(e.recording&&e.capture) {
+      // Every take shares one frame clock: the same callback frames, written together.
+      auto&cap=*e.capture;
+      const auto write=cap.write.load(std::memory_order_relaxed),read=cap.read.load(std::memory_order_acquire);
+      const auto available=cap.capacity-(write-read),take=std::min<std::uint64_t>(available,count);
+      for(std::uint64_t i=0;i<take;++i) {
+        float*frame=cap.ring.data()+static_cast<std::size_t>((write+i)%cap.capacity)*cap.channels;
+        const auto at=cursor+static_cast<std::uint32_t>(i);
+        for(const auto&t:cap.takes) {
+          const float left=inputSample(input,channels,at,t.route.left,e.invalidSamples);*frame++=left;
+          if(t.route.channels==2)*frame++=t.route.right>=0?inputSample(input,channels,at,t.route.right,e.invalidSamples):left;
+        }
       }
-    }
-    if(e.recording) {
-      auto write=e.recordingWrite.load(std::memory_order_relaxed);const auto read=e.recordingRead.load(std::memory_order_acquire);
-      const auto available=e.recordingCapacity-(write-read),take=std::min<std::uint64_t>(available,count);
-      for(std::uint64_t i=0;i<take;++i){const auto index=(write+i)%e.recordingCapacity;e.recordingRing[index*2]=e.inputScratch[i*2];e.recordingRing[index*2+1]=e.inputScratch[i*2+1];}
-      e.recordingWrite.store(write+take,std::memory_order_release);e.recordedFrames+=count;e.droppedFrames+=count-take;
+      cap.write.store(write+take,std::memory_order_release);e.recordedFrames+=count;e.droppedFrames+=count-take;
       if(take<count)e.recording=false;
     }
     auto*out=output+static_cast<std::size_t>(cursor)*2;std::fill_n(out,static_cast<std::size_t>(count)*2,0.f);
@@ -876,8 +1032,19 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       if(p.timeline.cycle&&!e.offline){context.cycleActive=true;context.cycleStartFrame=p.timeline.cycle->at(0);context.cycleEndFrame=p.timeline.cycle->at(1);}
       for(std::size_t index=0;index<p.tracks.size();++index) {
         auto&t=p.tracks[index];const bool monitor=(e.monitor[index/64]&(std::uint64_t{1}<<(index%64)))!=0;
-        const bool stereoInput=e.inputRight>=0&&e.inputRight!=e.inputLeft&&static_cast<std::uint32_t>(e.inputRight)<channels;
-        t.render(e.position,count,e.playing&&e.position<p.timeline.lengthFrames,e.inputScratch.data(),monitor,stereoInput,context,e.voiceOverflows,e.invalidSamples);
+        // Each monitored track hears its own input; an unopened one hears silence.
+        const float*trackInput=nullptr;bool stereoInput=false;
+        if(monitor) {
+          const auto route=routeInput(t.timeline.input,std::span(e.layout.data(),e.layoutCount),channels,e.inputLeft,e.inputRight);
+          if(!route.missing) {
+            for(std::uint32_t i=0;i<count;++i) {
+              const float left=inputSample(input,channels,cursor+i,route.left,e.invalidSamples);
+              e.inputScratch[2*i]=left;e.inputScratch[2*i+1]=route.right>=0?inputSample(input,channels,cursor+i,route.right,e.invalidSamples):left;
+            }
+            trackInput=e.inputScratch.data();stereoInput=route.right>=0;
+          }
+        }
+        t.render(e.position,count,e.playing&&e.position<p.timeline.lengthFrames,trackInput,monitor,stereoInput,context,e.voiceOverflows,e.invalidSamples);
         for(std::size_t sample=0;sample<static_cast<std::size_t>(count)*2;++sample)out[sample]+=t.buffer[sample];
       }
       const float smoothing=static_cast<float>(1-std::exp(-1/(e.rate*.012)));
@@ -906,11 +1073,11 @@ EngineSnapshot RenderEngine::snapshot()const noexcept {
   s.recording=p.recording.load(std::memory_order_relaxed);s.recordingStartFrame=p.recordingStart.load(std::memory_order_relaxed);s.recordedFrames=p.recorded.load(std::memory_order_relaxed);s.recordingDroppedFrames=p.dropped.load(std::memory_order_relaxed);return s;
 }
 std::uint32_t RenderEngine::drainRecording(float* destination,std::uint32_t capacity)noexcept {
-  if(!destination||!capacity)return 0;
-  auto&e=*impl_;const auto read=e.recordingRead.load(std::memory_order_relaxed),write=e.recordingWrite.load(std::memory_order_acquire);
+  if(!destination||!capacity||!impl_->ownedCapture)return 0;
+  auto&cap=*impl_->ownedCapture;const auto read=cap.read.load(std::memory_order_relaxed),write=cap.write.load(std::memory_order_acquire);
   const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(write-read,capacity));
-  for(std::uint32_t i=0;i<count;++i){const auto index=(read+i)%e.recordingCapacity;destination[2*i]=e.recordingRing[index*2];destination[2*i+1]=e.recordingRing[index*2+1];}
-  e.recordingRead.store(read+count,std::memory_order_release);return count;
+  for(std::uint32_t i=0;i<count;++i)std::copy_n(cap.ring.data()+static_cast<std::size_t>((read+i)%cap.capacity)*cap.channels,cap.channels,destination+static_cast<std::size_t>(i)*cap.channels);
+  cap.read.store(read+count,std::memory_order_release);return count;
 }
 
 } // namespace garak

@@ -90,6 +90,10 @@ export interface NativeAudioWindow {
   readonly fadeOutFrames: number
 }
 
+export interface NativeTrackInput {
+  readonly channels: readonly [number] | readonly [number, number]
+}
+
 export interface NativeTrackTimeline {
   readonly id: string
   readonly source: NativeTrackSource
@@ -101,6 +105,8 @@ export interface NativeTrackTimeline {
   readonly soloSafe: boolean
   /** Fader audibility; muted/unsoloed tracks still have events, but disabled sources must not run. */
   readonly audible: boolean
+  /** Physical device input channels this track records and monitors; null is the device's first channel or pair. */
+  readonly input: NativeTrackInput | null
   readonly inserts: readonly (NativeBuiltinInsert | NativePluginInsert)[]
   /** Sorted by onset, then off frame and ID. Notes are cropped to the project, not the audition cycle. */
   readonly notes: readonly NativeNotePair[]
@@ -208,6 +214,16 @@ function prepareOccurrences(project: Project): Map<MidiClip, readonly Occurrence
   return prepared
 }
 
+/** The host maps these physical channels to whatever the open device delivers; the label stays in the project. */
+function trackInput(track: Track): NativeTrackInput | null {
+  if (!track.input) return null
+  const channels = track.input.channels
+  if (!Array.isArray(channels) || (channels.length !== 1 && channels.length !== 2) || !channels.every(channel => Number.isSafeInteger(channel) && channel >= 0 && channel <= 255) || (channels.length === 2 && channels[0] === channels[1])) {
+    throw new NativeTimelineError('INVALID_PROJECT', 'Invalid track input channels.')
+  }
+  return { channels: channels.length === 1 ? [channels[0]] : [channels[0], channels[1]] }
+}
+
 /**
  * Pure preparation for the native host; it allocates no realtime audio objects.
  * Input must be a normalized Project (external JSON still goes through validateProject first).
@@ -289,6 +305,7 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
     audio.sort((a, b) => a.startFrame - b.startFrame || a.id - b.id)
     return { id: track.id, source: source(track), gain: number(track.volume, 0, 2, 'track gain'), pan: number(track.pan, -1, 1, 'track pan'),
       enabled: isTrackEnabled(track) && track.pluginInstrument?.enabled !== false, mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, audible: audible.has(track.id) && track.pluginInstrument?.enabled !== false,
+      input: trackInput(track),
       // One ordered chain: builtin and VST3 inserts interleave exactly as the project lists them.
       inserts: track.devices.map((device): NativeBuiltinInsert | NativePluginInsert => {
         if (device.type === 'vst3') {

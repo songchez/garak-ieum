@@ -13,9 +13,9 @@ import { assertNativeInstrumentsSupported, canPlayInstrument, unsupportedNativeI
 import { compileNativeTimeline, type NativePcmAsset } from './timeline'
 import type {
   NativeAudioBridge, NativeAudioFile, NativeBackend, NativeDevice, NativeDeviceState,
-  NativeEngineEvent, NativePluginDescriptor, NativePluginInstance, NativePluginParameter, NativePluginState,
+  NativeEngineEvent, NativeLatencyMeasurement, NativePluginDescriptor, NativePluginInstance, NativePluginParameter, NativePluginState,
 } from './contracts'
-import { NativeRecording } from './NativeRecording'
+import { NativeRecording, NativeRecordings, type NativeRecordingsCallbacks } from './NativeRecording'
 import { encodeWavetablePatch, WAVETABLE_UNAVAILABLE_STATUS, type WavetableBridgeStatus, type WavetableNativeBridge } from '../../devices/wavetable-synth/bridge'
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
 import { WAVE_SCHEMA_FINGERPRINT } from '../../devices/wavetable-synth/schema.generated'
@@ -54,6 +54,8 @@ export function nativeBackendForPlatform(settings: AudioSettings, platform: stri
  */
 export class NativeAudioEngine implements AudioEngine {
   readonly kind = 'native' as const
+  /** `record.start { takes }` accepts up to 64 tracks from one transport start. */
+  readonly maxSimultaneousRecordings = 64
   readonly samples: SampleLibrary
   private project: Project | null = null
   private assets = new Map<string, AudioAsset>()
@@ -719,6 +721,43 @@ export class NativeAudioEngine implements AudioEngine {
       ...callbacks,
       onComplete: result => { this.captureWanted = false; callbacks.onComplete(result) },
     }, this.desiredSampleRate)
+  }
+
+  /** Several armed tracks, each from its own input, sharing one start frame. Same lifetime as createRecording. */
+  createRecordings(trackIds: readonly string[], callbacks: NativeRecordingsCallbacks): NativeRecordings {
+    if (!this.configured || this.audioSnapshot.status !== 'ready') throw new Error('네이티브 입력 장치를 먼저 시작해 주세요.')
+    if (trackIds.length > this.maxSimultaneousRecordings) throw new Error(`한 번에 ${this.maxSimultaneousRecordings}개 트랙까지 녹음할 수 있습니다.`)
+    return new NativeRecordings(this.connect(), [...trackIds], {
+      ...callbacks,
+      onComplete: results => { this.captureWanted = false; callbacks.onComplete(results) },
+    }, this.desiredSampleRate)
+  }
+
+  /**
+   * Physical loopback (output pair → input channel) round trip, measured by the host while the
+   * transport is stopped. The device must already be open with that input channel.
+   */
+  async measureLatency(options: { inputChannel: number; outputChannelOffset?: number }): Promise<NativeLatencyMeasurement> {
+    const channel = (value: unknown, label: string) => {
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 255) throw new Error(`잘못된 ${label} 채널입니다.`)
+      return value
+    }
+    const params: Record<string, unknown> = { inputChannel: channel(options.inputChannel, '입력') }
+    if (options.outputChannelOffset !== undefined) params.outputChannelOffset = channel(options.outputChannelOffset, '출력')
+    if (!this.configured) throw new Error('지연을 측정하려면 오디오 장치를 먼저 시작해 주세요.')
+    if (this.snapshot.playing) await this.pauseAndWait()
+    const value = await this.request<Record<string, unknown>>('latency.measure', params)
+    const frames = (field: unknown, label: string): number | null => {
+      if (field === null || field === undefined) return null
+      if (typeof field !== 'number' || !Number.isSafeInteger(field)) throw new Error(`네이티브 엔진이 잘못된 ${label} 값을 반환했습니다.`)
+      return field
+    }
+    const confidence = finite(value?.confidence, NaN)
+    if (!(confidence >= 0 && confidence <= 1)) throw new Error('네이티브 엔진이 잘못된 측정 신뢰도를 반환했습니다.')
+    const roundTripFrames = frames(value.roundTripFrames, '왕복 지연')
+    if (roundTripFrames !== null && roundTripFrames < 0) throw new Error('네이티브 엔진이 잘못된 왕복 지연 값을 반환했습니다.')
+    return { roundTripFrames, reportedFrames: frames(value.reportedFrames, '드라이버 지연'), extraFrames: frames(value.extraFrames, '추가 지연'),
+      confidence, attempts: frames(value.attempts, '시도 횟수') ?? 0 }
   }
 
   async testOutput(signal: AbortSignal): Promise<void> {

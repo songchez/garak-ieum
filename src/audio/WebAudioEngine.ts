@@ -40,6 +40,8 @@ const contextKey = (settings: AudioSettings): string => JSON.stringify([settings
  */
 export class WebAudioEngine implements AudioEngine {
   readonly kind = 'web-audio' as const
+  /** A browser MediaStream records one track at a time. */
+  readonly maxSimultaneousRecordings = 1
   /** Decoded sample sets outlive contexts and graphs; see audio/samples.ts. */
   readonly samples = new SampleLibrary()
   private project: Project | null = null

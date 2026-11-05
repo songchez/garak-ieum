@@ -130,6 +130,18 @@ inline ProjectTimeline timeline(const Json& value) {
     t.gain = static_cast<float>(number(item, "gain", 0, 4, 1)); t.pan = static_cast<float>(number(item, "pan", -1, 1, 0));
     t.enabled = item.value("enabled", true); t.mute = item.value("mute", false); t.solo = item.value("solo", false);
     t.soloSafe = item.value("soloSafe", false); t.audible = item.value("audible", true);
+    // Physical device channels; null/absent is the device default (first channel or pair).
+    if (item.contains("input") && !item.at("input").is_null()) {
+      const auto& channels = item.at("input").at("channels");
+      if (!channels.is_array() || channels.empty() || channels.size() > 2) throw std::runtime_error("Invalid track input channels");
+      TrackInput input; input.channels = {-1, -1};
+      for (std::size_t i = 0; i < channels.size(); ++i) {
+        if (!channels[i].is_number_integer() || channels[i].get<std::int64_t>() < 0 || channels[i].get<std::int64_t>() > 255) throw std::runtime_error("Invalid track input channel");
+        input.channels[i] = static_cast<std::int16_t>(channels[i].get<std::int64_t>());
+      }
+      if (input.channels[1] == input.channels[0]) throw std::runtime_error("A stereo track input needs two different channels");
+      t.input = input;
+    }
     if (!item.at("inserts").is_array() || item.at("inserts").size() > 64) throw std::runtime_error("Too many inserts");
     for (const auto& insert : item.at("inserts")) {
       BuiltinInsert b; b.id = string(insert, "id"); b.type = string(insert, "type"); b.enabled = insert.value("enabled", true);

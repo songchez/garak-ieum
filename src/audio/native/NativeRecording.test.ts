@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AudioRecordingResult } from '../AudioRecording'
 import type { NativeAudioBridge } from './contracts'
-import { NativeRecording } from './NativeRecording'
+import { NativeRecording, NativeRecordings, type NativeTakeResult } from './NativeRecording'
 
 function deferred<T = unknown>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void
@@ -103,5 +103,88 @@ describe('native recording clock and ownership', () => {
     h.start.reject(new Error('already recording')); await rejected
     h.recording.dispose()
     expect(h.request.mock.calls.map(([method]) => method)).toEqual(['record.start'])
+  })
+})
+
+function multiHarness(trackIds = ['drums', 'bass']) {
+  let clock = 0
+  const start = deferred(), stop = deferred()
+  const request = vi.fn((method: string, _params?: Record<string, unknown>) => method === 'record.start' ? start.promise : stop.promise)
+  const bridge: NativeAudioBridge = { request, subscribe: () => () => undefined }
+  const onComplete = vi.fn<(results: NativeTakeResult[]) => void>(), onError = vi.fn<(error: Error) => void>()
+  const recording = new NativeRecordings(bridge, trackIds, { onComplete, onError }, 48000, () => clock)
+  const take = (trackId: string, extra = {}) => ({ trackId, takeId: `take-${trackId}`, channels: 1, startFrame: -100, rawStartFrame: 900, compensationFrames: 1000, compensationKnown: true, ...extra })
+  return { recording, request, start, stop, onComplete, onError, take, at: (value: number) => { clock = value } }
+}
+
+describe('native multi-track recording', () => {
+  it('starts every track in one request and returns each take with its own file in track order', async () => {
+    const h = multiHarness(), started = h.recording.start()
+    expect(h.request.mock.calls[0]).toEqual(['record.start', { takes: [{ trackId: 'drums' }, { trackId: 'bass' }] }])
+    h.start.resolve({ takes: [h.take('bass', { channels: 2 }), h.take('drums')], sampleRate: 48000 }); await started
+    expect(h.recording.startFrame).toBe(-100); expect(h.recording.rawStartFrame).toBe(900); expect(h.recording.compensationKnown).toBe(true)
+    expect(h.recording.startedTakes.map(take => [take.trackId, take.channels])).toEqual([['drums', 1], ['bass', 2]])
+    h.recording.stop()
+    h.stop.resolve({ sampleRate: 48000, takes: [
+      { trackId: 'bass', takeId: 'take-bass', data: new Uint8Array(64), frames: 48000, sampleRate: 48000, channels: 2 },
+      { trackId: 'drums', takeId: 'take-drums', data: new Uint8Array(48), frames: 48000, sampleRate: 48000, channels: 1 },
+    ] })
+    await vi.waitFor(() => expect(h.onComplete).toHaveBeenCalledTimes(1))
+    const results = h.onComplete.mock.calls[0][0]
+    expect(results.map(result => [result.trackId, result.takeId, result.channels, result.blob.size, result.durationSeconds, result.error])).toEqual([
+      ['drums', 'take-drums', 1, 48, 1, null], ['bass', 'take-bass', 2, 64, 1, null],
+    ])
+    expect(h.onError).not.toHaveBeenCalled()
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(['record.start', 'record.stop'])
+  })
+
+  it('keeps the good takes and reports a failed or missing one once', async () => {
+    const h = multiHarness(['a', 'b', 'c']), started = h.recording.start()
+    h.start.resolve({ takes: [h.take('a'), h.take('b'), h.take('c')], sampleRate: 48000 }); await started
+    h.recording.stop()
+    h.stop.resolve({ takes: [
+      { trackId: 'a', data: new Uint8Array(48), frames: 24000, sampleRate: 48000 },
+      { trackId: 'b', data: new Uint8Array(0), error: 'too large' },
+    ] })
+    await vi.waitFor(() => expect(h.onComplete).toHaveBeenCalledTimes(1))
+    const [a, b, c] = h.onComplete.mock.calls[0][0]
+    expect(a).toMatchObject({ trackId: 'a', error: null, durationSeconds: .5 })
+    expect(b.blob.size).toBe(0); expect(b.error?.message).toBe('too large')
+    expect(c.error?.message).toMatch(/결과/)
+    expect(h.onError).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    { takes: [{ trackId: 'drums', startFrame: 0 }], sampleRate: 48000 },
+    { takes: [{ trackId: 'drums', startFrame: 0 }, { trackId: 'bass', startFrame: 1 }], sampleRate: 48000 },
+    { takes: [{ trackId: 'drums', startFrame: 0 }, { trackId: 'bass', startFrame: 0 }], sampleRate: 44100 },
+    { startFrame: 0, sampleRate: 48000 },
+  ])('stops a multi-take start that does not match the request: %j', async response => {
+    const h = multiHarness(), started = h.recording.start()
+    const rejected = expect(started).rejects.toThrow()
+    h.start.resolve(response); h.stop.resolve({ takes: [] })
+    await rejected
+    expect(h.request.mock.calls.filter(([method]) => method === 'record.stop')).toHaveLength(1)
+    expect(h.onComplete).not.toHaveBeenCalled()
+  })
+
+  it('completes every track with the stop failure and never publishes after dispose', async () => {
+    const h = multiHarness(), started = h.recording.start()
+    h.start.resolve({ takes: [h.take('drums'), h.take('bass')], sampleRate: 48000 }); await started
+    h.recording.stop(); h.stop.reject(new Error('host exited'))
+    await vi.waitFor(() => expect(h.onComplete).toHaveBeenCalledTimes(1))
+    expect(h.onComplete.mock.calls[0][0].map(result => [result.trackId, result.error?.message])).toEqual([['drums', 'host exited'], ['bass', 'host exited']])
+    const late = multiHarness(), lateStart = late.recording.start()
+    late.recording.dispose(); late.start.resolve({ takes: [late.take('drums'), late.take('bass')], sampleRate: 48000 }); late.stop.resolve({ takes: [] })
+    await lateStart
+    expect(late.request.mock.calls.filter(([method]) => method === 'record.stop')).toHaveLength(1)
+    expect(late.onComplete).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty or duplicated track list before contacting the host', () => {
+    const bridge: NativeAudioBridge = { request: vi.fn(), subscribe: () => () => undefined }
+    expect(() => new NativeRecordings(bridge, [], { onComplete: vi.fn() }, 48000)).toThrow()
+    expect(() => new NativeRecordings(bridge, ['a', 'a'], { onComplete: vi.fn() }, 48000)).toThrow()
+    expect(bridge.request).not.toHaveBeenCalled()
   })
 })

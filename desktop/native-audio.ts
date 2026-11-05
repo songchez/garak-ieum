@@ -18,7 +18,10 @@ export interface NativeAudioOptions {
 interface CatalogEntry { pluginId: string; classId: string; path: string; name: string; vendor: string; version?: string; isInstrument: boolean; category?: string }
 const MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 const MAX_PCM_BYTES = 512 * 1024 * 1024
-const METHODS = new Set(['devices.list', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
+const MAX_TAKES = 64
+/** Several takes reach the renderer in one reply; larger ones stay in the recovery folder. */
+const MAX_TAKES_BYTES = 2 * 1024 * 1024 * 1024
+const METHODS = new Set(['devices.list', 'devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor', 'latency.measure', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
 
 function record(value: unknown, label = 'request'): Json {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid native audio ${label}.`)
@@ -32,6 +35,14 @@ function integer(value: unknown, min: number, max: number, label: string): numbe
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new Error(`Invalid ${label}.`)
   return value
 }
+/** `record.start { takes: [{ trackId }] }`: only track IDs cross from the renderer; paths are created here. */
+function recordingTracks(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.length || value.length > MAX_TAKES) throw new Error('Invalid recording takes.')
+  const ids = value.map(item => text(record(item, 'recording take').trackId, 'track ID'))
+  if (new Set(ids).size !== ids.length) throw new Error('한 트랙에는 녹음 테이크를 하나만 만들 수 있습니다.')
+  return ids
+}
+interface ActiveTake { id: string; trackId: string; path: string }
 
 /** Control process and private asset transport. No live audio buffer crosses this service. */
 export class NativeAudioService {
@@ -48,7 +59,8 @@ export class NativeAudioService {
   private disposed = false
   private directory = ''
   private recordingDirectory = ''
-  private activeTake: { id: string; path: string } | null = null
+  /** One recording at a time; `legacy` answers in the former single-take shape. */
+  private activeTakes: { takes: ActiveTake[]; legacy: boolean } | null = null
   private takes = new Map<string, string>()
   private catalog: CatalogEntry[] = []
   private catalogLoaded = false
@@ -114,7 +126,7 @@ export class NativeAudioService {
     this.pending.clear()
     this.options.onState({ type: 'error', ready: false, playing: false, error: error.message, generation: this.generation })
     // Recording files deliberately survive a crash for recovery.
-    this.activeTake = null
+    this.activeTakes = null
   }
 
   private consume(chunk: string): void {
@@ -271,29 +283,57 @@ export class NativeAudioService {
     // Discover the running host's instrument support without opening an audio
     // device. The renderer must not infer WAVE support from Electron alone.
     if (method === 'engine.capabilities') return this.send('hello', {})
-    if (method === 'engine.close') { const result = await this.send(method, params); this.activeTake = null; return result }
+    if (method === 'engine.close') { const result = await this.send(method, params); this.activeTakes = null; return result }
     if (method === 'asset.put') return this.pcmAsset(params)
     if (method === 'engine.configure' && Number(params.inputChannels) > 0 && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
-    if (method === 'monitor.set' && params.enabled === true && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
+    if ((method === 'latency.measure' || (method === 'monitor.set' && params.enabled === true)) && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
     if (method === 'project.set') return this.send(method, { ...params, timeline: await this.resolveTimeline(params.timeline) })
     if (method === 'record.start') {
-      if (this.activeTake) throw new Error('이미 녹음 중입니다.')
+      if (this.activeTakes) throw new Error('이미 녹음 중입니다.')
+      const legacy = !('takes' in params)
+      const trackIds = legacy ? [text(params.trackId, 'track ID')] : recordingTracks(params.takes)
       if (!(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
-      const id = randomUUID(), path = join(this.recordingDirectory, `${id}.wav`)
-      const result = record(await this.send(method, { ...params, path }), 'recording')
-      this.activeTake = { id, path }; this.takes.set(id, path)
-      return { ...result, takeId: id }
+      const takes = trackIds.map((trackId): ActiveTake => { const id = randomUUID(); return { id, trackId, path: join(this.recordingDirectory, `${id}.wav`) } })
+      const request = legacy ? { ...params, path: takes[0].path, takeId: takes[0].id } : { takes: takes.map(take => ({ trackId: take.trackId, takeId: take.id, path: take.path })) }
+      let result: Json
+      try { result = record(await this.send(method, request), 'recording') }
+      catch (error) {
+        // A refused start has captured nothing; do not leave empty headers in the recovery folder.
+        await Promise.all(takes.map(take => rm(take.path, { force: true }).catch(() => {})))
+        throw error
+      }
+      this.activeTakes = { takes, legacy }
+      for (const take of takes) this.takes.set(take.id, take.path)
+      const reported = Array.isArray(result.takes) ? result.takes.map(item => { const { path: _path, ...take } = record(item, 'recording take'); return take }) : []
+      if (legacy) { const { takes: _takes, path: _path, ...single } = result; return { ...single, takeId: takes[0].id } }
+      return { ...result, takes: reported }
     }
     if (method === 'record.stop') {
-      if (!this.activeTake) throw new Error('진행 중인 녹음이 없습니다.')
-      const take = this.activeTake
+      if (!this.activeTakes) throw new Error('진행 중인 녹음이 없습니다.')
+      const active = this.activeTakes
       const result = record(await this.send(method, params), 'recording')
-      this.activeTake = null
-      const info = await stat(take.path)
-      if (info.size > MAX_PCM_BYTES) throw new Error('녹음 파일이 프로젝트의 크기 한도를 넘었습니다. 복구 폴더에 원본을 보관했습니다.')
-      const data = new Uint8Array(await readFile(take.path))
-      const { path: _path, ...metadata } = result
-      return { ...metadata, data, name: `Recording-${take.id}.wav`, takeId: take.id }
+      this.activeTakes = null
+      const reported = Array.isArray(result.takes) ? result.takes.map(item => record(item, 'recording take')) : []
+      if (active.legacy) {
+        const take = active.takes[0]
+        const info = await stat(take.path)
+        if (info.size > MAX_PCM_BYTES) throw new Error('녹음 파일이 프로젝트의 크기 한도를 넘었습니다. 복구 폴더에 원본을 보관했습니다.')
+        const data = new Uint8Array(await readFile(take.path))
+        const { path: _path, takes: _takes, ...metadata } = result
+        return { ...metadata, data, name: `Recording-${take.id}.wav`, takeId: take.id }
+      }
+      let budget = MAX_TAKES_BYTES
+      const takes = []
+      for (const take of active.takes) {
+        const { path: _path, ...metadata } = reported.find(item => item.takeId === take.id) ?? { error: '네이티브 엔진이 이 테이크의 결과를 보내지 않았습니다. 복구 폴더를 확인해주세요.' }
+        const size = (await stat(take.path).catch(() => null))?.size ?? 0
+        // One oversized take must not discard the others: report it and keep its file for recovery.
+        if (size > MAX_PCM_BYTES || size > budget) { takes.push({ ...metadata, data: new Uint8Array(0), name: `Recording-${take.id}.wav`, takeId: take.id, trackId: take.trackId, error: '녹음 파일이 전송 크기 한도를 넘었습니다. 복구 폴더에 원본을 보관했습니다.' }); continue }
+        budget -= size
+        const data = size ? new Uint8Array(await readFile(take.path)) : new Uint8Array(0)
+        takes.push({ ...metadata, data, name: `Recording-${take.id}.wav`, takeId: take.id, trackId: take.trackId })
+      }
+      return { takes, sampleRate: result.sampleRate }
     }
     if (method === 'render.wav') {
       const path = join(this.directory, `${randomUUID()}.wav`)
