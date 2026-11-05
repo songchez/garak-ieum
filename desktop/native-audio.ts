@@ -44,6 +44,18 @@ function recordingTracks(value: unknown): string[] {
 }
 interface ActiveTake { id: string; trackId: string; path: string }
 
+// Device control (docs/AUDIO_CORE_PLAN.md, WP1/WP3). Kept apart from METHODS to keep parallel edits separate.
+for (const method of ['devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor']) METHODS.add(method)
+/** Electron passes only `message` across IPC; the renderer (src/audio/native/deviceErrors.ts) parses this suffix. */
+const NATIVE_ERROR_MARKER = '\n[garak-native-error]'
+export function ipcNativeError(error: unknown): Error {
+  const { code, details } = (error ?? {}) as { code?: unknown; details?: unknown }
+  if (!(error instanceof Error) || typeof code !== 'string') return error instanceof Error ? error : new Error(String(error))
+  let payload: string
+  try { payload = JSON.stringify({ code, details }) } catch { payload = JSON.stringify({ code }) }
+  return new Error(error.message + NATIVE_ERROR_MARKER + payload)
+}
+
 /** Control process and private asset transport. No live audio buffer crosses this service. */
 export class NativeAudioService {
   private child: ChildProcessWithoutNullStreams | null = null
@@ -141,7 +153,15 @@ export class NativeAudioService {
       if (!request) continue
       this.pending.delete(message.id); clearTimeout(request.timer)
       if (message.ok === true) request.resolve(message.result)
-      else { const problem = typeof message.error === 'string' ? message.error : (message.error as Json | undefined)?.message; request.reject(new Error(typeof problem === 'string' ? problem : '네이티브 오디오 요청이 실패했습니다.')) }
+      else {
+        const problem = typeof message.error === 'string' ? message.error : (message.error as Json | undefined)?.message
+        const failure: Error & { code?: string; details?: unknown } = new Error(typeof problem === 'string' ? problem : '네이티브 오디오 요청이 실패했습니다.')
+        // Host error codes (DEVICE_IN_USE, ...) travel with the message: `{ error, code, details }`.
+        const code = message.code ?? (message.error as Json | undefined)?.code
+        if (typeof code === 'string' && /^[A-Z_]{1,40}$/.test(code)) failure.code = code
+        if (message.details !== undefined) failure.details = message.details
+        request.reject(failure)
+      }
     }
   }
 

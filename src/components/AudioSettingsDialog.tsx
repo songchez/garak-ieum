@@ -5,7 +5,7 @@ import type { NativeAudioEngine } from '../audio/native/NativeAudioEngine'
 import NativeAudioSettingsDialog from './NativeAudioSettingsDialog'
 import type { InputCapture } from '../audio/InputCapture'
 import {
-  DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, RENDER_SIZES, SAMPLE_RATES,
+  DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, RENDER_SIZES, SAMPLE_RATES, recordingOffsetMs,
   type AudioSettings, type SampleRate,
 } from '../core/audioSettings'
 import type { Project } from '../core/types'
@@ -55,7 +55,8 @@ function BrowserAudioSettingsDialog({ engine, inputCapture, settings, project, b
   const [tab, setTab] = useState<Tab>('devices')
   const [draft, setDraft] = useState<AudioSettings>(() => ({ ...settings }))
   const [sampleRate, setSampleRate] = useState<SampleRate>(project.sampleRate)
-  const [offsetText, setOffsetText] = useState(String(settings.recordingOffsetMs))
+  // The setting is in sample frames; the browser dialog keeps editing whole milliseconds at the project rate.
+  const [offsetText, setOffsetText] = useState(String(Math.round(recordingOffsetMs(settings, project.sampleRate))))
   const [applying, setApplying] = useState(false)
   const [outputTesting, setOutputTesting] = useState(false)
   const outputRequest = useRef<AbortController | null>(null)
@@ -66,7 +67,8 @@ function BrowserAudioSettingsDialog({ engine, inputCapture, settings, project, b
   const input = useSyncExternalStore(inputCapture.subscribeInputState, inputCapture.getInputState, inputCapture.getInputState)
   const devices = useAudioDevices(draft, sampleRate)
   const offsetValue = parseRecordingOffset(offsetText)
-  const dirty = JSON.stringify(draft) !== JSON.stringify(settings) || sampleRate !== project.sampleRate || offsetValue !== settings.recordingOffsetMs
+  const offsetFrames = (ms: number) => Math.round(ms * sampleRate / 1000)
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings) || sampleRate !== project.sampleRate || offsetValue === null || offsetFrames(offsetValue) !== settings.recordingOffsetFrames
   const requiresApply = audio.needsReconfiguration || audio.status === 'error'
   const locked = applying || !!blockedReason
   const patch = (next: Partial<AudioSettings>) => { setDraft(value => ({ ...value, ...next })); setFeedback(null) }
@@ -90,7 +92,7 @@ function BrowserAudioSettingsDialog({ engine, inputCapture, settings, project, b
     if (offsetValue === null) { setTab('recording'); setFeedback({ error: true, text: '녹음 위치 보정은 -1000부터 1000까지의 정수로 입력해주세요.' }); return }
     if (!dirty && !requiresApply) { if (close) onClose(); return }
     setApplying(true); setFeedback(null); devices.stopInputTest(); stopOutputTest()
-    const applied = { ...draft, recordingOffsetMs: offsetValue }
+    const applied = { ...draft, recordingOffsetFrames: offsetFrames(offsetValue) }
     try {
       const result = await onApply(applied, sampleRate)
       if (!alive.current) return
@@ -186,7 +188,7 @@ function BrowserAudioSettingsDialog({ engine, inputCapture, settings, project, b
               ['noiseSuppression', '노이즈 억제', '배경 소음을 줄이도록 요청합니다. 악기 음색에도 영향을 줄 수 있습니다.'],
               ['autoGainControl', '자동 입력 레벨', '입력 소리의 크기를 자동 조절하도록 요청합니다.'],
             ] as const).map(([key, label, hint]) => <label key={key} className="audio-settings-check"><input type="checkbox" checked={draft[key]} disabled={locked || !devices.supportedConstraints[key]} onChange={event => patch({ [key]: event.target.checked })}/><span><strong>{label}{!devices.supportedConstraints[key] && <em> · 요청 미지원</em>}</strong><small>{hint}</small></span></label>)}
-            <SettingRow label="녹음 위치 보정" hint="새 녹음 리전을 수동으로 정렬합니다. 양수는 뒤로, 음수는 앞으로 이동합니다. 자동 왕복 지연 측정값은 아닙니다."><div className="audio-unit-input"><input type="text" inputMode="decimal" aria-label="녹음 위치 보정 밀리초" aria-invalid={offsetValue === null} value={offsetText} disabled={locked} onChange={event => { setOffsetText(event.target.value); setFeedback(null) }} onBlur={() => { if (offsetValue === null) setFeedback({ error: true, text: '녹음 위치 보정은 -1000부터 1000까지의 정수로 입력해주세요.' }); else { patch({ recordingOffsetMs: offsetValue }); setOffsetText(String(offsetValue)) } }}/><span>ms</span></div></SettingRow>
+            <SettingRow label="녹음 위치 보정" hint="새 녹음 리전을 수동으로 정렬합니다. 양수는 뒤로, 음수는 앞으로 이동합니다. 자동 왕복 지연 측정값은 아닙니다."><div className="audio-unit-input"><input type="text" inputMode="decimal" aria-label="녹음 위치 보정 밀리초" aria-invalid={offsetValue === null} value={offsetText} disabled={locked} onChange={event => { setOffsetText(event.target.value); setFeedback(null) }} onBlur={() => { if (offsetValue === null) setFeedback({ error: true, text: '녹음 위치 보정은 -1000부터 1000까지의 정수로 입력해주세요.' }); else { patch({ recordingOffsetFrames: offsetFrames(offsetValue) }); setOffsetText(String(offsetValue)) } }}/><span>ms</span></div></SettingRow>
           </>}
 
           {tab === 'project' && <>

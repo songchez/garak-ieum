@@ -58,6 +58,31 @@
 .status-bar button.audio-status:hover { background: var(--ink-21); color: var(--accent-hover); }
 .status-bar button.audio-status.error { color: var(--danger); }
 .appearance-footer .audio-settings-footer-status { font-size: 10px; }
+/* Device info, fix-it panel, channel configuration and latency wizard (desktop dialog) */
+.audio-device-info .audio-settings-facts { margin: 10px 0 4px; }
+.audio-warning { color: var(--warning, var(--text-secondary)); }
+.audio-warning .audio-small-button { margin-left: 6px; }
+.audio-problem { margin-top: 14px; padding: 11px 12px; border: 1px solid color-mix(in srgb,var(--danger) 35%,transparent); border-radius: 4px; background: color-mix(in srgb,var(--danger) 5%,transparent); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.audio-problem > strong { color: var(--danger); font-weight: 600; }
+.audio-problem > p { margin: 4px 0 0; color: var(--text-secondary); font-size: 10px; }
+.audio-problem .audio-settings-actions { margin: 10px 0 2px; }
+.audio-channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; margin: 10px 0; max-height: 330px; overflow-y: auto; padding-right: 2px; }
+.audio-channel-pair { display: flex; flex-direction: column; gap: 4px; padding: 8px; border: 1px solid var(--border-subtle); border-radius: 5px; background: var(--surface-canvas-alt); }
+.audio-channel-row { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 6px; font-size: 10px; color: var(--text-muted); }
+.audio-channel-grid > .audio-channel-row { padding: 4px 8px; border: 1px solid var(--border-subtle); border-radius: 5px; background: var(--surface-canvas-alt); }
+.audio-channel-row > label { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.audio-channel-row > label > input, .audio-channel-stereo > input { margin: 0; accent-color: var(--accent); }
+.audio-channel-row > input[type="text"] { min-width: 0; height: 26px; border: 1px solid var(--control-border); border-radius: 4px; background: var(--surface-input); padding: 0 7px; font-size: 10px; }
+.audio-channel-number { font-variant-numeric: tabular-nums; text-align: center; }
+.audio-channel-stereo { display: flex; align-items: center; gap: 6px; margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--border-subtle); font-size: 10px; color: var(--text-secondary); }
+.audio-channel-choices { overflow-wrap: anywhere; }
+.audio-latency-wizard { padding: 12px 14px; border: 1px solid var(--border-default); border-radius: 5px; background: var(--surface-canvas-alt); }
+.audio-latency-wizard ol { margin: 0 0 10px; padding-left: 18px; font-size: 10px; line-height: 1.8; color: var(--text-muted); }
+.audio-latency-controls { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
+.audio-latency-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 9px; color: var(--text-muted); }
+.audio-latency-controls select { min-width: 140px; height: 28px; border: 1px solid var(--control-border); border-radius: 4px; background: var(--surface-input); padding: 0 7px; font-size: 11px; }
+.audio-latency-result .audio-small-button { margin-top: 2px; }
+.toast > button.toast-action { display: inline-flex; padding: 4px 9px; border: 1px solid var(--accent-border); border-radius: 4px; color: var(--accent-hover); background: var(--accent-soft); font-size: 10px; white-space: nowrap; }
 @media (max-width: 740px) {
   .audio-settings-layout { grid-template-columns: 128px minmax(0, 1fr); }
   .audio-settings-nav > button { padding-inline: 7px; gap: 6px; font-size: 10px; }
