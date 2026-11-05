@@ -22,6 +22,15 @@ const assets = (...items: NativePcmAsset[]) => new Map(items.map(item => [item.i
 const pcm = (id: string, seconds = 10, sampleRate = 48000): NativePcmAsset => ({ id, sampleRate, frames: seconds * sampleRate, channels: 2 })
 
 describe('native timeline preparation', () => {
+  it('carries each track input as physical channels and leaves the default to the host', () => {
+    const tracks = [track('mono', { kind: 'audio', input: { channels: [5], label: 'Guitar DI' } }), track('pair', { kind: 'audio', input: { channels: [2, 3] } }), track('default', { kind: 'audio' })]
+    const compiled = compileNativeTimeline(project(tracks)).tracks
+    expect(compiled.map(item => item.input)).toEqual([{ channels: [5] }, { channels: [2, 3] }, null])
+    for (const channels of [[], [1, 1], [-1], [256], [1.5], [1, 2, 3]]) {
+      expect(() => compileNativeTimeline(project([track('bad', { kind: 'audio', input: { channels } as never })]))).toThrow(/input channels/)
+    }
+  })
+
   it('carries a validated independent wavetable patch instead of classifying it as a browser synth', () => {
     const owner = track('wave', { instrument: 'wavetable', clips: [midi('wave-phrase', { notes: [note(0)] })] })
     owner.instrumentState!.customBanks = [{ slot: 4, name: 'User', frames: [Array(2048).fill(0)] }]

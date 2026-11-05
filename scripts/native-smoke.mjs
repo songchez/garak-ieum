@@ -331,6 +331,52 @@ try {
       }
     })
   })
+  await checked('simultaneous takes record each track input from one start, and loopback latency is measured', async () => {
+    await withTestHost(async request => {
+      const configured = await request('engine.configure', { backend: 'test', sampleRate: 48000, bufferFrames: 128, inputChannels: 2 })
+      assert.equal(typeof configured.running, 'boolean')
+      const p = project([
+        { ...track('left', { kind: 'audio' }), input: { channels: [0] } },
+        { ...track('pair', { kind: 'audio' }), input: null },
+        { ...track('absent', { kind: 'audio' }), input: { channels: [7] } },
+      ]); p.lengthFrames = 48000 * 30
+      await request('project.set', { timeline: p })
+      const idle = await request('engine.snapshot')
+      assert.deepEqual(idle.tracksMissingInput, ['absent'])
+      assert.ok(Number.isInteger(idle.device.overloads) && idle.device.overloads >= 0)
+      assert.ok(typeof idle.device.lastCallbackLoad === 'number' && idle.device.lastCallbackLoad >= 0)
+
+      const latency = await request('latency.measure', { inputChannel: 1 })
+      assert.equal(latency.roundTripFrames, 128, 'the synthetic loopback is exactly one buffer')
+      assert.equal(latency.attempts, 5); assert.ok(latency.confidence > .9)
+      assert.equal(latency.reportedFrames, null); assert.equal(latency.extraFrames, null)
+      await assert.rejects(request('latency.measure', { inputChannel: 5 }), /not open/)
+
+      await request('test.input', { active: true })
+      await request('transport.play')
+      await assert.rejects(request('latency.measure', { inputChannel: 0 }), /Stop playback/)
+      await assert.rejects(request('record.start', { takes: [{ trackId: 'absent', path: path.join(temporary, 'absent.wav') }] }), /not open/)
+      await assert.rejects(request('record.start', { takes: [{ trackId: 'left', path: path.join(temporary, 'a.wav') }, { trackId: 'left', path: path.join(temporary, 'b.wav') }] }), /one take/)
+      const files = { left: path.join(temporary, 'multi-left.wav'), pair: path.join(temporary, 'multi-pair.wav') }
+      const start = await request('record.start', { takes: [{ trackId: 'left', takeId: 'L', path: files.left }, { trackId: 'pair', takeId: 'P', path: files.pair }] })
+      assert.deepEqual(start.takes.map(take => [take.trackId, take.takeId, take.channels]), [['left', 'L', 1], ['pair', 'P', 2]])
+      assert.equal(start.takes[0].startFrame, start.takes[1].startFrame)
+      assert.equal(start.startFrame, undefined, 'a multi-take start has no single-take fields')
+      const deadline = Date.now() + 5000
+      while ((await request('engine.snapshot')).recordedFrames < 2048) { assert.ok(Date.now() < deadline, 'Multi-take capture did not advance'); await delay(10) }
+      const stop = await request('record.stop')
+      assert.equal(stop.takes.length, 2); assert.equal(stop.path, undefined)
+      for (const take of stop.takes) {
+        assert.equal(take.error, undefined)
+        const audio = wav(await readFile(files[take.trackId]))
+        assert.equal(audio.channels, take.channels); assert.equal(audio.frames, take.frames)
+        assert.equal(take.frames, stop.takes[0].frames, 'takes stopped on different frames')
+        assert.ok(rms(audio.samples) > .05, 'a take recorded silence from an open input')
+      }
+      await request('transport.stop')
+      await request('engine.close')
+    })
+  })
   await checked('unknown and missing processors fail before silent substitution', async () => {
     const p = project()
     p.tracks[0].source.instrumentId = 'not-an-instrument'

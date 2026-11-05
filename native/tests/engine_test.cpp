@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <limits>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <sstream>
 #include <string>
@@ -160,6 +161,99 @@ void monitoringAndRecording(){
   check(e.drainRecording(recorded.data(),16)==16,"Capture ring lost already-buffered PCM on overflow");
 }
 
+// Device opens physical inputs 4, 7 and 9, interleaved as indices 0, 1, 2.
+ProjectTimeline inputProject(){
+  auto p=project(48000,10000);
+  const auto audio=[](const char*id,std::optional<TrackInput>input){TrackTimeline t;t.id=id;t.input=input;return t;};
+  p.tracks={audio("mono9",TrackInput{{9,-1}}),audio("pair47",TrackInput{{4,7}}),audio("absent5",TrackInput{{5,-1}}),audio("default",std::nullopt)};
+  return p;
+}
+void perTrackInputRouting(){
+  const std::array<std::uint8_t,3>layout{4,7,9};
+  const auto mono=routeInput(TrackInput{{9,-1}},layout,3,0,1),pair=routeInput(TrackInput{{4,7}},layout,3,0,1),absent=routeInput(TrackInput{{5,-1}},layout,3,0,1);
+  check(mono.left==2&&mono.right==-1&&mono.channels==1&&!mono.missing,"Physical mono input did not map to its interleaved index");
+  check(pair.left==0&&pair.right==1&&pair.channels==2,"Physical stereo input did not map to its interleaved pair");
+  check(absent.missing&&absent.left==-1&&absent.channels==1,"An unopened input was not reported missing");
+  check(routeInput(TrackInput{{4,5}},layout,3,0,1).missing,"A half-open stereo pair recorded only one side");
+  check(routeInput(TrackInput{{9,-1}},layout,2,0,1).missing,"A layout channel beyond the delivered count was treated as open");
+  const auto fallback=routeInput(std::nullopt,layout,1,0,1);check(fallback.left==0&&fallback.right==-1&&fallback.channels==1,"Default input on a mono device is not its first channel");
+  check(routeInput(std::nullopt,layout,0,0,1).missing,"Default input without any device input is not missing");
+
+  auto p=inputProject();RenderEngine e(48000,8,64);e.submit(e.prepare(p,{}));
+  const std::array<std::uint32_t,3>physical{4,7,9};check(e.setInputLayout(physical),"Input layout command failed");
+  std::array<float,24>in{};for(std::size_t i=0;i<8;++i){in[i*3]=.1f;in[i*3+1]=.2f;in[i*3+2]=.3f;}
+  std::array<float,16>out{};
+  const auto monitorOnly=[&](std::uint32_t index){const std::array<std::uint32_t,1>ids{index};check(e.setMonitoring(ids),"Monitor command failed");rt(e,out.data(),in.data(),8,3);};
+  monitorOnly(0);for(std::size_t i=0;i<8;++i){near(out[2*i],.3/std::sqrt(2.0),1e-6,"Mono track did not monitor its own physical input");near(out[2*i+1],out[2*i],1e-7,"Mono track input was not centered");}
+  monitorOnly(1);for(std::size_t i=0;i<8;++i){near(out[2*i],.1,1e-6,"Stereo track left is not its first physical channel");near(out[2*i+1],.2,1e-6,"Stereo track right is not its second physical channel");}
+  monitorOnly(2);for(const auto v:out)near(v,0,0,"A track with an unopened input heard another channel");
+  monitorOnly(3);near(out[0],.1,1e-6,"Default input is not the first enabled pair");near(out[1],.2,1e-6,"Default input is not the first enabled pair");
+  // Reconfigured device: the same tracks follow their physical channels to new indices.
+  const std::array<std::uint32_t,2>swapped{9,4};check(e.setInputLayout(swapped),"Input layout swap failed");
+  std::array<float,16>two{};for(std::size_t i=0;i<8;++i){two[i*2]=.5f;two[i*2+1]=.6f;}
+  {const std::array<std::uint32_t,1>ids{0};check(e.setMonitoring(ids),"Monitor command failed");rt(e,out.data(),two.data(),8,2);}
+  near(out[0],.5/std::sqrt(2.0),1e-6,"Input layout swap did not remap the physical channel");
+  {const std::array<std::uint32_t,1>ids{1};check(e.setMonitoring(ids),"Monitor command failed");rt(e,out.data(),two.data(),8,2);}
+  for(const auto v:out)near(v,0,0,"A stereo input whose pair closed still produced sound");
+  rejects([&]{const std::array<std::uint32_t,2>dup{3,3};(void)e.setInputLayout(dup);},"Duplicate physical input channels were accepted");
+  rejects([&]{const std::array<std::uint32_t,1>big{256};(void)e.setInputLayout(big);},"Out-of-range physical input channel was accepted");
+}
+
+void simultaneousTakes(){
+  auto p=inputProject();RenderEngine e(48000,8,64);e.submit(e.prepare(p,{}));
+  const std::array<std::uint32_t,3>physical{4,7,9};check(e.setInputLayout(physical),"Input layout command failed");
+  const std::array<std::uint32_t,4>tracks{0,1,2,3};const auto plan=e.planRecording(tracks);
+  check(plan.size()==4&&plan[0].route.channels==1&&plan[1].route.channels==2&&plan[2].route.missing&&plan[3].route.channels==2,"Take plan does not follow each track input");
+  rejects([&]{const std::array<std::uint32_t,2>dup{1,1};(void)e.planRecording(dup);},"A track was planned to record twice");
+  rejects([&]{const std::array<std::uint32_t,1>bad{9};(void)e.planRecording(bad);},"An unknown track was planned");
+  rejects([&]{std::vector<std::uint32_t>many(65);for(std::uint32_t i=0;i<65;++i)many[i]=i;(void)e.planRecording(many);},"More than 64 takes were planned");
+  check(e.seek(40),"Seek failed");check(e.startRecording(plan),"Multi-take start failed");check(e.play(),"Play failed");
+  check(e.recordingChannels()==6,"Capture frame does not hold every take's channels");
+  rejects([&]{(void)e.startRecording(plan);},"A second capture replaced one the callback still owns");
+  std::array<float,24>in{};std::array<float,16>out{};
+  for(int block=0;block<2;++block){for(std::size_t i=0;i<8;++i)for(std::size_t c=0;c<3;++c)in[i*3+c]=static_cast<float>(block*8+i)+static_cast<float>(c)/10;rt(e,out.data(),in.data(),8,3);}
+  check(e.snapshot().recordingStartFrame==40&&e.snapshot().recordedFrames==16,"Takes did not start on one shared transport frame");
+  const auto stop=e.stopRecording();rt(e,out.data(),in.data(),8,3);check(e.snapshot().lastAppliedCommand>=stop,"Multi-take stop was not acknowledged");
+  std::vector<float>frames(16*6);check(e.drainRecording(frames.data(),16)==16,"Multi-take capture lost frames");
+  for(std::size_t f=0;f<16;++f){
+    const float*x=frames.data()+f*6;const auto base=static_cast<float>(f);
+    near(x[0],base+.2f,0,"Mono take did not record physical channel 9");
+    near(x[1],base,0,"Stereo take left is not physical channel 4");near(x[2],base+.1f,0,"Stereo take right is not physical channel 7");
+    near(x[3],0,0,"A take with an unopened input recorded another channel");
+    near(x[4],base,0,"Default take left is not the first pair");near(x[5],base+.1f,0,"Default take right is not the first pair");
+  }
+  // The released ring can be replaced by the next recording.
+  const std::array<std::uint32_t,1>one{0};check(e.startRecording(e.planRecording(one)),"Next take after a drained stop failed");check(e.recordingChannels()==1,"Next take kept the previous capture layout");
+}
+
+void latencyDetection(){
+  const auto pulse=latencyPulse(48000);check(pulse.size()==192,"Latency pulse is not 4 ms");
+  std::vector<std::int64_t>emitted;for(int k=0;k<5;++k)emitted.push_back(k*20000);
+  std::uint32_t seed=12345;const auto noise=[&]{seed=seed*1664525u+1013904223u;return (static_cast<float>(seed>>8)/16777216.f-.5f);};
+  const auto loop=[&](std::int64_t delay,float gain,float noiseLevel,int skip){
+    std::vector<float>x(100000);for(auto&v:x)v=noise()*noiseLevel+.01f; // DC offset from a cheap converter.
+    for(std::size_t k=0;k<emitted.size();++k)if(static_cast<int>(k)!=skip)for(std::size_t i=0;i<pulse.size();++i)x[static_cast<std::size_t>(emitted[k]+delay)+i]+=gain*pulse[i];
+    return x;
+  };
+  auto found=detectLatency(loop(777,-.3f,.02f,-1),pulse,emitted,16800);
+  check(found.roundTripFrames&&*found.roundTripFrames==777,"Inverted, quiet loopback was not found at the exact frame");
+  check(found.attempts==5&&found.detected==5&&found.confidence>.8,"Clean loopback reported low confidence");
+  auto partial=detectLatency(loop(4096,.8f,.05f,2),pulse,emitted,16800);
+  check(partial.roundTripFrames&&*partial.roundTripFrames==4096&&partial.detected==4,"A missed pulse changed the measured latency");
+  check(partial.confidence<found.confidence&&partial.confidence>.5,"A missed pulse did not reduce confidence");
+  auto silent=detectLatency(loop(500,0,.05f,-1),pulse,emitted,16800);
+  check(!silent.roundTripFrames&&silent.confidence==0&&silent.attempts==5,"Noise without a loopback reported a latency");
+  auto late=detectLatency(loop(17000,.5f,.01f,-1),pulse,emitted,16800);
+  check(!late.roundTripFrames||late.confidence<.5,"A return beyond the search window was reported as certain");
+}
+
+void overloadCounting(){
+  LoadMeter meter;meter.record(.0005,.001);check(meter.overloads()==0,"Half a buffer of work was counted as an overload");near(meter.lastLoad(),.5,1e-6,"Callback load is not processing/buffer time");
+  meter.record(.00091,.001);meter.record(.002,.001);check(meter.overloads()==2,"Callbacks above 90% of the buffer were not counted");near(meter.lastLoad(),2,1e-6,"A late callback load was clamped");
+  meter.record(.001,0);check(meter.overloads()==2,"A zero-length buffer was counted");
+  meter.reset();check(meter.overloads()==0&&meter.lastLoad()==0,"Load meter reset failed");
+}
+
 void builtinEffectsAndGuitar(){
   // The old BiquadFilterNode low/high-pass Q is measured in dB. Check against
   // its documented gain at cutoff, independently from the native coefficients.
@@ -275,7 +369,7 @@ void concurrentControlAndRender(){
 } // namespace
 
 int main(){
-  const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"native monitoring and capture ring",monitoringAndRecording},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender}};
+  const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

@@ -46,46 +46,78 @@ void waveHeader(std::ostream& out, std::uint32_t rate, std::uint16_t channels, s
   put16(out,channels*(floating?4:2)); put16(out,floating?32:16); out.write("data",4); put32(out,static_cast<std::uint32_t>(bytes));
 }
 
-/** A single non-realtime consumer writes the preallocated recording ring. */
-class RecordingFile {
+/** One non-realtime consumer drains the shared capture ring into one WAV per
+ * take. Files are created before the take starts (a disk error refuses the
+ * take), and the thread starts only after the engine holds the new ring. */
+class RecordingSession {
  public:
-  RecordingFile(RenderEngine& engine, std::string path, std::uint32_t rate, std::uint16_t channels)
-      : engine_(engine), path_(std::move(path)), rate_(rate), channels_(channels),
-        file_(pathOf(path_),std::ios::binary|std::ios::out|std::ios::trunc) {
-    if (!file_) throw std::runtime_error("Cannot create recording file");
-    waveHeader(file_,rate_,channels_,0,true); file_.flush();
-    thread_ = std::thread([this] { run(); });
+  struct Take { std::string trackId, takeId, path; std::uint16_t channels = 1; std::ofstream file; std::vector<float> pcm; };
+  RecordingSession(RenderEngine& engine, std::uint32_t rate, std::vector<Take> takes, bool legacy)
+      : engine_(engine), rate_(rate), legacy_(legacy), takes_(std::move(takes)) {
+    for (auto& take : takes_) {
+      take.file.open(pathOf(take.path),std::ios::binary|std::ios::out|std::ios::trunc);
+      if (!take.file) throw std::runtime_error("Cannot create recording file");
+      waveHeader(take.file,rate_,take.channels,0,true); take.file.flush();
+      take.pcm.resize(std::size_t(scratchFrames)*take.channels); channels_+=take.channels;
+    }
+    frame_.resize(std::size_t(scratchFrames)*channels_);
   }
-  ~RecordingFile() { finish(); }
+  ~RecordingSession() { finish(); }
+  void begin() { thread_ = std::thread([this] { run(); }); }
   void finish() noexcept { stopping_.store(true); if (thread_.joinable()) thread_.join(); }
   [[nodiscard]] std::uint64_t frames() const noexcept { return frames_.load(); }
   [[nodiscard]] bool failed() const noexcept { return failed_.load(); }
-  [[nodiscard]] std::uint16_t channels() const noexcept { return channels_; }
-  [[nodiscard]] const std::string& path() const noexcept { return path_; }
+  [[nodiscard]] bool legacy() const noexcept { return legacy_; }
+  [[nodiscard]] const std::vector<Take>& takes() const noexcept { return takes_; }
+  std::int64_t rawStart = 0; std::uint64_t compensation = 0; bool compensationKnown = false;
  private:
+  void header() { for (auto& take : takes_) { waveHeader(take.file,rate_,take.channels,frames_.load(),true); take.file.seekp(0,std::ios::end); take.file.flush(); } }
   void run() noexcept {
     try {
-      std::array<float,scratchFrames*2> pcm{}, mono{};
+      if (engine_.recordingChannels()!=channels_) throw std::runtime_error("Recording layout differs from its files");
       auto checkpoint = Clock::now();
       for (;;) {
-        const auto n = engine_.drainRecording(pcm.data(),scratchFrames);
+        const auto n = engine_.drainRecording(frame_.data(),scratchFrames);
         if (n) {
-          if (channels_ == 1) for (std::uint32_t i=0;i<n;++i) mono[i]=pcm[i*2];
-          file_.write(reinterpret_cast<const char*>(channels_==1?mono.data():pcm.data()),std::streamsize(n)*channels_*sizeof(float));
+          std::uint32_t offset=0;
+          for (auto& take : takes_) {
+            for (std::uint32_t i=0;i<n;++i) for (std::uint32_t c=0;c<take.channels;++c) take.pcm[std::size_t(i)*take.channels+c]=frame_[std::size_t(i)*channels_+offset+c];
+            take.file.write(reinterpret_cast<const char*>(take.pcm.data()),std::streamsize(n)*take.channels*sizeof(float));
+            if (!take.file) throw std::runtime_error("Recording disk write failed");
+            offset+=take.channels;
+          }
           frames_.fetch_add(n);
-          if (!file_) throw std::runtime_error("Recording disk write failed");
         } else if (stopping_.load()) break;
         else std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        if (Clock::now()-checkpoint>std::chrono::seconds(1)) {
-          waveHeader(file_,rate_,channels_,frames_.load(),true); file_.seekp(0,std::ios::end); file_.flush(); checkpoint=Clock::now();
-        }
+        if (Clock::now()-checkpoint>std::chrono::seconds(1)) { header(); checkpoint=Clock::now(); }
       }
-      waveHeader(file_,rate_,channels_,frames_.load(),true); file_.flush(); file_.close();
+      for (auto& take : takes_) { waveHeader(take.file,rate_,take.channels,frames_.load(),true); take.file.flush(); take.file.close(); }
     } catch (...) { failed_.store(true); }
   }
-  RenderEngine& engine_; std::string path_; std::uint32_t rate_; std::uint16_t channels_;
-  std::ofstream file_; std::thread thread_; std::atomic<bool> stopping_{false},failed_{false}; std::atomic<std::uint64_t> frames_{0};
+  RenderEngine& engine_; std::uint32_t rate_; bool legacy_; std::vector<Take> takes_; std::uint32_t channels_=0; std::vector<float> frame_;
+  std::thread thread_; std::atomic<bool> stopping_{false},failed_{false}; std::atomic<std::uint64_t> frames_{0};
 };
+
+/** latency.measure: preallocated before the callback sees it, never resized while
+ * published. The callback only advances `position`; the control thread reads the
+ * capture after observing the final position. */
+struct LatencyProbe {
+  std::vector<float> pulse, captured; std::vector<std::int64_t> emitted;
+  std::int32_t inputIndex = -1; std::uint64_t spacing = 0, total = 0;
+  std::atomic<std::uint64_t> position{0};
+};
+
+// Physical input channels the open device interleaves into the callback.
+// Prefer the device's own list (docs/AUDIO_CORE_PLAN.md); older device layers
+// only expose a contiguous range from an offset.
+template<class State> std::vector<std::uint32_t> inputLayoutOf(const State& s) {
+  if constexpr (requires { s.inputChannelList; }) {
+    if (!s.inputChannelList.empty()) return std::vector<std::uint32_t>(s.inputChannelList.begin(),s.inputChannelList.end());
+  }
+  std::vector<std::uint32_t> layout;
+  for (std::uint32_t c=0;c<s.inputChannels && s.inputChannelOffset+c<256 && layout.size()<maxInputLayout;++c) layout.push_back(s.inputChannelOffset+c);
+  return layout;
+}
 
 Json deviceJson(const DeviceState& s) {
   return {{"configured",s.configured},{"running",s.running},{"backend",s.backend},{"inputDeviceId",s.inputDeviceId},{"outputDeviceId",s.outputDeviceId},
@@ -106,7 +138,10 @@ class Host {
       while (now>=nextTest_ && count++<8) {
         const auto frames=testState_.bufferFrames;
         if (testState_.inputChannels) {
-          for (std::uint32_t i=0;i<frames;++i) { const float v=testTone_?float(.15*std::sin(testPhase_)):0; testPhase_+=6.283185307179586*220/testState_.sampleRate; for(std::uint32_t c=0;c<testState_.inputChannels;++c) testInput_[i*testState_.inputChannels+c]=v; }
+          // A latency probe hears the previous callback's output: a loopback
+          // cable with exactly one buffer of round trip on the synthetic clock.
+          const bool loopback=probe_.load(std::memory_order_acquire)!=nullptr;
+          for (std::uint32_t i=0;i<frames;++i) { const float v=loopback?testOutput_[i*2]:testTone_?float(.15*std::sin(testPhase_)):0; testPhase_+=6.283185307179586*220/testState_.sampleRate; for(std::uint32_t c=0;c<testState_.inputChannels;++c) testInput_[i*testState_.inputChannels+c]=v; }
         }
         callback(this,testOutput_.data(),testState_.inputChannels?testInput_.data():nullptr,frames,testState_.inputChannels);
         nextTest_+=std::chrono::nanoseconds(std::int64_t(1e9*frames/testState_.sampleRate));
@@ -127,6 +162,8 @@ class Host {
         configured_=false;
       }
     }
+    const auto epoch2=callbacks_.load();
+    std::erase_if(retiredProbes_,[epoch2](const auto& item){return epoch2>=item.first;});
     if (recording_ && (recording_->failed() || (engine_ && engine_->snapshot().recordingDroppedFrames))) {
       if (!recordingError_) { recordingError_=true; (void)engine_->stopRecording(); }
     }
@@ -189,6 +226,7 @@ class Host {
       return Json::object();
     }
     if(method=="note.allOff") { awaitApplied(engine_->allNotesOff(trackIndex(string(a,"trackId")))); return Json::object(); }
+    if (method=="latency.measure") return measureLatency(a);
     if (method=="monitor.set") {
       std::vector<std::uint32_t> tracks;
       if(a.value("enabled",false)) {
@@ -198,21 +236,7 @@ class Host {
       }
       awaitApplied(engine_->setMonitoring(tracks)); return Json::object();
     }
-    if (method=="record.start") {
-      if(recording_) throw std::runtime_error("Recording is already active");
-      if(!currentDevice().inputChannels) throw std::runtime_error("Native input is not configured");
-      if(!engine_->snapshot().playing) throw std::runtime_error("Start transport playback before recording");
-      const auto index=trackIndex(string(a,"trackId")); if(project_.tracks[index].source.kind!=TrackSource::Kind::Audio) throw std::runtime_error("Recording requires an audio track");
-      recordingError_=false;
-      recording_=std::make_unique<RecordingFile>(*engine_,string(a,"path",32768),currentDevice().sampleRate,std::uint16_t(std::min(2u,currentDevice().inputChannels)));
-      try { awaitApplied(engine_->startRecording()); } catch(...) { recording_.reset(); throw; }
-      const auto s=engine_->snapshot(); const auto device=currentDevice();
-      recordingRawStart_=s.recordingStartFrame;
-      recordingCompensation_=std::uint64_t(device.inputLatencyFrames.value_or(0))+device.outputLatencyFrames.value_or(0)+s.latencyFrames;
-      recordingCompensationKnown_=device.inputLatencyFrames.has_value()&&device.outputLatencyFrames.has_value();
-      return {{"startFrame",recordingRawStart_-std::int64_t(recordingCompensation_)},{"rawStartFrame",recordingRawStart_},
-        {"compensationFrames",recordingCompensation_},{"compensationKnown",recordingCompensationKnown_},{"sampleRate",s.sampleRate},{"channels",recording_->channels()}};
-    }
+    if (method=="record.start") return startRecording(a);
     if (method=="record.stop") {
       if(!recording_ || !engine_) throw std::runtime_error("No active recording");
       const auto ticket=engine_->stopRecording();
@@ -225,9 +249,17 @@ class Host {
         recordingError_=true;
       }
       const auto s=engine_->snapshot(); recording_->finish();
-      Json result={{"path",recording_->path()},{"startFrame",recordingRawStart_-std::int64_t(recordingCompensation_)},{"rawStartFrame",recordingRawStart_},
-        {"compensationFrames",recordingCompensation_},{"compensationKnown",recordingCompensationKnown_},{"frames",recording_->frames()},{"sampleRate",s.sampleRate},{"channels",recording_->channels()}};
-      if(recordingError_ || recording_->failed() || s.recordingDroppedFrames) result["error"]="장치·플러그인 또는 녹음 오류로 중단되었습니다. 복구 폴더에 받은 오디오를 보관했습니다.";
+      const auto& r=*recording_; const bool failed=recordingError_ || r.failed() || s.recordingDroppedFrames;
+      Json takes=Json::array();
+      for(const auto& take:r.takes()) {
+        Json item={{"trackId",take.trackId},{"takeId",take.takeId},{"path",take.path},{"startFrame",r.rawStart-std::int64_t(r.compensation)},{"rawStartFrame",r.rawStart},
+          {"compensationFrames",r.compensation},{"compensationKnown",r.compensationKnown},{"frames",r.frames()},{"sampleRate",s.sampleRate},{"channels",take.channels}};
+        if(failed) item["error"]="장치·플러그인 또는 녹음 오류로 중단되었습니다. 복구 폴더에 받은 오디오를 보관했습니다.";
+        takes.push_back(std::move(item));
+      }
+      Json result={{"takes",takes},{"sampleRate",s.sampleRate}};
+      // A single { trackId } start keeps its former flat response as well.
+      if(r.legacy()) for(const auto& [key,value]:takes[0].items()) if(key!="trackId"&&key!="takeId") result[key]=value;
       recording_.reset(); return result;
     }
     if (method=="output.test") { toneRemaining_.store(a.value("active",true)?currentDevice().sampleRate*2:0); return Json::object(); }
@@ -289,6 +321,95 @@ class Host {
     throw std::runtime_error("Unknown plugin operation");
   }
   DeviceState currentDevice() const { return test_?testState_:device_.state(); }
+  Json startRecording(const Json& a) {
+    if(recording_) throw std::runtime_error("Recording is already active");
+    const auto device=currentDevice();
+    if(!device.inputChannels) throw std::runtime_error("Native input is not configured");
+    if(!engine_->snapshot().playing) throw std::runtime_error("Start transport playback before recording");
+    // { trackId, path } is the former single take; { takes: [{ trackId, path, takeId? }] } records them all at once.
+    const bool legacy=!a.contains("takes");
+    std::vector<Json> requests;
+    if(legacy) requests.push_back(a);
+    else {
+      const auto& list=a.at("takes");
+      if(!list.is_array() || list.empty() || list.size()>maxRecordingTakes) throw std::runtime_error("Invalid recording takes");
+      for(const auto& item:list) { if(!item.is_object()) throw std::runtime_error("Invalid recording take"); requests.push_back(item); }
+    }
+    std::vector<std::uint32_t> indices; std::set<std::string> paths; std::vector<RecordingSession::Take> takes;
+    for(const auto& item:requests) {
+      RecordingSession::Take take; take.trackId=string(item,"trackId"); take.path=string(item,"path",32768);
+      if(item.contains("takeId")) take.takeId=string(item,"takeId",128);
+      const auto index=trackIndex(take.trackId);
+      if(std::find(indices.begin(),indices.end(),index)!=indices.end()) throw std::runtime_error("A track can record only one take at a time");
+      if(project_.tracks[index].source.kind!=TrackSource::Kind::Audio) throw std::runtime_error("Recording requires an audio track");
+      if(!paths.insert(take.path).second) throw std::runtime_error("Recording takes need separate files");
+      indices.push_back(index); takes.push_back(std::move(take));
+    }
+    const auto plan=engine_->planRecording(indices);
+    for(std::size_t i=0;i<plan.size();++i) {
+      // Recording silence from an unopened channel would look like a successful take.
+      if(plan[i].route.missing) throw std::runtime_error("The input selected for track "+takes[i].trackId+" is not open on this audio device");
+      takes[i].channels=std::uint16_t(plan[i].route.channels);
+    }
+    recordingError_=false;
+    recording_=std::make_unique<RecordingSession>(*engine_,device.sampleRate,std::move(takes),legacy);
+    try { awaitApplied(engine_->startRecording(plan)); recording_->begin(); } catch(...) { recording_.reset(); throw; }
+    const auto s=engine_->snapshot(); auto& r=*recording_;
+    r.rawStart=s.recordingStartFrame;
+    r.compensation=std::uint64_t(device.inputLatencyFrames.value_or(0))+device.outputLatencyFrames.value_or(0)+s.latencyFrames;
+    r.compensationKnown=device.inputLatencyFrames.has_value()&&device.outputLatencyFrames.has_value();
+    Json list=Json::array();
+    for(const auto& take:r.takes()) list.push_back({{"trackId",take.trackId},{"takeId",take.takeId},{"path",take.path},{"channels",take.channels},{"startFrame",r.rawStart-std::int64_t(r.compensation)},
+      {"rawStartFrame",r.rawStart},{"compensationFrames",r.compensation},{"compensationKnown",r.compensationKnown}});
+    Json result={{"takes",list},{"sampleRate",s.sampleRate}};
+    if(legacy) result.update({{"startFrame",r.rawStart-std::int64_t(r.compensation)},{"rawStartFrame",r.rawStart},{"compensationFrames",r.compensation},
+      {"compensationKnown",r.compensationKnown},{"channels",r.takes()[0].channels}});
+    return result;
+  }
+  Json measureLatency(const Json& a) {
+    const auto device=currentDevice();
+    if(recording_ || engine_->snapshot().playing) throw std::runtime_error("Stop playback before measuring latency");
+    if(!device.running) throw std::runtime_error("The audio device is not running");
+    if(a.contains("outputChannelOffset") && std::uint32_t(integer(a,"outputChannelOffset",0,255,0))!=device.outputChannelOffset)
+      throw std::runtime_error("Configure the audio device with this output pair before measuring");
+    if(a.contains("sampleRate") && std::uint32_t(integer(a,"sampleRate",8000,192000,48000))!=device.sampleRate)
+      throw std::runtime_error("Configure the audio device at this sample rate before measuring");
+    const auto physical=std::uint32_t(integer(a,"inputChannel",0,255,0));
+    if(!a.contains("inputChannel")) throw std::runtime_error("Missing number: inputChannel");
+    const auto layout=inputLayoutOf(device); const auto found=std::find(layout.begin(),layout.end(),physical);
+    if(found==layout.end() || std::uint32_t(found-layout.begin())>=device.inputChannels) throw std::runtime_error("The measured input channel is not open on this audio device");
+    constexpr std::uint32_t attempts=5;
+    auto probe=std::make_unique<LatencyProbe>(); probe->pulse=latencyPulse(device.sampleRate);
+    const auto maxLag=std::int64_t(device.sampleRate)*35/100;
+    probe->spacing=std::uint64_t(maxLag)+probe->pulse.size()+device.sampleRate/20; probe->total=probe->spacing*attempts;
+    probe->captured.assign(probe->total,0.f); probe->inputIndex=std::int32_t(found-layout.begin());
+    for(std::uint32_t k=0;k<attempts;++k) probe->emitted.push_back(std::int64_t(k*probe->spacing));
+    auto* active=probe.get(); probe_.store(active,std::memory_order_release);
+    const auto retire=[&]{ probe_.store(nullptr,std::memory_order_release); retiredProbes_.emplace_back(callbacks_.load()+2,std::move(probe)); };
+    const auto until=Clock::now()+std::chrono::milliseconds(1000*active->total/device.sampleRate+3000);
+    while(active->position.load(std::memory_order_acquire)<active->total) {
+      service(); pumpNativeEvents();
+      if(Clock::now()>until || !currentDevice().running) { retire(); throw std::runtime_error("The audio callback stopped during latency measurement"); }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto detection=detectLatency(active->captured,active->pulse,active->emitted,maxLag);
+    retire();
+    const auto reported=device.inputLatencyFrames&&device.outputLatencyFrames?Json(std::uint64_t(*device.inputLatencyFrames)+*device.outputLatencyFrames):Json(nullptr);
+    Json result={{"roundTripFrames",detection.roundTripFrames?Json(*detection.roundTripFrames):Json(nullptr)},{"reportedFrames",reported},
+      {"extraFrames",detection.roundTripFrames&&!reported.is_null()?Json(*detection.roundTripFrames-reported.get<std::int64_t>()):Json(nullptr)},
+      {"confidence",detection.confidence},{"attempts",detection.attempts},{"detected",detection.detected},{"sampleRate",device.sampleRate}};
+    if(!detection.roundTripFrames) result["message"]="측정 신호를 찾지 못했습니다. 선택한 출력과 입력을 케이블로 연결하고 입력 레벨을 확인해주세요.";
+    return result;
+  }
+  // Tracks whose explicit input names a channel the open device does not deliver.
+  Json tracksMissingInput(const DeviceState& device) const {
+    Json missing=Json::array();
+    if(!device.configured || !device.inputChannels) return missing;
+    std::vector<std::uint8_t> layout; for(const auto c:inputLayoutOf(device)) layout.push_back(std::uint8_t(c));
+    for(const auto& t:project_.tracks)
+      if(t.input && t.source.kind==TrackSource::Kind::Audio && routeInput(t.input,layout,device.inputChannels,0,-1).missing) missing.push_back(t.id);
+    return missing;
+  }
   void requireEngine() const { if(!engine_ || !configured_) throw std::runtime_error("Configure a native audio device first"); }
   std::uint32_t trackIndex(const std::string& id) const {
     const auto found=std::find_if(project_.tracks.begin(),project_.tracks.end(),[&](const auto& track){return track.id==id;});
@@ -316,7 +437,8 @@ class Host {
     if(project_.projectId.empty()) { project_.projectId="empty"; project_.sampleRate=state.sampleRate; project_.lengthFrames=state.sampleRate; }
     if(project_.sampleRate!=state.sampleRate) { project_={}; project_.projectId="empty"; project_.sampleRate=state.sampleRate; project_.lengthFrames=state.sampleRate; }
     auto prepared=engine_->prepare(project_,assets_,sets_,resolver(false)); engine_->submit(std::move(prepared));
-    (void)engine_->setInputChannels(0,state.inputChannels>1?1:-1); (void)engine_->seek(std::min(oldFrame,project_.lengthFrames));
+    (void)engine_->setInputChannels(0,state.inputChannels>1?1:-1); (void)engine_->setInputLayout(inputLayoutOf(state)); (void)engine_->seek(std::min(oldFrame,project_.lengthFrames));
+    load_.reset(); callbackRate_.store(state.sampleRate,std::memory_order_relaxed);
     configured_=true; nextTest_=Clock::now();
     try { if(!test_) device_.start(); } catch(...) { configured_=false; device_.close(); throw; }
     auto result=deviceJson(currentDevice()); result["testClock"]=test_; return result;
@@ -352,6 +474,7 @@ class Host {
   void clearPreview() { preview_.store(nullptr,std::memory_order_release); if(previewOwned_) retiredPreview_.emplace_back(callbacks_.load()+2,std::move(previewOwned_)); }
   static void callback(void* context,float* output,const float* input,std::uint32_t frames,std::uint32_t channels) noexcept {
     auto& host=*static_cast<Host*>(context);
+    const auto began=Clock::now();
     if(host.engine_) host.engine_->render(output,input,frames,channels); else std::fill_n(output,std::size_t(frames)*2,0.f);
     auto* audition=host.preview_.load(std::memory_order_acquire);
     if(audition) for(std::uint32_t offset=0;offset<frames;offset+=scratchFrames) {
@@ -370,7 +493,23 @@ class Host {
       auto expected=originalRemaining;
       host.toneRemaining_.compare_exchange_strong(expected,remaining);
     }
+    if(auto* probe=host.probe_.load(std::memory_order_acquire)) {
+      // Only the pulses reach the output, so monitoring cannot feed the loopback.
+      const auto position=probe->position.load(std::memory_order_relaxed);
+      const auto count=std::uint32_t(std::min<std::uint64_t>(frames,probe->total-std::min(position,probe->total)));
+      std::fill_n(output,std::size_t(frames)*2,0.f);
+      for(std::uint32_t i=0;i<count;++i) {
+        const auto frame=position+i,offset=frame%probe->spacing;
+        const float v=offset<probe->pulse.size()?probe->pulse[offset]:0.f; output[i*2]=v; output[i*2+1]=v;
+        const auto index=probe->inputIndex;
+        const float heard=input&&index>=0&&std::uint32_t(index)<channels?input[std::size_t(i)*channels+std::uint32_t(index)]:0.f;
+        probe->captured[frame]=std::isfinite(heard)?heard:0.f;
+      }
+      if(count) probe->position.store(position+count,std::memory_order_release);
+    }
     for(std::uint32_t i=0;i<frames*2;++i) output[i]=std::isfinite(output[i])?std::clamp(output[i],-1.f,1.f):0.f;
+    if(const auto rate=host.callbackRate_.load(std::memory_order_relaxed); rate && frames)
+      host.load_.record(std::chrono::duration<double>(Clock::now()-began).count(),double(frames)/rate);
     host.callbacks_.fetch_add(1,std::memory_order_release);
   }
   Json render(const Json& a) {
@@ -420,13 +559,16 @@ class Host {
   }
   Json snapshot() const {
     Json result={{"type","state"},{"ready",false},{"playing",false},{"frame",0},{"sampleRate",48000},{"masterLevel",0},{"levels",Json::object()},{"testClock",test_}};
-    const auto device=currentDevice(); if(device.configured) { result["device"]=deviceJson(device); result["device"]["testClock"]=test_; }
+    const auto device=currentDevice(); if(device.configured) { result["device"]=deviceJson(device); result["device"]["testClock"]=test_;
+      // Callback deadlines this host measured, plus driver-reported overload/xrun events.
+      result["device"]["overloads"]=load_.overloads()+device.discontinuities; result["device"]["lastCallbackLoad"]=load_.lastLoad(); }
     if(!device.error.empty()) result["error"]=device.error;
     if(engine_) {
       const auto s=engine_->snapshot();
       result.update({{"revision",s.revision},{"ready",configured_&&s.ready&&device.running},{"playing",s.playing&&device.running},{"frame",s.frame},{"sampleRate",s.sampleRate},{"masterLevel",s.masterPeak},
         {"recording",s.recording},{"recordingStartFrame",s.recordingStartFrame},{"recordedFrames",s.recordedFrames},{"recordingDroppedFrames",s.recordingDroppedFrames},{"latencyFrames",s.latencyFrames},{"commandOverflows",s.commandOverflows},{"voiceOverflows",s.voiceOverflows},{"invalidSamples",s.invalidSamples}});
       for(std::size_t i=0;i<std::min(project_.tracks.size(),std::size_t(s.trackCount));++i) result["levels"][project_.tracks[i].id]=s.trackPeaks[i];
+      result["tracksMissingInput"]=tracksMissingInput(device);
       if(recordingError_) result["error"]="녹음 데이터가 손실되었습니다. 녹음을 중지하고 복구 파일을 확인해주세요.";
     }
     if(!pluginError_.empty()) result["error"]=pluginError_;
@@ -435,6 +577,7 @@ class Host {
   void closeDevice() {
     if(!test_) device_.close(); configured_=false; testState_={};
     preview_.store(nullptr); previewOwned_.reset(); retiredPreview_.clear(); toneRemaining_.store(0);
+    probe_.store(nullptr); retiredProbes_.clear(); callbackRate_.store(0);
   }
   void close() noexcept {
     try { closeDevice(); if(recording_) recording_->finish(); recording_.reset(); engine_.reset(); plugins_.clear(); assets_.clear(); sets_.clear(); project_={}; pluginError_.clear(); recordingError_=false; } catch(...) {}
@@ -443,12 +586,13 @@ class Host {
   std::string pluginError_;
   DeviceHost device_; DeviceState testState_; std::unique_ptr<RenderEngine> engine_; ProjectTimeline project_;
   AssetStore assets_; SampleSetStore sets_; std::map<std::string,PluginEntry> plugins_;
-  std::unique_ptr<RecordingFile> recording_; Clock::time_point nextTest_{};
-  std::int64_t recordingRawStart_=0; std::uint64_t recordingCompensation_=0; bool recordingCompensationKnown_=false;
+  std::unique_ptr<RecordingSession> recording_; Clock::time_point nextTest_{};
   std::array<float,scratchFrames*2> testInput_{},testOutput_{},previewScratch_{};
   double testPhase_=0,outputPhase_=0; std::atomic<std::uint32_t> toneRemaining_{0};
   std::atomic<std::uint64_t> callbacks_{0}; std::atomic<RenderEngine*> preview_{nullptr}; std::unique_ptr<RenderEngine> previewOwned_;
   std::vector<std::pair<std::uint64_t,std::unique_ptr<RenderEngine>>> retiredPreview_;
+  std::atomic<LatencyProbe*> probe_{nullptr}; std::vector<std::pair<std::uint64_t,std::unique_ptr<LatencyProbe>>> retiredProbes_;
+  LoadMeter load_; std::atomic<std::uint32_t> callbackRate_{0};
 };
 
 struct InputQueue { std::mutex mutex; std::condition_variable changed; std::deque<std::string> lines; bool done=false; std::string error; };

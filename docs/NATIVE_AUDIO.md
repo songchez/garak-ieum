@@ -47,13 +47,13 @@ flowchart TD
 
 - **플러그인 지연:** `getLatencySamples()`와 내장 DSP의 처리 지연으로 트랙별 보상량을 계산합니다. 오프라인 출력은 보상용 앞부분을 제거합니다. 낮은 지연 입력 모니터링 모드는 녹음 중인 입력에 다른 트랙을 맞추기 위한 추가 보상을 넣지 않는 정책입니다.
 - **드라이버 지연:** ASIO의 입력·출력 지연 보고값을 각각 표시합니다. miniaudio의 공통 API에서 정확한 별도 값을 얻을 수 없는 WASAPI/Core Audio 항목은 미보고로 둡니다. 블록 크기의 두 배를 임의의 왕복 지연으로 표시하지 않습니다.
-- **실측 왕복 지연:** 인터페이스 루프백 측정이 필요합니다. 이번 작업에서는 실측하지 않았습니다. 녹음 위치에는 보고된 입력/출력 지연과 그래프 지연을 보정하고 원시 시작 frame과 보정 frame, 보고값의 완전성(`compensationKnown`)을 별도로 전달합니다. 미보고 값은 측정한 0으로 표시하지 않습니다. 수동 녹음 위치 보정은 자동 왕복 지연 측정과 별개입니다.
+- **실측 왕복 지연:** `latency.measure { inputChannel, outputChannelOffset? }`가 재생이 멈춘 상태에서 현재 출력 쌍으로 4 ms 처프를 5번 내보내고 고른 입력에서 상호상관으로 찾습니다(케이블 루프백 필요). 결과는 `roundTripFrames`, 드라이버 보고 합 `reportedFrames`, 차이 `extraFrames`, `confidence`(0~1), `attempts`입니다. 측정 중에는 다른 출력을 끕니다. 녹음 위치에는 보고된 입력/출력 지연과 그래프 지연을 보정하고 원시 시작 frame과 보정 frame, 보고값의 완전성(`compensationKnown`)을 별도로 전달합니다. 미보고 값은 측정한 0으로 표시하지 않습니다. 수동 녹음 위치 보정은 자동 왕복 지연 측정과 별개입니다.
 
 프리앰프 게인, 팬텀 파워, 외부 클럭 설정, 인터페이스 자체 직접 모니터링, 다중 트랙 동시 입력 녹음은 이 장치 API가 제공하지 않습니다.
 
 ## 4. DSP, 녹음과 오프라인 출력
 
-`native/src/engine.cpp`가 준비된 타임라인, 음표의 샘플 offset, 루프·탐색, 샘플 존·벨로시티·choke, 믹서와 트랙별 지연 보상을 처리합니다. `native/src/dsp.cpp`가 내장 합성 악기와 EQ·필터·컴프레서·드라이브·딜레이·리버브·기타 앰프를 처리합니다. 녹음은 장치 입력을 한정된 링 버퍼에 넣고 별도 스레드가 Float32 WAV를 작성합니다. 디스크/큐 오류와 실제 시작 프레임은 제어 응답으로 전달합니다. [엔진](../native/src/engine.cpp) · [DSP](../native/src/dsp.cpp) · [녹음 연결](../src/audio/native/NativeRecording.ts)
+`native/src/engine.cpp`가 준비된 타임라인, 음표의 샘플 offset, 루프·탐색, 샘플 존·벨로시티·choke, 믹서와 트랙별 지연 보상을 처리합니다. `native/src/dsp.cpp`가 내장 합성 악기와 EQ·필터·컴프레서·드라이브·딜레이·리버브·기타 앰프를 처리합니다. 녹음은 장치 입력을 한정된 링 버퍼에 넣고 별도 스레드가 Float32 WAV를 작성합니다. 트랙은 물리 입력 채널(`input.channels`, 모노 또는 쌍)을 가지며 호스트가 열린 채널 목록으로 콜백의 인터리브 위치를 찾습니다. 열리지 않은 채널을 고른 트랙은 무음이고 `tracksMissingInput`에 표시됩니다. `record.start { takes }`는 최대 64개 트랙을 같은 프레임에서 함께 시작하고 트랙마다 1·2채널 파일을 씁니다. 콜백 처리 시간이 버퍼 시간의 90%를 넘거나 드라이버가 overload를 알리면 `device.overloads`가 늘고, 최근 비율은 `device.lastCallbackLoad`입니다. 디스크/큐 오류와 실제 시작 프레임은 제어 응답으로 전달합니다. [엔진](../native/src/engine.cpp) · [DSP](../native/src/dsp.cpp) · [녹음 연결](../src/audio/native/NativeRecording.ts)
 
 WAV 내보내기는 같은 C++ 그래프와 **새 플러그인 인스턴스**를 오프라인 모드로 실행합니다. 실시간 플러그인 상태를 읽을 때는 callback을 정지시켜 경쟁을 피합니다. VST3와 내장 효과의 tail을 포함하되 전체 tail은 30초로 제한합니다. 출력은 프로젝트 레이트의 스테레오 PCM 16-bit WAV이며, 처리는 블록 단위로 파일에 기록합니다. 피치 렌더 자산도 이 출력에 포함됩니다.
 
