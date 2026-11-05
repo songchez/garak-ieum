@@ -718,6 +718,15 @@ describe('native device settings client', () => {
     expect(h.calls('engine.configure')[1]).toMatchObject({ inputChannels: 3, inputChannelOffset: 0, inputChannelList: [0, 2, 3] })
   })
 
+  it('sends the processing thread and render-ahead settings', async () => {
+    const h = managed(audioProject()), pcm = asset()
+    h.engine.setAssets(new Map([[pcm.id, pcm]]))
+    await h.engine.configure(DEFAULT_AUDIO_SETTINGS, 48000)
+    expect(h.calls('engine.configure')[0]).toMatchObject({ processingThreads: 'auto', renderAhead: 'off' })
+    await h.engine.configure({ ...DEFAULT_AUDIO_SETTINGS, processingThreads: 4, renderAhead: 'high' }, 48000)
+    expect(h.calls('engine.configure')[1]).toMatchObject({ processingThreads: 4, renderAhead: 'high' })
+  })
+
   it('reuses an open device that reports the same channel list and asks for an enabled input', async () => {
     const p = audioProject(), h = managed(p), pcm = asset()
     h.engine.setAssets(new Map([[pcm.id, pcm]]))

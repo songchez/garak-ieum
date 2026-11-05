@@ -7,6 +7,11 @@ export type RenderSizeHint = typeof RENDER_SIZES[number]
 export type LatencyHint = 'interactive' | 'balanced' | 'playback'
 /** `driver` asks the driver for its preferred block; a number is snapped by ASIO to its nearest allowed size. */
 export type NativeBufferFrames = number | 'driver'
+/** Native engine worker threads besides the audio callback: `auto` = hardware threads - 1 (at most 8), 0 = single-threaded. */
+export type ProcessingThreads = 'auto' | number
+export const MAX_PROCESSING_THREADS = 16
+/** Pre-render playing tracks that are not live (not monitored, recording or played live) ahead of the callback. */
+export type RenderAhead = 'off' | 'normal' | 'high'
 /** Per device (`${backend}:${deviceId}`): which physical channels open, how inputs pair, and the user's names. */
 export interface NativeDeviceProfile {
   /** Enabled physical inputs (zero based, ascending, at most MAX_ENABLED_INPUTS). The host opens exactly these. */
@@ -57,6 +62,10 @@ export interface AudioSettings {
   clockSource?: number
   /** Interface hardware (ASIO direct) monitoring, when the driver supports it. */
   directMonitoring: boolean
+  /** Multi-core track processing in the native engine. */
+  processingThreads: ProcessingThreads
+  /** Render-ahead window for non-live tracks: normal = 2 device buffers, high = 4. */
+  renderAhead: RenderAhead
 }
 
 export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
@@ -65,6 +74,7 @@ export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   inputChannels: 'default', recordingOffsetFrames: 0,
   nativeBackend: 'auto', nativeBufferFrames: 'driver', nativeInputChannel: 0, lowLatencyMonitoring: true,
   nativeDeviceProfiles: {}, releaseInBackground: false, directMonitoring: false,
+  processingThreads: 'auto', renderAhead: 'off',
 }
 export const AUDIO_SETTINGS_STORAGE_KEY = 'garak-ieum:audio-settings:v1'
 
@@ -97,8 +107,13 @@ export function normalizeAudioSettings(value: unknown): AudioSettings {
     releaseInBackground: flag('releaseInBackground'),
     ...(channelIndex(raw.clockSource) ? { clockSource: raw.clockSource } : {}),
     directMonitoring: flag('directMonitoring'),
+    processingThreads: isProcessingThreads(raw.processingThreads) ? raw.processingThreads : 'auto',
+    renderAhead: raw.renderAhead === 'normal' || raw.renderAhead === 'high' ? raw.renderAhead : 'off',
   }
 }
+
+const isProcessingThreads = (value: unknown): value is AudioSettings['processingThreads'] =>
+  value === 'auto' || (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_PROCESSING_THREADS)
 
 const isBufferFrames = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 16 && value <= 8192
 const channelIndex = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < MAX_PHYSICAL_CHANNELS

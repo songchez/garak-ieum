@@ -6,7 +6,7 @@ import type { NativeBackend, NativeDevice, NativeDeviceProbe } from '../audio/na
 import { describeNativeError, NATIVE_ACTION_LABELS, type NativeErrorAction, type NativeErrorAdvice } from '../audio/native/deviceErrors'
 import { bufferPlan, driverChannelName, inputChoices, namesByIndex, nearestSampleRate, snapshotInputNames } from '../audio/native/deviceProfile'
 import {
-  DEFAULT_AUDIO_SETTINGS, MAX_RECORDING_OFFSET_FRAMES, SAMPLE_RATES, nativeInputDeviceId, nativeInputProfile, nativeOutputProfile,
+  DEFAULT_AUDIO_SETTINGS, MAX_PROCESSING_THREADS, MAX_RECORDING_OFFSET_FRAMES, SAMPLE_RATES, nativeInputDeviceId, nativeInputProfile, nativeOutputProfile,
   nativeProfileKey, normalizeAudioSettings, parseRecordingOffsetFrames, type AudioSettings, type NativeDeviceProfile, type SampleRate,
 } from '../core/audioSettings'
 import type { Project } from '../core/types'
@@ -50,6 +50,11 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   return <div className="audio-setting-row"><div><strong>{label}</strong>{hint && <p>{hint}</p>}</div><div className="audio-setting-control">{children}</div></div>
 }
 function Fact({ name, value }: { name: string; value: ReactNode }) { return <><dt>{name}</dt><dd>{value}</dd></> }
+/** 자동, 끔, then 2..16 worker threads; a stored value outside that list (1) stays selectable. */
+const threadOptions = (current: AudioSettings['processingThreads']): AudioSettings['processingThreads'][] => {
+  const values: AudioSettings['processingThreads'][] = ['auto', 0, ...Array.from({ length: MAX_PROCESSING_THREADS - 1 }, (_, index) => index + 2)]
+  return values.includes(current) ? values : [...values, current]
+}
 /** The supported project rate closest to the refused one; never the refused rate itself. */
 const otherRate = (advice: { supportedRates: number[]; requestedRate: number }) => nearestSampleRate(advice.supportedRates.filter(value => value !== advice.requestedRate), advice.requestedRate)
 
@@ -285,6 +290,17 @@ export default function NativeAudioSettingsDialog({ engine, settings, project, b
             <div className="audio-current-strip"><span>입력 지연 <b>{latency(actualInputLatency)}</b></span><span>출력 지연 <b>{latency(actualOutputLatency)}</b></span><button disabled={locked || (!testing && (dirty || audio.needsReconfiguration))} onClick={() => void outputTest()}><Icon name={testing ? 'stop' : 'play'} size={13}/>{testing ? '테스트 중지' : '출력 테스트'}</button></div>
             <h3>드라이버 사용</h3>
             <label className="audio-settings-check"><input type="checkbox" checked={draft.releaseInBackground} disabled={locked} onChange={event => patch({ releaseInBackground: event.target.checked })}/><span><strong>백그라운드에서 드라이버 해제</strong><small>다른 앱으로 전환하면 재생을 멈추고 장치를 닫아 다른 프로그램이 쓸 수 있게 합니다. 돌아오면 같은 설정으로 다시 엽니다. 녹음 중에는 해제하지 않습니다.</small></span></label>
+            <h3>엔진 처리</h3>
+            <Row label="처리 스레드" hint="트랙을 여러 CPU 코어에서 나눠 처리합니다. 결과 소리는 같고, 트랙이 많을 때 끊김을 줄입니다.">
+              <select aria-label="처리 스레드" value={String(draft.processingThreads)} disabled={locked} onChange={event => patch({ processingThreads: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}>
+                {threadOptions(draft.processingThreads).map(value => <option key={String(value)} value={String(value)}>{value === 'auto' ? '자동' : value === 0 ? '끔' : `${value}개`}</option>)}
+              </select>
+            </Row>
+            <Row label="재생 트랙 미리 처리" hint="모니터링·녹음·연주 중이 아닌 트랙을 장치 버퍼 2개(보통)·4개(높음)만큼 미리 처리해 CPU 여유를 늘립니다. 그 트랙의 믹서·파라미터 변경은 그만큼 늦게 들립니다.">
+              <select aria-label="재생 트랙 미리 처리" value={draft.renderAhead} disabled={locked} onChange={event => patch({ renderAhead: event.target.value as AudioSettings['renderAhead'] })}>
+                <option value="off">끔</option><option value="normal">보통</option><option value="high">높음</option>
+              </select>
+            </Row>
           </>}
           {tab === 'channels' && <NativeChannelConfig inputs={inputChannels} outputs={outputChannels} inputProfile={inputProfile} outputProfile={outputProfile} disabled={locked} note={channelNote}
             onInputs={change => changeProfile(inputKey, change)} onOutputs={change => changeProfile(outputKey, change)}/>}

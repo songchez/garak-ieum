@@ -86,6 +86,11 @@ struct DeviceState {
 using DeviceCallback = void (*)(void* user, float* stereoOutput, const float* input,
     std::uint32_t frames, std::uint32_t inputChannels) noexcept;
 
+// Called on each engine worker thread as it starts (true) and exits (false).
+// Windows: MMCSS "Pro Audio" plus time-critical priority, reverted on exit.
+// macOS: a real-time time-constraint policy sized to the device buffer.
+void promoteAudioWorkerThread(bool started, std::uint32_t sampleRate, std::uint32_t bufferFrames) noexcept;
+
 // Failures with a known cause are thrown as DeviceError (device_logic.hpp).
 class DeviceHost {
  public:
