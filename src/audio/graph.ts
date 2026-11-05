@@ -43,7 +43,7 @@ export interface EngineGraph {
   nodes: AudioNode[]
   resources: DeviceGraph[]
   /** Live input currently wired into track inputs; see connectMonitor. */
-  monitor?: { source: MediaStreamAudioSourceNode; trackIds: string[] }
+  monitor?: { source: MediaStreamAudioSourceNode; trackIds: string[]; splitter?: ChannelSplitterNode; nodes: AudioNode[] }
 }
 
 const disposedGraphs = new WeakSet<EngineGraph>()
@@ -192,12 +192,38 @@ function releaseResources(resources: readonly DeviceGraph[], nodes: readonly Aud
   }
 }
 
-/** Wires one live input into the given tracks' inputs, replacing any earlier wiring on this graph. */
-export function connectMonitor(graph: EngineGraph, source: MediaStreamAudioSourceNode, trackIds: readonly string[]): void {
+/** A ChannelSplitterNode has at most 32 outputs; higher device channels cannot be split in a browser. */
+const MAX_SPLIT_CHANNELS = 32
+
+/**
+ * Wires one live input into the given tracks' inputs, replacing any earlier wiring on this graph.
+ * `inputs` picks stream channels per track (TrackInput.channels): one goes in as mono, two are merged as
+ * left/right. Tracks without an entry hear the whole stream. The splitter reads the stream as discrete
+ * channels, so a channel the stream does not have is silent, like a missing input on the native engine.
+ */
+export function connectMonitor(graph: EngineGraph, source: MediaStreamAudioSourceNode, trackIds: readonly string[], inputs: ReadonlyMap<string, readonly number[]> = new Map()): void {
   disconnectMonitor(graph)
   const targets = trackIds.filter(id => graph.tracks.has(id))
-  for (const id of targets) source.connect(graph.tracks.get(id)!.input)
-  if (targets.length) graph.monitor = { source, trackIds: targets }
+  if (!targets.length) return
+  const routed = targets.map(id => inputs.get(id)).filter((channels): channels is readonly number[] => !!channels)
+  const outputs = Math.min(MAX_SPLIT_CHANNELS, Math.max(1, ...routed.flat().map(channel => channel + 1)))
+  const splitter = routed.length ? graph.context.createChannelSplitter(outputs) : undefined
+  const nodes: AudioNode[] = []
+  if (splitter) { splitter.channelInterpretation = 'discrete'; source.connect(splitter); nodes.push(splitter) }
+  for (const id of targets) {
+    const destination = graph.tracks.get(id)!.input
+    const channels = inputs.get(id)
+    if (!channels || !splitter) { source.connect(destination); continue }
+    const usable = channels.filter(channel => channel < outputs)
+    if (usable.length !== channels.length) continue
+    if (channels.length === 1) { splitter.connect(destination, channels[0], 0); continue }
+    const merger = graph.context.createChannelMerger(2)
+    splitter.connect(merger, channels[0], 0)
+    splitter.connect(merger, channels[1], 1)
+    merger.connect(destination)
+    nodes.push(merger)
+  }
+  graph.monitor = { source, trackIds: targets.filter(id => !inputs.has(id)), splitter, nodes }
 }
 
 export function disconnectMonitor(graph: EngineGraph): void {
@@ -209,6 +235,8 @@ export function disconnectMonitor(graph: EngineGraph): void {
     if (!channel) continue
     try { monitor.source.disconnect(channel.input) } catch { /* Already detached. */ }
   }
+  if (monitor.splitter) try { monitor.source.disconnect(monitor.splitter) } catch { /* Already detached. */ }
+  for (const node of monitor.nodes) try { node.disconnect() } catch { /* Already detached. */ }
 }
 
 export function disposeGraph(graph: EngineGraph): void {

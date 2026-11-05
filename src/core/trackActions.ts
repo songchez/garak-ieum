@@ -1,5 +1,5 @@
 /** Track button semantics (Logic: M/S/R/I/⏻/H with ⌥/⌘/⌃) and the derived audible/record/monitor sets. All pure. */
-import type { Project, Track } from './types'
+import type { Project, Track, TrackMonitorMode } from './types'
 
 export type TrackButtonKind = 'mute' | 'solo' | 'arm' | 'monitor' | 'enabled' | 'hidden'
 export interface TrackButtonMods { alt?: boolean; mod?: boolean; soloSafe?: boolean }
@@ -8,6 +8,13 @@ export type ArmState = 'off' | 'auto' | 'armed'
 const FIELD: Record<TrackButtonKind, 'mute' | 'solo' | 'armed' | 'monitor' | 'enabled' | 'hidden'> = {
   mute: 'mute', solo: 'solo', arm: 'armed', monitor: 'monitor', enabled: 'enabled', hidden: 'hidden',
 }
+
+/** Schema ≤7 tracks (and tracks never switched) derive the mode from the legacy I flag. */
+export const monitorModeOf = (track: Track): TrackMonitorMode => track.monitorMode ?? (track.monitor ? 'in' : 'auto')
+/** The persisted mode and the legacy I flag always change together. */
+export const monitorModePatch = (mode: TrackMonitorMode): Pick<Track, 'monitor' | 'monitorMode'> => ({ monitor: mode === 'in', monitorMode: mode })
+/** The I button toggles In/Off (an unlit button may mean Auto or Off); Auto is chosen in the inspector. */
+const monitorButtonPatch = (on: boolean) => monitorModePatch(on ? 'in' : 'off')
 
 /** Applies patch(track) to every track; returns the same project when nothing actually changed. */
 function mapTracks(project: Project, patch: (track: Track) => Partial<Track> | null): Project {
@@ -27,7 +34,7 @@ export function pressTrackButton(project: Project, trackId: string, kind: TrackB
   const target = project.tracks.find(t => t.id === trackId)
   if (!target) return project
   const field = FIELD[kind]
-  const toggle = () => mapTracks(project, t => t.id === trackId ? { [field]: !t[field] } : null)
+  const toggle = () => mapTracks(project, t => t.id !== trackId ? null : kind === 'monitor' ? monitorButtonPatch(monitorModeOf(t) !== 'in') : { [field]: !t[field] })
   const exclusive = () => mapTracks(project, t => ({ [field]: t.id === trackId }))
   switch (kind) {
     case 'mute': {
@@ -60,7 +67,7 @@ export function pressTrackButton(project: Project, trackId: string, kind: TrackB
 /** Drag-across activation: the swept button takes the value computed at pointerdown. */
 export function sweepTrackButton(project: Project, trackId: string, kind: TrackButtonKind, value: boolean): Project {
   const field = FIELD[kind]
-  return mapTracks(project, t => t.id === trackId ? { [field]: value } : null)
+  return mapTracks(project, t => t.id !== trackId ? null : kind === 'monitor' ? monitorButtonPatch(value) : { [field]: value })
 }
 
 /** Clear/Recall Solo (⌥S): clears every solo and remembers them, or restores the remembered ones. */
@@ -107,6 +114,22 @@ export function recordTarget(project: Project, focusedTrackId: string | null): R
   return { trackId: null, reason: 'focusedInstrument', extraArmed: [] }
 }
 
+/** Ableton monitor semantics: `in` always hears the input, `off` never does, and `auto` hears it while the
+ * track is armed unless clips are playing back without recording (so a take can be checked against the
+ * input, then auditioned without the live signal on top). */
+export function monitorsInput(track: Track, recording: boolean, playing: boolean): boolean {
+  if (track.kind !== 'audio' || !track.enabled) return false
+  const mode = monitorModeOf(track)
+  return mode === 'in' || (mode === 'auto' && track.armed && (recording || !playing))
+}
+
 /** Audio tracks that should receive the live input stream. */
-export const monitorTargets = (project: Project, recording: boolean): string[] =>
-  project.tracks.filter(t => t.kind === 'audio' && t.enabled && (t.monitor || (t.armed && recording))).map(t => t.id)
+export const monitorTargets = (project: Project, recording: boolean, playing: boolean): string[] =>
+  project.tracks.filter(t => monitorsInput(t, recording, playing)).map(t => t.id)
+
+/** Tracks that record in one pass: every armed audio track (top to bottom, at most `limit`) when the engine
+ * can capture several takes at once, otherwise only the record target. */
+export function recordTakeTrackIds(target: RecordTarget, limit: number): string[] {
+  if (!target.trackId) return []
+  return limit > 1 && target.reason === 'armed' ? [target.trackId, ...target.extraArmed].slice(0, Math.floor(limit)) : [target.trackId]
+}

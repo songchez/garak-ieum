@@ -162,3 +162,9 @@
 .new-tracks-count{width:60px;height:24px;padding:0 8px;border:1px solid var(--border-subtle)!important;border-radius:3px;background:var(--surface-input);color:var(--text-primary);font-family:Consolas,monospace;font-size:11px}
 .new-tracks-check{cursor:pointer}
 .new-tracks-check input{margin:0;accent-color:var(--accent)}
+.insp-monitor-modes{gap:2px}
+.insp-mode{flex:1;min-width:0;height:18px;padding:0 4px;border:1px solid var(--border-subtle);border-radius:3px;background:var(--surface-input);color:var(--text-muted);font-size:10px}
+.insp-mode.active{background:var(--track-monitor,#e8923a);border-color:var(--track-monitor,#e8923a);color:var(--on-track-color,#111)}
+.input-remap-list{display:flex;flex-direction:column;gap:8px;max-height:50vh;overflow:auto}
+.input-remap-list .new-tracks-row>span:first-child{flex:0 0 150px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.input-remap-list small{display:block;color:var(--text-muted);font-size:9px}

@@ -110,7 +110,8 @@ export interface Track {
   enabled: boolean
   /** Record-enabled. Live state: never enters undo history. */
   armed: boolean
-  /** Input monitoring for audio tracks. Live state: never enters undo history. */
+  /** The I button: true exactly when monitorMode is `in`. Kept for schema ≤7 files and older readers.
+   * Live state: never enters undo history. */
   monitor: boolean
   /** Hidden in the Tracks area while hide view is off; still plays. */
   hidden: boolean
@@ -131,9 +132,11 @@ export interface Track {
   devices: Device[]
   /** Native VST3 source; the builtin instrument selection remains available when removed. */
   pluginInstrument?: NativePluginInstance
-  /** Absent: the engine's default input (first enabled channel or pair). Schema 8 (WP4 validates). */
+  /** Audio tracks only. Absent: the engine's default input (first enabled channel or pair). A saved,
+   * undoable setting (schema 8). */
   input?: TrackInput
-  /** Absent: legacy behavior from `monitor`. Schema 8 (WP4 validates). */
+  /** Absent: derived from `monitor` (`in` when on, else `auto`). Saved with the project like Ableton's
+   * monitor switch, but live like arm/monitor: it never enters undo history (schema 8). */
   monitorMode?: TrackMonitorMode
 }
 export interface Marker {
@@ -147,8 +150,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  /** 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 7
+  /** 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 8
   id: string
   name: string
   bpm: number

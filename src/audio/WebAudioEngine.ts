@@ -1,7 +1,8 @@
 import { instrumentDef } from '../core/instruments'
 import { DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, normalizeAudioSettings, projectSampleRate, type AudioSettings, type AudioState, type RenderSizeHint, type SampleRate } from '../core/audioSettings'
 import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
-import type { AudioAsset, AudioEngine, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
+import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
+import { numberedInputChoices } from '../core/trackInputs'
 import {
   connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
   trackLayoutKey, updateGraph,
@@ -40,7 +41,7 @@ const contextKey = (settings: AudioSettings): string => JSON.stringify([settings
  */
 export class WebAudioEngine implements AudioEngine {
   readonly kind = 'web-audio' as const
-  /** A browser MediaStream records one track at a time. */
+  /** One MediaRecorder per take; a browser records the chosen track only. */
   readonly maxSimultaneousRecordings = 1
   /** Decoded sample sets outlive contexts and graphs; see audio/samples.ts. */
   readonly samples = new SampleLibrary()
@@ -69,6 +70,10 @@ export class WebAudioEngine implements AudioEngine {
   private monitorStream: MediaStream | null = null
   private monitorSource: MediaStreamAudioSourceNode | null = null
   private monitorTrackIds: string[] = []
+  /** Channel routes last wired for monitoring; a track input change rewires without a new stream. */
+  private monitorRoutes = ''
+  /** Channels of the last live input stream; null until a stream has been seen. */
+  private inputChannelCount: number | null = null
   private snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: 0 }
   private settings: AudioSettings
   private desiredSampleRate: SampleRate = DEFAULT_SAMPLE_RATE
@@ -161,7 +166,7 @@ export class WebAudioEngine implements AudioEngine {
           candidateGraph.gate.gain.value = 0
           if (next.softwareMonitoring && this.monitorStream?.active && this.monitorTrackIds.length) {
             candidateMonitor = candidate.createMediaStreamSource(this.monitorStream)
-            connectMonitor(candidateGraph, candidateMonitor, this.monitorTrackIds)
+            connectMonitor(candidateGraph, candidateMonitor, this.monitorTrackIds, this.monitorInputs())
           }
         }
         if (!current()) throw configurationCancelled()
@@ -390,6 +395,7 @@ export class WebAudioEngine implements AudioEngine {
       } catch (error) {
         this.blockEffectGraph(this.context, error)
       }
+      if (this.graph && this.monitorStream && JSON.stringify([...this.monitorInputs()]) !== this.monitorRoutes) this.wireMonitor()
     }
     this.publishSnapshot()
   }
@@ -513,14 +519,36 @@ export class WebAudioEngine implements AudioEngine {
     this.monitorStream = stream
     this.monitorTrackIds = stream ? [...trackIds] : []
     if (!stream) return
+    this.observeInputStream(stream)
     if (this.context && this.context.state !== 'closed') this.wireMonitor()
   }
 
   private wireMonitor(): void {
     if (!this.context || !this.graph) return
-    if (this.outputFault || !this.settings.softwareMonitoring || !this.monitorStream || !this.monitorTrackIds.length) { disconnectMonitor(this.graph); return }
+    if (this.outputFault || !this.settings.softwareMonitoring || !this.monitorStream || !this.monitorTrackIds.length) { disconnectMonitor(this.graph); this.monitorRoutes = ''; return }
     this.monitorSource ??= this.context.createMediaStreamSource(this.monitorStream)
-    connectMonitor(this.graph, this.monitorSource, this.monitorTrackIds)
+    const inputs = this.monitorInputs()
+    connectMonitor(this.graph, this.monitorSource, this.monitorTrackIds, inputs)
+    this.monitorRoutes = JSON.stringify([...inputs])
+  }
+
+  /** Track input channels for the monitored tracks; absent = the whole stream (the default input). */
+  private monitorInputs(): Map<string, readonly number[]> {
+    const ids = new Set(this.monitorTrackIds)
+    return new Map((this.project?.tracks ?? []).flatMap(track => ids.has(track.id) && track.kind === 'audio' && track.input ? [[track.id, track.input.channels] as const] : []))
+  }
+
+  /** Browsers do not name input channels; choices are numbered from the stream (or the requested count). */
+  getInputChoices(): InputChoice[] {
+    return numberedInputChoices(this.inputChannelCount ?? (this.settings.inputChannels === 'default' ? 0 : this.settings.inputChannels))
+  }
+
+  /** Records the live stream's channel count so track input choices match what the browser delivers. */
+  observeInputStream(stream: MediaStream): void {
+    const count = stream.getAudioTracks?.()[0]?.getSettings?.().channelCount
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count === this.inputChannelCount) return
+    this.inputChannelCount = count
+    for (const listener of this.audioListeners) listener()
   }
 
   async decodeAsset(blob: Blob, name: string, id?: string): Promise<AudioAsset> {

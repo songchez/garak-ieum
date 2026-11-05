@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import type { InstrumentId, Track } from '../core/types'
+import type { InputChoice, InstrumentId, Track, TrackInput, TrackMonitorMode } from '../core/types'
 import { instrumentDef } from '../core/instruments'
+import { monitorModeOf, monitorModePatch } from '../core/trackActions'
+import { InputSelect } from './InputSelect'
 import { parsePitchName, pitchName } from '../core/pitch'
 import { Icon } from './Icon'
 import { InstrumentOptions } from './InstrumentOptions'
@@ -22,9 +24,18 @@ interface Props {
   onInstrumentChange: (trackId: string, instrument: InstrumentId) => void
   onOpenColorPalette: (trackId: string, e: React.MouseEvent) => void
   onIconMenu: (trackId: string, e: React.MouseEvent) => void
+  /** Mono/stereo inputs of the current device; empty = unknown (only the default input). */
+  inputChoices?: readonly InputChoice[]
+  onInputChange?: (trackId: string, input: TrackInput | null) => void
 }
 
-export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, onOpenColorPalette, onIconMenu }: Props) {
+const MONITOR_MODES: { mode: TrackMonitorMode; label: string; help: string }[] = [
+  { mode: 'in', label: '켬', help: '항상 입력을 듣습니다' },
+  { mode: 'auto', label: '자동', help: '녹음 대기 중에 듣고, 녹음 없이 재생하는 동안에는 녹음된 소리를 듣습니다' },
+  { mode: 'off', label: '끔', help: '입력을 듣지 않습니다(녹음은 됩니다)' },
+]
+
+export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, onOpenColorPalette, onIconMenu, inputChoices = [], onInputChange }: Props) {
   const id = track.id
   const patch = (p: Partial<Track>, key: string) => onTrackChange(id, p, `${id}:${key}`)
   /** Two-field range: the edited bound pushes the other one along (Logic). */
@@ -43,6 +54,13 @@ export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, 
       <button type="button" className="insp-icon-button" onClick={e => onIconMenu(id, e)} aria-haspopup="menu" title="트랙 아이콘 변경" aria-label="트랙 아이콘 변경" style={{ color: track.color }}><Icon name={trackIcon(track)} size={16} /></button>
       <button type="button" className="insp-swatch" onClick={e => onOpenColorPalette(id, e)} aria-haspopup="dialog" title="트랙 색상 변경" aria-label="트랙 색상 변경" style={{ background: track.color }} />
     </span></div>
+    {track.kind === 'audio' && <>
+      <div className="insp-row"><span className="insp-label">입력</span><InputSelect input={track.input} choices={inputChoices} ariaLabel="트랙 입력" disabled={!onInputChange} onChange={input => onInputChange?.(id, input)} /></div>
+      <div className="insp-row"><span className="insp-label">모니터</span><span className="insp-pair insp-monitor-modes" role="radiogroup" aria-label="입력 모니터링">
+        {MONITOR_MODES.map(({ mode, label, help }) => <button key={mode} type="button" role="radio" aria-checked={monitorModeOf(track) === mode} className={`insp-mode${monitorModeOf(track) === mode ? ' active' : ''}`} title={`${label}: ${help}`}
+          onClick={() => onTrackChange(id, monitorModePatch(mode), `${id}:monitorMode`)}>{label}</button>)}
+      </span></div>
+    </>}
     {track.kind === 'instrument' && <>
       <div className="insp-row"><span className="insp-label">악기</span><select className="insp-select" aria-label="악기 변경" value={track.pluginInstrument ? 'vst3' : track.instrument} onChange={e => { if (e.target.value !== 'vst3') onInstrumentChange(id, e.target.value) }}>{track.pluginInstrument && <optgroup label="VST3 악기"><option value="vst3">{track.pluginInstrument.name}</option></optgroup>}<InstrumentOptions /></select></div>
       <div className="insp-row"><span className="insp-label">트랜스포즈</span><ValueField value={track.transpose} min={-96} max={96} format={signed} ariaLabel="트랙 트랜스포즈" onChange={transpose => patch({ transpose }, 'transpose')} /></div>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { AudioEngine, SampleStatus, Track } from '../core/types'
+import type { AudioEngine, InputChoice, SampleStatus, Track, TrackInput } from '../core/types'
 import type { ArmState } from '../core/trackActions'
 import type { TrackHeaderConfig } from '../core/trackUi'
 import { instrumentDef } from '../core/instruments'
@@ -8,6 +8,7 @@ import { Icon } from './Icon'
 import { TrackButtons, type TrackButtonKind, type TrackButtonMods } from './TrackButtons'
 import { VolumeSlider } from './VolumeSlider'
 import { PanKnob } from './PanKnob'
+import { InputSelect } from './InputSelect'
 import './TrackHeader.css'
 
 const MAC = shortcutPlatform() === 'mac'
@@ -16,12 +17,15 @@ const MOD = MAC ? '⌘' : 'Ctrl+'
 /** Rows that fit: 0 = name + M/S on one line, 1 = name over buttons, 2 = + volume, 3 = + pan. */
 export const headerTier = (height: number) => height < 44 ? 0 : height < 72 ? 1 : height < 96 ? 2 : 3
 export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : instrumentDef(track.instrument).icon)
-const CONTROL = 'button,input,[role="slider"],.track-resize-corner'
+const CONTROL = 'button,input,select,[role="slider"],.track-resize-corner'
 
 export interface TrackHeaderProps {
   track: Track; index: number; focused: boolean; selected: boolean; multi: boolean; height: number
   config: TrackHeaderConfig; ui: { hideView: boolean; recording: boolean }; arm: ArmState; implicitMute: boolean; renaming: boolean
   engine: AudioEngine; loading?: SampleStatus
+  /** Shown as a compact input chooser on audio tracks tall enough for a third row. */
+  inputChoices?: readonly InputChoice[]
+  onInputChange?(input: TrackInput | null): void
   onClick(mods: { range: boolean; toggle: boolean; trackOnly: boolean }): void
   onFocus(): void
   onDoubleClickBackground?(): void
@@ -56,6 +60,7 @@ export function TrackHeader(props: TrackHeaderProps) {
     if (config.monitor && track.kind === 'audio') kinds.push('monitor')
   }
   const showVolume = tier >= 2 && config.volume, showPan = tier >= 3 && config.pan
+  const showInput = tier >= 2 && track.kind === 'audio' && !!props.onInputChange
   const hiddenNow = track.hidden && ui.hideView
 
   function pointerDown(e: React.PointerEvent<HTMLDivElement>) {
@@ -96,6 +101,7 @@ export function TrackHeader(props: TrackHeaderProps) {
         {!track.enabled && <b className="track-off-badge" title="꺼진 트랙"><Icon name="power" size={9}/></b>}
       </div>
       {kinds.length > 0 && <TrackButtons track={track} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}
+      {showInput && <InputSelect className="track-input-select" input={track.input} choices={props.inputChoices ?? []} ariaLabel={`${track.name} 입력`} onChange={input => props.onInputChange?.(input)}/>}
     </div>
     {(showVolume || showPan) && <div className="track-side">
       {showVolume && <VolumeSlider value={track.volume} orientation="horizontal" meter={{ engine, trackId: track.id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={v => props.onChange({ volume: v }, `${track.id}:volume`)}/>}

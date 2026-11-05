@@ -147,6 +147,29 @@ describe('input monitoring uses the live channel graph', () => {
     disposeGraph(graph)
   })
 
+  it('splits the chosen device channels per track and silences channels the stream lacks', () => {
+    const { context } = contextSpy()
+    const splitters: (AudioNodeSpy & { outputs: number; channelInterpretation?: string })[] = [], mergers: AudioNodeSpy[] = []
+    Object.assign(context, {
+      createChannelSplitter: (outputs: number) => { const value = Object.assign(new AudioNodeSpy(), { outputs }); splitters.push(value); return value },
+      createChannelMerger: () => { const value = new AudioNodeSpy(); mergers.push(value); return value },
+    })
+    const project: Project = { ...createEmptyProject(), tracks: ['whole', 'mono', 'stereo', 'far'].map(id => ({ ...createTrack('audio'), id })) }
+    const graph = createGraph(context, project)
+    const source = new AudioNodeSpy()
+    const input = (id: string) => graph.tracks.get(id)!.input
+    connectMonitor(graph, source as unknown as MediaStreamAudioSourceNode, ['whole', 'mono', 'stereo', 'far'], new Map([['mono', [3]], ['stereo', [0, 1]], ['far', [40]]]))
+    const [splitter] = splitters
+    expect(splitter).toMatchObject({ outputs: 32, channelInterpretation: 'discrete' })
+    expect([...source.connections]).toEqual([splitter, input('whole')])
+    expect(splitter.connect.mock.calls).toEqual([[input('mono'), 3, 0], [mergers[0], 0, 0], [mergers[0], 1, 1]])
+    expect([...mergers[0].connections]).toEqual([input('stereo')])
+    disconnectMonitor(graph)
+    expect(source.connections.size).toBe(0)
+    expect(splitter.disconnect).toHaveBeenCalledWith()
+    expect(mergers[0].connections.size).toBe(0)
+  })
+
   it('keeps the replacement graph connected when the retired graph is disposed', () => {
     const { context } = contextSpy()
     const project = audioProject()

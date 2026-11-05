@@ -839,3 +839,19 @@ describe('guitar graph changes and recovery', () => {
     expect(ContextSpy.instances).toHaveLength(0)
   })
 })
+
+describe('browser track inputs', () => {
+  it('numbers input choices from the requested count, then from the live stream, and records one take at a time', () => {
+    const engine = new WebAudioEngine(undefined, { ...DEFAULT_AUDIO_SETTINGS, inputChannels: 2 })
+    expect(engine.maxSimultaneousRecordings).toBe(1)
+    expect(engine.getInputChoices().map(choice => choice.channels)).toEqual([[0], [1], [0, 1]])
+    const listener = vi.fn()
+    engine.subscribeAudioState(listener)
+    engine.observeInputStream({ getAudioTracks: () => [{ getSettings: () => ({ channelCount: 1 }) }] } as unknown as MediaStream)
+    expect(engine.getInputChoices()).toEqual([{ channels: [0], label: '입력 1' }])
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(new WebAudioEngine().getInputChoices()).toEqual([])
+    engine.dispose()
+  })
+})
+

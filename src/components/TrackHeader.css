@@ -21,6 +21,7 @@
 .track-header[data-track-id] .track-hide-badge,.track-header[data-track-id] .track-off-badge{flex-shrink:0;display:inline-grid;place-items:center;height:11px;min-width:11px;padding:0 2px;border-radius:2px;font-size:7px;font-weight:700;line-height:1}
 .track-header[data-track-id] .track-hide-badge{color:var(--track-hide);border:1px solid color-mix(in srgb,var(--track-hide) 60%,transparent)}
 .track-header[data-track-id] .track-off-badge{color:var(--ink-45);border:1px solid var(--border-default)}
+.track-header[data-track-id] .track-input-select{align-self:flex-start;max-width:100%;height:15px;padding:0 2px;border:1px solid var(--border-subtle);border-radius:3px;background:var(--surface-input);color:var(--text-muted);font-size:9px}
 .track-header[data-track-id] .track-side{flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:5px;width:78px}
 .track-header[data-track-id].tier-3 .track-side{gap:7px}
 /* Header narrower than 230px (content box = width − 19px padding) hides the slider and knob. */
@@ -46,6 +47,8 @@
 .track-button--solo.on{background:var(--track-solo);border-color:var(--track-solo);color:var(--on-track-color)}
 .track-button--solo.safe::after{content:"";position:absolute;inset:-1px;border-radius:inherit;background:linear-gradient(135deg,transparent 44%,var(--track-arm) 44%,var(--track-arm) 56%,transparent 56%);pointer-events:none}
 .track-button--arm.auto{color:var(--track-arm)}
+.track-button--monitor.auto{color:var(--track-monitor)}
+.track-button--monitor.mode-off{opacity:.55}
 .track-button--arm.on{--track-button-on-text:#fff;background:var(--track-arm);border-color:var(--track-arm);color:var(--track-button-on-text);animation:track-arm-blink 1s steps(1,end) infinite}
 .track-button--arm.on.recording{animation:none}
 .track-button--monitor.on{background:var(--track-monitor);border-color:var(--track-monitor);color:var(--on-track-color)}

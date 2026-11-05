@@ -3,6 +3,7 @@ import { COMMAND_LIMITS, COMMAND_METADATA, COMMAND_REQUEST_SCHEMA, HISTORY_REQUE
 import { EFFECT_DEFS } from '../core/devices'
 import { GM_KIT_NAMES, INSTRUMENTS } from '../core/instruments'
 import type { Project, Track, TransportSnapshot } from '../core/types'
+import { monitorModeOf } from '../core/trackActions'
 import { BRIDGE_PROTOCOL_VERSION, type BridgeParams, type DawMethod } from './protocol'
 
 export interface DawSelection {
@@ -34,6 +35,7 @@ const units = {
   volume: 'track volume is linear gain 0..2; volumeDb uses 20*log10(gain), null means silence',
   pan: '-1=left, 0=center, 1=right',
   delayTicks: '960 ticks per quarter note; notes themselves are stored in beats',
+  trackInput: 'input.channels are zero-based physical device channels (one = mono, two = stereo); label is the channel name used to re-find it on other hardware; null = engine default input. monitorMode in/auto/off is read-only here (live state set by the user).',
 }
 const unsupported = [
   'audio capture and device changes', 'transport control', 'audio asset transfer',
@@ -63,7 +65,8 @@ function trackSummary(track: Track) {
     id: track.id, name: track.name, kind: track.kind, instrument: track.instrument,
     volume: track.volume, volumeDb: track.volume === 0 ? null : 20 * Math.log10(track.volume), pan: track.pan,
     mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, enabled: track.enabled,
-    armed: track.armed, monitor: track.monitor, hidden: track.hidden, color: track.color,
+    armed: track.armed, monitor: track.monitor, monitorMode: monitorModeOf(track), hidden: track.hidden, color: track.color,
+    input: track.input ? { channels: [...track.input.channels], ...(track.input.label === undefined ? {} : { label: track.input.label }) } : null,
     clipCount: track.clips.length, effectCount: track.devices.length,
   }
 }

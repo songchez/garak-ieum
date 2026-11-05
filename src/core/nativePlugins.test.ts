@@ -17,7 +17,7 @@ const insert = (track: { devices: Device[] }, index = 0) => track.devices[index]
 describe('schema 7 native plugin persistence', () => {
   it('round-trips catalog IDs, separate component/controller state and normalized parameters without executable paths', () => {
     const raw = project(), normalized = validateProject(JSON.parse(JSON.stringify(raw)))
-    expect(normalized.schemaVersion).toBe(7)
+    expect(normalized.schemaVersion).toBe(8)
     expect(normalized.tracks[0].pluginInstrument).toEqual({ ...raw.tracks[0].pluginInstrument, classId: raw.tracks[0].pluginInstrument.classId.toUpperCase() })
     expect(insert(normalized.tracks[0])).toMatchObject({ type: 'vst3', state: { component: 'AQID', controller: 'BA==' } })
     expect(JSON.stringify(normalized)).not.toContain('path')
@@ -25,11 +25,11 @@ describe('schema 7 native plugin persistence', () => {
 
   it('migrates schema 5 projects while preserving their exact meter and rejects hidden VST data under an old schema', () => {
     const old = { ...createEmptyProject(), schemaVersion: 5, timeSignature: { numerator: 7, denominator: 8 }, beatsPerBar: 3.5 }
-    expect(validateProject(old)).toMatchObject({ schemaVersion: 7, timeSignature: { numerator: 7, denominator: 8 }, beatsPerBar: 3.5 })
+    expect(validateProject(old)).toMatchObject({ schemaVersion: 8, timeSignature: { numerator: 7, denominator: 8 }, beatsPerBar: 3.5 })
     const { devices: _devices, ...sourceOnly } = project().tracks[0]
     expect(() => validateProject({ ...project(), schemaVersion: 5, tracks: [{ ...sourceOnly, devices: [] }] })).toThrow('schema version 6')
     expect(() => validateProject({ ...project(), schemaVersion: 6 })).toThrow('unknown effect type')
-    expect(() => validateProject({ ...project(), schemaVersion: 8 })).toThrow()
+    expect(() => validateProject({ ...project(), schemaVersion: 9 })).toThrow()
   })
 
   it.each(['path', 'modulePath', 'executable', 'unknown'])('rejects executable or unknown plugin field %s instead of passing it through', field => {
