@@ -76,7 +76,7 @@ Windows 설치 파일은 `.garak`를 **가락이음 음악 프로젝트**로 등
 
 [네이티브 오디오 안내](NATIVE_AUDIO.md)에 처리 구조·한도·고정 SDK와 검증 결과를 정리했습니다. ASIO SDK 2.3.4의 GPLv3 경로와 앱 코드의 GPL-3.0-only를 유지합니다. Linux에서 실제 SDK/테스트 플러그인 회귀를 통과했으며, 새 Windows MSVC CI와 실제 ASIO 인터페이스의 청감·왕복 지연·장치 복구는 별도 확인 대상입니다. Web Audio는 브라우저 데모와 데스크톱의 일회성 압축 파일 디코딩·비실시간 피치 작업에 남습니다.
 
-외부 USB MIDI 입력·MIDI 녹음과 VST2/AU/CLAP 호스트도 현재 패키징에서 추가하지 않습니다. 전체 지원 범위는 [구현 상태](IMPLEMENTATION_STATUS.md)를 따릅니다.
+외부 MIDI 입력은 네이티브 호스트가 WinMM(Windows)·CoreMIDI(macOS)로 직접 엽니다([MIDI_RECORDING.md](MIDI_RECORDING.md)). VST2/AU/CLAP 호스트는 현재 패키징에서 추가하지 않습니다. 전체 지원 범위는 [구현 상태](IMPLEMENTATION_STATUS.md)를 따릅니다.
 
 ## 4. 소스에서 실행하고 빌드하기
 

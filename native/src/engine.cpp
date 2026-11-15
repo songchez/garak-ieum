@@ -1010,8 +1010,8 @@ struct RenderEngine::Impl {
         if(type==0x90&&ev.data2>0)t.spawn(ev.data1&0x7F,static_cast<float>(ev.data2&0x7F)/127.f,unlimitedFrame,unlimitedFrame,ev.noteId,true,voiceOverflows);
         else if(type==0x80||type==0x90)t.noteOff(ev.data1&0x7F,ev.noteId,voiceOverflows);
         else if(type==0xB0&&(ev.data1==120||ev.data1==123))t.allNotesOff(voiceOverflows);
-        // Hook: CC64 (sustain) and other controllers are delivered here once the
-        // track runtime supports them (feat/sustain-pedal). No-op for now.
+        // CC64 sustain (built-ins defer note-offs) and, for VST3, every controller.
+        else if(type==0xB0)t.controlChange(ev.data1&0x7F,ev.data2&0x7F,voiceOverflows);
       }
       ++liveMidiNext;
     }

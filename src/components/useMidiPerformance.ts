@@ -5,6 +5,7 @@ import { MidiTake, commitMidiTake, takeSpan, type MidiRecordMode, type MidiTakeR
 import { MidiCaptureBuffer, capturePerformance } from '../core/midiCapture'
 import { DEFAULT_MUSICAL_TYPING, musicalTypingAction, musicalTypingNoteCode, type MusicalTypingState } from '../core/musicalTyping'
 import { shortcutScope } from '../core/input'
+import { SUSTAIN_CONTROLLER, isPedalDown } from '../core/sustain'
 import { recordingStartBeat } from '../core/recording'
 import { getMetronomePrefs } from '../core/metronome'
 import { NativeMidiInputService, WebMidiInputService, midiDeviceDirectory, type MidiInputService, type MidiInputState } from '../audio/MidiInput'
@@ -113,6 +114,8 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
   const capture = useRef(new MidiCaptureBuffer())
   /** Notes held right now (for a take that starts while they are down). */
   const held = useRef(new Map<string, { source: string; channel: number; pitch: number; velocity: number }>())
+  /** Sustain pedals down right now, per input and channel. */
+  const pedals = useRef(new Map<string, { source: string; channel: number }>())
   const [midiRecording, setMidiRecording] = useState(false)
   const [preparing, setPreparing] = useState(false)
   const [previews, setPreviews] = useState<MidiRecordingPreview[]>([])
@@ -124,6 +127,11 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
       const message = parseMidi(event.data)
       if (message.type === 'noteOn') held.current.set(`${event.source}:${message.channel}:${message.pitch}`, { source: event.source, channel: message.channel, pitch: message.pitch, velocity: message.velocity })
       else if (message.type === 'noteOff') held.current.delete(`${event.source}:${message.channel}:${message.pitch}`)
+      else if (message.type === 'controller' && message.controller === SUSTAIN_CONTROLLER) {
+        const key = `${event.source}:${message.channel}`
+        if (isPedalDown(message.value)) pedals.current.set(key, { source: event.source, channel: message.channel })
+        else pedals.current.delete(key)
+      }
       if (take.current) take.current.input(event)
       else capture.current.push(event)
     })
@@ -147,6 +155,7 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
     if (!tracks.length) return false
     const next = new MidiTake({ startBeat, cycle, tracks })
     for (const note of held.current.values()) next.holdAtStart(note.source, note.channel, note.pitch, note.velocity)
+    for (const pedal of pedals.current.values()) next.pedalAtStart(pedal.source, pedal.channel)
     take.current = next
     setMidiRecording(true)
     refreshPreview()
@@ -184,6 +193,7 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
         if (take.current && !latest.current.audioRecording) { finishTake(); ownTransport.current = false }
         port?.panic()
         held.current.clear()
+        pedals.current.clear()
       }
       wasPlaying = playing
     })
@@ -239,7 +249,7 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
     const performance = capturePerformance(capture.current.snapshot(), { bpm: current.bpm, playheadBeat: engine.getSnapshot().beat, accepts: (source, channel) => acceptsMidi(input, source, channel) })
     if (!performance) { notify('캡처할 최근 연주가 없습니다. 악기 트랙에서 연주한 뒤 다시 시도하세요.'); return }
     const span = takeSpan({ startBeat: performance.startBeat, endBeat: performance.endBeat, cycle: null }, performance.notes, current.beatsPerBar)
-    const result: MidiTakeResult = { startBeat: span.start, endBeat: span.end, cycle: null, tracks: [{ trackId: track.id, notes: performance.notes, controllers: [] }] }
+    const result: MidiTakeResult = { startBeat: span.start, endBeat: span.end, cycle: null, tracks: [{ trackId: track.id, notes: performance.notes, controllers: [], sustain: performance.sustain }] }
     const committed = commitMidiTake(current, result, { mode: modeRef.current, beatsPerBar: current.beatsPerBar, name: 'MIDI 캡처' })
     if (!committed.clipIds.length) { notify('캡처할 음표가 없습니다.'); return }
     capture.current.clear()
@@ -257,7 +267,7 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
     return () => { delete target.__garakMidi }
   }, [port, routes])
 
-  const panic = useCallback(() => { releaseKeys(); port?.panic(); held.current.clear() }, [port, releaseKeys])
+  const panic = useCallback(() => { releaseKeys(); port?.panic(); held.current.clear(); pedals.current.clear() }, [port, releaseKeys])
 
   return {
     supported: !!port,

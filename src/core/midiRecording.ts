@@ -1,6 +1,7 @@
 import type { MidiClip, MidiNote, Project, TrackMidiInput } from './types'
 import { acceptsMidi, parseMidi } from './midiInput'
 import { applyDragMode, fitProjectLength, joinClips, uid } from './project'
+import { SUSTAIN_CONTROLLER, isPedalDown, spansToSustain } from './sustain'
 import type { StampedMidi } from '../audio/liveMidi'
 
 /**
@@ -39,7 +40,7 @@ export const frameToBeat = (frame: number, sampleRate: number, bpm: number): num
 export const compensatedBeat = (beatAtArrival: number, latencySeconds: number, bpm: number): number => beatAtArrival - Math.max(0, latencySeconds) * bpm / 60
 
 export interface RecordedNote { pitch: number; start: number; end: number; velocity: number }
-/** Raw controller data kept for the sustain/controller work (CC64 first); not written to regions yet. */
+/** Raw controller data (CC64 becomes the region's sustain pedal; other controllers wait for the controller-lane work). */
 export interface RecordedController { beat: number; channel: number; controller: number; value: number }
 export interface TakeTrack { trackId: string; input: TrackMidiInput }
 export interface MidiTakeOptions {
@@ -48,7 +49,13 @@ export interface MidiTakeOptions {
   cycle: { start: number; end: number } | null
   tracks: readonly TakeTrack[]
 }
-export interface MidiTakeTrackResult { trackId: string; notes: RecordedNote[]; controllers: RecordedController[] }
+export interface MidiTakeTrackResult {
+  trackId: string
+  notes: RecordedNote[]
+  controllers: RecordedController[]
+  /** Sustain pedal (CC64) down spans in absolute beats; passes of a cycle take are united. */
+  sustain?: [number, number][]
+}
 export interface MidiTakeResult { startBeat: number; endBeat: number; cycle: MidiTakeOptions['cycle']; tracks: MidiTakeTrackResult[] }
 
 interface OpenNote { start: number; velocity: number; pass: number }
@@ -61,6 +68,9 @@ export class MidiTake {
   private notes = new Map<string, RecordedNote[]>()
   private controllers = new Map<string, RecordedController[]>()
   private open = new Map<string, OpenNote>()
+  /** Pedal-down beat per track (null = up) and finished spans. */
+  private pedal = new Map<string, number | null>()
+  private spans = new Map<string, [number, number][]>()
   private lastBeat: number
   private pass = 0
   private maxBeat: number
@@ -73,7 +83,7 @@ export class MidiTake {
     this.tracks = options.tracks
     this.lastBeat = options.startBeat
     this.maxBeat = options.startBeat
-    for (const track of options.tracks) { this.notes.set(track.trackId, []); this.controllers.set(track.trackId, []) }
+    for (const track of options.tracks) { this.notes.set(track.trackId, []); this.controllers.set(track.trackId, []); this.pedal.set(track.trackId, null); this.spans.set(track.trackId, []) }
   }
 
   get trackIds(): string[] { return this.tracks.map(track => track.trackId) }
@@ -92,6 +102,8 @@ export class MidiTake {
         this.push(trackId, note.start, this.cycle.end, key, note.velocity)
       }
       this.open.clear()
+      // A pedal held through the wrap closes at the cycle end and keeps holding from the cycle start.
+      for (const [trackId, downAt] of this.pedal) if (downAt !== null) { this.closePedal(trackId, downAt, this.cycle.end); this.pedal.set(trackId, this.cycle.start) }
     }
     this.lastBeat = beat
     this.maxBeat = Math.max(this.maxBeat, beat)
@@ -103,6 +115,15 @@ export class MidiTake {
     const safeEnd = Math.min(limit, Math.max(end, start + MIN_RECORDED_NOTE))
     this.notes.get(trackId)?.push({ pitch, start, end: safeEnd, velocity })
     this.revision += 1
+  }
+
+  private closePedal(trackId: string, start: number, end: number): void {
+    if (end - start > EPSILON) { this.spans.get(trackId)?.push([start, end]); this.revision += 1 }
+  }
+
+  /** The pedal already down when recording started (pressed during the count-in) holds from the first recorded beat. */
+  pedalAtStart(source: string, channel: number): void {
+    for (const track of this.tracks) if (acceptsMidi(track.input, source, channel)) this.pedal.set(track.trackId, this.startBeat)
   }
 
   /** A note already held when recording started (played during the count-in) starts on the first recorded beat. */
@@ -128,6 +149,11 @@ export class MidiTake {
       if (!acceptsMidi(track.input, event.source, message.channel)) continue
       if (message.type === 'controller') {
         this.controllers.get(track.trackId)?.push({ beat, channel: message.channel, controller: message.controller, value: message.value })
+        if (message.controller === SUSTAIN_CONTROLLER) {
+          const downAt = this.pedal.get(track.trackId) ?? null
+          if (isPedalDown(message.value) && downAt === null) this.pedal.set(track.trackId, beat)
+          else if (!isPedalDown(message.value) && downAt !== null) { this.closePedal(track.trackId, downAt, beat); this.pedal.set(track.trackId, null) }
+        }
         continue
       }
       const key = this.key(track.trackId, event.source, message.channel, message.pitch)
@@ -161,9 +187,10 @@ export class MidiTake {
       this.push(trackId, note.start, end > note.start ? end : this.cycle ? this.cycle.end : end, key, note.velocity)
     }
     this.open.clear()
+    for (const [trackId, downAt] of this.pedal) if (downAt !== null) { this.closePedal(trackId, downAt, end > downAt ? end : this.cycle ? this.cycle.end : end); this.pedal.set(trackId, null) }
     return {
       startBeat: this.startBeat, endBeat: Math.max(end, this.maxBeat), cycle: this.cycle,
-      tracks: this.tracks.map(track => ({ trackId: track.trackId, notes: [...(this.notes.get(track.trackId) ?? [])].sort((a, b) => a.start - b.start || a.pitch - b.pitch), controllers: [...(this.controllers.get(track.trackId) ?? [])] })),
+      tracks: this.tracks.map(track => ({ trackId: track.trackId, notes: [...(this.notes.get(track.trackId) ?? [])].sort((a, b) => a.start - b.start || a.pitch - b.pitch), controllers: [...(this.controllers.get(track.trackId) ?? [])], sustain: [...(this.spans.get(track.trackId) ?? [])] })),
     }
   }
 }
@@ -183,8 +210,10 @@ export interface CommitOptions { mode: MidiRecordMode; beatsPerBar: number; name
 export interface CommitResult { project: Project; clipIds: string[] }
 
 /** One region from absolute-beat notes starting at `start`. */
-export function recordedClip(notes: readonly RecordedNote[], start: number, end: number, name: string): MidiClip {
+export function recordedClip(notes: readonly RecordedNote[], start: number, end: number, name: string, pedal: readonly (readonly [number, number])[] = []): MidiClip {
+  const sustain = spansToSustain(pedal.map(([from, to]) => [Math.max(start, from) - start, Math.min(end, to) - start] as [number, number]).filter(([from, to]) => to - from > EPSILON))
   return {
+    ...(sustain.length ? { sustain } : {}),
     id: uid(), kind: 'midi', name, startBeat: start, lengthBeats: end - start, gain: 1,
     notes: notes.filter(note => note.end > start + EPSILON && note.start < end - EPSILON).map((note): MidiNote => {
       const noteStart = Math.max(start, note.start)
@@ -202,11 +231,11 @@ export function commitMidiTake(project: Project, result: MidiTakeResult, options
   let next = project
   const clipIds: string[] = []
   for (const take of result.tracks) {
-    if (!take.notes.length) continue
+    if (!take.notes.length && !take.sustain?.length) continue
     const track = next.tracks.find(item => item.id === take.trackId)
     if (!track || track.kind !== 'instrument') continue
     const span = takeSpan(result, take.notes, options.beatsPerBar)
-    let clip: MidiClip = recordedClip(take.notes, span.start, span.end, options.name)
+    let clip: MidiClip = recordedClip(take.notes, span.start, span.end, options.name, take.sustain)
     if (options.mode === 'replace') {
       next = { ...next, tracks: next.tracks.map(item => item.id === track.id ? { ...item, clips: [...item.clips, clip] } : item) }
       next = applyDragMode(next, [track.id], [clip.id], 'noOverlap')

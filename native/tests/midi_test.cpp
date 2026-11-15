@@ -103,8 +103,11 @@ void routingAndActiveNotes() {
   events.clear(); router.handle(1, 0x90, 60, 100, &switched, 0, Collect{&events}); router.handle(1, 0x90, 60, 100, &switched, 0, Collect{&events});
   check(events.size() == 3 && events[1].status == 0x80 && router.sounding() == 1, "Retriggered note did not end the previous one");
   events.clear(); router.handle(1, 0xB0, 123, 0, &switched, 0, Collect{&events}); check(events.size() == 1 && router.sounding() == 0, "All notes off (CC123) ignored");
-  // CC64 is forwarded for recording but has no live routing yet.
-  events.clear(); router.handle(1, 0xB0, 64, 127, &switched, 0, Collect{&events}); check(events.empty(), "CC64 unexpectedly routed");
+  // CC64 reaches each routed track once (sustain pedal); losing the route lifts the pedal on that track.
+  events.clear(); router.handle(1, 0xB0, 64, 127, &switched, 0, Collect{&events});
+  check(events.size() == 1 && events[0].track == 4 && events[0].status == 0xB0 && events[0].data1 == 64 && events[0].data2 == 127 && router.pedalDown(4), "CC64 not routed to the track");
+  events.clear(); router.retarget(nullptr, 0, Collect{&events});
+  check(events.size() == 1 && events[0].status == 0xB0 && events[0].data2 == 0 && !router.pedalDown(4), "Track switch left the pedal down");
   // Allocation-free.
   std::array<LiveMidiEvent, 16> fixed{}; std::size_t n = 0;
   auto emit = [&](const LiveMidiEvent& e) { if (n < fixed.size()) fixed[n++] = e; };
@@ -143,9 +146,21 @@ void sampleAccurateLiveEvents() {
   (void)e.queueLiveMidi(std::span<const LiveMidiEvent>(&late, 1));
   const auto first = renderCall(e, 256); check(energy(first, 0, 256) == 0, "Late event played early");
   const auto second = renderCall(e, 256); check(energy(second, 0, 256) > 1e-6, "Late event was lost");
-  // Unknown track and CC64 are ignored safely.
-  const LiveMidiEvent junk[]{{0, 99, 0x90, 60, 100, -1}, {0, 0, 0xB0, 64, 127, -1}};
+  // Unknown tracks are ignored safely.
+  const LiveMidiEvent junk[]{{0, 99, 0x90, 60, 100, -1}, {0, 99, 0xB0, 64, 127, -1}};
   (void)e.queueLiveMidi(junk); (void)renderCall(e, 128);
+  // Live sustain: with the pedal down a note-off keeps ringing; pedal up releases it.
+  const LiveMidiEvent off2{0, 0, 0x80, 64, 0, 1'500'000'002};
+  (void)e.queueLiveMidi(std::span<const LiveMidiEvent>(&off2, 1));
+  for (int i = 0; i < 400; ++i) (void)renderCall(e, 256);
+  const LiveMidiEvent held[]{{0, 0, 0xB0, 64, 127, -1}, {5, 0, 0x90, 67, 100, 1'500'000'003}, {200, 0, 0x80, 67, 0, 1'500'000'003}};
+  (void)e.queueLiveMidi(held);
+  std::vector<float> pedal; for (int i = 0; i < 40; ++i) { const auto b = renderCall(e, 256); pedal.insert(pedal.end(), b.begin(), b.end()); }
+  check(energy(pedal, pedal.size() / 2 - 1024, pedal.size() / 2) > 1e-9, "Sustain pedal did not hold the released note");
+  const LiveMidiEvent up{0, 0, 0xB0, 64, 0, -1};
+  (void)e.queueLiveMidi(std::span<const LiveMidiEvent>(&up, 1));
+  std::vector<float> after; for (int i = 0; i < 400; ++i) { const auto b = renderCall(e, 256); after.insert(after.end(), b.begin(), b.end()); }
+  check(energy(after, after.size() / 2 - 2048, after.size() / 2) == 0, "Pedal up did not release the sustained note");
 }
 
 void transportStamps() {

@@ -1,4 +1,5 @@
 import { parseMidi } from './midiInput'
+import { SUSTAIN_CONTROLLER, isPedalDown } from './sustain'
 import { MIN_RECORDED_NOTE, type RecordedNote } from './midiRecording'
 import type { StampedMidi } from '../audio/liveMidi'
 
@@ -37,7 +38,7 @@ export class MidiCaptureBuffer {
   snapshot(): readonly CaptureEvent[] { return this.events }
 }
 
-export interface CaptureTrack { notes: RecordedNote[]; startBeat: number; endBeat: number; playing: boolean }
+export interface CaptureTrack { notes: RecordedNote[]; startBeat: number; endBeat: number; playing: boolean; /** CC64 down spans in beats. */ sustain: [number, number][] }
 
 /**
  * The last performance: the events after the last silence of `gapMs` with no held note. When it was played over a
@@ -95,6 +96,19 @@ export function capturePerformance(
   for (const [key, note] of open) notes.push({ pitch: Number(key.split(':').pop()), start: note.start, end: Math.max(lastBeat, note.start + MIN_RECORDED_NOTE), velocity: note.velocity })
   if (!notes.length) return null
   notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch)
-  return { notes, startBeat: Math.min(...notes.map(note => note.start)), endBeat: Math.max(...notes.map(note => note.end)), playing }
+  const startBeat = Math.min(...notes.map(note => note.start)), endBeat = Math.max(...notes.map(note => note.end))
+  // The pedal (CC64) during the phrase, with a pedal already down at its first note starting there.
+  const sustain: [number, number][] = []
+  let downAt: number | null = null
+  const lastTime = phrase[phrase.length - 1].time
+  for (const event of events) {
+    const message = parseMidi(event.data)
+    if (message.type !== 'controller' || message.controller !== SUSTAIN_CONTROLLER || !accepts(event.source, message.channel) || event.time > lastTime) continue
+    const beat = Math.min(endBeat, Math.max(startBeat, event.time < origin ? startBeat : beatOf(event)))
+    if (isPedalDown(message.value) && downAt === null) downAt = beat
+    else if (!isPedalDown(message.value) && downAt !== null) { if (beat > downAt) sustain.push([downAt, beat]); downAt = null }
+  }
+  if (downAt !== null && endBeat > downAt) sustain.push([downAt, endBeat])
+  return { notes, startBeat, endBeat, playing, sustain: sustain.filter(([from, to]) => to > startBeat && from < endBeat) }
 }
 
