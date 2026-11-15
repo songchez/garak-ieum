@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import {
-  Activity, AudioLines, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleSmall, GripVertical,
+  Activity, AudioLines, Spline, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleSmall, GripVertical,
   ClipboardPaste, Combine, Copy, Download, Drum, EighthNotes, ExternalLink, Eye, EyeOff,
   FileHeadphone, FilePlus, FileText, Flag, Flame, FolderOpen, Funnel, Guitar, Headphones,
   Info, Keyboard, LayoutGrid, LibraryBig, ListMusic, LocateFixed, LockKeyhole, Magnet,
@@ -9,7 +9,7 @@ import {
   Save, Scissors, Search, Settings, Sparkles, SkipBack, SlidersHorizontal, SlidersVertical,
   Snowflake, Square, SquareDashed, SquareDashedMousePointer, TextCursorInput, Trash,
   Undo2, Upload, Volume2, VolumeX, WavesHorizontal, WavesVertical, Wind, X, Zap, History,
-  Waves, Orbit, Tornado, AudioWaveform, ArrowUpToLine, DoorClosed, CassetteTape, Binary, UnfoldHorizontal,
+  Waves, Orbit, Tornado, AudioWaveform, ArrowUpToLine, DoorClosed, CassetteTape, Binary, UnfoldHorizontal, CornerDownLeft,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -31,13 +31,13 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   refresh: RefreshCw, locate: LocateFixed, capture: History,
   close: X, check: Check, info: Info, grid: LayoutGrid, magnet: Magnet,
   keyboard: Keyboard, panel: PanelLeft, external: ExternalLink, bolt: Zap,
-  moon: Moon, metronome: Metronome, plug: Plug, power: Power, ai: Sparkles,
+  moon: Moon, metronome: Metronome, plug: Plug, power: Power, ai: Sparkles, automation: Spline,
   fit: Maximize, arrowsH: MoveHorizontal, arrowsV: MoveVertical,
   lock: LockKeyhole, snowflake: Snowflake, eye: Eye, 'eye-off': EyeOff, dot: CircleSmall,
   eq: SlidersVertical, filter: Funnel, compressor: Minimize2,
   drive: Flame, delay: Repeat2, reverb: WavesHorizontal, 'guitar-rig': Guitar,
   chorus: Waves, phaser: Orbit, flanger: Tornado, tremolo: AudioWaveform, limiter: ArrowUpToLine, gate: DoorClosed,
-  tape: CassetteTape, bitcrusher: Binary, utility: UnfoldHorizontal,
+  tape: CassetteTape, bitcrusher: Binary, utility: UnfoldHorizontal, return: CornerDownLeft,
 }
 
 export function Icon({ name, size = 18, className = '', style }: { name: string; size?: number; className?: string; style?: CSSProperties }) {

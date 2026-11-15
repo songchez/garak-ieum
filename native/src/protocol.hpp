@@ -110,6 +110,21 @@ inline ProjectTimeline timeline(const Json& value) {
   p.sampleRate = static_cast<std::uint32_t>(integer(value, "sampleRate", 8000, 192000, 48000));
   p.bpm = number(value, "bpm", 20, 400, 120); p.beatsPerBar = number(value, "beatsPerBar", .25, 64, 4);
   p.lengthFrames = integer(value, "lengthFrames", 1, std::int64_t(p.sampleRate) * 3600, 1);
+  // Tempo map (docs/TEMPO_MAP.md): sorted points, the first at beat 0 carrying `bpm`. Absent = constant tempo.
+  if (value.contains("tempoMap") && !value.at("tempoMap").is_null()) {
+    const auto& points = value.at("tempoMap");
+    if (!points.is_array() || points.size() > 4096) throw std::runtime_error("Invalid tempo map");
+    for (const auto& point : points) {
+      TempoPoint t;
+      t.beat = number(point, "beat", 0, 10000000, 0); t.bpm = number(point, "bpm", 20, 400, p.bpm);
+      const auto curve = point.value("curve", std::string("step"));
+      if (curve != "step" && curve != "ramp") throw std::runtime_error("Invalid tempo curve");
+      t.ramp = curve == "ramp";
+      if (p.tempoMap.empty() ? (t.beat != 0 || std::abs(t.bpm - p.bpm) > 1e-6) : !(t.beat > p.tempoMap.back().beat)) throw std::runtime_error("Invalid tempo map order");
+      p.tempoMap.push_back(t);
+    }
+    if (p.tempoMap.size() < 2) p.tempoMap.clear();
+  }
   p.masterGain = static_cast<float>(number(value, "masterGain", 0, 4, 1));
   p.lowLatencyMonitoring = value.value("lowLatencyMonitoring", true);
   const auto signature = value.value("timeSignature", Json::object());
@@ -156,6 +171,19 @@ inline ProjectTimeline timeline(const Json& value) {
       else throw std::runtime_error("Invalid track route");
       t.route = std::move(route);
     }
+    // Send/return (docs/SENDS_RETURNS.md): `return` marks an aux track; `sends` feed returns by id.
+    t.isReturn = item.value("return", false);
+    if (item.contains("sends") && !item.at("sends").is_null()) {
+      const auto& sends = item.at("sends");
+      if (!sends.is_array() || sends.size() > 256) throw std::runtime_error("Invalid track sends");
+      if (t.isReturn && !sends.empty()) throw std::runtime_error("A return track cannot have sends");
+      for (const auto& value : sends) {
+        TrackSend send; send.returnId = string(value, "returnId");
+        send.gain = static_cast<float>(number(value, "gain", 0, 4, 0)); send.pre = value.value("pre", false);
+        for (const auto& other : t.sends) if (other.returnId == send.returnId) throw std::runtime_error("Duplicate track send");
+        t.sends.push_back(std::move(send));
+      }
+    }
     if (!item.at("inserts").is_array() || item.at("inserts").size() > 64) throw std::runtime_error("Too many inserts");
     for (const auto& insert : item.at("inserts")) {
       BuiltinInsert b; b.id = string(insert, "id"); b.type = string(insert, "type"); b.enabled = insert.value("enabled", true);
@@ -177,16 +205,54 @@ inline ProjectTimeline timeline(const Json& value) {
     }
     if (item.contains("controls")) {
       const auto& controls = item.at("controls");
-      if (!controls.is_array() || controls.size() > 50000) throw std::runtime_error("Invalid track controls");
+      if (!controls.is_array() || controls.size() > 100000) throw std::runtime_error("Invalid track controls");
       std::int64_t previous = -1;
       for (const auto& c : controls) {
         ControlEvent event;
         event.frame = integer(c, "frame", 0, p.lengthFrames, 0);
-        event.controller = static_cast<std::uint8_t>(integer(c, "controller", 0, 127, sustainController));
-        event.value = static_cast<std::uint8_t>(integer(c, "value", 0, 127, 0));
+        event.controller = static_cast<std::uint16_t>(integer(c, "controller", 0, controllerCount - 1, sustainController));
+        event.value = static_cast<std::int32_t>(integer(c, "value", -8192, 8191, 0));
+        if (!validControllerValue(event.controller, event.value)) throw std::runtime_error("Invalid track control value");
         if (event.frame < previous) throw std::runtime_error("Track controls must be sorted by frame");
         previous = event.frame;
         t.controls.push_back(event);
+      }
+    }
+    // Automation lanes (docs/AUTOMATION.md): { target: { kind, insertId?, param?, returnId? }, minimum, maximum, logarithmic?,
+    // options?, points: [{ frame, value, curve? }] }.
+    t.unmutedAudible = item.value("unmutedAudible", t.audible);
+    if (item.contains("automation")) {
+      const auto& lanes = item.at("automation");
+      if (!lanes.is_array() || lanes.size() > 256) throw std::runtime_error("Invalid track automation");
+      std::size_t totalPoints = 0;
+      for (const auto& value : lanes) {
+        AutomationLane lane; const auto& target = value.at("target"); const auto kind = string(target, "kind", 16);
+        if (kind == "volume") lane.target = AutomationLane::Target::Volume;
+        else if (kind == "pan") lane.target = AutomationLane::Target::Pan;
+        else if (kind == "mute") lane.target = AutomationLane::Target::Mute;
+        else if (kind == "insert") { lane.target = AutomationLane::Target::Insert; lane.insertId = string(target, "insertId"); lane.param = string(target, "param", 120); }
+        else if (kind == "instrument") { lane.target = AutomationLane::Target::Instrument; lane.param = string(target, "param", 120); }
+        else if (kind == "send") { lane.target = AutomationLane::Target::Send; lane.returnId = string(target, "returnId"); }
+        else throw std::runtime_error("Invalid automation target");
+        lane.minimum = number(value, "minimum", -1e9, 1e9, 0); lane.maximum = number(value, "maximum", -1e9, 1e9, 1);
+        lane.logarithmic = value.value("logarithmic", false);
+        if (lane.logarithmic && !(lane.minimum > 0 && lane.maximum > 0)) throw std::runtime_error("Invalid logarithmic automation range");
+        if (value.contains("options")) {
+          const auto& options = value.at("options");
+          if (!options.is_array() || options.size() > 64) throw std::runtime_error("Invalid automation options");
+          for (const auto& option : options) { if (!option.is_number()) throw std::runtime_error("Invalid automation option"); lane.options.push_back(option.get<double>()); }
+        }
+        const auto& points = value.at("points");
+        if (!points.is_array() || points.size() > 20000 || (totalPoints += points.size()) > 100000) throw std::runtime_error("Automation point limit exceeded");
+        double previous = 0;
+        for (const auto& item : points) {
+          AutomationPoint point;
+          point.frame = number(item, "frame", previous, 1e13, previous);
+          point.value = number(item, "value", 0, 1, 0); point.curve = number(item, "curve", -1, 1, 0);
+          previous = point.frame;
+          lane.points.push_back(point);
+        }
+        t.automation.push_back(std::move(lane));
       }
     }
     for (const auto& a : audio) {

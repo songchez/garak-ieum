@@ -4,11 +4,13 @@ import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
 import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
 import { numberedInputChoices } from '../core/trackInputs'
 import {
-  connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
-  setRouteMonitoring, trackLayoutKey, updateGraph,
+  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
+  setRouteMonitoring, trackLayoutKey, updateEffectTempo, updateGraph,
 } from './graph'
+import { hasActiveAutomation } from '../core/automation'
 import type { EngineGraph } from './graph'
-import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter, secondsPerBeat } from './math'
+import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter } from './math'
+import { tempoMapOf } from '../core/tempoMap'
 import { SampleLibrary } from './samples'
 import { ownAudioBytes } from './assetBytes'
 import { playOutputTest } from './OutputTest'
@@ -100,7 +102,8 @@ export class WebAudioEngine implements AudioEngine {
   /** Monitor-only clicks on the audio clock; never part of the graph, recordings or export. */
   private readonly metronome = new WebMetronome()
   /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md). */
-  readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time) })
+  readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time),
+    control: (trackId, key, value) => { const controls = this.graph?.tracks.get(trackId)?.controls; if (controls && this.context) applyControl(controls, key, value, this.context.currentTime) } })
 
   constructor(project?: Project, settings: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     this.settings = normalizeAudioSettings(settings)
@@ -391,7 +394,7 @@ export class WebAudioEngine implements AudioEngine {
     }
     // Clip playback fields (loop, delay, quantize, swing, transpose, velocity) travel inside track.clips.
     const nextKey = JSON.stringify([
-      project.bpm, project.lengthBeats, project.loop, project.timeSignature,
+      project.bpm, project.tempoMap, project.lengthBeats, project.loop, project.timeSignature,
       project.tracks.map(track => [
         track.id, track.kind, track.instrument, track.enabled, track.transpose, track.velocityOffset,
         track.keyLimit, track.velocityLimit, track.delayTicks, track.clips,
@@ -407,7 +410,9 @@ export class WebAudioEngine implements AudioEngine {
       try {
         if (this.playing && (changedArrangement || changedLayout)) this.restartAt(this.position)
         else if (!this.graph || changedLayout || changedRate) this.replaceGraph()
-        else updateGraph(this.graph, project)
+        // A mixer edit (fader, send level, effect knob) keeps synced effects — returns' delays included — on the
+        // tempo at the playhead, not the project's beat-0 tempo (docs/TEMPO_MAP.md); automated targets keep their lanes.
+        else this.applyStatic(project)
       } catch (error) {
         this.blockEffectGraph(this.context, error)
       }
@@ -472,9 +477,9 @@ export class WebAudioEngine implements AudioEngine {
       if (!loopRange(this.project) && beat >= this.project.lengthBeats) beat = 0
       this.playing = true
       // A count-in delays the transport anchor; its clicks share the same audio clock.
-      const countIn = this.metronome.countInSeconds(this.project, options.countInBars ?? 0)
+      const countIn = this.metronome.countInSeconds(this.project, options.countInBars ?? 0, beat)
       this.restartAt(beat, countIn)
-      if (countIn > 0 && this.context && !this.outputFault) this.metronome.scheduleCountIn(this.context, this.project, options.countInBars ?? 0, this.anchorTime - countIn)
+      if (countIn > 0 && this.context && !this.outputFault) this.metronome.scheduleCountIn(this.context, this.project, options.countInBars ?? 0, this.anchorTime - countIn, beat)
       if (this.outputFault) throw new Error(this.audioError ?? this.outputFault)
       this.publishSnapshot()
       // Resolve on the downbeat, so a recording starts its capture with the music.
@@ -508,7 +513,23 @@ export class WebAudioEngine implements AudioEngine {
     if (!this.project) return
     this.position = clamp(beat, 0, this.project.lengthBeats)
     if (this.playing) this.restartAt(this.position)
+    else if (this.graph && hasActiveAutomation(this.project)) this.applyStatic(this.project)
     this.publishSnapshot()
+  }
+
+  /** Static parameter edit. Automated targets keep their lane value at the heard beat; while playing, the
+   * automation already scheduled ahead is replaced from now on (docs/AUTOMATION.md). */
+  private applyStatic(project: Project): void {
+    if (!this.graph || !this.context) return
+    const automated = hasActiveAutomation(project)
+    const beat = this.currentBeat()
+    this.effectBpm = tempoMapOf(project).bpmAt(beat)
+    updateGraph(this.graph, project, true, automated ? beat : undefined, this.effectBpm)
+    resetAutomationState(this.graph)
+    if (automated && this.playing && this.cursorTime > this.context.currentTime) {
+      const anchorBeat = this.anchorBeat, anchorTime = this.anchorTime
+      scheduleAutomation(this.graph, project, this.context.currentTime, this.cursorTime, time => positionAfter(project, anchorBeat, time - anchorTime))
+    }
   }
 
   async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8, trackId?: string): Promise<void> {
@@ -549,9 +570,10 @@ export class WebAudioEngine implements AudioEngine {
     if (def.set && !loaded) { void this.preloadSamples(def.set).catch(() => undefined); return null }
     const when = context.currentTime
     // available === duration: no release-noise sample is scheduled at the far end of the hold.
+    const input = channel.controls?.input ?? channel.input, pitchBus = def.isKit ? undefined : channel.controls?.pitch
     const voice = loaded
-      ? scheduleSampled(graph, channel.input, loaded, def.isKit, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, channel.chokes)
-      : scheduleInstrument(graph, channel.input, track.instrument, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams)
+      ? scheduleSampled(graph, input, loaded, def.isKit, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, channel.chokes, pitchBus)
+      : scheduleInstrument(graph, input, track.instrument, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, pitchBus)
     if (!voice) return null
     // Drum hits ring out on their own, like timeline notes; note-offs do not cut them.
     if (def.isKit) return { release: () => undefined }
@@ -638,8 +660,7 @@ export class WebAudioEngine implements AudioEngine {
       projectFrameAt: time => {
         const project = this.project
         if (!project) return 0
-        const beatSeconds = secondsPerBeat(project.bpm)
-        return (this.anchorBeat * beatSeconds + time - this.anchorTime) * projectSampleRate(project.sampleRate)
+        return (tempoMapOf(project).secondsAt(this.anchorBeat) + time - this.anchorTime) * projectSampleRate(project.sampleRate)
       },
     }
     return new RouteRecordings(host, trackIds, callbacks)
@@ -699,7 +720,8 @@ export class WebAudioEngine implements AudioEngine {
       }
     }
     const sampleRate = projectSampleRate(project.sampleRate)
-    const duration = project.lengthBeats * secondsPerBeat(project.bpm) + renderTailSeconds(project)
+    const tempo = tempoMapOf(project)
+    const duration = tempo.secondsAt(project.lengthBeats) + renderTailSeconds(project)
     const frames = Math.ceil(duration * sampleRate)
     if (!Number.isFinite(frames) || frames < 1) throw new Error('프로젝트의 내보내기 길이가 올바르지 않습니다.')
     // OfflineAudioContext stores all rendered samples in RAM. Fail clearly before
@@ -710,6 +732,13 @@ export class WebAudioEngine implements AudioEngine {
     const graph = createGraph(offline, project)
     try {
       scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
+      // Automation is scheduled for the whole render before it starts, so worklet events are queued first.
+      if (hasActiveAutomation(project)) {
+        const tempo = tempoMapOf(project)
+        updateGraph(graph, project, false, 0)
+        scheduleAutomation(graph, project, 0, duration, time => Math.min(project.lengthBeats, tempo.beatAt(time)))
+      }
+      scheduleTempoUpdates(offline, graph, project, duration)
       const rendered = await offline.startRendering()
       assertGuitarRigHealthy(offline)
       const bytes = encodePcm16Wav([rendered.getChannelData(0), rendered.getChannelData(1)], rendered.sampleRate)
@@ -780,6 +809,7 @@ export class WebAudioEngine implements AudioEngine {
       // Construct before retiring the current graph. A failed effect must never leave
       // a partly connected replacement or quietly substitute the old/dry signal.
       replacement = createGraph(context, this.project)
+      if (hasActiveAutomation(this.project) || !tempoMapOf(this.project).isConstant) updateGraph(replacement, this.project, false, this.currentBeat())
       if (this.graph) {
         const old = this.graph
         if (context.state === 'running') {
@@ -801,6 +831,7 @@ export class WebAudioEngine implements AudioEngine {
         } else disposeGraph(old)
       }
       this.graph = replacement
+      this.effectBpm = 0
       if (this.outputFault) this.graph.gate.gain.value = 0
       this.wireRoutes(replacement)
       this.wireMonitor()
@@ -831,7 +862,7 @@ export class WebAudioEngine implements AudioEngine {
     if (!this.playing || !this.context || !this.project || !this.graph) return
     const project = this.project
     const loop = loopRange(project)
-    const beatSeconds = secondsPerBeat(project.bpm)
+    const tempo = tempoMapOf(project)
     const boundary = loop?.end ?? project.lengthBeats
     const horizon = this.context.currentTime + LOOKAHEAD_SECONDS
 
@@ -854,16 +885,27 @@ export class WebAudioEngine implements AudioEngine {
         this.cursorBeat = loop.start
         this.chaseCursor = true
       }
-      const remainingSeconds = (boundary - this.cursorBeat) * beatSeconds
+      const remainingSeconds = tempo.secondsBetween(this.cursorBeat, boundary)
       const segmentSeconds = Math.min(horizon - this.cursorTime, remainingSeconds)
       if (segmentSeconds <= 0.00000001) break
-      const endBeat = this.cursorBeat + segmentSeconds / beatSeconds
+      const endBeat = segmentSeconds >= remainingSeconds ? boundary : Math.min(boundary, tempo.beatAfter(this.cursorBeat, segmentSeconds))
       scheduleRange(this.graph, project, this.assets, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true, this.samples)
+      const segmentBeat = this.cursorBeat, segmentTime = this.cursorTime
+      scheduleAutomation(this.graph, project, segmentTime, segmentTime + segmentSeconds, time => tempo.beatAfter(segmentBeat, time - segmentTime))
       if (!this.outputFault) this.metronome.scheduleSegment(this.context, project, this.cursorBeat, endBeat, this.cursorTime)
       this.cursorTime += segmentSeconds
       this.cursorBeat = endBeat
       this.chaseCursor = false
-    }
+    }    // Tempo-synced effects (delay, tremolo) follow the tempo at the playhead (docs/TEMPO_MAP.md).
+    if (!tempo.isConstant) this.followTempo(tempo.bpmAt(this.currentBeat()))
+  }
+
+  private effectBpm = 0
+  private followTempo(bpm: number): void {
+    if (!this.graph || !this.project || Math.abs(bpm - this.effectBpm) < 0.05) return
+    this.effectBpm = bpm
+    // Only non-automated synced effects: a full updateGraph would cancel the scheduled automation.
+    updateEffectTempo(this.graph, this.project, bpm)
   }
 
   /** Waits on the audio clock for a count-in to reach the transport anchor (or for the play to be cancelled). */
@@ -878,7 +920,7 @@ export class WebAudioEngine implements AudioEngine {
   private tick(): void {
     if (!this.context) return
     if (this.playing && this.project) {
-      const completed = !loopRange(this.project) && this.context.currentTime >= this.anchorTime + (this.project.lengthBeats - this.anchorBeat) * secondsPerBeat(this.project.bpm)
+      const completed = !loopRange(this.project) && this.context.currentTime >= this.anchorTime + tempoMapOf(this.project).secondsBetween(this.anchorBeat, this.project.lengthBeats)
       if (completed) {
         this.position = this.project.lengthBeats
         this.playing = false
@@ -913,5 +955,24 @@ export class WebAudioEngine implements AudioEngine {
     if (next.playing === this.snapshot.playing && next.beat === this.snapshot.beat && next.ready === this.snapshot.ready && next.sampleRate === this.snapshot.sampleRate) return
     this.snapshot = next
     for (const listener of this.listeners) listener()
+  }
+}
+
+/**
+ * Offline export: tempo-synced effects follow the tempo map. The render suspends where the tempo has moved
+ * by more than 0.05 BPM (checked every 50 ms) and retunes the effects, like the realtime scheduler does.
+ */
+function scheduleTempoUpdates(offline: OfflineAudioContext, graph: EngineGraph, project: Project, duration: number): void {
+  const tempo = tempoMapOf(project)
+  if (tempo.isConstant || typeof offline.suspend !== 'function') return
+  const step = 0.05
+  let last = tempo.bpmAt(0)
+  for (let time = step; time < duration; time += step) {
+    const bpm = tempo.bpmAt(Math.min(project.lengthBeats, tempo.beatAt(time)))
+    if (Math.abs(bpm - last) < 0.05) continue
+    last = bpm
+    // Suspend times are quantized to render quanta (128 frames); each one is unique here.
+    const at = Math.ceil(time * offline.sampleRate / 128) * 128 / offline.sampleRate
+    offline.suspend(at).then(() => { updateEffectTempo(graph, project, bpm); return offline.resume() }).catch(() => undefined)
   }
 }

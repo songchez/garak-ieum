@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { InstrumentId } from '../core/types'
+import type { InstrumentId, Track } from '../core/types'
 import { Icon } from './Icon'
 import { InstrumentOptions } from './InstrumentOptions'
 import './Inspector.css'
@@ -7,7 +7,7 @@ import './Inspector.css'
 export interface NewTracksOptions { kind: 'instrument' | 'audio'; instrument?: InstrumentId; count: number; openLibrary: boolean; guitarRig?: boolean }
 
 export interface NewTracksDialogProps {
-  focusedKind: 'instrument' | 'audio' | undefined
+  focusedKind: Track['kind'] | undefined
   /** Default patch for new instrument tracks (the focused track's); 'keys' when absent. */
   focusedInstrument?: InstrumentId
   onCreate: (opts: NewTracksOptions) => void
@@ -17,7 +17,7 @@ export interface NewTracksDialogProps {
 export const MAX_NEW_TRACKS = 16
 
 export function NewTracksDialog({ focusedKind, focusedInstrument, onCreate, onClose }: NewTracksDialogProps) {
-  const [kind, setKind] = useState<'instrument' | 'audio'>(focusedKind ?? 'instrument')
+  const [kind, setKind] = useState<'instrument' | 'audio'>(focusedKind === 'audio' ? 'audio' : 'instrument')
   const [guitarRig, setGuitarRig] = useState(false)
   const [instrument, setInstrument] = useState<InstrumentId>(focusedInstrument ?? 'keys')
   const [count, setCount] = useState(1)

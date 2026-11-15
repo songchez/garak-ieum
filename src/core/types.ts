@@ -28,7 +28,17 @@ export interface MidiNote {
 /** One MIDI CC64 (sustain pedal) event. Stored in source beats like MidiNote.start; see core/sustain.ts. */
 export interface SustainEvent {
   beat: number
-  /** 0…127; 64 or more is pedal down. */
+  /** 0??27; 64 or more is pedal down. */
+  value: number
+}
+/**
+ * A controller lane (docs/MIDI_CONTROLLERS.md, core/controllers.ts): 'cc0'…'cc127' except 'cc64' (the sustain pedal
+ * lives in MidiClip.sustain), 'pitchBend', 'aftertouch' (channel pressure) or 'program' (program change).
+ */
+export type ControllerKey = `cc${number}` | 'pitchBend' | 'aftertouch' | 'program'
+/** One controller event in source beats (like MidiNote.start). value: 0…127, pitch bend −8192…8191 (0 = center). */
+export interface ControllerPoint {
+  beat: number
   value: number
 }
 export interface ClipBase {
@@ -44,7 +54,7 @@ export interface ClipBase {
   /** Total span from startBeat to a manual repeat endpoint; at least lengthBeats. Absent = continuous loop.
    * Relative to the clip so moving/copying it carries its endpoint. Ignored while loop is false. */
   loopLengthBeats?: number
-  /** Playback offset in ticks at 960 PPQ (−1920…1920). Absent = 0. */
+  /** Playback offset in ticks at 960 PPQ (??920??920). Absent = 0. */
   delayTicks?: number
 }
 export interface MidiClip extends ClipBase {
@@ -55,15 +65,19 @@ export interface MidiClip extends ClipBase {
   notes: MidiNote[]
   /** Sustain pedal (CC64) controller lane, sorted by beat (schema 13). Absent = no pedal. Never transposed or quantized. */
   sustain?: SustainEvent[]
+  /** Controller lanes by key, each sorted by beat (schema 16). Absent = none. Never transposed or quantized. */
+  controllers?: Partial<Record<ControllerKey, ControllerPoint[]>>
+  /** Pitch-bend range in semitones 0…48 for the built-in instruments (schema 16). Absent = 2. */
+  bendRange?: number
   /** Non-destructive playback quantize grid in beats; one of QUANTIZE_VALUES. Absent/0 = off. */
   quantize?: number
-  /** Swing 0…100 (50 = straight); only used when quantize is on. Absent = 50. */
+  /** Swing 0??00 (50 = straight); only used when quantize is on. Absent = 50. */
   swing?: number
-  /** Semitones −96…96. Absent = 0. */
+  /** Semitones ??6??6. Absent = 0. */
   transpose?: number
-  /** Velocity offset −99…99 (MIDI units). Absent = 0. */
+  /** Velocity offset ??9??9 (MIDI units). Absent = 0. */
   velocity?: number
-  /** Q-강도 0…100: how far quantize moves each note toward its grid line. Absent = 100. */
+  /** Q-媛뺣룄 0??00: how far quantize moves each note toward its grid line. Absent = 100. */
   qStrength?: number
 }
 export interface AudioClip extends ClipBase {
@@ -83,7 +97,7 @@ export interface AudioClip extends ClipBase {
   /** Region pitch (schema 12; docs/REGION_PITCH.md). Absent = 0 / keep tempo. Never combined with pitch. */
   regionPitch?: AudioTranspose
 }
-/** 템포 유지 (pitch shift, same length) or 자연스럽게 (varispeed: pitch and speed together). */
+/** ?쒗룷 ?좎? (pitch shift, same length) or ?먯뿰?ㅻ읇寃?(varispeed: pitch and speed together). */
 export type TransposeMode = 'keep' | 'varispeed'
 /** What an installed pitch render carries: total cents, mode and formant preservation. */
 export interface AudioTransposeRender { cents: number; mode: TransposeMode; formant: boolean }
@@ -92,9 +106,9 @@ export interface AudioTransposeRender { cents: number; mode: TransposeMode; form
  * renderer installed it; offsetSeconds is in that asset's seconds (like warp).
  */
 export interface AudioTranspose {
-  /** −24…24 */
+  /** ??4??4 */
   semitones: number
-  /** −50…50 */
+  /** ??0??0 */
   cents: number
   mode: TransposeMode
   /** Keep-tempo only: preserve formants. Absent = false. */
@@ -115,7 +129,7 @@ export interface AudioWarp {
   sourceBpm: number
   /** First detected beat in original-file seconds (informational alignment hint). */
   firstBeatSeconds: number
-  /** 0–1. 0 means typed by hand. */
+  /** 0??. 0 means typed by hand. */
   confidence: number
   originalAssetId: string
   /** Project tempo the current assetId was rendered for. */
@@ -175,27 +189,73 @@ export interface TrackMidiInput {
   deviceId?: string
   /** Device name when chosen, shown while the device is unplugged. */
   deviceName?: string
-  /** 1…16; absent = every channel. */
+  /** 1??6; absent = every channel. */
   channel?: number
 }
+
+/**
+ * One aux send (schema 15; docs/SENDS_RETURNS.md): this track's signal into a return track at `level`
+ * (linear gain like Track.volume, 0 = off, 1 = 0 dB, max 2 = +6 dB). Post-fader by default (after pan, fader,
+ * mute and solo); `pre` taps after the 시김새 chain, before pan and fader (still silenced by mute/solo).
+ */
+export interface TrackSend {
+  returnId: string
+  level: number
+  /** Absent = post-fader. */
+  pre?: boolean
+}
+
+/** `return` (리턴/aux, schema 15): no regions or inputs; fed by other tracks' sends, own 시김새 chain, out to the master. */
+export type TrackKind = 'instrument' | 'audio' | 'return'
+
+/**
+ * What an automation lane drives (schema 17, docs/AUTOMATION.md). Device lanes follow the device by id, so
+ * moving a 시김새 keeps its lanes and deleting it removes them. `param` is a ParamDef id for built-in devices
+ * and instruments, and the decimal VST3 ParamID for plug-ins. Return tracks are automatable like any track; send levels use kind 'send'. New kinds add a
+ * member here and a case in core/automation.ts targetKey/targetDef; nothing else keys on the shape.
+ */
+export type AutomationTarget =
+  | { kind: 'track'; param: 'volume' | 'pan' | 'mute' }
+  | { kind: 'device'; deviceId: string; param: string }
+  | { kind: 'instrument'; param: string }
+  | { kind: 'plugin-instrument'; param: string }
+  /** Send level (TrackSend.level) of this track's send into return track `returnId`. */
+  | { kind: 'send'; returnId: string }
+/** One breakpoint. value is normalized 0…1 in the target's own range (core/devices.ts toNormalized). */
+export interface AutomationPoint {
+  beat: number
+  value: number
+  /** Curvature of the segment to the next point, −1…1 (0 = straight). Absent = 0. */
+  curve?: number
+}
+export interface AutomationLane {
+  id: string
+  target: AutomationTarget
+  /** Sorted by beat; two points on one beat make a jump. */
+  points: AutomationPoint[]
+  /** Off = the static value plays (Ableton's override, Logic's lane off). Absent = true. */
+  enabled?: boolean
+}
+/** Logic's automation modes: 읽기 plays lanes, 터치/래치/쓰기 also record knob moves during playback. */
+export type AutomationMode = 'read' | 'touch' | 'latch' | 'write'
 
 export interface Track {
   id: string
   name: string
-  kind: 'instrument' | 'audio'
+  kind: TrackKind
   instrument: InstrumentId
   color: string
   volume: number
   pan: number
   mute: boolean
   solo: boolean
-  /** Heard even when other tracks are soloed (Logic: ⌃-click S). */
+  /** Heard even when other tracks are soloed (Logic: ??click S). */
   soloSafe: boolean
-  /** Off = not scheduled, no fader, no preview (Logic: track on/off, ⌥M). */
+  /** Off = not scheduled, no fader, no preview (Logic: track on/off, ?쩗). */
   enabled: boolean
   /** Record-enabled. Live state: never enters undo history. */
   armed: boolean
-  /** The I button: true exactly when monitorMode is `in`. Kept for schema ≤7 files and older readers.
+  /** The I button: true exactly when monitorMode is `in`. Kept for schema ?? files and older readers.
    * Live state: never enters undo history. */
   monitor: boolean
   /** Hidden in the Tracks area while hide view is off; still plays. */
@@ -205,7 +265,7 @@ export interface Track {
   velocityOffset: number
   keyLimit: [number, number]
   velocityLimit: [number, number]
-  /** Ticks at 960 PPQ, −1920…1920. */
+  /** Ticks at 960 PPQ, ??920??920. */
   delayTicks: number
   /** Icon name from components/Icon.tsx. Absent = category default. */
   icon?: string
@@ -228,6 +288,12 @@ export interface Track {
   inputRoute?: TrackInputRoute
   /** Instrument tracks only. Absent = every MIDI input, every channel. Undoable. */
   midiInput?: TrackMidiInput
+  /** Audio and instrument tracks only: at most one send per return track (schema 15). Absent = none. */
+  sends?: TrackSend[]
+  /** Track automation lanes (schema 17, docs/AUTOMATION.md). Absent = none. Independent of regions. */
+  automation?: AutomationLane[]
+  /** Absent = 'read'. */
+  automationMode?: AutomationMode
 }
 export interface Marker {
   id: string
@@ -239,12 +305,24 @@ export interface TimeSignature {
   numerator: number
   denominator: TimeSignatureDenominator
 }
+/** Shape of the tempo segment that starts at a point; see core/tempoMap.ts. */
+export type TempoCurve = 'step' | 'ramp'
+/** One tempo-map point (schema 14). bpm is quarter notes per minute, like Project.bpm. */
+export interface TempoPoint {
+  beat: number
+  bpm: number
+  curve: TempoCurve
+}
 export interface Project {
-  /** 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 13
+  /** 17: track automation lanes (Track.automation, Track.automationMode; send levels and return tracks automatable). 16: MIDI controller lanes (MidiClip.controllers, bendRange). 15: send/return tracks (Track.kind 'return', Track.sends). 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 17
   id: string
   name: string
+  /** Tempo at beat 0. With a tempo map this mirrors tempoMap[0].bpm. */
   bpm: number
+  /** Tempo changes (schema 14; docs/TEMPO_MAP.md). Sorted by beat, first point at beat 0 with Project.bpm.
+   * Absent (or fewer than two points) = constant Project.bpm. Convert beats?봳ime only through core/tempoMap.ts. */
+  tempoMap?: TempoPoint[]
   /** Project rendering rate; device preferences are stored separately in this browser. */
   sampleRate: SampleRate
   timeSignature: TimeSignature

@@ -345,6 +345,55 @@ describe('music-domain edits', () => {
     expect(project.tracks[1].clips[0]).toMatchObject({ id: 'midi', startBeat: 8, transpose: 12, notes: [{ id: 'note', pitch: 60 }] })
   })
 
+  it('sets region gain, fades and curves with one undo step and reports applied values', () => {
+    const session = new ProjectSession(fixture())
+    const result = session.execute(request(session, [
+      { type: 'clip.setGain', clipId: 'audio-clip', gainDb: 6 },
+      { type: 'clip.setFades', clipId: 'audio-clip', fadeInSeconds: 0.5, fadeOutSeconds: 10, fadeOutCurve: 'equalPower' },
+      { type: 'clip.setGain', clipId: 'midi', gainDb: -60 },
+    ]))
+    const project = session.getSnapshot().history.present, audio = project.tracks[2].clips[0] as AudioClip
+    expect(audio.gain).toBeCloseTo(10 ** (6 / 20))
+    // 4 beats at 96 BPM = 2.5 s; the fade-out gets what the 0.5 s fade-in leaves.
+    expect(audio).toMatchObject({ fadeIn: 0.5, fadeOut: 2, fadeOutCurve: 'equalPower' })
+    expect(audio.fadeInCurve).toBeUndefined()
+    expect(result.results[1].after).toMatchObject({ fadeInSeconds: 0.5, fadeOutSeconds: 2, fadeInCurve: 'linear', fadeOutCurve: 'equalPower' })
+    expect(project.tracks[0].clips[0].gain).toBe(0)
+    expect(validateProject(project)).toEqual(project)
+    session.dispatch({ type: 'undo' })
+    expect(session.getSnapshot().history.present.tracks[2].clips[0]).toMatchObject({ gain: 1, fadeIn: 0.005, fadeOut: 0.01 })
+  })
+
+  it('sets audio region pitch (varispeed scales length) and replaces a MIDI sustain lane', () => {
+    const session = new ProjectSession(fixture())
+    session.execute(request(session, [
+      { type: 'clip.setPitch', clipId: 'audio-clip', semitones: 12, mode: 'varispeed' },
+      { type: 'clip.setSustain', clipId: 'midi', events: [{ beat: 2, value: 0 }, { beat: 0, value: 127 }] },
+    ]))
+    let project = session.getSnapshot().history.present
+    const audio = project.tracks[2].clips[0] as AudioClip, midi = project.tracks[0].clips[0] as MidiClip
+    expect(audio.regionPitch).toMatchObject({ semitones: 12, cents: 0, mode: 'varispeed', originalAssetId: 'asset' })
+    expect(audio.lengthBeats).toBeCloseTo(2)
+    expect(midi.sustain).toEqual([{ beat: 0, value: 127 }, { beat: 2, value: 0 }])
+    expect(validateProject(project)).toEqual(project)
+    session.execute(request(session, [{ type: 'clip.setPitch', clipId: 'audio-clip', semitones: 0, mode: 'keep' }, { type: 'clip.setSustain', clipId: 'midi', events: [] }], 'op-2'))
+    project = session.getSnapshot().history.present
+    expect((project.tracks[2].clips[0] as AudioClip).regionPitch).toBeUndefined()
+    expect(project.tracks[2].clips[0].lengthBeats).toBeCloseTo(4)
+    expect('sustain' in project.tracks[0].clips[0]).toBe(false)
+  })
+
+  it('rejects region edits on the wrong clip kind and MIDI gain above +6 dB', () => {
+    const session = new ProjectSession(fixture()), before = session.getSnapshot()
+    for (const command of [
+      { type: 'clip.setFades', clipId: 'midi', fadeInSeconds: 1 },
+      { type: 'clip.setPitch', clipId: 'midi', semitones: 1 },
+      { type: 'clip.setSustain', clipId: 'audio-clip', events: [] },
+    ] as DawCommand[]) fails(() => session.execute(request(session, [command])), 'TYPE_MISMATCH')
+    fails(() => session.execute(request(session, [{ type: 'clip.setGain', clipId: 'midi', gainDb: 12 }])), 'INVALID_ARGUMENT')
+    expect(session.getSnapshot()).toBe(before)
+  })
+
   it('rejects MIDI on audio tracks, audio transposition, and cross-kind moves', () => {
     const session = new ProjectSession(fixture()), before = session.getSnapshot()
     for (const command of [

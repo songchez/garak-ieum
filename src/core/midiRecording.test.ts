@@ -84,7 +84,7 @@ describe('MidiTake', () => {
     take.input({ source: 'k', data: [0xB0, 64, 0], beat: 2 })
     const result = take.finish(4).tracks[0]
     expect(result.notes).toEqual([])
-    expect(result.controllers).toEqual([{ beat: 1, channel: 1, controller: 64, value: 127 }, { beat: 2, channel: 1, controller: 64, value: 0 }])
+    expect(result.controllers).toEqual([{ beat: 1, channel: 1, controller: 64, value: 127, pass: 0 }, { beat: 2, channel: 1, controller: 64, value: 0, pass: 0 }])
   })
   it('previews held notes up to now', () => {
     const take = takeOf()

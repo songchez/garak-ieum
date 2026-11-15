@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDevice, createEmptyProject, createTrack } from '../core/project'
 import type { MidiClip, Project } from '../core/types'
-import { connectMonitor, createGraph, disconnectMonitor, disposeGraph, scheduleRange, setRouteMonitoring, trackLayoutKey, updateGraph } from './graph'
+import { connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, scheduleRange, setRouteMonitoring, trackLayoutKey, updateGraph } from './graph'
 import type { LoadedSet, SampleLibrary } from './samples'
+import { tempoMapOf } from '../core/tempoMap'
 import { EFFECT_MODULES } from '../devices/effects/registry'
 import * as guitarRig from '../devices/guitar-rig'
 
@@ -370,5 +371,100 @@ describe('track-input routes (docs/TRACK_INPUT_ROUTING.md)', () => {
     expect(into('a')).toBe(false)
     expect((graph.tracks.get('a')!.postFx as unknown as AudioNodeSpy).connections.has(graph.routes.get('b')!.input)).toBe(true)
     expect(into('orphan')).toBe(false)
+  })
+})
+
+describe('send/return buses (docs/SENDS_RETURNS.md)', () => {
+  const sendProject = (devices = [createDevice('eq')]): Project => {
+    const ret = { ...createTrack('return'), id: 'ret', soloSafe: true, devices }
+    const keys = { ...createTrack('instrument'), id: 'keys', sends: [{ returnId: 'ret', level: 0.5 }] }
+    const vox = { ...createTrack('audio'), id: 'vox', volume: 0.3, sends: [{ returnId: 'ret', level: 0.25, pre: true }] }
+    return { ...createEmptyProject(), tracks: [ret, keys, vox] }
+  }
+  const spy = (node: unknown) => node as AudioNodeSpy
+
+  it('taps post-fader sends from the fader and pre-fader sends from postFx into the return input', () => {
+    const { context } = contextSpy()
+    const graph = createGraph(context, sendProject())
+    const ret = graph.tracks.get('ret')!, keys = graph.tracks.get('keys')!, vox = graph.tracks.get('vox')!
+    const post = keys.sends.get('ret')!, pre = vox.sends.get('ret')!
+    expect(post.pre).toBe(false)
+    expect(spy(keys.fader).connections.has(post.gain)).toBe(true)
+    expect(spy(keys.postFx).connections.has(post.gain)).toBe(false)
+    expect(spy(vox.postFx).connections.has(pre.gain)).toBe(true)
+    expect(spy(post.gain).connections).toEqual(new Set([ret.input]))
+    expect(spy(pre.gain).connections).toEqual(new Set([ret.input]))
+    expect(post.gain.gain.value).toBe(0.5)
+    expect(pre.gain.gain.value).toBe(0.25)
+    // The return itself is an ordinary channel into the master and has no sends.
+    expect(ret.sends.size).toBe(0)
+  })
+
+  it('updates levels as parameters, silences pre-fader sends of unsoloed tracks, and keeps returns audible on solo', () => {
+    const { context } = contextSpy()
+    const project = sendProject()
+    const graph = createGraph(context, project)
+    const soloKeys = { ...project, tracks: project.tracks.map(track => track.id === 'keys' ? { ...track, solo: true, sends: [{ returnId: 'ret', level: 1 }] } : track) }
+    expect(trackLayoutKey(soloKeys.tracks)).toBe(trackLayoutKey(project.tracks))
+    updateGraph(graph, soloKeys, false)
+    expect(graph.tracks.get('keys')!.sends.get('ret')!.gain.gain.value).toBe(1)
+    expect(graph.tracks.get('vox')!.sends.get('ret')!.gain.gain.value).toBe(0)
+    expect(graph.tracks.get('vox')!.fader.gain.value).toBe(0)
+    expect(graph.tracks.get('ret')!.fader.gain.value).toBe(0.7)
+    const flipped = { ...project, tracks: project.tracks.map(track => track.id === 'keys' ? { ...track, sends: [{ returnId: 'ret', level: 0.5, pre: true }] } : track) }
+    expect(trackLayoutKey(flipped.tracks)).not.toBe(trackLayoutKey(project.tracks))
+  })
+
+  it('wires nothing for sends to missing returns and includes return tails after their senders', () => {
+    const { context } = contextSpy()
+    const lonely = { ...createTrack('audio'), id: 'lonely', sends: [{ returnId: 'gone', level: 1 }] }
+    const graph = createGraph(context, { ...createEmptyProject(), tracks: [lonely] })
+    expect(graph.tracks.get('lonely')!.sends.size).toBe(0)
+    const project = sendProject([createDevice('reverb', { amount: 1, dry: 0 })])
+    const reverbTail = EFFECT_MODULES.reverb.tailSeconds({ amount: 1, dry: 0, size: 0.35, tone: 9000, type: 0, predelay: 0, lowcut: 20 }, 120)
+    // keys (release 0.3 s + 0.2) feeds the return, so the reverb rings on after the keys' own release.
+    expect(renderTailSeconds(project)).toBeCloseTo(reverbTail + 0.5, 6)
+  })
+})
+
+describe('tempo map × sends × controllers in the Web Audio graph', () => {
+  const ramp = [{ beat: 0, bpm: 90, curve: 'ramp' as const }, { beat: 8, bpm: 150, curve: 'step' as const }]
+
+  it('schedules pitch-bend events across a ramp at tempo-map times, through the track controller bus', () => {
+    const { context, nodes } = contextSpy()
+    const spyContext = context as unknown as Record<string, unknown>
+    spyContext.createConstantSource = () => { const value = Object.assign(new AudioNodeSpy(), { offset: new Parameter() }); nodes.push(value); return value }
+    spyContext.createOscillator = () => { const value = new AudioNodeSpy(); nodes.push(value); return value }
+    const region = clip({ lengthBeats: 8, bendRange: 12, notes: [], controllers: { pitchBend: [{ beat: 2, value: 4096 }, { beat: 6, value: -8192 }] } })
+    const project: Project = { ...projectFor(region), bpm: 90, tempoMap: ramp, lengthBeats: 12 }
+    const graph = createGraph(context, project)
+    const offset = (graph.tracks.get('track')!.controls!.bend as unknown as { offset: Parameter }).offset
+    scheduleRange(graph, project, new Map(), 0, 12, 5, 12, false, false, library)
+    const tempo = tempoMapOf(project)
+    const calls = offset.setTargetAtTime.mock.calls.map(([value, time]) => [value, time])
+    // Bend 4096 at beat 2 (+600 cents with a 12-semitone range), full down at beat 6, the reset at the region end (beat 8).
+    expect(calls.map(([value]) => value)).toEqual([600, -1200, 0])
+    calls.forEach(([, time], index) => expect(time).toBeCloseTo(5 + tempo.secondsAt([2, 6, 8][index]), 9))
+    // Not constant-tempo times: the accelerating ramp brings beat 6 earlier than at 90 BPM.
+    expect(calls[1][1]).toBeLessThan(5 + 6 * 60 / 90 - 0.1)
+    disposeGraph(graph)
+  })
+
+  it('feeds sends into a return whose synced effects follow the tempo passed for the playhead', () => {
+    const { context } = contextSpy()
+    const device = createDevice('eq')
+    const ret = { ...createTrack('return'), id: 'ret', devices: [device] }
+    const keys = { ...createTrack('instrument'), id: 'keys', sends: [{ returnId: 'ret', level: 0.5 }] }
+    const project: Project = { ...createEmptyProject(), bpm: 90, tempoMap: ramp, tracks: [ret, keys] }
+    const graph = createGraph(context, project)
+    const update = vi.fn()
+    graph.tracks.get('ret')!.devices.set(device.id, { update } as never)
+    const send = graph.tracks.get('keys')!.sends.get('ret')!.gain as unknown as AudioNodeSpy
+    expect(send.connections.has(graph.tracks.get('ret')!.input)).toBe(true)
+    const playhead = tempoMapOf(project).bpmAt(6)
+    updateGraph(graph, project, false, 6) // the beat: bpm defaults to the tempo there
+    expect(update).toHaveBeenLastCalledWith(device.params, playhead, 0, false)
+    expect(playhead).toBeGreaterThan(90)
+    disposeGraph(graph)
   })
 })

@@ -585,6 +585,101 @@ void trackInputRoutes(){
   }
 }
 
+
+// Send/return (docs/SENDS_RETURNS.md). Stereo audio regions keep the pan law out of the arithmetic.
+class CountingPlugin final:public PluginProcessor {
+ public:
+  void process(float*,std::uint32_t frames,std::span<const PluginEvent>,const ProcessContext&)noexcept override{processed+=frames;}
+  std::uint32_t latencyFrames()const noexcept override{return 0;}
+  void requestReset()noexcept override{}
+  std::uint64_t processed=0;
+};
+TrackTimeline regionTrack(const char*id,const char*assetId,float gain,std::int64_t frames){TrackTimeline t;t.id=id;t.gain=gain;t.audio={{1,assetId,0,frames,0,48000,0,frames,1.f,0,0}};return t;}
+TrackTimeline returnTrack(const char*id){TrackTimeline t;t.id=id;t.isReturn=true;return t;}
+void sendReturns(){
+  const std::int64_t length=4000;
+  AssetStore assets{{"dc",asset("dc",48000,std::vector<float>(static_cast<std::size_t>(length)*2,.1f),2)}};
+  {
+    // Exact send gains: post-fader follows the fader, pre-fader does not; both stop when the sender is muted.
+    // Two senders feed one return whose counting insert must see every frame exactly once.
+    for(const std::uint32_t threads:{0u,2u})for(const bool pre:{false,true})for(const bool muted:{false,true}) {
+      auto p=project(48000,length);auto a=regionTrack("a","dc",.5f,length),b=regionTrack("b","dc",.2f,length);
+      a.sends={{"ret",.25f,pre}};b.sends={{"ret",.5f,false}};a.audible=!muted;
+      auto ret=returnTrack("ret");BuiltinInsert count;count.id="count";count.type="vst3";count.plugin.instanceId="count";ret.inserts.push_back(count);
+      p.tracks={ret,a,b}; // The return is listed first: the engine must still render its senders before it.
+      auto counter=std::make_shared<CountingPlugin>();
+      RenderEngine e(48000,64);e.setProcessing(processing(threads));e.submit(e.prepare(p,assets,{},[&](const PluginSpec&,double,unsigned){return counter;}));check(e.play(),"Play failed");
+      const auto out=render(e,1000,64);
+      check(counter->processed==1000,"A return chain was not processed exactly once per frame");
+      const double dryA=muted?0:.05,dryB=.02,sendA=muted?0:pre?.1*.25:.05*.25,sendB=.02*.5;
+      for(std::size_t f=400;f<1000;++f)for(int c=0;c<2;++c)near(out[2*f+c],dryA+dryB+sendA+sendB,1e-6,"Send gain, pre/post tap or mute gating is not exact");
+      check(e.snapshot().latencyFrames==0&&e.snapshot().senderLatencyFrames==0,"A send without plug-in latency reported delay");
+    }
+    // A fader at 0 silences only the post-fader send.
+    auto p=project(48000,length);auto a=regionTrack("a","dc",0.f,length);a.sends={{"pre",1.f,true},{"post",1.f,false}};p.tracks={a,returnTrack("pre"),returnTrack("post")};
+    RenderEngine e(48000,64);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");const auto out=render(e,800,64);
+    for(std::size_t f=400;f<800;++f)near(out[2*f],.1,1e-6,"Pre-fader send followed the fader");
+  }
+  {
+    // PDC across a latent return path: senders align to the largest sender latency (5), the return adds 13,
+    // and every dry path waits 13 more, so the master hears each impulse once, dry and wet together, at +18.
+    std::vector<float> impulses(static_cast<std::size_t>(length)*2,0.f);impulses[500*2]=impulses[500*2+1]=.4f;
+    std::vector<float> later(static_cast<std::size_t>(length)*2,0.f);later[700*2]=later[700*2+1]=.4f;
+    AssetStore pulses{{"i",asset("i",48000,impulses,2)},{"j",asset("j",48000,later,2)}};
+    auto p=project(48000,length);
+    auto a=regionTrack("a","i",.5f,length),b=regionTrack("b","j",.5f,length);
+    BuiltinInsert five;five.id="five";five.type="vst3";five.plugin.instanceId="five";b.inserts.push_back(five);
+    a.sends={{"ret",1.f,false}};b.sends={{"ret",.5f,true}};
+    auto ret=returnTrack("ret");BuiltinInsert slow;slow.id="slow";slow.type="vst3";slow.plugin.instanceId="slow";ret.inserts.push_back(slow);ret.gain=.5f;
+    TrackTimeline rec;rec.id="rec";TrackRoute route;route.kind=TrackRoute::Kind::Track;route.trackId="a";route.tap=TrackRoute::Tap::PostFader;rec.route=route;rec.audible=false;
+    TrackTimeline loop=returnTrack("bad");loop.sends={{"bad",1.f,false}};
+    p.tracks={rec,ret,a,b};
+    const PluginResolver plugins=[](const PluginSpec&spec,double,unsigned){return std::make_shared<TestPlugin>(spec.instanceId=="slow"?13:5);};
+    std::vector<float> reference;
+    for(const std::uint32_t threads:{0u,2u}) {
+      RenderEngine e(48000,64,8192);e.setProcessing(processing(threads));auto prepared=e.prepare(p,pulses,{},plugins);
+      check(prepared->latencyFrames()==18&&prepared->senderLatencyFrames()==5,"Return-path latency was not added after the sender alignment");
+      e.submit(std::move(prepared));
+      const std::array<std::uint32_t,1>takes{0};const auto plan=e.planRecording(takes);
+      check(plan.size()==1&&plan[0].routed&&plan[0].routeDelayed&&!plan[0].routeMasterFeed,"A post-fader route was not planned as a delayed track tap");
+      check(e.startRecording(plan)&&e.play(),"Recording or play failed");
+      const auto out=render(e,1200,64);
+      check(e.snapshot().latencyFrames==18&&e.snapshot().senderLatencyFrames==5,"Snapshot latencies differ from the prepared graph");
+      for(std::size_t f=0;f<1200;++f){
+        // a: dry .2 + return (.2 * 1 send) * .5 return fader = .3 at 518. b (pre send): dry .2 + (.4 * .5) * .5 = .3 at 718.
+        const double expected=f==518||f==718?.3:0;
+        near(out[2*f],expected,1e-6,"Dry and return paths are not aligned by delay compensation");
+      }
+      if(threads)bitIdentical(reference,out,"Worker threads changed a send/return mix");else reference=out;
+      const auto stop=e.stopRecording();(void)render(e,64,64);check(e.snapshot().lastAppliedCommand>=stop,"Stop was not acknowledged");
+      std::vector<float> frames(1400*2);const auto got=e.drainRecording(frames.data(),1400);check(got>=1200,"Routed take lost frames");
+      for(std::size_t f=0;f<1200;++f)near(frames[2*f],f==505?.2:0,1e-6,"A post-fader route tap did not carry exactly the sender alignment");
+    }
+    auto invalid=p;invalid.tracks.push_back(loop);
+    rejects([&]{RenderEngine e(48000,64);(void)e.prepare(invalid,pulses,{},plugins);},"A return track with sends (a possible loop) was accepted");
+    // A route naming a return records silence (returns are never route sources), and a send to a missing return is silent.
+    auto orphan=project(48000,length);auto s=regionTrack("s","dc",.5f,length);s.sends={{"gone",1.f,false}};
+    TrackTimeline r2;r2.id="r2";TrackRoute toReturn;toReturn.kind=TrackRoute::Kind::Track;toReturn.trackId="ret";toReturn.tap=TrackRoute::Tap::PostFader;r2.route=toReturn;
+    orphan.tracks={s,returnTrack("ret"),r2};
+    RenderEngine e(48000,64,4096);e.submit(e.prepare(orphan,assets));const std::array<std::uint32_t,1>monitored{2};check(e.setMonitoring(monitored)&&e.play(),"Play failed");
+    const auto out=render(e,800,64);for(std::size_t f=400;f<800;++f)near(out[2*f],.05,1e-6,"A missing return or a route to a return produced sound");
+  }
+  {
+    // Tails: a 100% wet echo return keeps sounding after its sender stopped, and an offline export lasts that long.
+    auto p=project(48000,48000);p.bpm=120;
+    std::vector<float> burst(9600*2,.1f);AssetStore shortAssets{{"b",asset("b",48000,burst,2)}};
+    auto a=regionTrack("a","b",1.f,4800);a.sends={{"echo",1.f,false}};
+    auto echo=returnTrack("echo");echo.inserts.push_back({"delay","delay",true,{{"amount",1},{"dry",0},{"time",.25},{"feedback",0},{"sync",1},{"tone",16000}},{}});
+    p.tracks={a,echo};
+    RenderEngine e(48000,256);auto prepared=e.prepare(p,shortAssets);check(prepared->tailSeconds()>.85+.125,"The return's echo tail was not part of the render tail");
+    e.submit(std::move(prepared));check(e.play(),"Play failed");const auto out=render(e,16000,256);
+    double during=0,after=0;for(std::size_t f=1000;f<4000;++f)during=std::max(during,double(std::abs(out[2*f])));
+    for(std::size_t f=7000;f<10000;++f)after=std::max(after,double(std::abs(out[2*f])));
+    near(during,.1,1e-4,"A 100% wet return passed its dry input (dry = 0)");
+    check(after>.02,"The return's echo did not continue after the sender stopped");
+  }
+}
+
 PluginResolver testInstruments(){return [](const PluginSpec&,double,std::uint32_t){auto p=std::make_shared<TestPlugin>();p->instrument=true;return p;};}
 std::unique_ptr<RenderEngine> busyEngine(const Busy&b,const ProcessingOptions&options,bool offline=false,std::uint32_t maxBlock=512){
   auto e=std::make_unique<RenderEngine>(48000,maxBlock);if(offline)e->setOffline(true);e->setProcessing(options);
@@ -841,6 +936,34 @@ void checkClicks(const std::vector<float>&out,const std::vector<std::pair<std::s
   std::vector<float>want(out.size()/2,0.f);for(const auto&[frame,value]:expected)want[frame]=value;
   for(std::size_t i=0;i<want.size();++i){near(out[2*i],want[i],1e-7,message);near(out[2*i+1],want[i],1e-7,message);}
 }
+// Tempo map (docs/TEMPO_MAP.md): garak/tempo.hpp must place beats on the same frames as src/core/tempoMap.ts.
+// The expected frames below were computed by the TypeScript map (closed-form ramp integrals, not hashes).
+void tempoMapFrames(){
+  const TempoMap map(100,{{0,100,true},{6,180,false},{10,75,true},{18.5,75.5,true},{30,210,false}});
+  const std::vector<std::pair<double,double>> ts{{0.5,13940.320566},{3,72678.003110},{6,126961.919619},{7.25,146961.919619},{10,190961.919619},{14,344321.481189},{18.5,516278.731125},{22,622951.886684},{30,768181.540361},{33.3,813438.683218}};
+  for(const auto&[beat,frame]:ts){near(map.frameAt(beat,48000),frame,1,"Native tempo map disagrees with the TypeScript frames by more than one sample");near(map.frameAt(beat,48000),frame,1e-3,"Native tempo map drifted from the TypeScript closed form");}
+  for(double beat=-2;beat<40;beat+=.37)near(map.beatAtFrame(map.frameAt(beat,48000),48000),beat,1e-9,"Tempo map beat/frame round trip failed");
+  // An independent midpoint integral of 60/bpm(b) agrees with the closed form inside a ramp.
+  double seconds=0;const int steps=200000;for(int i=0;i<steps;++i)seconds+=60/map.bpmAt(10+8.5*(i+.5)/steps)*8.5/steps;
+  near(map.secondsAt(18.5)-map.secondsAt(10),seconds,1e-8,"Ramp integral is not exact");
+  near(map.bpmAt(3),140,1e-12,"Ramp tempo is not linear in beats");check(map.bpmAt(8)==180&&map.bpmAt(40)==210,"Step tempo is wrong");
+  check(TempoMap(120,{}).constant()&&!map.constant(),"Constant tempo detection failed");
+  // Ramp 90→150 over two bars, then 150: clicks land on the TypeScript frames through the accelerando.
+  auto p=project(48000,48000*6);p.bpm=90;p.tempoMap={{0,90,true},{8,150,false}};
+  const std::vector<std::size_t> frames{0,30736,59194,85687,110470,133750,155699,176460,196157,215357,234557,253757,272957};
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");
+   std::vector<std::pair<std::size_t,float>> want;for(std::size_t i=0;i<frames.size();++i)want.push_back({frames[i],i%4?.25f:1.f});
+   checkClicks(render(e,272958,97),want,"Metronome clicks do not follow the tempo ramp");}
+  // A count-in from inside the ramp clicks evenly at the tempo where the transport starts (120 BPM at beat 4).
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),false,1),"Metronome command failed");check(e.seek(110470),"Seek failed");check(e.play(96000),"Count-in play failed");
+   checkClicks(render(e,96000,89),{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f}},"Count-in inside a tempo map does not use the local tempo");}
+  // Tempo-synced effects follow setTempo: a 1-beat delay at 120 BPM echoes 24000 frames late, at 60 BPM 48000.
+  auto delay=dsp::makeEffect("delay",{{"sync",1},{"time",1},{"amount",1},{"feedback",0},{"tone",16000},{"lowcut",20}},48000,120);
+  delay->setTempo(60);std::vector<float>settle(48000*2,0.f);delay->process(settle.data(),48000);
+  std::vector<float>pulse(60000*2,0.f);pulse[0]=pulse[1]=1;delay->process(pulse.data(),60000);
+  std::size_t peak=1;for(std::size_t i=1;i<60000;++i)if(std::abs(pulse[2*i])>std::abs(pulse[2*peak]))peak=i;
+  check(peak>=47990&&peak<=48010,"Synced delay did not follow the new tempo");
+}
 void metronomeClicks(){
   // 120 BPM 4/4: a quarter is 24000 frames; the bar downbeat is accented.
   auto p=project(48000,48000*8);
@@ -951,13 +1074,265 @@ void sustainPedal(){
   checkSame(render(restrike,6000),render(reference,6000),0,"Pedal survived a panic");
   // Invalid controller numbers and values are rejected on the control thread.
   rejects([&]{(void)pedal.controlChange(0,64,128);},"Out-of-range controller value accepted");
-  rejects([&]{(void)pedal.controlChange(0,128,0);},"Out-of-range controller number accepted");
+  rejects([&]{(void)pedal.controlChange(0,132,0);},"Out-of-range controller number accepted");
+  rejects([&]{(void)pedal.controlChange(0,129,8192);},"Out-of-range pitch bend accepted");
+  rejects([&]{(void)pedal.controlChange(0,131,49);},"Out-of-range bend range accepted");
+}
+
+// MIDI controllers (docs/MIDI_CONTROLLERS.md). Measured pitch and level, never golden PCM.
+// Positive-going zero crossings of the left channel with sub-sample interpolation, in [first, last) frames.
+std::vector<double> crossings(const std::vector<float>&d,std::size_t first,std::size_t last){
+  std::vector<double>result;
+  for(std::size_t i=first+1;i<last;++i){const double a=d[(i-1)*2],b=d[i*2];if(a<0&&b>=0)result.push_back(static_cast<double>(i-1)+a/(a-b));}
+  return result;
+}
+double frequencyOf(const std::vector<float>&d,std::size_t first,std::size_t last,double rate=48000){
+  const auto x=crossings(d,first,last);check(x.size()>2,"No periodic signal to measure");
+  return static_cast<double>(x.size()-1)*rate/(x.back()-x.front());
+}
+// Spread (cents) between the fastest and slowest single cycle.
+double cycleSpreadCents(const std::vector<float>&d,std::size_t first,std::size_t last){
+  const auto x=crossings(d,first,last);check(x.size()>3,"No periodic signal to measure");
+  double shortest=1e9,longest=0;for(std::size_t i=1;i<x.size();++i){shortest=std::min(shortest,x[i]-x[i-1]);longest=std::max(longest,x[i]-x[i-1]);}
+  return 1200*std::log2(longest/shortest);
+}
+double rmsOf(const std::vector<float>&d,std::size_t first,std::size_t last){double sum=0;for(std::size_t i=first*2;i<last*2;++i)sum+=static_cast<double>(d[i])*d[i];return std::sqrt(sum/static_cast<double>((last-first)*2));}
+void midiControllers(){
+  auto base=project(48000,96000);TrackTimeline t;t.id="keys";t.source.kind=TrackSource::Kind::BuiltinSynth;t.source.instrumentId="keys";
+  t.source.params={{"bell",0},{"sustain",1},{"release",.05}};t.notes={{1,0,96000,96000,69,.5f}};base.tracks.push_back(t);
+  const auto play=[&](std::vector<ControlEvent> controls,std::uint32_t frames=24000){auto p=base;p.tracks[0].controls=std::move(controls);RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");return render(e,frames,256);};
+  const auto plain=play({});const double f0=frequencyOf(plain,2400,24000);near(f0,440,.5,"Unbent built-in pitch");
+  near(frequencyOf(play({{0,129,8191}}),2400,24000)/f0,std::pow(2,2/12.0),.001,"Full pitch bend up is not two semitones");
+  near(frequencyOf(play({{0,129,-8192}}),2400,24000)/f0,std::pow(2,-2/12.0),.001,"Full pitch bend down is not two semitones");
+  near(frequencyOf(play({{0,131,12},{0,129,8191}}),2400,24000)/f0,2,.002,"The bend range controller was ignored");
+  near(frequencyOf(play({{0,129,4096}}),2400,24000)/f0,std::pow(2,1/12.0),.001,"Half pitch bend is not one semitone");
+  // Neutral values change nothing: centred bend, CC7 at 100, a program change, and an unknown controller.
+  checkSame(play({{0,129,0},{0,7,100},{0,130,5},{0,74,30}}),plain,0,"Neutral controllers changed the built-in sound");
+  // Expression and volume scale the level by (value/127)^2 and (value/100)^2.
+  near(rmsOf(play({{0,11,90}}),2400,24000)/rmsOf(plain,2400,24000),(90.0/127)*(90.0/127),.002,"CC11 expression level");
+  near(rmsOf(play({{0,7,50}}),2400,24000)/rmsOf(plain,2400,24000),.25,.002,"CC7 volume level");
+  // The mod wheel (and channel pressure) add a ~±50 cent vibrato; without it every cycle has the same length.
+  check(cycleSpreadCents(plain,2400,24000)<2,"Unmodulated pitch wobbles");
+  const double vibrato=cycleSpreadCents(play({{0,1,127}}),2400,24000);check(vibrato>80&&vibrato<110,"Mod wheel vibrato depth");
+  const double pressure=cycleSpreadCents(play({{0,128,64}}),2400,24000);check(pressure>35&&pressure<60,"Channel pressure vibrato depth");
+  // A bend is smoothed: the cycle right after the event is between the old and the new pitch.
+  {const auto glide=play({{12000,129,8191}});const auto x=crossings(glide,12000,12400);check(x.size()>2,"No cycles after the bend");
+   const double first=48000/(x[1]-x[0]);check(first>f0*1.01&&first<f0*std::pow(2,2/12.0)*.995,"Pitch bend jumped instead of gliding");
+   near(frequencyOf(glide,16800,24000)/f0,std::pow(2,2/12.0),.001,"Pitch bend did not settle");}
+  // Drum kits ignore bend and vibrato.
+  {auto kit=project(48000,24000);TrackTimeline d;d.id="kit";d.source.kind=TrackSource::Kind::BuiltinSynth;d.source.instrumentId="drums";d.source.isKit=true;d.notes={{1,0,2000,24000,50,.8f}};kit.tracks.push_back(d);
+   auto bentKit=kit;bentKit.tracks[0].controls={{0,129,8191},{0,1,127}};RenderEngine a,b;a.submit(a.prepare(kit,{}));b.submit(b.prepare(bentKit,{}));check(a.play()&&b.play(),"Play failed");
+   checkSame(render(a,6000),render(b,6000),0,"A drum kit followed pitch bend or vibrato");}
+  // Seek chases the bend in effect (no glide); stop and replay from the start returns it to centre.
+  {auto p=base;p.tracks[0].controls={{1000,129,8191}};RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");(void)render(e,2048,256);
+   check(e.seek(48000),"Seek failed");const auto chased=render(e,4800,256);near(frequencyOf(chased,0,4800)/f0,std::pow(2,2/12.0),.001,"Seek did not chase the pitch bend");
+   check(e.stop(),"Stop failed");(void)render(e,256,256);check(e.play(),"Replay failed");const auto again=render(e,960,256);near(frequencyOf(again,0,960)/f0,1,.003,"Replay kept the chased bend before its event");}
+  // Live pitch bend (and the raw 0xE0 message) bends a live note; a panic re-centres it.
+  {auto live=project();TrackTimeline l=t;l.notes.clear();live.tracks.push_back(l);RenderEngine e;e.submit(e.prepare(live,{}));
+   check(e.noteOn(0,69,.5f,7),"Live note failed");check(e.controlChange(0,129,8191),"Live bend failed");
+   near(frequencyOf(render(e,12000),2400,12000)/f0,std::pow(2,2/12.0),.001,"Live pitch bend");
+   const std::array<LiveMidiEvent,1> centre{LiveMidiEvent{0,0,0xE0,0,64,-1}};check(e.queueLiveMidi(centre)==1,"Live MIDI queue");
+   near(frequencyOf(render(e,12000),2400,12000)/f0,1,.001,"Live 0xE0 centre");
+   check(e.controlChange(0,1,127)&&e.allNotesOff(0),"Live mod/panic failed");(void)render(e,6000);
+   check(e.noteOn(0,69,.5f,8),"Live note after panic failed");check(cycleSpreadCents(render(e,12000),2400,12000)<2,"Panic did not reset the mod wheel");}
+  // VST3: every controller as a normalized, sample-accurate event; the bend range stays in the host.
+  {auto plugin=std::make_shared<TestPlugin>();plugin->instrument=true;auto p=project(48000,1000);
+   TrackTimeline v;v.id="vst";v.source.kind=TrackSource::Kind::Vst3;v.source.plugin.instanceId="synth";v.source.plugin.isInstrument=true;
+   v.notes={{1,10,500,1000,60,.7f}};v.controls={{5,129,8191},{6,128,64},{7,1,127},{8,131,12},{9,7,90},{9,129,-8192}};p.tracks.push_back(v);
+   RenderEngine e(48000,64);e.submit(e.prepare(p,{}, {},[&](const PluginSpec&,double,unsigned){return plugin;}));check(e.play(),"Play failed");(void)render(e,64,64);
+   std::vector<PluginEvent> got;for(std::size_t i=0;i<plugin->eventCount;++i)if(plugin->received[i].type==PluginEvent::Type::Controller)got.push_back(plugin->received[i]);
+   const auto is=[](const PluginEvent&x,std::uint32_t id,std::uint32_t offset,float value){return x.parameterId==id&&x.offset==offset&&std::abs(x.value-value)<1e-6f;};
+   const float centre=8192.f/16383;
+   check(got.size()==8,"VST3 controller event count (chase + timeline, no bend range)");
+   check(is(got[0],1,0,0)&&is(got[1],128,0,0)&&is(got[2],129,0,centre),"Play did not reset mod wheel, pressure and bend");
+   check(is(got[3],129,5,1)&&is(got[4],128,6,64.f/127)&&is(got[5],1,7,1),"VST3 controller sample offsets or values");
+   check(is(got[6],7,9,90.f/127)&&is(got[7],129,9,0),"Same-sample controllers lost their order");
+   plugin->eventCount=0;check(e.seek(8),"Seek failed");(void)render(e,16,16);got.clear();
+   for(std::size_t i=0;i<plugin->eventCount;++i)if(plugin->received[i].type==PluginEvent::Type::Controller&&plugin->received[i].offset==0)got.push_back(plugin->received[i]);
+   check(got.size()==3&&is(got[0],1,0,1)&&is(got[1],128,0,64.f/127)&&is(got[2],129,0,1),"Seek did not chase the VST3 controllers");
+   plugin->eventCount=0;check(e.stop(),"Stop failed");(void)render(e,16,16);got.clear();
+   for(std::size_t i=0;i<plugin->eventCount;++i)if(plugin->received[i].type==PluginEvent::Type::Controller)got.push_back(plugin->received[i]);
+   check(got.size()==3&&is(got[0],1,0,0)&&is(got[1],128,0,0)&&is(got[2],129,0,centre),"Stop did not reset the VST3 controllers (volume must keep its value)");
+   plugin->eventCount=0;const std::array<LiveMidiEvent,3> live{LiveMidiEvent{0,0,0xE0,0x7F,0x7F,-1},LiveMidiEvent{0,0,0xD0,100,0,-1},LiveMidiEvent{0,0,0xC0,3,0,-1}};
+   check(e.queueLiveMidi(live)==3&&e.controlChange(0,131,12),"Live controllers failed");(void)render(e,16,16);
+   check(plugin->eventCount==3&&is(plugin->received[0],129,0,1)&&is(plugin->received[1],128,0,100.f/127)&&is(plugin->received[2],130,0,3.f/127)&&plugin->received[0].audition,"Live bend/pressure/program to VST3");}
+  // Timeline validation.
+  {auto p=base;p.tracks[0].controls={{0,129,9000}};RenderEngine e;rejects([&]{(void)e.prepare(p,{});},"Out-of-range timeline pitch bend accepted");
+   p.tracks[0].controls={{10,1,5},{5,1,6}};rejects([&]{(void)e.prepare(p,{});},"Unsorted timeline controls accepted");}
+}
+void tempoSendsControllers(){
+  // A synced delay on a return follows the tempo map: 120 BPM, then a step to 60 BPM at beat 4 (frame 96000).
+  // An impulse at beat 6 (frame 192000) sent pre-fader (dry path silent) echoes one 60 BPM beat later, not 24000.
+  {const std::int64_t length=252000;std::vector<float> pcm(static_cast<std::size_t>(length)*2,0.f);pcm[192000*2]=pcm[192000*2+1]=1;
+   AssetStore assets{{"imp",asset("imp",48000,pcm,2)}};
+   for(const std::uint32_t threads:{0u,2u}) {
+     auto p=project(48000,length);p.bpm=120;p.tempoMap={{0,120,false},{4,60,false}};
+     auto a=regionTrack("a","imp",0.f,length);a.sends={{"ret",1.f,true}};
+     auto ret=returnTrack("ret");BuiltinInsert delay;delay.id="echo";delay.type="delay";
+     delay.params={{"sync",1},{"time",1},{"amount",1},{"dry",0},{"feedback",0},{"tone",16000},{"lowcut",20},{"mode",0},{"age",0}};ret.inserts.push_back(delay);
+     p.tracks={ret,a};
+     RenderEngine e(48000,256);e.setProcessing(processing(threads));e.submit(e.prepare(p,assets));check(e.play(),"Play failed");
+     const auto out=render(e,static_cast<std::uint32_t>(length),256);
+     std::size_t peak=192000;for(std::size_t i=192000;i<static_cast<std::size_t>(length);++i)if(std::abs(out[2*i])>std::abs(out[2*peak]))peak=i;
+     check(std::abs(out[2*peak])>.05f,"The return's synced delay produced no echo");
+     check(peak>=240000-10&&peak<=240000+10,"A return's synced delay did not follow the tempo map (echo not one 60 BPM beat late)");
+     for(std::size_t i=192000;i<230000;++i)check(std::abs(out[2*i])<1e-4f,"The return leaked dry signal or echoed at the beat-0 tempo");
+   }}
+  // Controller events are frames already placed through the tempo map: a bend at beat 6 of a 90→150 ramp
+  // (frame 155699, the TypeScript/garak tempo.hpp list) bends exactly there, not at 6 beats of 90 BPM (192000).
+  {const TempoMap map(90,{{0,90,true},{8,150,false}});near(map.frameAt(6,48000),155699,1,"Ramp frame for beat 6");
+   auto p=project(48000,240000);p.bpm=90;p.tempoMap={{0,90,true},{8,150,false}};
+   TrackTimeline t;t.id="keys";t.source.kind=TrackSource::Kind::BuiltinSynth;t.source.instrumentId="keys";
+   t.source.params={{"bell",0},{"sustain",1},{"release",.05}};t.notes={{1,0,240000,240000,69,.5f}};t.controls={{155699,129,8191}};p.tracks.push_back(t);
+   RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");const auto out=render(e,200000,256);
+   const double f0=frequencyOf(out,130000,155000);near(f0,440,.5,"Pitch before the bend under a tempo map");
+   near(frequencyOf(out,160500,190000)/f0,std::pow(2,2/12.0),.001,"Pitch bend under a tempo ramp did not land on its tempo-map frame");}
+}
+
+
+// Track automation (docs/AUTOMATION.md): curve math, per-sample fader ramps, chunked effect parameters,
+// VST3 parameter points at sample offsets, and an allocation-free callback throughout (render() checks).
+AutomationLane lane(AutomationLane::Target target,double minimum,double maximum,std::vector<AutomationPoint> points){AutomationLane l;l.target=target;l.minimum=minimum;l.maximum=maximum;l.points=std::move(points);return l;}
+void trackAutomation(){
+  near(automationShape(.5,0),.5,1e-12,"Straight automation segment");
+  near(automationShape(.5,1),(std::exp(3.0)-1)/(std::exp(6.0)-1),1e-12,"Curved automation segment matches automation.ts");
+  near(automationShape(.5,-1),(std::exp(-3.0)-1)/(std::exp(-6.0)-1),1e-12,"Negative curvature");
+  auto ramp=lane(AutomationLane::Target::Volume,0,2,{{1000,0,0},{2000,1,0},{2000,.25,0},{3000,.25,0}});
+  std::size_t hint=0;
+  near(evaluateAutomation(ramp,0,hint),0,0,"Before the first point the first value holds");
+  near(evaluateAutomation(ramp,1500,hint),.5,1e-12,"Linear interpolation");
+  near(evaluateAutomation(ramp,2000,hint),.25,0,"Two points on one frame jump");
+  near(evaluateAutomation(ramp,1250,hint),.25,1e-12,"A backwards evaluation re-searches from the hint");
+  near(evaluateAutomation(ramp,9000,hint),.25,0,"After the last point the last value holds");
+  near(automationValue(ramp,.5),1,1e-12,"Linear mapping");
+  auto cutoff=lane(AutomationLane::Target::Insert,20,20000,{});cutoff.logarithmic=true;near(automationValue(cutoff,.5),std::sqrt(20.0*20000),1e-9,"Logarithmic mapping");
+  auto mode=lane(AutomationLane::Target::Insert,0,2,{{0,0,0},{100,1,0}});mode.options={0,1,2};std::size_t h=0;
+  near(evaluateAutomation(mode,99,h),0,0,"Discrete lanes hold until the next point");near(automationValue(mode,.5),1,0,"Option mapping");
+
+  // Volume ramp on a DC region: the fader follows the lane at every sample (no smoothing lag).
+  auto p=project(48000,8000);TrackTimeline t;t.id="audio";t.audio.push_back({1,"dc",0,8000,0,48000,0,8000,1.f,0,0});
+  t.automation.push_back(lane(AutomationLane::Target::Volume,0,2,{{2000,0,0},{6000,.5,0}}));p.tracks.push_back(t);
+  AssetStore assets{{"dc",asset("dc",48000,std::vector<float>(8000,.1f))}};
+  const double center=1/std::sqrt(2.0);
+  {RenderEngine e(48000,256);e.setOffline(true);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");const auto out=render(e,8000,97);
+    near(out[1000*2],0,1e-9,"Volume lane before its first point");
+    for(std::int64_t f:{2500,4000,5999})near(out[f*2],.1*(f-2000)/4000.0*center,2e-6,"Volume ramp applied at its exact frame");
+    near(out[7000*2],.1*center,2e-6,"Volume holds after the last point");}
+
+  // A mute lane fades over 12 ms instead of clicking.
+  auto m=p;m.tracks[0].automation={lane(AutomationLane::Target::Mute,0,1,{{0,0,0},{4000,1,0}})};m.tracks[0].automation[0].options={0,1};
+  {RenderEngine e(48000,256);e.setOffline(true);e.submit(e.prepare(m,assets));check(e.play(),"Play failed");const auto out=render(e,8000,128);
+    near(out[3000*2],.1*center,1e-6,"Unmuted before the mute point");check(std::abs(out[4010*2])>1e-3,"Mute ramps instead of clicking");near(out[6000*2],0,1e-6,"Muted after the mute point");}
+
+  // Built-in insert (stereo, so no mono pan law): utility gain jumps -36 dB -> 0 dB at frame 4800; the chunked update lands within 32 frames.
+  auto u=project(48000,9600);TrackTimeline g;g.id="gain";g.audio.push_back({1,"dc",0,9600,0,48000,0,9600,1.f,0,0});
+  BuiltinInsert utility;utility.id="utility";utility.type="utility";utility.params["gain"]=-36;g.inserts.push_back(utility);
+  g.automation.push_back(lane(AutomationLane::Target::Insert,-36,24,{{4800,0,0},{4800,.6,0}}));g.automation[0].insertId="utility";g.automation[0].param="gain";u.tracks.push_back(g);
+  AssetStore longAssets{{"dc",asset("dc",48000,std::vector<float>(9600,.1f))}};
+  {RenderEngine e(48000,512);e.setOffline(true);e.submit(e.prepare(u,longAssets));check(e.play(),"Play failed");const auto out=render(e,9600,512);
+    near(out[4700*2],.1*dsp::dbToGain(-36),1e-6,"Automated insert parameter before its point");
+    check(std::abs(out[(4800+31)*2])>std::abs(out[4700*2])*1.05,"Insert automation did not start within one 32-frame chunk");
+    near(out[9000*2],.1,1e-4,"Insert automation reached its value (12 ms glide)");}
+
+  // A falling filter cutoff darkens noise.
+  auto f=project(48000,48000);TrackTimeline n;n.id="noise";std::vector<float>noise(48000);std::uint32_t seed=1;for(auto&value:noise){seed=seed*1664525u+1013904223u;value=static_cast<float>(seed)/4294967295.f*.2f-.1f;}
+  n.audio.push_back({1,"noise",0,48000,0,48000,0,48000,1.f,0,0});BuiltinInsert filter;filter.id="filter";filter.type="filter";n.inserts.push_back(filter);
+  auto sweep=lane(AutomationLane::Target::Insert,20,20000,{{0,1,0},{48000,0,0}});sweep.logarithmic=true;sweep.insertId="filter";sweep.param="cutoff";n.automation.push_back(sweep);f.tracks.push_back(n);
+  AssetStore noiseAssets{{"noise",asset("noise",48000,std::move(noise))}};
+  {RenderEngine e(48000,1024);e.setOffline(true);e.submit(e.prepare(f,noiseAssets));check(e.play(),"Play failed");const auto out=render(e,48000,1024);
+    double early=0,late=0;for(std::size_t i=1000;i<6000;++i)early+=out[i*2]*out[i*2];for(std::size_t i=42000;i<47000;++i)late+=out[i*2]*out[i*2];
+    check(early>late*20,"A falling cutoff lane did not darken the noise");}
+
+  // VST3 insert: parameter points arrive with sample offsets on a fixed grid; flat stretches are not repeated.
+  auto v=project(48000,4096);TrackTimeline fx;fx.id="fx";fx.audio.push_back({1,"dc",0,4096,0,48000,0,4096,1.f,0,0});
+  BuiltinInsert vst;vst.id="vstfx";vst.type="vst3";vst.plugin.instanceId="effect";fx.inserts.push_back(vst);
+  auto param=lane(AutomationLane::Target::Insert,0,1,{{0,0,0},{512,1,0}});param.insertId="vstfx";param.param="7";fx.automation.push_back(param);v.tracks.push_back(fx);
+  auto plugin=std::make_shared<TestPlugin>();
+  {RenderEngine e(48000,512);e.submit(e.prepare(v,assets,{},[&](const PluginSpec&,double,unsigned){return plugin;}));check(e.play(),"Play failed");(void)render(e,1024,512);
+    check(plugin->eventCount>=8,"VST3 parameter points missing");
+    for(std::size_t i=0;i<plugin->eventCount;++i){const auto&ev=plugin->received[i];check(ev.type==PluginEvent::Type::Parameter&&ev.parameterId==7,"Unexpected VST3 automation event");check(ev.offset%64==0&&ev.offset<512,"VST3 parameter point off its grid");}
+    near(plugin->received[1].value,64.f/512,1e-6,"VST3 parameter value at its sample offset");
+    const auto flat=plugin->eventCount;(void)render(e,1024,512);check(plugin->eventCount==flat,"Flat VST3 automation repeated its value");}
+
+  // Built-in instrument parameter: level is read at each note onset.
+  auto s=project(48000,48000);auto keys=synthTrack();keys.source.params["level"]=1;keys.notes={{1,100,1000,48000,60,.8f},{2,30000,31000,48000,60,.8f}};
+  auto level=lane(AutomationLane::Target::Instrument,0,2,{{0,.5,0},{20000,.5,0},{20000,0,0}});level.param="level";keys.automation.push_back(level);s.tracks.push_back(keys);
+  {RenderEngine e(48000,256);e.setOffline(true);e.submit(e.prepare(s,{}));check(e.play(),"Play failed");const auto out=render(e,48000,256);
+    double first=0,second=0;for(std::size_t i=100;i<2000;++i)first+=out[i*2]*out[i*2];for(std::size_t i=30000;i<32000;++i)second+=out[i*2]*out[i*2];
+    check(first>1e-4&&second<first*1e-6,"Instrument level automation not applied at note onsets");}
+
+  // Every built-in effect re-reads every parameter in place without allocating (EffectControl + automate()).
+  for(const char* type:{"eq","filter","compressor","drive","reverb","delay","chorus","phaser","flanger","tremolo","limiter","gate","tape","bitcrusher","utility","guitar-rig"}){
+    Parameters params;if(std::string_view(type)=="guitar-rig"){params["rackSlot0"]=3;params["rackSlot1"]=2+16;params["rackSlot2"]=10;}
+    auto effect=dsp::makeEffect(type,params,48000,120);dsp::EffectControl control(type,params);
+    std::vector<int> indices;for(const char* id:{"cutoff","b1Freq","threshold","drive","amount","rate","depth","mix","gain","bits","ampGain","driveGain_2","reverbMix","tone","feedback","width"}){const int i=control.index(id);if(i>=0)indices.push_back(i);}
+    check(!indices.empty(),"Effect has no automatable parameter");
+    std::vector<float> buffer(512,.1f);
+    allocations=deallocations=0;watchAllocations=true;
+    for(int step=0;step<8;++step){for(int i:indices)control.set(i,control.get(i)*(step%2?1.1:.9));control.apply(*effect);effect->process(buffer.data(),256);}
+    watchAllocations=false;check(!allocations&&!deallocations,"Effect automation allocated");
+    for(auto value:buffer)check(std::isfinite(value),"Effect automation produced non-finite audio");
+  }
+
+  // Invalid lanes are rejected on the control thread.
+  auto bad=p;bad.tracks[0].automation[0].points={{100,0,0},{50,1,0}};bool rejected=false;try{RenderEngine e(48000,256);(void)e.prepare(bad,assets);}catch(const std::exception&){rejected=true;}check(rejected,"Unsorted automation points were accepted");
+}
+
+// Cross-feature (docs/AUTOMATION.md): lanes placed through a tempo map, send-level lanes and return-track lanes.
+// Frames come from the native TempoMap exactly as timeline.ts places them (a lane segment crossing a tempo point
+// is split there, so the frame-linear segments stay beat-linear).
+void automationTempoSendsReturns(){
+  const std::uint32_t rate=48000;
+  const TempoMap tempo(240,{{0,240,false},{2,120,false}}); // Beat 2 at 0.5 s, beat 3 at 1 s, beat 4 at 1.5 s.
+  const auto at=[&](double beat){return tempo.frameAt(beat,rate);};
+  const auto frame=[&](double beat){return static_cast<std::size_t>(std::llround(at(beat)));};
+  const auto length=static_cast<std::int64_t>(std::llround(at(4)));
+  AssetStore assets{{"dc",asset("dc",rate,std::vector<float>(static_cast<std::size_t>(length)*2,.1f),2)}};
+  const std::vector<AutomationPoint> rise{{at(1),0,0},{at(2),.25,0},{at(3),.5,0}}; // Normalized 0 -> .5 = gain 0 -> 1 over beats 1..3.
+  for(const std::uint32_t threads:{0u,2u}) {
+    // Volume lane under the tempo step, then a jump to silence at beat 3.5.
+    auto p=project(rate,length);p.bpm=240;p.tempoMap=tempo.points();
+    auto a=regionTrack("a","dc",1.f,length);
+    auto volume=lane(AutomationLane::Target::Volume,0,2,rise);volume.points.push_back({at(3.5),.5,0});volume.points.push_back({at(3.5),0,0});
+    a.automation={volume};p.tracks={a};
+    RenderEngine e(rate,64);e.setProcessing(processing(threads));e.setOffline(true);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");
+    const auto out=render(e,static_cast<std::size_t>(length),64);
+    near(out[2*frame(.5)],0,1e-9,"Volume lane before its first beat");
+    near(out[2*frame(1.5)],.1*.25,1e-6,"Volume lane at beat 1.5 under the fast tempo");
+    near(out[2*frame(2.5)],.1*.75,1e-6,"Volume lane at beat 2.5 after the tempo step");
+    near(out[2*(frame(3.5)-1)],.1,1e-6,"Volume lane holds until its jump");
+    near(out[2*(frame(3.5)+1)],0,1e-9,"Volume jump lands on the tempo-mapped frame");
+  }
+  for(const std::uint32_t threads:{0u,2u}) {
+    // A silent sender (fader 0) feeds a return only through its automated pre-fader send level; the return's
+    // own volume lane halves it from beat 3.5.
+    auto p=project(rate,length);p.bpm=240;p.tempoMap=tempo.points();
+    auto a=regionTrack("a","dc",0.f,length);a.sends={{"ret",0.f,true}};
+    auto send=lane(AutomationLane::Target::Send,0,2,rise);send.returnId="ret";a.automation={send};
+    auto ret=returnTrack("ret");ret.automation={lane(AutomationLane::Target::Volume,0,2,{{0,.5,0},{at(3.5),.5,0},{at(3.5),.25,0}})};
+    p.tracks={ret,a};
+    RenderEngine e(rate,64);e.setProcessing(processing(threads));e.setOffline(true);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");
+    const auto out=render(e,static_cast<std::size_t>(length),64);
+    near(out[2*frame(.5)],0,1e-9,"Send lane before its first beat");
+    near(out[2*frame(1.5)],.1*.25,1e-6,"Send level lane at beat 1.5");
+    near(out[2*frame(2.5)+1],.1*.75,1e-6,"Send level lane at beat 2.5 after the tempo step");
+    near(out[2*frame(3.25)],.1,1e-6,"Send level holds after its last point");
+    near(out[2*frame(3.75)],.05,1e-6,"Return-track volume lane");
+  }
+  // Editing only a lane is a structural change: render-ahead audio made with the old lane is not reused.
+  {
+    auto p=project(rate,length);auto a=regionTrack("a","dc",1.f,length);a.automation={lane(AutomationLane::Target::Volume,0,2,{{0,.5,0}})};p.tracks={a};
+    RenderEngine e(rate,64);e.setProcessing(processing(2,RenderAhead::High,64));e.submit(e.prepare(p,assets));check(e.play(),"Play failed");(void)render(e,640,64);
+    p.tracks[0].automation[0].points[0].value=.25;e.submit(e.prepare(p,assets));
+    const auto out=render(e,640,64);
+    near(out[2*600],.05,1e-6,"An edited lane did not replace the playing one");
+  }
 }
 
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation},{"automation x tempo map x sends x returns",automationTempoSendsReturns}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { formatParam, fromNormalized, toNormalized, type ParamDef } from '../core/devices'
 import { useHistoryGesture } from '../core/historyGesture'
+import { useAutomationControl } from './automationUi'
+import './Automation.css'
 
 const SWEEP=135
 const point=(c:number,r:number,deg:number)=>{const a=deg*Math.PI/180;return [c+r*Math.sin(a),c-r*Math.cos(a)]}
@@ -14,6 +16,8 @@ export function Knob({def,value,onChange,color='var(--accent)',size=38,imageSrc,
   const cancelDrag=useRef<(()=>void)|null>(null)
   const wheelTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined)
   const gesture=useHistoryGesture(`${ariaLabel??def.label} 조절`)
+  // Inside a device card the knob knows its automation target: ring state and right-click menu (docs/AUTOMATION.md).
+  const automation=useAutomationControl(def.id)
   const gestureRef=useRef(gesture);gestureRef.current=gesture
   const set=(next:number)=>{const l=latest.current;const v=Math.min(l.def.max,Math.max(l.def.min,next));if(v!==l.value){l.value=v;l.onChange(v)}}
   const step=(direction:number,amount:number)=>{const {def:d,value:v}=latest.current;if(d.options){const index=Math.max(0,d.options.findIndex(o=>o.value===v));set(d.options[Math.max(0,Math.min(d.options.length-1,index+direction))].value)}else set(fromNormalized(d,toNormalized(d,v)+direction*amount))}
@@ -79,7 +83,8 @@ export function Knob({def,value,onChange,color='var(--accent)',size=38,imageSrc,
   const origin=def.min<0&&def.max>0&&!def.options?angleOf(toNormalized(def,0)):-SWEEP
   const [px,py]=point(c,r-3,angle),[ix,iy]=point(c,6,angle)
   const text=formatValue?formatValue(value):formatParam(def,value)
-  return <div ref={ref} className={`knob${imageSrc?' knob--image':''}`} role="slider" tabIndex={0} aria-label={ariaLabel??def.label} aria-valuemin={def.min} aria-valuemax={def.max} aria-valuenow={value} aria-valuetext={text} title={`${ariaLabel??def.label} · ${text} (Shift: 미세 조절 · 더블 클릭·Alt/⌥클릭: 기본값)`} onPointerDown={startDrag} onKeyDown={keyDown} onKeyUp={keyUp} onBlur={()=>{if(!cancelDrag.current)gestureRef.current.end()}} onDoubleClick={()=>{gestureRef.current.begin();set(def.default);gestureRef.current.end()}} style={{'--knob-size':`${size}px`} as React.CSSProperties}>
+  const autoNote=automation.state==='active'?' · 오토메이션 재생 중':automation.state==='override'?' · 오토메이션 꺼짐(수동 값)':automation.state==='writing'?' · 오토메이션 기록 중':''
+  return <div ref={ref} className={`knob${imageSrc?' knob--image':''}${automation.state?` knob--auto knob--auto-${automation.state}`:''}`} role="slider" tabIndex={0} aria-label={ariaLabel??def.label} aria-valuemin={def.min} aria-valuemax={def.max} aria-valuenow={value} aria-valuetext={text} title={`${ariaLabel??def.label} · ${text}${autoNote} (Shift: 미세 조절 · 더블 클릭·Alt/⌥클릭: 기본값${automation.onContextMenu?' · 우클릭: 오토메이션':''})`} onContextMenu={automation.onContextMenu} onPointerDown={startDrag} onKeyDown={keyDown} onKeyUp={keyUp} onBlur={()=>{if(!cancelDrag.current)gestureRef.current.end()}} onDoubleClick={()=>{gestureRef.current.begin();set(def.default);gestureRef.current.end()}} style={{'--knob-size':`${size}px`} as React.CSSProperties}>
     {imageSrc?<span className="knob-image-visual" style={{width:size,height:size}} aria-hidden="true">
       <span className="knob-image-shadow"/>
       <svg className="knob-image-scale" viewBox="0 0 64 64"><path d={arc(32,29,-SWEEP,SWEEP)} className="knob-image-track"/>{Array.from({length:11},(_,i)=>{const a=angleOf(i/10),[x1,y1]=point(32,27,a),[x2,y2]=point(32,31,a);return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}/>})}</svg>

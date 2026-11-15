@@ -457,6 +457,41 @@ void concurrentPatchPreparationAndRender() {
   check(!bad.load() && status.invalidSamples == 0,"Concurrent WAVE updates violated callback allocation/lifetime safety");
   check(energy(render(engine,1024)) > .001,"Concurrent WAVE patch preparation lost its held note");
 }
+
+// MIDI controllers (docs/MIDI_CONTROLLERS.md): pitch bend uses the patch's bend range; CC11 scales the output;
+// the mod wheel drives Macro 1; seek chases the bend. Behavioural comparisons, never golden PCM.
+double crossingRate(const std::vector<float>& data, std::size_t first, std::size_t last) {
+  std::size_t crossings = 0;
+  for (std::size_t i = first + 1; i < last; ++i) if (data[(i - 1) * 2] < 0 && data[i * 2] >= 0) ++crossings;
+  return static_cast<double>(crossings) / static_cast<double>(last - first);
+}
+void midiControllers() {
+  auto p = project(); p.tracks[0].notes = {{0,0,40000,p.lengthFrames,57,.8f}};
+  const double bend = std::pow(2.0, dryPatch().params[wave::parameterIndex(ParameterId::PitchBendRange)] / 12);
+  auto bent = p; bent.tracks[0].controls = {{0,129,8191}};
+  auto louder = p; louder.tracks[0].controls = {{0,11,90},{0,7,100}};
+  auto modded = p; modded.tracks[0].controls = {{0,1,127},{0,64,127}};
+  RenderEngine plain(48000,512), bending(48000,512), expressive(48000,512), modulated(48000,512);
+  plain.submit(plain.prepare(p,{})); bending.submit(bending.prepare(bent,{}));
+  expressive.submit(expressive.prepare(louder,{})); modulated.submit(modulated.prepare(modded,{}));
+  for (auto* e : {&plain,&bending,&expressive,&modulated}) check(e->play(),"WAVE controller playback failed");
+  const auto a = render(plain,24000), b = render(bending,24000), c = render(expressive,24000), d = render(modulated,24000);
+  check(std::abs(crossingRate(b,4800,24000) / crossingRate(a,4800,24000) - bend) < .01, "WAVE pitch bend did not follow the patch bend range");
+  const double gain = std::sqrt(energy(c,4800,24000) / energy(a,4800,24000));
+  check(std::abs(gain - (90.0 / 127) * (90.0 / 127)) < .01, "WAVE CC11 expression did not scale the output");
+  // Macro 1 is unrouted in this patch: the mod wheel (and a stray CC64, which the host owns) leave the sound alone.
+  same(a,d,2e-6,"An unrouted mod wheel or a stray CC64 changed WAVE output");
+  // A seek chases the bend.
+  check(bending.seek(4800),"WAVE seek failed");
+  const auto chased = render(bending,9600);
+  check(std::abs(crossingRate(chased,480,9600) / crossingRate(a,4800,14000) - bend) < .015, "WAVE seek did not chase the pitch bend");
+  // Live pitch bend reaches a live note; a panic re-centres it.
+  RenderEngine live(48000,512), reference(48000,512);
+  for (auto* e : {&live,&reference}) { e->submit(e->prepare(project(),{})); check(e->noteOn(0,57,.8f,3),"WAVE live note failed"); }
+  check(live.controlChange(0,129,8191),"WAVE live bend failed");
+  const auto la = render(live,24000), lr = render(reference,24000);
+  check(std::abs(crossingRate(la,4800,24000) / crossingRate(lr,4800,24000) - bend) < .01, "WAVE live pitch bend failed");
+}
 } // namespace
 
 int main() {
@@ -472,7 +507,8 @@ int main() {
     {"WAVE offline endpoint note-off and release tail",offlineEndpointAndCompleteRelease},
     {"WAVE deterministic stop, seek and fresh engine",deterministicStopSeekAndFreshEngine},
     {"WAVE patch format and sample-rate validation",malformedPatchAndRateValidation},
-    {"WAVE concurrent preparation and callback isolation",concurrentPatchPreparationAndRender}
+    {"WAVE concurrent preparation and callback isolation",concurrentPatchPreparationAndRender},
+    {"WAVE MIDI controllers: bend, expression, chase and live",midiControllers}
   };
   unsigned failed = 0;
   for (const auto& [name,test] : tests) {

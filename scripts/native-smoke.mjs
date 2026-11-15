@@ -407,6 +407,25 @@ try {
       await request('engine.close')
     })
   })
+  await checked('send/return tracks reach the engine and their wet tail is exported (docs/SENDS_RETURNS.md)', async () => {
+    await withTestHost(async request => {
+      await request('engine.configure', { backend: 'test', sampleRate: 48000, bufferFrames: 128, inputChannels: 0 })
+      const echo = { ...track('echo', { kind: 'audio' }), return: true, gain: 1,
+        inserts: [{ id: 'echo-fx', type: 'delay', enabled: true, params: { amount: 1, dry: 0, time: 0.25, feedback: 0, sync: 1 } }] }
+      const render = async (sends, name) => {
+        const file = path.join(temporary, name)
+        await request('render.wav', { timeline: project([{ ...track('keys'), sends }, echo]), path: file })
+        return wav(await readFile(file))
+      }
+      const dry = await render([], 'return-dry.wav'), wet = await render([{ returnId: 'echo', gain: 1, pre: false }], 'return-wet.wav')
+      // Keys play frames 1000..6000 (+ release); the eighth-note echo (6000 frames) rings after the dry note ended.
+      const window = ({ samples, channels }, from, to) => samples.slice(from * channels, to * channels)
+      assert.ok(rms(window(wet, 13000, 15000)) > 10 * rms(window(dry, 13000, 15000)) + 1e-4, 'the return echo is missing after the source stopped')
+      assert.ok(Math.abs(rms(window(wet, 1500, 5000)) - rms(window(dry, 1500, 5000))) < 1e-3, 'a 100% wet return leaked its dry input')
+      await assert.rejects(request('project.set', { timeline: project([track('keys'), { ...echo, sends: [{ returnId: 'echo', gain: 1 }] }]) }), /return track/i)
+      await request('engine.close')
+    })
+  })
   await checked('unknown and missing processors fail before silent substitution', async () => {
     const p = project()
     p.tracks[0].source.instrumentId = 'not-an-instrument'

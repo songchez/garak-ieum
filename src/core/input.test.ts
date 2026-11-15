@@ -217,7 +217,7 @@ describe('Logic-style key commands', () => {
     [k('Backspace', 'Backspace', MOD), 'deleteTrack', ['timeline', 'workspace']], [k('Delete', 'Delete', CMD), 'deleteTrack', ['timeline', 'workspace']],
     [L('N', { ...MOD, ...ALT }), 'newTracksDialog', ['timeline', 'workspace']], [L('N', { ...CMD, ...ALT }), 'newTracksDialog', ['timeline', 'workspace']],
     [k('N', 'KeyN', SHIFT), 'renameClip', ['timeline']], [k('Enter', 'Enter', SHIFT), 'renameTrack', ['timeline', 'workspace']],
-    [L('C'), 'cycle', ['timeline', 'piano', 'workspace']], [L('R'), 'record', ['timeline', 'piano', 'workspace']], [L('K'), 'metronome', ['timeline', 'piano', 'workspace']],
+    [L('C'), 'cycle', ['timeline', 'piano', 'workspace']], [L('R'), 'record', ['timeline', 'piano', 'workspace']], [L('K'), 'metronome', ['timeline', 'piano', 'workspace']], [k('K', 'KeyK', SHIFT), 'countIn', ['timeline', 'piano', 'workspace']],
     [k('Enter', 'Enter'), 'home', ['timeline', 'workspace']], [k('Home', 'Home'), 'home', ['timeline', 'piano', 'workspace']],
     [k(',', 'Comma'), 'rewind', ['timeline', 'workspace']], [k('.', 'Period'), 'forward', ['timeline', 'workspace']],
     [k('ArrowRight', 'ArrowRight', MOD), 'zoomIn', ['timeline', 'piano', 'workspace']], [k('ArrowLeft', 'ArrowLeft', CMD), 'zoomOut', ['timeline', 'piano', 'workspace']], [L('Z'), 'zoomToFit', ['timeline', 'piano', 'workspace']],
@@ -254,7 +254,7 @@ describe('Logic-style key commands', () => {
       for (const platform of ['mac', 'windows'] as const) {
         for (const scope of ['text', 'control', 'dialog', 'outside'] as ShortcutScope[]) expect(resolveProjectShortcut(event, scope, false, platform)).toBeNull()
         for (const scope of ['timeline', 'piano', 'workspace'] as ShortcutScope[]) {
-          expect(resolveProjectShortcut({ ...event, shiftKey: true }, scope, false, platform)).toBe(event.code === 'KeyR' ? 'captureMidi' : null) // ⇧R: Logic Capture Recording
+          expect(resolveProjectShortcut({ ...event, shiftKey: true }, scope, false, platform)).toBe(event.code === 'KeyR' ? 'captureMidi' : event.code === 'KeyK' ? 'countIn' : null) // ⇧R: Logic Capture Recording, ⇧K: count-in
           // S/Z carry ⌥⌘ track chords and H has Ctrl+Alt+H outside macOS; every other plain key stays silent with Ctrl+Alt.
           const chord = resolveProjectShortcut({ ...event, ctrlKey: true, altKey: true }, scope, false, platform)
           expect(chord === null || !plainCommands.has(chord), `${event.code} with Ctrl+Alt`).toBe(true)

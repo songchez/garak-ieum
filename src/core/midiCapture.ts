@@ -1,6 +1,8 @@
 import { parseMidi } from './midiInput'
+import { beatAfterSeconds, type Tempo } from './tempoMap'
 import { SUSTAIN_CONTROLLER, isPedalDown } from './sustain'
-import { MIN_RECORDED_NOTE, type RecordedNote } from './midiRecording'
+import { MIN_RECORDED_NOTE, type RecordedController, type RecordedNote } from './midiRecording'
+import { AFTERTOUCH_NUMBER, PITCH_BEND_NUMBER, PROGRAM_NUMBER } from './controllers'
 import type { StampedMidi } from '../audio/liveMidi'
 
 /**
@@ -38,7 +40,13 @@ export class MidiCaptureBuffer {
   snapshot(): readonly CaptureEvent[] { return this.events }
 }
 
-export interface CaptureTrack { notes: RecordedNote[]; startBeat: number; endBeat: number; playing: boolean; /** CC64 down spans in beats. */ sustain: [number, number][] }
+export interface CaptureTrack {
+  notes: RecordedNote[]; startBeat: number; endBeat: number; playing: boolean
+  /** CC64 down spans in beats. */
+  sustain: [number, number][]
+  /** Pitch bend, other CCs, aftertouch and program changes of the phrase (values before it land on its first beat). */
+  controllers: RecordedController[]
+}
 
 /**
  * The last performance: the events after the last silence of `gapMs` with no held note. When it was played over a
@@ -47,7 +55,7 @@ export interface CaptureTrack { notes: RecordedNote[]; startBeat: number; endBea
  */
 export function capturePerformance(
   events: readonly CaptureEvent[],
-  options: { bpm: number; playheadBeat: number; gapMs?: number; accepts?: (source: string, channel: number) => boolean },
+  options: { bpm: Tempo; playheadBeat: number; gapMs?: number; accepts?: (source: string, channel: number) => boolean },
 ): CaptureTrack | null {
   const accepts = options.accepts ?? (() => true)
   const gap = options.gapMs ?? CAPTURE_GAP_MS
@@ -76,9 +84,9 @@ export function capturePerformance(
   }
   const phrase = relevant.slice(first)
   const playing = phrase.every(event => event.beat !== null)
-  const beatsPerMs = options.bpm / 60_000
   const origin = phrase[0].time
-  const beatOf = (event: CaptureEvent) => playing ? event.beat! : options.playheadBeat + (event.time - origin) * beatsPerMs
+  // A stopped transport has no beats: times follow the tempo map from the playhead.
+  const beatOf = (event: CaptureEvent) => playing ? event.beat! : beatAfterSeconds(options.bpm, options.playheadBeat, (event.time - origin) / 1000)
   const open = new Map<string, { start: number; velocity: number }>()
   const notes: RecordedNote[] = []
   let lastBeat = beatOf(phrase[phrase.length - 1])
@@ -109,6 +117,15 @@ export function capturePerformance(
     else if (!isPedalDown(message.value) && downAt !== null) { if (beat > downAt) sustain.push([downAt, beat]); downAt = null }
   }
   if (downAt !== null && endBeat > downAt) sustain.push([downAt, endBeat])
-  return { notes, startBeat, endBeat, playing, sustain: sustain.filter(([from, to]) => to > startBeat && from < endBeat) }
+  const controllers: RecordedController[] = []
+  for (const event of events) {
+    const message = parseMidi(event.data)
+    if (event.time > lastTime || !(message.type === 'pitchBend' || message.type === 'aftertouch' || message.type === 'program' || (message.type === 'controller' && message.controller !== SUSTAIN_CONTROLLER))) continue
+    if (!accepts(event.source, message.channel)) continue
+    const beat = Math.min(endBeat, Math.max(startBeat, event.time < origin ? startBeat : beatOf(event)))
+    const controller = message.type === 'pitchBend' ? PITCH_BEND_NUMBER : message.type === 'aftertouch' ? AFTERTOUCH_NUMBER : message.type === 'program' ? PROGRAM_NUMBER : message.controller
+    controllers.push({ beat, channel: message.channel, controller, value: message.type === 'program' ? message.program : message.value })
+  }
+  return { notes, startBeat, endBeat, playing, sustain: sustain.filter(([from, to]) => to > startBeat && from < endBeat), controllers }
 }
 

@@ -33,6 +33,8 @@ export const DELAY_DEF: EffectDef = {
     { id: 'sync', label: '템포', min: 0, max: 1, default: 1, unit: 'x', options: [{ value: 0, label: 'ms' }, { value: 1, label: '박자' }] },
     { id: 'ms', label: '시간', min: 1, max: 2000, default: 375, unit: 'ms', scale: 'log' },
     { id: 'mode', label: '모드', min: 0, max: 1, default: 0, unit: 'x', options: [{ value: 0, label: '스테레오' }, { value: 1, label: '핑퐁' }] },
+    // Dry (original) level: 1 keeps the insert behaviour; 0 = 100% wet for return tracks (docs/SENDS_RETURNS.md).
+    { id: 'dry', label: '원음', min: 0, max: 1, default: 1, unit: 'pct' },
   ],
 }
 

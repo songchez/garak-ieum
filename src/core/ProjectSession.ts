@@ -1,10 +1,15 @@
 import { EFFECT_DEFS } from './devices'
+import { pruneProjectAutomation } from './automation'
 import { sigimsaeVariant } from './sigimsaeVariants'
 import { deviceFromVariant } from './sigimsaeDevices'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { copyTrackInput, createDevice, createTrack, fitProjectLength, validateProject } from './project'
+import { detachDeletedSends } from './sends'
 import type { Clip, Device, EffectType, MidiClip, Project, Track } from './types'
 import { sameTrackInput } from './trackInputs'
+import { clipGainMaxDb, clipSeconds, fadeCurveOf, gainToDb, withClipGainDb, withFade, withFadeCurve } from './clipEnvelope'
+import { normalizeSustain } from './sustain'
+import { setClipTranspose, transposeSettings } from '../devices/region-pitch/state'
 import {
   COMMAND_LIMITS, DomainError, parseCommandRequest, parseHistoryRequest, requestFingerprint,
   type CommandRequest, type CommandResponse, type CommandResult, type CommandSummary,
@@ -161,7 +166,8 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
           result.targetId = track.id; result.trackId = track.id
           if (command.type === 'track.delete') {
             changes.deleted.tracks += 1; changes.deleted.clips += track.clips.length; changes.deleted.notes += noteCount(track.clips); changes.deleted.devices += track.devices.length
-            next = { ...next, tracks: next.tracks.filter(item => item.id !== track.id) }
+            // Sends that fed a deleted return disappear with it (docs/SENDS_RETURNS.md).
+            next = detachDeletedSends({ ...next, tracks: next.tracks.filter(item => item.id !== track.id) })
             result.before = { name: track.name, clipCount: track.clips.length, deviceCount: track.devices.length }
           } else if (command.type === 'track.rename') {
             result.before = { name: track.name }; result.after = { name: command.name }
@@ -246,6 +252,47 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
           }
           break
         }
+        case 'clip.setGain': case 'clip.setFades': case 'clip.setPitch': case 'clip.setSustain': {
+          const { track, clip } = knownClip(next, command.clipId)
+          result.targetId = clip.id; result.trackId = track.id
+          if (command.type === 'clip.setGain') {
+            const max = clipGainMaxDb(clip)
+            if (command.gainDb > max + 1e-9) throw new DomainError('INVALID_ARGUMENT', `이 리전의 게인은 최대 +${max.toFixed(2)} dB입니다.`, { clipId: clip.id, gainDb: command.gainDb, maxGainDb: max })
+            const edited = withClipGainDb(clip, command.gainDb)
+            result.before = { gainDb: clip.gain > 0 ? gainToDb(clip.gain) : null, gain: clip.gain }; result.after = { gainDb: edited.gain > 0 ? gainToDb(edited.gain) : null, gain: edited.gain }
+            if (edited !== clip) replaceClip(track, edited)
+          } else if (command.type === 'clip.setSustain') {
+            if (clip.kind !== 'midi') throw new DomainError('TYPE_MISMATCH', '서스테인 페달은 MIDI 리전에만 있습니다.', { clipId: clip.id })
+            const events = normalizeSustain(command.events)
+            const before = clip.sustain ?? []
+            result.before = { sustainEventCount: before.length }; result.after = { sustainEventCount: events.length }
+            if (JSON.stringify(before) !== JSON.stringify(events)) {
+              const { sustain: _old, ...rest } = clip
+              replaceClip(track, events.length ? { ...rest, sustain: events } : rest)
+            }
+          } else {
+            if (clip.kind !== 'audio') throw new DomainError('TYPE_MISMATCH', command.type === 'clip.setFades' ? '페이드는 오디오 리전에만 있습니다.' : '리전 피치는 오디오 리전에만 적용합니다. MIDI 리전은 clip.setTranspose를 사용하세요.', { clipId: clip.id })
+            if (command.type === 'clip.setFades') {
+              const region = clipSeconds(clip, next.bpm)
+              let edited = clip
+              if (command.fadeInCurve) edited = withFadeCurve(edited, 'in', command.fadeInCurve)
+              if (command.fadeOutCurve) edited = withFadeCurve(edited, 'out', command.fadeOutCurve)
+              if (command.fadeInSeconds !== undefined) edited = withFade(edited, 'in', command.fadeInSeconds, region)
+              if (command.fadeOutSeconds !== undefined) edited = withFade(edited, 'out', command.fadeOutSeconds, region)
+              const fades = (c: typeof clip) => ({ fadeInSeconds: c.fadeIn, fadeOutSeconds: c.fadeOut, fadeInCurve: fadeCurveOf(c.fadeInCurve), fadeOutCurve: fadeCurveOf(c.fadeOutCurve) })
+              result.before = fades(clip); result.after = fades(edited)
+              if (edited !== clip) replaceClip(track, edited)
+            } else {
+              if (clip.pitch) throw new DomainError('TYPE_MISMATCH', '음표 피치 편집을 적용한 리전에는 리전 피치를 쓸 수 없습니다. 피치 편집을 초기화한 뒤 다시 시도해 주세요.', { clipId: clip.id })
+              const prev = transposeSettings(clip)
+              const edited = setClipTranspose(clip, { semitones: command.semitones, cents: command.cents ?? 0, mode: command.mode ?? prev.mode, formant: command.formant ?? (command.mode === 'varispeed' ? false : prev.formant) })
+              const after = transposeSettings(edited)
+              result.before = { ...prev, lengthBeats: clip.lengthBeats }; result.after = { ...after, lengthBeats: edited.lengthBeats }
+              if (edited !== clip) { checkEnd(edited.startBeat, edited.lengthBeats); replaceClip(track, edited); fitLength = true }
+            }
+          }
+          break
+        }
         case 'instrument.setParam': {
           const track = knownTrack(next, command.trackId)
           if (track.kind !== 'instrument') throw new DomainError('TYPE_MISMATCH', '악기 트랙이 필요합니다.', { trackId: track.id })
@@ -282,7 +329,7 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
               replaceTrack({ ...track, devices: track.devices.filter(item => item.id !== device.id) })
               result.before = { effectType: device.type }
             } else if (command.type === 'effect.setParam') {
-              if (device.type === 'vst3') throw new DomainError('UNSUPPORTED_COMMAND', 'VST3 파라미터는 데스크톱 디바이스 창에서 조절해 주세요.', { deviceId: device.id })
+              if (device.type === 'vst3') throw new DomainError('UNSUPPORTED_COMMAND', 'VST3 파라미터는 데스크톱 앱의 시김새 체인에서 플러그인 창을 열어 조절해 주세요.', { deviceId: device.id })
               checkParameter(device.type, command.paramId, command.value)
               const before = device.params[command.paramId] ?? EFFECT_DEFS[device.type].params.find(item => item.id === command.paramId)!.default
               result.before = { paramId: command.paramId, value: before }; result.after = { paramId: command.paramId, value: command.value }
@@ -317,7 +364,8 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
   }
   changes.updatedTrackIds = [...updatedTracks]; changes.updatedClipIds = [...updatedClips]; changes.updatedDeviceIds = [...updatedDevices]
   changes.projectLengthAfter = next.lengthBeats
-  return { project: next, changes, results }
+  // A removed device or changed instrument takes its automation lanes with it (docs/AUTOMATION.md).
+  return { project: pruneProjectAutomation(next), changes, results }
 }
 
 type CachedResponse = { fingerprint: string; result: CommandResponse | HistoryResponse }

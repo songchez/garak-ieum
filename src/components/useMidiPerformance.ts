@@ -8,6 +8,7 @@ import { shortcutScope } from '../core/input'
 import { SUSTAIN_CONTROLLER, isPedalDown } from '../core/sustain'
 import { recordingStartBeat } from '../core/recording'
 import { getMetronomePrefs } from '../core/metronome'
+import { tempoMapOf } from '../core/tempoMap'
 import { NativeMidiInputService, WebMidiInputService, midiDeviceDirectory, type MidiInputService, type MidiInputState } from '../audio/MidiInput'
 import type { NativeLiveMidi } from '../audio/native/nativeLiveMidi'
 
@@ -246,10 +247,10 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
     const track = current.tracks.find(item => item.id === trackId)
     if (!track) { notify('캡처할 악기 트랙을 선택하세요.'); return }
     const input = midiInputOf(track)
-    const performance = capturePerformance(capture.current.snapshot(), { bpm: current.bpm, playheadBeat: engine.getSnapshot().beat, accepts: (source, channel) => acceptsMidi(input, source, channel) })
+    const performance = capturePerformance(capture.current.snapshot(), { bpm: tempoMapOf(current), playheadBeat: engine.getSnapshot().beat, accepts: (source, channel) => acceptsMidi(input, source, channel) })
     if (!performance) { notify('캡처할 최근 연주가 없습니다. 악기 트랙에서 연주한 뒤 다시 시도하세요.'); return }
     const span = takeSpan({ startBeat: performance.startBeat, endBeat: performance.endBeat, cycle: null }, performance.notes, current.beatsPerBar)
-    const result: MidiTakeResult = { startBeat: span.start, endBeat: span.end, cycle: null, tracks: [{ trackId: track.id, notes: performance.notes, controllers: [], sustain: performance.sustain }] }
+    const result: MidiTakeResult = { startBeat: span.start, endBeat: span.end, cycle: null, tracks: [{ trackId: track.id, notes: performance.notes, controllers: performance.controllers, sustain: performance.sustain }] }
     const committed = commitMidiTake(current, result, { mode: modeRef.current, beatsPerBar: current.beatsPerBar, name: 'MIDI 캡처' })
     if (!committed.clipIds.length) { notify('캡처할 음표가 없습니다.'); return }
     capture.current.clear()

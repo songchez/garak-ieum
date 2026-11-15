@@ -1,10 +1,14 @@
 import { SAMPLED_KIT_PARAMS, SAMPLED_PIANO_PARAMS, paramValue } from '../core/devices'
 import { instrumentDef } from '../core/instruments'
-import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../core/playback'
-import type { AudioWindow, PlaybackNote } from '../core/playback'
+import { audibleTrackIds, audioWindows, isTrackEnabled, midiControllerEvents, midiEvents } from '../core/playback'
+import type { AudioWindow, PlaybackController, PlaybackNote } from '../core/playback'
+import { DEFAULT_BEND_RANGE, controllerSpec } from '../core/controllers'
+import type { ControllerKey } from '../core/types'
 import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
 import { masterFeedExcluded, reconcileTrackRoutes, routeOf } from '../core/trackRouting'
-import { clamp, secondsPerBeat } from './math'
+import { isReturnTrack, sendLayoutKey, sendsOf } from '../core/sends'
+import { clamp } from './math'
+import { tempoMapOf, type TempoMap } from '../core/tempoMap'
 import { AUDIO_CLIP_GAIN_MAX, envelopeAt, envelopeBreakpoints, fadeLengths } from '../core/clipEnvelope.js'
 import { pickZone, releaseNoiseGain, type LoadedSet, type SampleLibrary } from './samples'
 import type { DeviceGraph } from '../devices/contracts'
@@ -14,6 +18,9 @@ import { bindGuitarRigDevice, createGuitarRigMaster } from '../devices/guitar-ri
 import { bindDeviceAnalysis } from '../devices/effects/analysis'
 import { bindDynamicsMeter } from '../devices/effects/dynamicsMeter'
 import { dbToGain, randomGenerator, setParameter } from '../devices/effects/shared'
+import { automationValue, evaluateLane, isActiveLane, isDiscrete, targetDef, trackAt } from '../core/automation'
+import type { AutomationLane } from '../core/types'
+import type { ParamDef } from '../core/devices'
 
 type SourceNode = AudioBufferSourceNode | OscillatorNode
 
@@ -37,7 +44,39 @@ export interface TrackGraph {
   meter: AnalyserNode
   meterData: Float32Array<ArrayBuffer>
   chokes: ChokeMap
+  /** Aux sends by return track ID (docs/SENDS_RETURNS.md): a gain from postFx (pre) or the fader (post) into the return's input. */
+  sends: Map<string, SendGraph>
+  /** Controller response of the built-in instruments (instrument tracks only; docs/MIDI_CONTROLLERS.md). */
+  controls?: TrackControls
 }
+
+export interface SendGraph {
+  gain: GainNode
+  pre: boolean
+}
+
+/**
+ * Per-track controller nodes. Voices connect to `input` (volume CC7 x expression CC11) instead of the track input,
+ * and pitched voices connect `pitch` (a cents bus: pitch bend + mod-wheel vibrato) to their sources' detune.
+ */
+export interface TrackControls {
+  input: GainNode
+  pitch: GainNode
+  bend: ConstantSourceNode
+  vibrato: OscillatorNode
+  vibratoDepth: GainNode
+  /** Last scheduled values (MIDI units; bend in cents). */
+  state: { bend: number; mod: number; aftertouch: number; volume: number; expression: number }
+}
+
+/** Mod wheel / aftertouch at 127 = this vibrato depth in cents, at VIBRATO_HZ. */
+export const VIBRATO_CENTS = 50
+export const VIBRATO_HZ = 5.5
+const BEND_SMOOTHING = 0.004
+const GAIN_SMOOTHING = 0.005
+const defaultControlState = (): TrackControls['state'] => ({ bend: 0, mod: 0, aftertouch: 0, volume: 100, expression: 127 })
+/** CC7 100 = unity (the GM default); both follow the usual squared MIDI volume curve. */
+export const controllerGain = (volume: number, expression: number): number => (volume / 100) ** 2 * (expression / 127) ** 2
 
 export interface EngineGraph {
   context: BaseAudioContext
@@ -93,8 +132,12 @@ function tineShaperCurve(): Float32Array<ArrayBuffer> {
   return tineCurve
 }
 
-export function updateGraph(graph: EngineGraph, project: Project, smooth = true): void {
+/** Static parameters; automated targets take their value at `beat` (docs/AUTOMATION.md). While playing, the
+ * engine reschedules automation from now on afterwards, since this cancels what was scheduled. `bpm` is the tempo
+ * tempo-synced effects follow: the tempo at `beat` (the playhead) when the project has a tempo map. */
+export function updateGraph(graph: EngineGraph, project: Project, smooth = true, beat?: number, bpm = beat === undefined ? project.bpm : tempoMapOf(project).bpmAt(beat)): void {
   const now = graph.context.currentTime
+  if (beat !== undefined) project = { ...project, tracks: project.tracks.map(track => trackAt(track, beat)) }
   const audible = audibleTrackIds(project.tracks)
   setParameter(graph.masterVolume.gain, clamp(project.masterVolume, 0, 2), now, smooth)
   if (graph.resampleVolume) setParameter(graph.resampleVolume.gain, clamp(project.masterVolume, 0, 2), now, smooth)
@@ -103,26 +146,174 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true)
     if (!channel) continue
     setParameter(channel.fader.gain, audible.has(track.id) ? clamp(track.volume, 0, 2) : 0, now, smooth)
     setParameter(channel.panner.pan, clamp(track.pan, -1, 1), now, smooth)
+    for (const send of sendsOf(track)) {
+      const node = channel.sends.get(send.returnId)
+      // A post-fader send already follows the fader (mute/solo included); a pre-fader one is still silenced by mute/solo.
+      if (node) setParameter(node.gain.gain, node.pre && !audible.has(track.id) ? 0 : clamp(send.level, 0, 2), now, smooth)
+    }
     for (const device of track.devices) {
-      if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, project.bpm, now, smooth)
+      if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, bpm, now, smooth)
+    }
+  }
+}
+
+/** Automation evaluation step: one render quantum. AudioParams glide between steps with a ~1 ms time constant;
+ * worklet 시김새 apply each step at its block and smooth internally (12 ms), so steps never zipper. */
+export const AUTOMATION_STEP_FRAMES = 128
+interface CompiledLane { lane: AutomationLane; def: ParamDef; discrete: boolean }
+interface CompiledAutomation { volume?: CompiledLane; pan?: CompiledLane; mute?: CompiledLane; devices: Map<string, CompiledLane[]>; sends: Map<string, CompiledLane> }
+const compiledAutomation = new WeakMap<Track, CompiledAutomation | null>()
+function compileAutomation(track: Track): CompiledAutomation | null {
+  if (compiledAutomation.has(track)) return compiledAutomation.get(track)!
+  let result: CompiledAutomation | null = null
+  for (const lane of track.automation ?? []) {
+    if (!isActiveLane(track, lane)) continue
+    const def = targetDef(track, lane.target)!
+    const compiled = { lane, def, discrete: isDiscrete(def) }
+    const target = lane.target
+    result ??= { devices: new Map(), sends: new Map() }
+    if (target.kind === 'track') result[target.param] = compiled
+    else if (target.kind === 'send') result.sends.set(target.returnId, compiled)
+    else if (target.kind === 'device') {
+      const device = track.devices.find(item => item.id === target.deviceId)
+      if (device && device.enabled && isEffectDevice(device)) result.devices.set(device.id, [...result.devices.get(device.id) ?? [], compiled])
+    }
+    // Instrument parameters apply per note onset in scheduleRange; VST3 lanes are native-only.
+  }
+  compiledAutomation.set(track, result)
+  return result
+}
+const laneValue = (compiled: CompiledLane, beat: number) => automationValue(compiled.def, evaluateLane(compiled.lane.points, beat, compiled.discrete)!)
+/** Last values (and tempo) sent per device graph, so flat stretches send nothing. */
+const sentParams = new WeakMap<DeviceGraph, Record<string, number>>()
+const sentBpm = new WeakMap<DeviceGraph, number>()
+
+/**
+ * Schedules track volume, pan, mute, send level and 시김새 parameter automation for context times [startTime, endTime).
+ * beatAt maps a context time to the project beat heard then (loops and the tempo map included); worklet events
+ * carry the tempo at their beat so synced effects follow a tempo map. Steps sit on an absolute grid of
+ * AUTOMATION_STEP_FRAMES so consecutive calls neither overlap nor leave gaps.
+ */
+export function scheduleAutomation(graph: EngineGraph, project: Project, startTime: number, endTime: number, beatAt: (time: number) => number): void {
+  if (!(endTime > startTime)) return
+  const step = AUTOMATION_STEP_FRAMES / graph.context.sampleRate
+  const first = Math.ceil(startTime / step - 1e-9)
+  const count = Math.max(0, Math.ceil(endTime / step - 1e-9) - first)
+  if (!count) return
+  let audible: Set<string> | null = null
+  const tempo = tempoMapOf(project)
+  for (const track of project.tracks) {
+    const channel = graph.tracks.get(track.id)
+    const compiled = channel && isTrackEnabled(track) ? compileAutomation(track) : null
+    if (!channel || !compiled) continue
+    const tau = step / 3
+    if (compiled.volume || compiled.mute) {
+      audible ??= audibleTrackIds(project.tracks)
+      // Mute automation only changes this track's own audibility; solo state comes from the static flags.
+      const unmuted = compiled.mute ? audibleTrackIds(project.tracks.map(item => item.id === track.id ? { ...item, mute: false } : item)).has(track.id) : audible.has(track.id)
+      for (let i = 0; i < count; i++) {
+        const time = (first + i) * step, beat = beatAt(time)
+        const muted = compiled.mute ? laneValue(compiled.mute, beat) >= 0.5 : false
+        const gain = muted || !unmuted ? 0 : clamp(compiled.volume ? laneValue(compiled.volume, beat) : track.volume, 0, 2)
+        channel.fader.gain.setTargetAtTime(gain, time, tau)
+      }
+    }
+    if (compiled.sends.size) {
+      audible ??= audibleTrackIds(project.tracks)
+      for (const [returnId, lane] of compiled.sends) {
+        const node = channel.sends.get(returnId)
+        if (!node) continue
+        // A pre-fader send is still silenced while the track is not audible (mute/solo), as in updateGraph.
+        const silent = node.pre && !audible.has(track.id)
+        for (let i = 0; i < count; i++) {
+          const time = (first + i) * step
+          node.gain.gain.setTargetAtTime(silent ? 0 : clamp(laneValue(lane, beatAt(time)), 0, 2), time, tau)
+        }
+      }
+    }
+    if (compiled.pan) for (let i = 0; i < count; i++) {
+      const time = (first + i) * step
+      channel.panner.pan.setTargetAtTime(clamp(laneValue(compiled.pan, beatAt(time)), -1, 1), time, tau)
+    }
+    for (const [deviceId, lanes] of compiled.devices) {
+      const node = channel.devices.get(deviceId)
+      const device = track.devices.find(item => item.id === deviceId)
+      if (!node || !device || !isEffectDevice(device)) continue
+      const events: { at: number; params: Record<string, number>; bpm: number }[] = []
+      let last = sentParams.get(node)
+      let lastBpm = sentBpm.get(node)
+      for (let i = 0; i < count; i++) {
+        const at = (first + i) * step, beat = beatAt(at)
+        const params = { ...device.params }
+        const bpm = tempo.bpmAt(beat)
+        let changed = !last || lastBpm === undefined || Math.abs(bpm - lastBpm) >= 0.05 || Object.keys(params).some(key => last![key] !== params[key] && !lanes.some(lane => lane.def.id === key))
+        for (const compiled of lanes) {
+          const value = laneValue(compiled, beat)
+          params[compiled.def.id] = value
+          const previous = last?.[compiled.def.id]
+          if (previous === undefined || Math.abs(previous - value) > Math.abs(value) * 1e-7) changed = true
+        }
+        if (!changed) continue
+        events.push({ at, params, bpm })
+        last = params
+        lastBpm = bpm
+      }
+      if (!events.length) continue
+      sentParams.set(node, last!)
+      sentBpm.set(node, lastBpm!)
+      if (node.schedule) node.schedule(events, events[0].bpm)
+      else for (const event of events) node.update(event.params, event.bpm, event.at, true)
+    }
+  }
+}
+
+/** Forget what was sent (a static update or a new graph replaced the scheduled values). */
+export function resetAutomationState(graph: EngineGraph): void {
+  for (const channel of graph.tracks.values()) for (const node of channel.devices.values()) { sentParams.delete(node); sentBpm.delete(node) }
+}
+
+/**
+ * Tempo map follow (docs/TEMPO_MAP.md) without touching automation: only 시김새 without active lanes are retuned
+ * (automated ones get the tempo with each scheduled event), and faders, pans and sends keep what is scheduled.
+ */
+export function updateEffectTempo(graph: EngineGraph, project: Project, bpm: number, smooth = true): void {
+  const now = graph.context.currentTime
+  for (const track of project.tracks) {
+    const channel = graph.tracks.get(track.id)
+    if (!channel) continue
+    const automated = compileAutomation(track)?.devices
+    for (const device of track.devices) {
+      if (device.enabled && isEffectDevice(device) && !automated?.has(device.id)) channel.devices.get(device.id)?.update(device.params, bpm, now, smooth)
     }
   }
 }
 
 export function renderTailSeconds(project: Project): number {
-  let tail = 0.85
+  const tails = new Map<string, number>()
+  // Synced delays ring longest at the slowest tempo of the map.
+  const slowest = Math.min(...tempoMapOf(project).points.map(point => point.bpm))
   for (const track of project.tracks) {
     if (!isTrackEnabled(track)) continue
+    let tail = 0
     const def = instrumentDef(track.instrument)
     if (track.kind === 'instrument' && !def.isKit) {
       tail = Math.max(tail, clamp(paramValue(def.params, track.instrumentParams, 'release'), 0, 30) + 0.2)
     } else if (track.kind === 'instrument' && def.kind === 'sampled') tail = Math.max(tail, 2)
     for (const device of track.devices) {
       if (!device.enabled || !isEffectDevice(device)) continue
-      tail = Math.max(tail, EFFECT_MODULES[device.type].tailSeconds(device.params, project.bpm))
+      tail = Math.max(tail, EFFECT_MODULES[device.type].tailSeconds(device.params, slowest))
     }
+    tails.set(track.id, tail)
   }
-  return tail
+  let result = 0.85
+  for (const track of project.tracks) {
+    const own = tails.get(track.id)
+    if (own === undefined) continue
+    // A return keeps ringing after its senders' own tails: its effect tail continues from theirs.
+    const senders = isReturnTrack(track) ? project.tracks.filter(item => sendsOf(item).some(send => send.returnId === track.id)).map(item => tails.get(item.id) ?? 0) : []
+    result = Math.max(result, isReturnTrack(track) ? own + Math.max(0, ...senders) : own)
+  }
+  return result
 }
 
 function usesGuitarRigMaster(tracks: readonly Track[]): boolean {
@@ -188,11 +379,13 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
       tail.connect(postFx).connect(panner)
       panner.connect(fader).connect(trackMeter).connect(sum)
 
+      const controls = track.kind === 'instrument' ? createTrackControls(context, input, remember) : undefined
       tracks.set(track.id, {
         input, postFx, devices, panner, fader, meter: trackMeter,
-        meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(),
+        meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(), sends: new Map(), ...(controls ? { controls } : {}),
       })
     }
+    connectSends(context, project, tracks, remember)
     const { routes, resampleVolume } = connectRoutes(context, project, tracks, remember)
     const graph: EngineGraph = {
       context, tracks, routes, ...(resampleVolume ? { resampleVolume } : {}), voices: new Set(), previewInput, masterVolume, gate, meter,
@@ -204,6 +397,71 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     // A partially constructed effect must not leave a connected/dry path behind.
     releaseResources(resources, nodes)
     throw error
+  }
+}
+
+/**
+ * Wires every send into its return track's input (docs/SENDS_RETURNS.md). Returns never send and are never
+ * route sources, so these connections cannot form a cycle. Levels are set by updateGraph.
+ */
+export function connectSends(context: BaseAudioContext, project: Project, tracks: ReadonlyMap<string, TrackGraph>, remember: <T extends AudioNode>(node: T) => T): void {
+  for (const track of project.tracks) {
+    const channel = tracks.get(track.id)
+    if (!channel) continue
+    for (const send of sendsOf(track)) {
+      const target = project.tracks.find(item => item.id === send.returnId)
+      const destination = target && isReturnTrack(target) ? tracks.get(target.id) : undefined
+      if (!destination || channel.sends.has(send.returnId)) continue
+      const gain = remember(context.createGain())
+      gain.gain.value = 0
+      ;(send.pre ? channel.postFx : channel.fader).connect(gain).connect(destination.input)
+      channel.sends.set(send.returnId, { gain, pre: !!send.pre })
+    }
+  }
+}
+
+function createTrackControls(context: BaseAudioContext, destination: AudioNode, remember: <T extends AudioNode>(node: T) => T): TrackControls | undefined {
+  if (typeof context.createConstantSource !== 'function') return undefined
+  const input = remember(context.createGain())
+  input.connect(destination)
+  const pitch = remember(context.createGain())
+  const bend = remember(context.createConstantSource())
+  bend.offset.value = 0
+  bend.connect(pitch)
+  const vibrato = remember(context.createOscillator())
+  vibrato.frequency.value = VIBRATO_HZ
+  const vibratoDepth = remember(context.createGain())
+  vibratoDepth.gain.value = 0
+  vibrato.connect(vibratoDepth).connect(pitch)
+  bend.start()
+  vibrato.start()
+  return { input, pitch, bend, vibrato, vibratoDepth, state: defaultControlState() }
+}
+
+/** Applies one controller value at `time`. Other controllers (pan, other CCs, program) have no built-in meaning. */
+export function applyControl(controls: TrackControls, key: ControllerKey, value: number, time: number, range = DEFAULT_BEND_RANGE): void {
+  const state = controls.state
+  if (key === 'pitchBend') {
+    state.bend = value / 8192 * range * 100
+    controls.bend.offset.setTargetAtTime(state.bend, time, BEND_SMOOTHING)
+  } else if (key === 'cc1' || key === 'aftertouch') {
+    if (key === 'cc1') state.mod = value
+    else state.aftertouch = value
+    controls.vibratoDepth.gain.setTargetAtTime(Math.max(state.mod, state.aftertouch) / 127 * VIBRATO_CENTS, time, GAIN_SMOOTHING)
+  } else if (key === 'cc7' || key === 'cc11') {
+    if (key === 'cc7') state.volume = value
+    else state.expression = value
+    controls.input.gain.setTargetAtTime(controllerGain(state.volume, state.expression), time, GAIN_SMOOTHING)
+  }
+}
+
+/** Jumps every controller to its value in effect at `beat` (chase on start, seek and cycle wrap). */
+export function chaseControls(controls: TrackControls, events: readonly PlaybackController[], beat: number, time: number): void {
+  const last = new Map<ControllerKey, PlaybackController>()
+  for (const event of events) { if (event.beat > beat + 1e-9) break; last.set(event.key, event) }
+  for (const key of ['pitchBend', 'cc1', 'aftertouch', 'cc7', 'cc11'] as const) {
+    const event = last.get(key)
+    applyControl(controls, key, event?.value ?? controllerSpec(key).default, time, event?.range)
   }
 }
 
@@ -326,11 +584,17 @@ export function disposeGraph(graph: EngineGraph): void {
     try { voice.disconnect() } catch { /* Continue releasing the remaining graph. */ }
   }
   graph.voices.clear()
+  for (const channel of graph.tracks.values()) {
+    if (!channel.controls) continue
+    try { channel.controls.bend.stop(); channel.controls.vibrato.stop() } catch { /* Already stopped. */ }
+  }
   releaseResources(graph.resources, graph.nodes)
 }
 
-function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNode[], envelope: GainNode): Voice {
+function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNode[], envelope: GainNode, pitchBus?: AudioNode): Voice {
   let disconnected = false
+  // Pitch bend and vibrato reach every source of a pitched voice through its detune (cents).
+  if (pitchBus) for (const source of sources) pitchBus.connect(source.detune)
   let ended = 0
   let stopped = false
   const voice: Voice = {
@@ -361,6 +625,7 @@ function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNo
       if (disconnected) return
       disconnected = true
       for (const node of nodes) node.disconnect()
+      if (pitchBus) for (const source of sources) { try { pitchBus.disconnect(source.detune) } catch { /* Not connected. */ } }
       for (const source of sources) source.onended = null
       graph.voices.delete(voice)
     },
@@ -398,6 +663,7 @@ export function scheduleInstrument(
   velocity: number,
   availableSeconds: number,
   params?: Record<string, number>,
+  pitchBus?: AudioNode,
 ): Voice | undefined {
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
   // Native instruments are rendered by their host; never use the browser's keys fallback.
@@ -560,7 +826,7 @@ export function scheduleInstrument(
       }
     }
   }
-  const voice = registerVoice(graph, sources, nodes, envelope)
+  const voice = registerVoice(graph, sources, nodes, envelope, instrument === 'drums' ? undefined : pitchBus)
   for (const source of sources) { source.start(when); source.stop(end) }
   return voice
 }
@@ -578,6 +844,7 @@ export function scheduleSampled(
   availableSeconds: number,
   params?: Record<string, number>,
   chokes?: ChokeMap,
+  pitchBus?: AudioNode,
 ): Voice | undefined {
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
   const { set, startOffset } = loaded
@@ -650,7 +917,7 @@ export function scheduleSampled(
       noise.start(when + noteDuration, startOffset)
     }
   }
-  const voice = registerVoice(graph, [source], nodes, envelope)
+  const voice = registerVoice(graph, [source], nodes, envelope, isKit ? undefined : pitchBus)
   source.start(when, startOffset)
   source.stop(end)
   if (isKit && chokes && zone.choke !== undefined) {
@@ -661,11 +928,12 @@ export function scheduleSampled(
   return voice
 }
 
-/** localSeconds is the position inside the clip content; maxSeconds caps playback at the window or range end. */
-function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: AudioClip, asset: AudioAsset, localSeconds: number, when: number, maxSeconds: number, beatSeconds: number): void {
+/** localSeconds is the position inside the clip content; maxSeconds caps playback at the window or range end;
+ * regionSeconds is the occurrence's real duration through the tempo map. */
+function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: AudioClip, asset: AudioAsset, localSeconds: number, when: number, maxSeconds: number, regionSeconds: number): void {
   const context = graph.context
   const offset = Math.max(0, clip.offsetSeconds) + localSeconds
-  const clipDuration = Math.min(clip.lengthBeats * beatSeconds, asset.buffer.duration - Math.max(0, clip.offsetSeconds))
+  const clipDuration = Math.min(regionSeconds, asset.buffer.duration - Math.max(0, clip.offsetSeconds))
   const duration = Math.min(clipDuration - localSeconds, maxSeconds)
   if (duration <= 0.001 || offset >= asset.buffer.duration) return
   const source = context.createBufferSource()
@@ -704,13 +972,16 @@ export function scheduleRange(
   realtime: boolean,
   library?: SampleLibrary,
 ): void {
-  const beatSeconds = secondsPerBeat(project.bpm)
+  // Every beat→time conversion goes through the tempo map (docs/TEMPO_MAP.md).
+  const tempo = tempoMapOf(project)
+  const startSeconds = tempo.secondsAt(startBeat)
+  const seconds = (from: number, to: number): number => tempo.secondsBetween(from, to)
   const epsilon = 0.0000001
   const adjustStart = (beat: number): [number, number] => {
-    let time = startTime + (beat - startBeat) * beatSeconds
+    let time = startTime + tempo.secondsAt(beat) - startSeconds
     if (realtime && time < graph.context.currentTime) {
       const nextTime = graph.context.currentTime + 0.002
-      beat += (nextTime - time) / beatSeconds
+      beat = tempo.beatAfter(beat, nextTime - time)
       time = nextTime
     }
     return [beat, time]
@@ -729,7 +1000,7 @@ export function scheduleRange(
         continue
       }
     }
-    const events = trackEvents(track, project.lengthBeats, project.bpm)
+    const events = trackEvents(track, project.lengthBeats, tempo)
     for (const window of events.windows) {
       const windowEnd = Math.min(window.end, boundary, project.lengthBeats)
       if (windowEnd <= startBeat || window.start >= endBeat) continue
@@ -738,8 +1009,20 @@ export function scheduleRange(
       if (!asset) continue
       const [beat, time] = adjustStart(Math.max(window.start, startBeat))
       if (beat >= windowEnd) continue
-      const localSeconds = (beat - window.start + window.sourceOffsetBeats) * beatSeconds
-      scheduleAudioClip(graph, channel.input, window.clip, asset, localSeconds, time, (windowEnd - beat) * beatSeconds, beatSeconds)
+      // Audio plays at 1×: its source position is the real time since the occurrence started.
+      const origin = window.start - window.sourceOffsetBeats
+      scheduleAudioClip(graph, channel.input, window.clip, asset, seconds(origin, beat), time, seconds(beat, windowEnd), seconds(origin, origin + window.clip.lengthBeats))
+    }
+    const controls = channel.controls
+    const voiceInput = controls?.input ?? channel.input
+    const pitchBus = def.isKit ? undefined : controls?.pitch
+    if (controls && events.controls.length) {
+      if (chase) chaseControls(controls, events.controls, startBeat, adjustStart(startBeat)[1])
+      for (const event of events.controls) {
+        if (event.beat >= endBeat - epsilon) break
+        if (event.beat < startBeat - epsilon || (chase && event.beat <= startBeat + epsilon)) continue
+        applyControl(controls, event.key, event.value, adjustStart(event.beat)[1], event.range)
+      }
     }
     for (const note of events.notes) {
       const noteEnd = Math.min(note.end, boundary, project.lengthBeats)
@@ -747,11 +1030,13 @@ export function scheduleRange(
       if (!startsInRange(note.start) && !(chase && !def.isKit && note.start < startBeat && noteEnd > startBeat)) continue
       const [beat, time] = adjustStart(Math.max(note.start, startBeat))
       if (beat >= noteEnd) continue
-      const available = (Math.min(note.limit, boundary, project.lengthBeats) - beat) * beatSeconds
+      const available = seconds(beat, Math.min(note.limit, boundary, project.lengthBeats))
+      // Instrument parameter automation is read at each note onset, as the native engine does.
+      const params = track.automation ? trackAt(track, beat).instrumentParams : track.instrumentParams
       if (loaded) {
-        scheduleSampled(graph, channel.input, loaded, def.isKit, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams, channel.chokes)
+        scheduleSampled(graph, voiceInput, loaded, def.isKit, note.pitch, time, seconds(beat, noteEnd), note.velocity, available, params, channel.chokes, pitchBus)
       } else {
-        scheduleInstrument(graph, channel.input, track.instrument, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams)
+        scheduleInstrument(graph, voiceInput, track.instrument, note.pitch, time, seconds(beat, noteEnd), note.velocity, available, params, pitchBus)
       }
     }
   }
@@ -759,18 +1044,19 @@ export function scheduleRange(
 
 interface TrackEvents {
   projectEnd: number
-  bpm: number
+  tempo: TempoMap
   notes: PlaybackNote[]
+  controls: PlaybackController[]
   windows: AudioWindow[]
 }
 
 // Track objects are immutable snapshots, so the expanded events can be reused across scheduler ticks.
 const eventCache = new WeakMap<Track, TrackEvents>()
 
-function trackEvents(track: Track, projectEnd: number, bpm: number): TrackEvents {
+function trackEvents(track: Track, projectEnd: number, tempo: TempoMap): TrackEvents {
   const cached = eventCache.get(track)
-  if (cached && cached.projectEnd === projectEnd && cached.bpm === bpm) return cached
-  const events: TrackEvents = { projectEnd, bpm, notes: midiEvents(track, projectEnd), windows: audioWindows(track, projectEnd, bpm) }
+  if (cached && cached.projectEnd === projectEnd && cached.tempo === tempo) return cached
+  const events: TrackEvents = { projectEnd, tempo, notes: midiEvents(track, projectEnd), controls: track.kind === 'instrument' ? midiControllerEvents(track, projectEnd) : [], windows: audioWindows(track, projectEnd, tempo) }
   eventCache.set(track, events)
   return events
 }
@@ -790,6 +1076,6 @@ export function trackLayoutKey(tracks: readonly Track[]): string {
     const route = routeOf(track)
     // Internal inputs are graph connections: a route or tap change rebuilds the graph.
     const routed = route ? '<' + (route.kind === 'track' ? `${route.trackId}@${route.tap}` : route.kind) : ''
-    return track.id + routed + '[' + track.devices.filter(device => device.enabled).map(device => device.type + ':' + device.id).join(',') + ']'
+    return track.id + routed + sendLayoutKey(track) + '[' + track.devices.filter(device => device.enabled).map(device => device.type + ':' + device.id).join(',') + ']'
   }).join('|')
 }

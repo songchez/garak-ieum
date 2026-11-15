@@ -100,8 +100,28 @@ int main(int argc, char** argv) {
     PluginEvent unmapped{}; unmapped.type = PluginEvent::Type::Controller; unmapped.parameterId = 11; unmapped.value = .5f;
     pedal.process(buffer.data(), 64, {&unmapped, 1}, context);
     check(!pedal.status().faulted, "An unmapped controller must be ignored, not fault the plug-in");
+    // Pitch bend (129 = kPitchBend), channel pressure (128 = kAfterTouch) and CC1 reach their IMidiMapping
+    // parameters at exact sample offsets (docs/MIDI_CONTROLLERS.md); the fixture's right channel reveals them.
+    Vst3Processor controllers(synthSpec, 48000, 64);
+    controllers.setParameter(5, 1);
+    controllers.process(buffer.data(), 64, {}, context);
+    near(buffer[1], .5f, "Pitch bend parameter starts centred");
+    std::array<PluginEvent, 4> moves{};
+    for (auto& m : moves) m.type = PluginEvent::Type::Controller;
+    moves[0].parameterId = 129; moves[0].value = 1; moves[0].offset = 8;
+    moves[1].parameterId = 128; moves[1].value = .25f; moves[1].offset = 16;
+    moves[2].parameterId = 1; moves[2].value = .5f; moves[2].offset = 24;
+    moves[3].parameterId = 129; moves[3].value = 0; moves[3].offset = 40;
+    controllers.process(buffer.data(), 64, moves, context);
+    near(buffer[2 * 7 + 1], .5f, "Pitch bend applied before its offset");
+    near(buffer[2 * 8 + 1], 1, "Pitch bend at its exact sample offset");
+    near(buffer[2 * 15 + 1], 1, "Channel pressure applied before its offset");
+    near(buffer[2 * 16 + 1], 1.5f, "Channel pressure at its exact sample offset");
+    near(buffer[2 * 24 + 1], 3.5f, "Mod wheel at its exact sample offset");
+    near(buffer[2 * 40 + 1], 2.5f, "Pitch bend down at its exact sample offset");
+    check(!controllers.status().faulted, "Controller events faulted the plug-in");
     check(!synth.status().faulted && !effect.status().faulted, "Actual VST3 processing fault");
-    std::cout << "PASS real VST3 scan, lifecycle, effect/instrument processing, offsets, parameters, state, note reset and CC64 sustain\n";
+    std::cout << "PASS real VST3 scan, lifecycle, effect/instrument processing, offsets, parameters, state, note reset, CC64 sustain and bend/pressure/mod-wheel controllers\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

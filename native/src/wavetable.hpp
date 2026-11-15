@@ -40,6 +40,10 @@ class WavetableProcessor final : public PluginProcessor {
   std::unique_ptr<ieum::wave::Synth> synth_;
   std::vector<float> left_, right_;
   std::array<ieum::wave::Event, 2048> events_{};
+  // MIDI controllers (docs/MIDI_CONTROLLERS.md): CC7 volume x CC11 expression, sample-accurate and smoothed.
+  struct GainChange { std::uint32_t offset = 0; float volume = 1, expression = 1; };
+  std::array<GainChange, 256> gainChanges_{};
+  float volume_ = 1, expression_ = 1, gain_ = 1;
   bool reset_ = false, fadeComplete_ = true;
 };
 

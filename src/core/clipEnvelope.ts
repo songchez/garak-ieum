@@ -1,4 +1,5 @@
 import type { AudioClip, Clip, FadeCurve, Project, Track } from './types'
+import { spanBeats, spanSeconds, tempoMapOf, type Tempo } from './tempoMap.js'
 
 /**
  * Region gain and fades (docs/REGION_GAIN_FADES.md). Both engines evaluate the same envelope:
@@ -86,8 +87,8 @@ export function withClipGainDb<T extends Clip>(clip: T, db: number): T {
 export type FadeEdge = 'in' | 'out'
 
 /** Seconds of the region's audible length (trimmed to the source). */
-export function clipSeconds(clip: AudioClip, bpm: number, sourceSeconds = Infinity): number {
-  return Math.max(0, Math.min(clip.lengthBeats * 60 / bpm, sourceSeconds - Math.max(0, clip.offsetSeconds)))
+export function clipSeconds(clip: AudioClip, tempo: Tempo, sourceSeconds = Infinity): number {
+  return Math.max(0, Math.min(spanSeconds(tempo, clip.startBeat, clip.startBeat + clip.lengthBeats), sourceSeconds - Math.max(0, clip.offsetSeconds)))
 }
 
 /** Sets one fade; it can use whatever the other fade leaves of the region. */
@@ -127,8 +128,8 @@ const EPSILON = 1e-7
 const endOf = (clip: Clip) => clip.startBeat + clip.lengthBeats
 
 /** Both regions read the same file in one continuous take (a split edit): their audio is identical in the overlap. */
-export function isContinuousSplice(a: AudioClip, b: AudioClip, bpm: number): boolean {
-  return a.assetId === b.assetId && Math.abs(b.offsetSeconds - a.offsetSeconds - (b.startBeat - a.startBeat) * 60 / bpm) < 1e-3
+export function isContinuousSplice(a: AudioClip, b: AudioClip, tempo: Tempo): boolean {
+  return a.assetId === b.assetId && Math.abs(b.offsetSeconds - a.offsetSeconds - spanSeconds(tempo, a.startBeat, b.startBeat)) < 1e-3
 }
 
 /**
@@ -136,9 +137,9 @@ export function isContinuousSplice(a: AudioClip, b: AudioClip, bpm: number): boo
  * a continuous splice of one take gets equal gain (linear), which sums back to the original without a +3 dB bump
  * (Pro Tools' Equal Gain vs Equal Power rule).
  */
-function crossfadePair(a: AudioClip, b: AudioClip, overlapBeats: number, bpm: number): [AudioClip, AudioClip] {
-  const seconds = overlapBeats * 60 / bpm
-  const curve: FadeCurve = isContinuousSplice(a, b, bpm) ? 'linear' : 'equalPower'
+function crossfadePair(a: AudioClip, b: AudioClip, overlapBeats: number, tempo: Tempo): [AudioClip, AudioClip] {
+  const seconds = spanSeconds(tempo, b.startBeat, b.startBeat + overlapBeats)
+  const curve: FadeCurve = isContinuousSplice(a, b, tempo) ? 'linear' : 'equalPower'
   const left = withFadeCurve({ ...a, fadeOut: seconds }, 'out', curve)
   const right = withFadeCurve({ ...b, fadeIn: seconds }, 'in', curve)
   return [left, right]
@@ -151,7 +152,7 @@ function crossfadePair(a: AudioClip, b: AudioClip, overlapBeats: number, bpm: nu
  * `sourceSeconds` returns an asset's length (Infinity when unknown).
  */
 export function crossfadeClips(project: Project, clipIds: ReadonlySet<string>, sourceSeconds: (assetId: string) => number, lengthSeconds = DEFAULT_CROSSFADE_SECONDS): { project: Project; count: number } {
-  const bpm = project.bpm
+  const tempo = tempoMapOf(project)
   let count = 0
   const tracks = project.tracks.map(track => {
     const chosen = track.clips.filter((c): c is AudioClip => c.kind === 'audio' && clipIds.has(c.id)).sort((x, y) => x.startBeat - y.startBeat)
@@ -163,18 +164,19 @@ export function crossfadeClips(project: Project, clipIds: ReadonlySet<string>, s
       if (b.startBeat > endOf(a) + EPSILON || endOf(b) <= endOf(a) + EPSILON) continue
       let overlap = endOf(a) - b.startBeat
       if (overlap <= EPSILON) {
-        const want = lengthSeconds * bpm / 60
-        const aRoom = Math.max(0, (sourceSeconds(a.assetId) - a.offsetSeconds) * bpm / 60 - a.lengthBeats)
-        const bRoom = Math.max(0, Math.min(b.offsetSeconds * bpm / 60, b.startBeat))
+        const joint = endOf(a)
+        const want = spanBeats(tempo, joint, lengthSeconds / 2) - spanBeats(tempo, joint, -lengthSeconds / 2)
+        const aRoom = Math.max(0, spanBeats(tempo, a.startBeat, sourceSeconds(a.assetId) - a.offsetSeconds) - a.lengthBeats)
+        const bRoom = Math.max(0, Math.min(-spanBeats(tempo, b.startBeat, -b.offsetSeconds), b.startBeat))
         let aExt = Math.min(aRoom, want / 2), bExt = Math.min(bRoom, want / 2)
         aExt = Math.min(aRoom, aExt + (want / 2 - bExt)); bExt = Math.min(bRoom, bExt + (want / 2 - aExt))
         if (aExt + bExt <= EPSILON) continue
         a = { ...a, lengthBeats: a.lengthBeats + aExt, ...(a.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(a.loopLengthBeats, a.lengthBeats + aExt) }) }
-        if (bExt > 0) b = { ...b, startBeat: b.startBeat - bExt, lengthBeats: b.lengthBeats + bExt, offsetSeconds: Math.max(0, b.offsetSeconds - bExt * 60 / bpm),
+        if (bExt > 0) b = { ...b, startBeat: b.startBeat - bExt, lengthBeats: b.lengthBeats + bExt, offsetSeconds: Math.max(0, b.offsetSeconds - spanSeconds(tempo, b.startBeat - bExt, b.startBeat)),
           ...(b.loopLengthBeats === undefined ? {} : { loopLengthBeats: b.loopLengthBeats + bExt }) }
         overlap = aExt + bExt
       }
-      const [left, right] = crossfadePair(a, b, overlap, bpm)
+      const [left, right] = crossfadePair(a, b, overlap, tempo)
       replaced.set(left.id, left); replaced.set(right.id, right)
       count += 1
     }
@@ -189,7 +191,7 @@ export function crossfadeClips(project: Project, clipIds: ReadonlySet<string>, s
  * on its track crossfades with it over the overlap. MIDI and regions that cover each other are left
  * unchanged for the caller to resolve like "겹치지 않음".
  */
-export function crossfadeOverlaps(track: Track, moved: ReadonlySet<string>, bpm: number): Track {
+export function crossfadeOverlaps(track: Track, moved: ReadonlySet<string>, tempo: Tempo): Track {
   const replaced = new Map<string, AudioClip>()
   const current = (clip: AudioClip) => replaced.get(clip.id) ?? clip
   const audio = track.clips.filter((c): c is AudioClip => c.kind === 'audio')
@@ -200,7 +202,7 @@ export function crossfadeOverlaps(track: Track, moved: ReadonlySet<string>, bpm:
       const [a, b] = m.startBeat <= o.startBeat ? [m, o] : [o, m]
       const overlap = endOf(a) - b.startBeat
       if (overlap <= EPSILON || endOf(b) <= endOf(a) + EPSILON || b.startBeat <= a.startBeat + EPSILON) continue
-      const [left, right] = crossfadePair(a, b, overlap, bpm)
+      const [left, right] = crossfadePair(a, b, overlap, tempo)
       replaced.set(left.id, left); replaced.set(right.id, right)
     }
   }

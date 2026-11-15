@@ -1,4 +1,5 @@
 import type { MidiRoute } from '../../core/midiInput'
+import type { Tempo } from '../../core/tempoMap'
 import { frameToBeat } from '../../core/midiRecording'
 import { ListenerSet, type LiveMidiPort, type StampedMidi, type StampedMidiListener } from '../liveMidi'
 
@@ -23,7 +24,8 @@ export class NativeLiveMidi implements LiveMidiPort {
   constructor(
     private readonly request: Request,
     private readonly ready: () => boolean,
-    private readonly bpm: () => number,
+    /** The project's tempo map (or a constant bpm) for frame→beat. */
+    private readonly bpm: () => Tempo,
     private readonly now: () => number = () => performance.now(),
   ) {}
 

@@ -10,6 +10,8 @@ import { VolumeSlider } from './VolumeSlider'
 import { PanKnob } from './PanKnob'
 import { InputSelect } from './InputSelect'
 import { routeText } from '../core/trackRouting'
+import { returnLetterOf } from '../core/sends'
+import { useDisplayTrack } from './automationUi'
 import './TrackHeader.css'
 
 const MAC = shortcutPlatform() === 'mac'
@@ -17,7 +19,7 @@ const MOD = MAC ? '⌘' : 'Ctrl+'
 
 /** Rows that fit: 0 = name + M/S on one line, 1 = name over buttons, 2 = + volume row and pan beside the buttons, 3 = roomier, + audio input chooser. */
 export const headerTier = (height: number) => height < 44 ? 0 : height < 68 ? 1 : height < 92 ? 2 : 3
-export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : instrumentDef(track.instrument).icon)
+export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : track.kind === 'return' ? 'return' : instrumentDef(track.instrument).icon)
 const CONTROL = 'button,input,select,[role="slider"],.track-resize-corner'
 
 export interface TrackHeaderProps {
@@ -42,9 +44,13 @@ export interface TrackHeaderProps {
   onContextMenu(e: React.MouseEvent): void
   onReorderStart(e: React.PointerEvent): void
   onResizeStart(e: React.PointerEvent, all: boolean, reset: boolean): void
+  /** 오토메이션 보기 toggle (A); `active` marks a track that plays automation. */
+  automation?: { visible: boolean; active: boolean; onToggle(): void }
 }
 
 export function TrackHeader(props: TrackHeaderProps) {
+  // Volume, pan and mute follow automation during playback (docs/AUTOMATION.md).
+  const shown = useDisplayTrack(props.track)
   const { track, index, focused, selected, multi, height, config, ui, arm, implicitMute, renaming, engine, loading } = props
   const tier = headerTier(height)
   const [editing, setEditing] = useState(renaming)
@@ -60,7 +66,7 @@ export function TrackHeader(props: TrackHeaderProps) {
     if (config.hide && ui.hideView) kinds.push('hidden')
     if (config.mute) kinds.push('mute')
     if (config.solo) kinds.push('solo')
-    if (config.record) kinds.push('arm')
+    if (config.record && track.kind !== 'return') kinds.push('arm')
     if (config.monitor && track.kind === 'audio') kinds.push('monitor')
   }
   const showVolume = tier >= 2 && config.volume, showPan = tier >= 2 && config.pan
@@ -102,20 +108,22 @@ export function TrackHeader(props: TrackHeaderProps) {
     <div className="track-main">
       <div className="track-name-row">
         {editing ? <InlineName value={track.name} label="트랙 이름" onDone={renameDone}/> : <span className="track-name" title={`${track.name} · 더블 클릭: 이름 바꾸기`}>{track.name}</span>}
+        {track.kind === 'return' && <b className="track-return-badge" title="리턴 트랙 · 다른 트랙의 센드로 소리를 받습니다">{returnLetterOf(props.routeTracks ?? [track], track.id) || 'R'}</b>}
         {hiddenNow && <b className="track-hide-badge" title="가려진 트랙">H</b>}
         {!track.enabled && <b className="track-off-badge" title="꺼진 트랙"><Icon name="power" size={9}/></b>}
       </div>
       {(kinds.length > 0 || showPan) && <div className="track-controls">
-        {kinds.length > 0 && <TrackButtons track={track} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}
-        {showPan && <PanKnob value={track.pan} size={tier >= 3 ? 24 : 20} ariaLabel={`${track.name} 팬`} onChange={v => props.onChange({ pan: v }, `${track.id}:pan`)}/>}
+        {kinds.length > 0 && <TrackButtons track={shown} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}
+        {showPan && <PanKnob value={shown.pan} size={tier >= 3 ? 24 : 20} ariaLabel={`${track.name} 팬`} onChange={v => props.onChange({ pan: v }, `${track.id}:pan`)}/>}
       </div>}
       {showInput && <InputSelect className="track-input-select" input={track.input} choices={props.inputChoices ?? []} ariaLabel={`${track.name} 입력`} onChange={input => props.onInputChange?.(input)}
         routing={props.routeTracks && props.onRouteChange ? { track, tracks: props.routeTracks, onChange: props.onRouteChange } : undefined}/>}
       {!showInput && tier >= 1 && routeLabel && <span className={`track-route-label${track.inputRoute?.kind === 'none' ? ' missing' : ''}`} title={`입력: ${routeLabel}`}>{routeLabel}</span>}
       {showVolume && <div className="track-volume">
-        <VolumeSlider value={track.volume} orientation="horizontal" meter={{ engine, trackId: track.id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={v => props.onChange({ volume: v }, `${track.id}:volume`)}/>
+        <VolumeSlider value={shown.volume} orientation="horizontal" meter={{ engine, trackId: track.id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={v => props.onChange({ volume: v }, `${track.id}:volume`)}/>
       </div>}
     </div>
+    {props.automation && tier >= 1 && <button type="button" className={`automation-toggle${props.automation.visible ? ' on' : ''}${props.automation.active ? ' active' : ''}`} aria-pressed={props.automation.visible} aria-label={`${track.name} 오토메이션 보기`} title="오토메이션 보기 (A)" onClick={e => { e.stopPropagation(); props.automation!.onToggle() }}><Icon name="automation" size={11}/></button>}
     <i className="track-resize-corner" title={`개별 트랙 확대/축소 (${MOD}드래그: 전체 · ⇧클릭: 초기화)`} onPointerDown={e => { e.stopPropagation(); if (e.button !== 0) return; e.preventDefault(); props.onResizeStart(e, MAC ? e.metaKey : e.ctrlKey, e.shiftKey) }}/>
   </div>
 }

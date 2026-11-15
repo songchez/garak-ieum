@@ -296,7 +296,7 @@ def studio(theme: dict,x: float,y: float,w: float,h: float) -> None:
     # A small pitch pane demonstrates the now-visible dual-stroke curve.
     rect(track_x,y+229,w-inspector-1,26,c['panelSoft'])
     line(track_x,y+229,x+w-1,y+229,frame)
-    text('피아노롤     믹서     디바이스',track_x+13,y+246,9,c['muted'])
+    text('피아노롤     믹서     시김새 체인',track_x+13,y+246,9,c['muted'])
     text('피치 편집',track_x+215,y+246,9,c['accent'],700)
     line(track_x+215,y+253,track_x+255,y+253,c['accent'],2)
     rect(track_x,y+255,w-inspector-1,33,c['canvas'])

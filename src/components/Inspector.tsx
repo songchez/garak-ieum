@@ -1,4 +1,6 @@
+import type { SendPatch } from '../core/sends'
 import { useState } from 'react'
+import { tempoMapOf } from '../core/tempoMap'
 import type { AudioEngine, Clip, EffectType, InputChoice, InstrumentId, Project, Track, TrackInput, TrackInputRoute } from '../core/types'
 import type { TrackButtonKind, TrackButtonMods } from '../core/trackActions'
 import type { InspectorSections } from '../core/trackUi'
@@ -25,7 +27,8 @@ export interface InspectorProps {
   onTrackButton: (trackId: string, kind: TrackButtonKind, mods: TrackButtonMods) => void
   onTrackSweep: (trackId: string, kind: TrackButtonKind, value: boolean) => void
   onInstrumentChange: (trackId: string, instrument: InstrumentId) => void
-  onAddDevice: (trackId: string, type: EffectType) => void
+  onAddDevice: (trackId: string, type: EffectType, variantId?: string) => void
+  onOpenLibrary?: (trackId: string) => void
   onToggleDevice: (trackId: string, deviceId: string) => void
   onMoveDevice: (trackId: string, deviceId: string, offset: number) => void
   onRemoveDevice: (trackId: string, deviceId: string) => void
@@ -33,6 +36,7 @@ export interface InspectorProps {
   onMasterChange: (v: number) => void
   onOpenColorPalette: (trackId: string, e: React.MouseEvent) => void
   onIconMenu: (trackId: string, e: React.MouseEvent) => void
+  onSendChange?: (trackId: string, returnId: string, patch: SendPatch, key?: string) => void
   inputChoices?: readonly InputChoice[]
   onTrackInput?: (trackId: string, input: TrackInput | null) => void
   onTrackRoute?: (trackId: string, route: TrackInputRoute | null, input?: TrackInput | null) => void
@@ -59,7 +63,7 @@ export function Inspector(props: InspectorProps) {
     : <span onDoubleClick={e => { if (single) { e.stopPropagation(); setRenaming(single.name) } }} title={single ? '더블클릭: 이름 변경' : undefined}>{regionTitle(selection)}</span>
   return <div className="inspector" aria-label="인스펙터">
     <Section id="region" open={sections.region} title={regionHead} onToggle={() => toggle('region')} className="insp-region">
-      {selection.length > 0 && <RegionInspector selection={selection} bpm={project.bpm} beatsPerBar={project.beatsPerBar} onClipsEdit={props.onClipsEdit} warp={props.warp} />}
+      {selection.length > 0 && <RegionInspector selection={selection} bpm={Math.round(tempoMapOf(project).bpmAt(selection[0].clip.startBeat) * 100) / 100} beatsPerBar={project.beatsPerBar} onClipsEdit={props.onClipsEdit} warp={props.warp} />}
     </Section>
     <Section id="track" open={sections.track} title={focusedTrack ? `트랙: ${focusedTrack.name}` : '트랙'} onToggle={() => toggle('track')} className="insp-track">
       {focusedTrack ? <TrackInspector track={focusedTrack} bpm={project.bpm} onTrackChange={props.onTrackChange} onInstrumentChange={props.onInstrumentChange} onOpenColorPalette={props.onOpenColorPalette} onIconMenu={props.onIconMenu} inputChoices={props.inputChoices} onInputChange={props.onTrackInput} tracks={project.tracks} onRouteChange={props.onTrackRoute} /> : <p className="insp-empty">트랙을 선택해주세요</p>}
@@ -68,8 +72,8 @@ export function Inspector(props: InspectorProps) {
       <div className="strips">
         {focusedTrack ? <ChannelStrip track={focusedTrack} project={project} engine={props.engine} recording={props.recording} arm={props.arm} implicitMute={props.implicitMute} focused
           onTrackChange={props.onTrackChange} onTrackButton={props.onTrackButton} onTrackSweep={props.onTrackSweep} onInstrumentChange={props.onInstrumentChange}
-          onAddDevice={props.onAddDevice} onToggleDevice={props.onToggleDevice} onMoveDevice={props.onMoveDevice} onRemoveDevice={props.onRemoveDevice} onOpenDevices={props.onOpenDevices}
-          onOpenColorPalette={props.onOpenColorPalette} onIconMenu={props.onIconMenu} /> : <div className="cstrip cstrip-placeholder"><span>트랙 없음</span></div>}
+          onAddDevice={props.onAddDevice} onToggleDevice={props.onToggleDevice} onMoveDevice={props.onMoveDevice} onRemoveDevice={props.onRemoveDevice} onOpenDevices={props.onOpenDevices} onOpenLibrary={props.onOpenLibrary}
+          onOpenColorPalette={props.onOpenColorPalette} onIconMenu={props.onIconMenu} onSendChange={props.onSendChange} /> : <div className="cstrip cstrip-placeholder"><span>트랙 없음</span></div>}
         <ChannelStrip track={undefined} project={project} engine={props.engine} recording={props.recording} arm="off" implicitMute={false} onTrackChange={props.onTrackChange} onTrackButton={props.onTrackButton} onTrackSweep={props.onTrackSweep} onMasterChange={props.onMasterChange} />
       </div>
     </Section>

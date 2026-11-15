@@ -1,4 +1,5 @@
 import type { TimeSignature } from './types'
+import type { TempoMap } from './tempoMap'
 
 /**
  * Metronome: app preferences, the click grid for a time signature, and the
@@ -103,8 +104,15 @@ export function subscribeMetronomePrefs(listener: () => void): () => void {
   listeners.add(listener)
   return () => { listeners.delete(listener) }
 }
+let lastCountIn: CountInBars = 1
+/** ⇧K: count-in off, or back on at the last bar count used (1 bar the first time). */
+export const toggledCountIn = (current: CountInBars, last: CountInBars): CountInBars => current > 0 ? 0 : last > 0 ? last : 1
+export function toggleCountIn(): MetronomePrefs {
+  return updateMetronomePrefs({ countInBars: toggledCountIn(getMetronomePrefs().countInBars, lastCountIn) })
+}
 export function updateMetronomePrefs(patch: Partial<MetronomePrefs>): MetronomePrefs {
   const next = normalizeMetronomePrefs({ ...getMetronomePrefs(), ...patch })
+  if (next.countInBars > 0) lastCountIn = next.countInBars
   current = next
   saveMetronomePrefs(next)
   for (const listener of listeners) listener()
@@ -137,7 +145,7 @@ export function pulseLevel(grid: MetronomeGrid, pulse: number): MetronomeLevel {
 export interface MetronomeClick { beat: number; pulse: number; level: MetronomeLevel }
 
 const EPSILON = 1e-9
-/** Clicks with startBeat <= beat < endBeat. Bars start at beat 0 (no tempo map yet). */
+/** Clicks with startBeat <= beat < endBeat. Bars start at beat 0; the grid is in beats, so tempo changes never move it. */
 export function clicksInRange(grid: MetronomeGrid, startBeat: number, endBeat: number): MetronomeClick[] {
   const clicks: MetronomeClick[] = []
   if (!(endBeat > startBeat) || !(grid.pulseBeats > 0)) return clicks
@@ -164,9 +172,11 @@ export function countInClicks(signature: TimeSignature, bars: number): { clicks:
 export const effectiveLevel = (level: MetronomeLevel, accent: boolean): MetronomeLevel => accent ? level : 2
 
 /**
- * One transport segment of the realtime scheduler: [startBeat, endBeat) begins at
- * `startTime` seconds and runs at `beatSeconds`. Returns audio-clock times.
+ * One transport segment of the realtime scheduler: [startBeat, endBeat) begins at `startTime` seconds.
+ * `timing` is the project's tempo map (clicks follow its steps and ramps exactly) or a constant number
+ * of seconds per beat. Returns audio-clock times.
  */
-export function scheduleSegment(grid: MetronomeGrid, startBeat: number, endBeat: number, startTime: number, beatSeconds: number): Array<MetronomeClick & { time: number }> {
-  return clicksInRange(grid, startBeat, endBeat).map(click => ({ ...click, time: startTime + (click.beat - startBeat) * beatSeconds }))
+export function scheduleSegment(grid: MetronomeGrid, startBeat: number, endBeat: number, startTime: number, timing: number | TempoMap): Array<MetronomeClick & { time: number }> {
+  const at = typeof timing === 'number' ? (beat: number) => (beat - startBeat) * timing : (beat: number) => timing.secondsBetween(startBeat, beat)
+  return clicksInRange(grid, startBeat, endBeat).map(click => ({ ...click, time: startTime + at(click.beat) }))
 }

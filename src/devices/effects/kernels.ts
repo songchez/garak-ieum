@@ -357,7 +357,7 @@ export function delaySeconds(p: (id: string) => number, bpm: number): number {
 export class DelayKernel extends Kernel {
   private readonly lines: [Ring, Ring]
   private readonly low: Biquad; private readonly high: Biquad
-  private readonly wet = new Smooth(); private readonly feedback = new Smooth(); private readonly age = new Smooth(); private readonly time = new Smooth()
+  private readonly wet = new Smooth(); private readonly dry = new Smooth(); private readonly feedback = new Smooth(); private readonly age = new Smooth(); private readonly time = new Smooth()
   private readonly glide: number
   private lowcut = false; private pingPong = false
   private wow = 0; private flutter = 0
@@ -369,7 +369,7 @@ export class DelayKernel extends Kernel {
     this.glide = 1 - Math.exp(-1 / (0.08 * sr))
   }
   protected apply(p: (id: string) => number, bpm: number, now: boolean): void {
-    this.wet.set(p('amount') * 0.45, now); this.feedback.set(p('feedback'), now); this.age.set(p('age'), now)
+    this.wet.set(p('amount') * 0.45, now); this.dry.set(p('dry'), now); this.feedback.set(p('feedback'), now); this.age.set(p('age'), now)
     this.time.set(delaySeconds(p, bpm) * this.sampleRate, now)
     this.low.configure('lowpass', p('tone'), 1, 0, now)
     this.lowcut = p('lowcut') > 20.5
@@ -379,7 +379,7 @@ export class DelayKernel extends Kernel {
   process(l: Float32Array, r: Float32Array, frames: number): void {
     const sr = this.sampleRate, wowStep = TAU * 0.7 / sr, flutterStep = TAU * 7.3 / sr
     for (let i = 0; i < frames; i += 1) {
-      const wet = this.wet.next(this.k), feedback = this.feedback.next(this.k), age = this.age.next(this.k)
+      const wet = this.wet.next(this.k), dry = this.dry.next(this.k), feedback = this.feedback.next(this.k), age = this.age.next(this.k)
       const time = this.time.next(this.glide)
       const wobble = age * sr * (0.0014 + 0.0012 * Math.sin(this.wow) + 0.00015 * Math.sin(this.flutter))
       const read = Math.max(0, time + wobble - 1)
@@ -390,7 +390,7 @@ export class DelayKernel extends Kernel {
       const xl = l[i], xr = r[i]
       if (this.pingPong) { this.lines[0].push(0.5 * (xl + xr) + feedback * fr); this.lines[1].push(feedback * fl) }
       else { this.lines[0].push(xl + feedback * fl); this.lines[1].push(xr + feedback * fr) }
-      l[i] = xl + wet * fl; r[i] = xr + wet * fr
+      l[i] = dry * xl + wet * fl; r[i] = dry * xr + wet * fr
       this.wow += wowStep; if (this.wow >= TAU) this.wow -= TAU
       this.flutter += flutterStep; if (this.flutter >= TAU) this.flutter -= TAU
     }

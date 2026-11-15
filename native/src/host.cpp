@@ -264,8 +264,13 @@ class Host {
       awaitApplied(method=="note.on"?engine_->noteOn(index,pitch,static_cast<float>(number(a,"velocity",0,4,.8)),id):engine_->noteOff(index,pitch,id));
       return Json::object();
     }
-    // Live MIDI control change (CC64 sustain pedal; docs/SUSTAIN_PEDAL.md).
-    if(method=="note.control") { awaitApplied(engine_->controlChange(trackIndex(string(a,"trackId")),static_cast<int>(integer(a,"controller",0,127,64)),static_cast<int>(integer(a,"value",0,127,0)))); return Json::object(); }
+    // Live MIDI controller (docs/MIDI_CONTROLLERS.md): 0..127 CC, 128 channel pressure, 129 pitch bend
+    // (-8192..8191), 130 program change, 131 built-in pitch-bend range (0..48 semitones).
+    if(method=="note.control") {
+      const auto controller=static_cast<int>(integer(a,"controller",0,controllerCount-1,64)),value=static_cast<int>(integer(a,"value",-8192,8191,0));
+      if(!validControllerValue(controller,value)) throw std::runtime_error("Invalid MIDI controller value");
+      awaitApplied(engine_->controlChange(trackIndex(string(a,"trackId")),controller,value)); return Json::object();
+    }
     if(method=="note.allOff") { awaitApplied(engine_->allNotesOff(trackIndex(string(a,"trackId")))); return Json::object(); }
     if (method=="latency.measure") return measureLatency(a);
     if (method=="monitor.set") {
@@ -437,7 +442,7 @@ class Host {
     // only the graph's plug-in delay when the tap sits after the inserts (post-FX, post-fader, master).
     for(std::size_t i=0;i<plan.size();++i) {
       auto& take=r.mutableTakes()[i];
-      if(take.routed){take.compensation=plan[i].routeDelayed?s.latencyFrames:0;take.compensationKnown=true;}
+      if(take.routed){take.compensation=!plan[i].routeDelayed?0:plan[i].routeMasterFeed?s.latencyFrames:s.senderLatencyFrames;take.compensationKnown=true;}
       else {take.compensation=r.compensation;take.compensationKnown=r.compensationKnown;}
     }
     Json list=Json::array();

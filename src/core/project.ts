@@ -3,6 +3,7 @@ import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { midiEditorClip, midiSourceOffset } from './midiRegions'
 import { joinSustain } from './sustain'
+import { MAX_BEND_RANGE, controllerOrder, controllerSpec, isControllerKey, joinControllers, mapControllerBeats } from './controllers'
 import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
@@ -10,13 +11,17 @@ import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type ControllerKey, type ControllerPoint, type TempoPoint, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend, type AutomationLane, type AutomationMode, type AutomationTarget } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
+import { MAX_TEMPO_POINTS, TEMPO_MAX, TEMPO_MIN, beatAfterSeconds, normalizeTempoPoints, spanSeconds, tempoMapOf, type Tempo } from './tempoMap'
+// sends.ts imports this module too: only use its exports inside functions (no top-level reads).
+import { SEND_LEVEL_MAX, copySend, reconcileSends } from './sends'
+import { AUTOMATION_MODES, MAX_AUTOMATION_LANES, MAX_AUTOMATION_POINTS, copyAutomation, parseTargetKey, pruneAutomation, targetKey } from './automation'
 
 let fallbackSequence = 0
 
-/** Logic defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%). */
-export const DEFAULT_TRACK_COLORS: Readonly<Record<Track['kind'], string>> = { audio: '#669ed6', instrument: '#66d666' }
+/** Logic defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%); returns at 270°. */
+export const DEFAULT_TRACK_COLORS: Readonly<Record<Track['kind'], string>> = { audio: '#669ed6', instrument: '#66d666', return: '#9e66d6' }
 
 /** IDs describe editing objects; they are not security tokens. */
 export function uid(): string {
@@ -72,10 +77,10 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
   const def = instrumentDef(instrument)
   return {
     id: uid(),
-    name: kind === 'audio' ? 'Audio track' : def.name,
+    name: kind === 'audio' ? 'Audio track' : kind === 'return' ? '리턴' : def.name,
     kind,
     instrument,
-    color: kind === 'audio' ? DEFAULT_TRACK_COLORS.audio : instrumentDef(instrument).color,
+    color: kind === 'instrument' ? instrumentDef(instrument).color : DEFAULT_TRACK_COLORS[kind],
     volume: 0.7,
     pan: 0,
     mute: false,
@@ -99,7 +104,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 13,
+    schemaVersion: 17,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -241,9 +246,9 @@ export function duplicateClip(clip: Clip, startBeat = clip.startBeat + clip.leng
 }
 
 /** `beat` is an absolute project beat. Each MIDI half keeps an independent, recoverable source. */
-export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
+export function splitClip(clip: Clip, beat: number, tempo: Tempo): Clip[] {
   if (!Number.isFinite(beat)) throw new Error('Split position must be a finite number.')
-  if (!Number.isFinite(bpm) || bpm <= 0) throw new Error('Tempo must be greater than zero.')
+  checkTempo(tempo)
   const endBeat = clip.startBeat + clip.lengthBeats
   if (beat <= clip.startBeat || beat >= endBeat) return [clip]
 
@@ -251,8 +256,8 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
   const rightLength = clip.lengthBeats - cut
   const rightLoop = clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: clip.loopLengthBeats - cut }
   if (clip.kind === 'audio') {
-    const leftSeconds = cut * 60 / bpm
-    const rightSeconds = rightLength * 60 / bpm
+    const leftSeconds = spanSeconds(tempo, clip.startBeat, beat)
+    const rightSeconds = spanSeconds(tempo, beat, endBeat)
     return [
       { ...clip, lengthBeats: cut, fadeIn: Math.min(clip.fadeIn, leftSeconds), fadeOut: 0 },
       {
@@ -276,6 +281,10 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
   ]
 }
 
+function checkTempo(tempo: Tempo): void {
+  if (typeof tempo === 'number' && (!Number.isFinite(tempo) || tempo <= 0)) throw new Error('Tempo must be greater than zero.')
+}
+
 /** Shortest clip a trim can leave: one 1/64 note. */
 export const MIN_CLIP_BEATS = 0.0625
 const EPSILON = 1e-9
@@ -290,22 +299,22 @@ export function cropNotesToClip(clip: MidiClip): MidiClip {
  * survive outside the visible window. Extending before the MIDI source inserts leading
  * silence by rebasing all source notes; audio can never read before the original file.
  */
-export function trimClipStart(clip: Clip, newStartBeat: number, bpm: number): Clip {
+export function trimClipStart(clip: Clip, newStartBeat: number, tempo: Tempo): Clip {
   if (!Number.isFinite(newStartBeat)) throw new Error('Trim position must be a finite number.')
-  if (!Number.isFinite(bpm) || bpm <= 0) throw new Error('Tempo must be greater than zero.')
+  checkTempo(tempo)
   const end = clip.startBeat + clip.lengthBeats
   let start = Math.min(Math.max(0, newStartBeat), end - MIN_CLIP_BEATS)
-  if (clip.kind === 'audio') start = Math.max(start, clip.startBeat - clip.offsetSeconds * bpm / 60)
+  if (clip.kind === 'audio') start = Math.max(start, beatAfterSeconds(tempo, clip.startBeat, -clip.offsetSeconds))
   const delta = start - clip.startBeat
   if (Math.abs(delta) < EPSILON) return clip
   const lengthBeats = end - start
   const loop = clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(lengthBeats, clip.loopLengthBeats - delta) }
   if (clip.kind === 'audio') {
-    const seconds = lengthBeats * 60 / bpm
+    const seconds = spanSeconds(tempo, start, end)
     return {
       ...clip, startBeat: start, lengthBeats,
       ...loop,
-      offsetSeconds: Math.max(0, clip.offsetSeconds + delta * 60 / bpm),
+      offsetSeconds: Math.max(0, clip.offsetSeconds + spanSeconds(tempo, clip.startBeat, start)),
       fadeIn: Math.min(clip.fadeIn, seconds), fadeOut: Math.min(clip.fadeOut, seconds),
     }
   }
@@ -314,7 +323,8 @@ export function trimClipStart(clip: Clip, newStartBeat: number, bpm: number): Cl
   return { ...source, startBeat: start, lengthBeats, ...loop,
     ...(offset > 0 ? { sourceOffsetBeats: offset } : {}),
     notes: offset < 0 ? clip.notes.map(value => ({ ...value, start: value.start - offset })) : clip.notes,
-    ...(offset < 0 && clip.sustain ? { sustain: clip.sustain.map(event => ({ ...event, beat: event.beat - offset })) } : {}) }
+    ...(offset < 0 && clip.sustain ? { sustain: clip.sustain.map(event => ({ ...event, beat: event.beat - offset })) } : {}),
+    ...(offset < 0 && clip.controllers ? { controllers: mapControllerBeats(clip, beat => beat - offset) } : {}) }
 }
 
 /** Moves the right edge. `maxLengthBeats` lets callers clamp audio to the source length. */
@@ -355,7 +365,7 @@ export function transposeClip(clip: MidiClip, semitones: number): MidiClip {
  * Audio: only when every clip reads the same asset with continuous source offsets
  * (within 1 ms) and no gap between them; otherwise null.
  */
-export function joinClips(clips: Clip[], bpm: number): Clip | null {
+export function joinClips(clips: Clip[], tempo: Tempo): Clip | null {
   if (clips.length < 2 || !clips.every(clip => clip.kind === clips[0].kind)) return null
   const sorted = [...clips].sort((a, b) => a.startBeat - b.startBeat)
   const first = sorted[0]
@@ -363,9 +373,10 @@ export function joinClips(clips: Clip[], bpm: number): Clip | null {
   const endBeat = Math.max(...sorted.map(clip => clip.startBeat + clip.lengthBeats))
   if (first.kind === 'midi') {
     const notes = (sorted as MidiClip[]).flatMap(clip => cropNotesToClip(clip).notes.map(value => ({ ...value, start: value.start + clip.startBeat - startBeat })))
-    const { sourceOffsetBeats: _offset, sustain: _sustain, ...base } = first
+    const { sourceOffsetBeats: _offset, sustain: _sustain, controllers: _controllers, ...base } = first
     const sustain = joinSustain(sorted as MidiClip[], startBeat)
-    return { ...base, startBeat, lengthBeats: endBeat - startBeat, notes, ...(sustain.length ? { sustain } : {}),
+    const controllers = joinControllers(sorted as MidiClip[], startBeat)
+    return { ...base, startBeat, lengthBeats: endBeat - startBeat, notes, ...(sustain.length ? { sustain } : {}), ...(controllers ? { controllers } : {}),
       ...(first.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(endBeat - startBeat, first.loopLengthBeats) }) }
   }
   const audio = sorted as Extract<Clip, { kind: 'audio' }>[]
@@ -373,7 +384,7 @@ export function joinClips(clips: Clip[], bpm: number): Clip | null {
   for (const clip of audio.slice(1)) {
     if (clip.assetId !== first.assetId) return null
     if (clip.startBeat > reach + 1e-6) return null
-    const expected = first.offsetSeconds + (clip.startBeat - startBeat) * 60 / bpm
+    const expected = first.offsetSeconds + spanSeconds(tempo, startBeat, clip.startBeat)
     if (Math.abs(clip.offsetSeconds - expected) > 1e-3) return null
     reach = Math.max(reach, clip.startBeat + clip.lengthBeats)
   }
@@ -388,24 +399,33 @@ export const copyTrackInput = (input: TrackInput): TrackInput => ({ channels: [.
 
 /** A deep copy with new track, clip, note and device IDs; audio assets stay shared. */
 export function duplicateTrack(track: Track): Track {
-  return {
+  const copy: Track = {
     ...track,
     id: uid(),
     name: `${track.name} 복사본`.slice(0, 512),
     ...(track.input ? { input: copyTrackInput(track.input) } : {}),
     ...(track.inputRoute ? { inputRoute: copyRoute(track.inputRoute) } : {}),
+    ...(track.sends ? { sends: track.sends.map(copySend) } : {}),
     instrumentParams: { ...track.instrumentParams },
     ...(track.instrumentState ? { instrumentState: cloneWavetableState(track.instrumentState) } : {}),
     devices: track.devices.map(device => cloneDevice(device)),
     ...(track.pluginInstrument ? { pluginInstrument: cloneNativePlugin(track.pluginInstrument, uid()) } : {}),
     clips: track.clips.map(clip => duplicateClip(clip, clip.startBeat)),
   }
+  return withCopiedAutomation(track, copy)
+}
+
+/** Lanes follow the copied devices; a copy without lanes carries no automation field. */
+function withCopiedAutomation(source: Track, copy: Track): Track {
+  const { automation: _lanes, ...rest } = copy
+  const automation = copyAutomation(source, copy)
+  return automation ? { ...rest, automation } : rest
 }
 
 /** Logic "New Track With Duplicate Settings": every setting but no clips; arm and monitor stay off.
  * The input and monitor mode are settings and carry over, except that `in` (the I flag) becomes `off`. */
 export function duplicateTrackSettings(track: Track): Track {
-  return {
+  const copy: Track = {
     ...track,
     id: uid(),
     armed: false,
@@ -413,6 +433,7 @@ export function duplicateTrackSettings(track: Track): Track {
     ...(track.monitorMode === 'in' ? { monitorMode: 'off' as const } : {}),
     ...(track.input ? { input: copyTrackInput(track.input) } : {}),
     ...(track.inputRoute ? { inputRoute: copyRoute(track.inputRoute) } : {}),
+    ...(track.sends ? { sends: track.sends.map(copySend) } : {}),
     keyLimit: [...track.keyLimit],
     velocityLimit: [...track.velocityLimit],
     instrumentParams: { ...track.instrumentParams },
@@ -421,6 +442,7 @@ export function duplicateTrackSettings(track: Track): Track {
     ...(track.pluginInstrument ? { pluginInstrument: cloneNativePlugin(track.pluginInstrument, uid()) } : {}),
     clips: [],
   }
+  return withCopiedAutomation(track, copy)
 }
 
 /** Grows to the last source/manual-loop end; continuous loops never grow the project. */
@@ -433,16 +455,16 @@ export function fitProjectLength(project: Project): Project {
 export type DragMode = 'overlap' | 'noOverlap' | 'crossfade'
 
 /** Cuts `piece` so it no longer overlaps [start, end); [] removes it, two clips means it was split around. */
-function cutAround(piece: Clip, start: number, end: number, bpm: number): Clip[] {
+function cutAround(piece: Clip, start: number, end: number, tempo: Tempo): Clip[] {
   const pieceEnd = piece.startBeat + piece.lengthBeats
   if (end <= piece.startBeat + EPSILON || start >= pieceEnd - EPSILON) return [piece]
   const coversStart = start <= piece.startBeat + EPSILON
   const coversEnd = end >= pieceEnd - EPSILON
   if (coversStart && coversEnd) return []
-  if (coversStart) return pieceEnd - end < MIN_CLIP_BEATS ? [] : [trimClipStart(piece, end, bpm)]
+  if (coversStart) return pieceEnd - end < MIN_CLIP_BEATS ? [] : [trimClipStart(piece, end, tempo)]
   if (coversEnd) return start - piece.startBeat < MIN_CLIP_BEATS ? [] : [trimClipEnd(piece, start)]
-  const [left, right] = splitClip(piece, start, bpm)
-  return [left, ...cutAround(right, start, end, bpm)]
+  const [left, right] = splitClip(piece, start, tempo)
+  return [left, ...cutAround(right, start, end, tempo)]
 }
 
 /**
@@ -457,7 +479,7 @@ export function applyDragMode(project: Project, trackIds: readonly string[], mov
   const tracks = project.tracks.map(input => {
     if (!trackIds.includes(input.id)) return input
     // X-Fade: partial audio overlaps become crossfades; covered regions and MIDI still resolve like noOverlap.
-    const track = mode === 'crossfade' ? crossfadeOverlaps(input, moved, project.bpm) : input
+    const track = mode === 'crossfade' ? crossfadeOverlaps(input, moved, tempoMapOf(project)) : input
     if (track !== input) changed = true
     const crossfaded = (mover: Clip, clip: Clip) => mode === 'crossfade' && mover.kind === 'audio' && clip.kind === 'audio'
       && Math.min(mover.startBeat, clip.startBeat) < Math.max(mover.startBeat, clip.startBeat) - EPSILON
@@ -470,7 +492,7 @@ export function applyDragMode(project: Project, trackIds: readonly string[], mov
       if (moved.has(clip.id)) return [clip]
       let pieces = [clip]
       for (const mover of movers) {
-        pieces = pieces.flatMap(piece => crossfaded(mover, piece) ? [piece] : cutAround(piece, mover.startBeat, mover.startBeat + mover.lengthBeats, project.bpm))
+        pieces = pieces.flatMap(piece => crossfaded(mover, piece) ? [piece] : cutAround(piece, mover.startBeat, mover.startBeat + mover.lengthBeats, tempoMapOf(project)))
       }
       if (pieces.length !== 1 || pieces[0] !== clip) trackChanged = true
       return pieces
@@ -506,7 +528,7 @@ export function trimClipStarts(project: Project, trims: readonly ClipStartTrim[]
       if (!own.has(clip.id)) return clip
       trackIds.add(track.id)
       clipIds.push(clip.id)
-      const next = trimClipStart(clip, own.get(clip.id)!, project.bpm)
+      const next = trimClipStart(clip, own.get(clip.id)!, tempoMapOf(project))
       if (next !== clip) trackChanged = true
       return next
     })
@@ -661,6 +683,20 @@ function parseTrackMidiInput(value: unknown, path: string): TrackMidiInput {
   }
 }
 
+/** Schema 15 sends: one per return, level 0…2. Return IDs are checked after every track is read. */
+function parseSends(value: unknown, path: string): TrackSend[] {
+  const seen = new Set<string>()
+  return list(value, `${path} sends`, 256).map((input, index): TrackSend => {
+    const sendPath = `${path}, send ${index + 1}`
+    const send = object(input, sendPath)
+    const returnId = text(send.returnId, `${sendPath} return ID`, 200)
+    if (seen.has(returnId)) throw new Error(`${sendPath} repeats a return track.`)
+    seen.add(returnId)
+    const pre = send.pre === undefined ? false : flag(send.pre, `${sendPath} pre-fader`)
+    return { returnId, level: number(send.level, `${sendPath} level`, 0, SEND_LEVEL_MAX), ...(pre ? { pre: true } : {}) }
+  })
+}
+
 function monitorMode(value: unknown, path: string): TrackMonitorMode {
   if (!MONITOR_MODES.includes(value as TrackMonitorMode)) throw new Error(`${path} must be off, auto or in.`)
   return value as TrackMonitorMode
@@ -685,6 +721,30 @@ function sustainEvents(value: unknown, path: string, version: number): SustainEv
     previous = beat
     return { beat, value: integer(event.value, `${eventPath} value`, 0, 127) }
   })
+}
+
+/** Controller lanes (schema 16): known keys, each sorted with unique beats and integer values in the lane's range. */
+function controllerLanes(value: unknown, path: string, version: number): Partial<Record<ControllerKey, ControllerPoint[]>> {
+  if (version < 16) throw new Error(`${path} controller data requires project schema version 16 or later.`)
+  const source = object(value, `${path} controllers`)
+  const keys = Object.keys(source)
+  if (keys.length > 132) throw new Error(`${path} has too many controller lanes.`)
+  const result: Partial<Record<ControllerKey, ControllerPoint[]>> = {}
+  for (const key of keys.sort((a, b) => isControllerKey(a) && isControllerKey(b) ? controllerOrder(a, b) : 0)) {
+    if (!isControllerKey(key)) throw new Error(`${path} has an unknown controller lane: ${key.slice(0, 40)}.`)
+    const spec = controllerSpec(key)
+    let previous = -1
+    const points = list(source[key], `${path} ${key} lane`, 200_000).map((input, index): ControllerPoint => {
+      const pointPath = `${path}, ${key} event ${index + 1}`
+      const point = object(input, pointPath)
+      const beat = number(point.beat, `${pointPath} position`, 0, 10_000_000)
+      if (beat <= previous) throw new Error(`${pointPath} must come after the previous event.`)
+      previous = beat
+      return { beat, value: integer(point.value, `${pointPath} value`, spec.min, spec.max) }
+    })
+    if (points.length) result[key] = points
+  }
+  return result
 }
 
 function list(value: unknown, path: string, maxLength: number): unknown[] {
@@ -725,11 +785,70 @@ function fadeCurves(clip: Record<string, unknown>, path: string, version: number
   return result
 }
 
+/** Schema 14 tempo map: absent stays absent; the first point must sit at beat 0 with the project tempo. */
+function validateTempoMap(input: unknown, bpm: number): TempoPoint[] | undefined {
+  if (input === undefined) return undefined
+  const points = list(input, 'Tempo map', MAX_TEMPO_POINTS).map((pointInput, index): TempoPoint => {
+    const path = `Tempo point ${index + 1}`
+    const point = object(pointInput, path)
+    if (point.curve !== 'step' && point.curve !== 'ramp') throw new Error(`${path} curve must be step or ramp.`)
+    return { beat: number(point.beat, `${path} position`, 0, 10_000_000), bpm: number(point.bpm, `${path} tempo`, TEMPO_MIN, TEMPO_MAX), curve: point.curve }
+  })
+  if (!points.length) return undefined
+  for (let index = 1; index < points.length; index += 1) {
+    if (!(points[index].beat > points[index - 1].beat)) throw new Error('Tempo points must be sorted by position without duplicates.')
+  }
+  if (points[0].beat !== 0) throw new Error('The first tempo point must be at the project start.')
+  if (Math.abs(points[0].bpm - bpm) > 1e-6) throw new Error('The first tempo point must match the project tempo.')
+  return points.length > 1 ? normalizeTempoPoints(bpm, points) : undefined
+}
+function parseAutomationMode(value: unknown, path: string): AutomationMode {
+  if (typeof value !== 'string' || !AUTOMATION_MODES.includes(value as AutomationMode)) throw new Error(`${path} must be one of ${AUTOMATION_MODES.join(', ')}.`)
+  return value as AutomationMode
+}
+function parseAutomationTarget(value: unknown, path: string): AutomationTarget {
+  const source = object(value, path)
+  let target: AutomationTarget | null = null
+  if (source.kind === 'track') target = parseTargetKey(`track:${text(source.param, `${path} parameter`, 16)}`)
+  else if (source.kind === 'device') target = { kind: 'device', deviceId: text(source.deviceId, `${path} device ID`, 200), param: text(source.param, `${path} parameter`, 120) }
+  else if (source.kind === 'instrument') target = { kind: 'instrument', param: text(source.param, `${path} parameter`, 120) }
+  else if (source.kind === 'plugin-instrument') target = parseTargetKey(`plugin:${text(source.param, `${path} parameter`, 20)}`)
+  else if (source.kind === 'send') target = { kind: 'send', returnId: text(source.returnId, `${path} return ID`, 200) }
+  if (!target) throw new Error(`${path} is not a supported automation target.`)
+  return target
+}
+/** Schema 17 lanes. Points are sorted here so a hand-edited file still evaluates deterministically. */
+function parseAutomation(value: unknown, path: string, id: (value: unknown, path: string) => string): AutomationLane[] {
+  const keys = new Set<string>()
+  let points = 0
+  return list(value, path, MAX_AUTOMATION_LANES).map((laneInput, laneIndex): AutomationLane => {
+    const lanePath = `${path} lane ${laneIndex + 1}`
+    const lane = object(laneInput, lanePath)
+    const target = parseAutomationTarget(lane.target, `${lanePath} target`)
+    const key = targetKey(target)
+    if (keys.has(key)) throw new Error(`${lanePath} duplicates another lane's target.`)
+    keys.add(key)
+    const parsedPoints = list(lane.points, `${lanePath} points`, MAX_AUTOMATION_POINTS).map((pointInput, pointIndex) => {
+      if (++points > MAX_AUTOMATION_POINTS * 4) throw new Error(`${path} contains too many automation points.`)
+      const pointPath = `${lanePath} point ${pointIndex + 1}`
+      const point = object(pointInput, pointPath)
+      const curve = point.curve === undefined ? 0 : number(point.curve, `${pointPath} curve`, -1, 1)
+      return { beat: number(point.beat, `${pointPath} position`, 0, 10_000_000), value: number(point.value, `${pointPath} value`, 0, 1), ...(curve ? { curve } : {}) }
+    }).map((point, index) => ({ point, index })).sort((a, b) => a.point.beat - b.point.beat || a.index - b.index).map(item => item.point)
+    return {
+      id: id(lane.id, `${lanePath} ID`),
+      target,
+      points: parsedPoints,
+      ...(lane.enabled === undefined || flag(lane.enabled, `${lanePath} enabled`) ? {} : { enabled: false }),
+    }
+  })
+}
+
 /** Parse known fields into fresh objects; never trust JSON casts or imported prototypes. */
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13) throw new Error('This project version is not supported. Expected schema version 1 through 13.')
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 17) throw new Error('This project version is not supported. Expected schema version 1 through 17.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -751,7 +870,8 @@ export function validateProject(input: unknown): Project {
   const tracks = list(source.tracks, 'Tracks', 10_000).map((trackInput, trackIndex): Track => {
     const path = `Track ${trackIndex + 1}`
     const track = object(trackInput, path)
-    if (track.kind !== 'audio' && track.kind !== 'instrument') throw new Error(`${path} has an invalid track type.`)
+    if (track.kind !== 'audio' && track.kind !== 'instrument' && track.kind !== 'return') throw new Error(`${path} has an invalid track type.`)
+    if (track.kind === 'return' && version < 15) throw new Error('Return tracks require project schema version 15 or later.')
     if (!isInstrumentId(track.instrument)) throw new Error(`${path} has an unknown instrument.`)
     const color = text(track.color, `${path} color`, 9)
     if (!/^#[\da-f]{6}$/i.test(color)) throw new Error(`${path} color must be a six-digit hex color.`)
@@ -818,6 +938,10 @@ export function validateProject(input: unknown): Project {
     const mode = track.monitorMode === undefined ? undefined : monitorMode(track.monitorMode, `${path} monitor mode`)
     if (track.kind !== 'instrument' && track.midiInput !== undefined) throw new Error(`${path} MIDI input requires an instrument track.`)
     const midiInput = track.midiInput === undefined ? undefined : parseTrackMidiInput(track.midiInput, `${path} MIDI input`)
+    if (version < 15 && track.sends !== undefined) throw new Error('Track sends require project schema version 15 or later.')
+    if (track.kind === 'return' && track.sends !== undefined) throw new Error(`${path} is a return track; return tracks cannot have sends.`)
+    const sends = track.sends === undefined ? undefined : parseSends(track.sends, path)
+    if (track.kind === 'return' && Array.isArray(track.clips) && track.clips.length) throw new Error(`${path} is a return track and cannot contain regions.`)
     // Schema ≤7 has only the I flag, and an absent mode keeps deriving from it. A saved mode is authoritative.
     const monitor = mode === undefined ? optional(track.monitor, false, value => flag(value, `${path} monitor`)) : mode === 'in'
     const clips = list(track.clips, `${path} clips`, 100_000).map((clipInput, clipIndex): Clip => {
@@ -878,6 +1002,12 @@ export function validateProject(input: unknown): Project {
         ...(clip.transpose === undefined ? {} : { transpose: integer(clip.transpose, `${clipPath} transpose`, -96, 96) }),
         ...(clip.velocity === undefined ? {} : { velocity: integer(clip.velocity, `${clipPath} velocity`, -99, 99) }),
         ...(clip.sustain === undefined ? {} : { sustain: sustainEvents(clip.sustain, clipPath, version) }),
+        ...(() => {
+          if (clip.controllers === undefined) return {}
+          const controllers = controllerLanes(clip.controllers, clipPath, version)
+          return Object.keys(controllers).length ? { controllers } : {}
+        })(),
+        ...(clip.bendRange === undefined ? {} : version < 16 ? (() => { throw new Error(`${clipPath} pitch-bend range requires project schema version 16 or later.`) })() : { bendRange: integer(clip.bendRange, `${clipPath} pitch-bend range`, 0, MAX_BEND_RANGE) }),
         notes: list(clip.notes, `${clipPath} notes`, 100_000).map((noteInput, noteIndex): MidiNote => {
           noteCount += 1
           if (noteCount > 1_000_000) throw new Error('The project contains too many notes.')
@@ -895,7 +1025,10 @@ export function validateProject(input: unknown): Project {
         }),
       }
     })
-    return {
+    if (version < 17 && (track.automation !== undefined || track.automationMode !== undefined)) throw new Error('Track automation requires project schema version 17 or later.')
+    const automationMode = track.automationMode === undefined ? undefined : parseAutomationMode(track.automationMode, `${path} automation mode`)
+    const automation = track.automation === undefined ? undefined : parseAutomation(track.automation, `${path} automation`, id)
+    const parsed: Track = {
       id: trackId,
       name: text(track.name, `${path} name`),
       kind: track.kind,
@@ -925,10 +1058,17 @@ export function validateProject(input: unknown): Project {
       ...(input ? { input } : {}),
       ...(inputRoute ? { inputRoute } : {}),
       ...(midiInput ? { midiInput } : {}),
+      ...(sends?.length ? { sends } : {}),
+      ...(automation?.length ? { automation } : {}),
+      ...(automationMode && automationMode !== 'read' ? { automationMode } : {}),
     }
+    // Lanes of a device or instrument parameter that is gone (hand-edited or older writers) are dropped, not fatal.
+    return pruneAutomation(parsed)
   })
   // Routes to deleted tracks read as 'none'; a saved loop (only possible by hand-editing) is broken the same way.
-  const routedTracks = reconcileTrackRoutes(tracks)
+  // Sends to a missing track (or one that is not a return) are dropped like deleted returns.
+  // Send lanes whose send was just dropped go with it.
+  const routedTracks = reconcileSends(reconcileTrackRoutes(tracks)).map(pruneAutomation)
   const markers = sortMarkers(list(source.markers ?? [], 'Markers', 10_000).map((markerInput, markerIndex): Marker => {
     const path = `Marker ${markerIndex + 1}`
     const marker = object(markerInput, path)
@@ -938,11 +1078,14 @@ export function validateProject(input: unknown): Project {
       startBeat: number(marker.startBeat, `${path} position`, 0, MAX_MARKER_BEAT),
     }
   }))
+  const bpm = number(source.bpm, 'Tempo', 30, 300)
+  const tempoMap = version >= 14 ? validateTempoMap(source.tempoMap, bpm) : undefined
   return {
-    schemaVersion: 13,
+    schemaVersion: 17,
     id: projectId,
     name: text(source.name, 'Project name'),
-    bpm: number(source.bpm, 'Tempo', 30, 300),
+    bpm,
+    ...(tempoMap ? { tempoMap } : {}),
     sampleRate: projectSampleRate(source.sampleRate),
     timeSignature,
     beatsPerBar,

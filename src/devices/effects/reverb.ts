@@ -66,6 +66,8 @@ const definition: EffectDef = {
     { id: 'type', label: '공간', min: 0, max: 3, default: 0, unit: 'x', options: [{ value: 0, label: '홀' }, { value: 1, label: '룸' }, { value: 2, label: '플레이트' }, { value: 3, label: '스프링' }] },
     { id: 'predelay', label: '프리딜레이', min: 0, max: 250, default: 0, unit: 'ms' },
     { id: 'lowcut', label: '로우컷', min: 20, max: 1000, default: 20, unit: 'hz', scale: 'log' },
+    // Dry (original) level: 1 keeps the insert behaviour; 0 = 100% wet for return tracks (docs/SENDS_RETURNS.md).
+    { id: 'dry', label: '원음', min: 0, max: 1, default: 1, unit: 'pct' },
   ],
 }
 
@@ -82,6 +84,7 @@ export const reverbEffect: RealtimeEffectModule = {
     const largeGain = remember(context.createGain())
     const tone = remember(context.createBiquadFilter())
     const wet = remember(context.createGain())
+    const dry = remember(context.createGain())
     const predelay = remember(context.createDelay(0.3))
     const lowcut = remember(context.createBiquadFilter())
     let space = 0
@@ -90,7 +93,7 @@ export const reverbEffect: RealtimeEffectModule = {
     tone.type = 'lowpass'
     lowcut.type = 'lowshelf'
     lowcut.Q.value = 0.5
-    input.connect(output)
+    input.connect(dry).connect(output)
     input.connect(predelay)
     predelay.connect(small).connect(smallGain).connect(tone)
     predelay.connect(large).connect(largeGain).connect(tone)
@@ -111,6 +114,7 @@ export const reverbEffect: RealtimeEffectModule = {
         setParameter(largeGain.gain, size, now, smooth)
         setParameter(tone.frequency, clamp(p('tone'), 10, context.sampleRate * 0.45), now, smooth)
         setParameter(wet.gain, clamp(p('amount'), 0, 1) * 0.5, now, smooth)
+        setParameter(dry.gain, clamp(p('dry'), 0, 1), now, smooth)
         setParameter(predelay.delayTime, clamp(p('predelay'), 0, 250) / 1000, now, smooth)
         // At 20 Hz the low cut is off: a 0 dB shelf is an exact pass-through (native skips the filter).
         const cut = clamp(p('lowcut'), 20, 1000)

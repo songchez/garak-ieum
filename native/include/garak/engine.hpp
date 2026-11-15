@@ -1,5 +1,6 @@
 #pragma once
 
+#include "garak/tempo.hpp"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -58,16 +59,21 @@ struct PluginSpec {
   bool operator==(const PluginSpec&) const = default;
 };
 struct ProcessContext {
+  // bpm is the tempo at projectFrame; `tempo` (when set) converts any project frame to beats (docs/TEMPO_MAP.md).
   double sampleRate = 48000, bpm = 120;
   std::int64_t projectFrame = 0;
   bool playing = false, offline = false;
   int timeSigNumerator = 4, timeSigDenominator = 4;
   bool cycleActive = false, recording = false;
   std::int64_t cycleStartFrame = 0, cycleEndFrame = 0, continuousFrame = 0;
+  const TempoMap* tempo = nullptr;
+  // Musical position (quarter notes) of a project frame: through the tempo map when there is one.
+  [[nodiscard]] double beatAt(double frame) const noexcept { return tempo ? tempo->beatAtFrame(frame, sampleRate) : frame / sampleRate * bpm / 60.0; }
 };
 struct PluginEvent {
-  // Controller: MIDI control change; parameterId is the controller number (0..127) and value is
-  // normalized (CC value / 127). VST3 delivers it through the plug-in's IMidiMapping.
+  // Controller: MIDI controller; parameterId is the controller number (ControlEvent numbering: 0..127 CC,
+  // 128 channel pressure, 129 pitch bend, 130 program change) and value is normalizedControllerValue().
+  // VST3 delivers it through the plug-in's IMidiMapping; IEUM WAVE interprets it itself.
   enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff, Controller };
   Type type = Type::NoteOn;
   std::uint32_t offset = 0;
@@ -118,15 +124,43 @@ struct NotePair {
   float velocity = 1;
   bool operator==(const NotePair&) const = default;
 };
-// A MIDI control change on the timeline (currently CC64 sustain for VST3 instruments; built-in sources get
-// the pedal applied to their note-off frames by the timeline compiler, docs/SUSTAIN_PEDAL.md).
+// A MIDI controller event on the timeline (docs/MIDI_CONTROLLERS.md, docs/SUSTAIN_PEDAL.md).
+// controller: 0..127 control change (value 0..127), 128 channel pressure (0..127), 129 pitch bend
+// (-8192..8191, 0 = centre), 130 program change (0..127), 131 pitch-bend range in semitones (0..48,
+// a host meta-controller for built-in sources only). The timeline compiler sends VST3 instruments every
+// controller including CC64; IEUM WAVE everything but CC64/131 (the pedal is baked into note-offs);
+// built-in sources everything but CC64/130.
 struct ControlEvent {
   std::int64_t frame = 0;
-  std::uint8_t controller = 64, value = 0;
+  std::uint16_t controller = 64;
+  std::int32_t value = 0;
   bool operator==(const ControlEvent&) const = default;
 };
 constexpr int sustainController = 64;
+constexpr int modWheelController = 1, volumeController = 7, expressionController = 11;
+constexpr int channelPressureController = 128, pitchBendController = 129, programChangeController = 130, bendRangeController = 131;
+constexpr int controllerCount = 132;
 [[nodiscard]] constexpr bool pedalDown(int value) noexcept { return value >= 64; }
+// Valid value range of a controller (pitch bend is signed; the bend range is 0..48 semitones).
+[[nodiscard]] constexpr bool validControllerValue(int controller, int value) noexcept {
+  if (controller < 0 || controller >= controllerCount) return false;
+  if (controller == pitchBendController) return value >= -8192 && value <= 8191;
+  if (controller == bendRangeController) return value >= 0 && value <= 48;
+  return value >= 0 && value <= 127;
+}
+// Normalized 0..1 value a plug-in receives (VST3 IMidiMapping parameter point; IEUM WAVE decodes it back).
+[[nodiscard]] constexpr float normalizedControllerValue(int controller, int value) noexcept {
+  return controller == pitchBendController ? static_cast<float>(value + 8192) / 16383.f : static_cast<float>(value) / 127.f;
+}
+// Controllers returned to a default when playback stops and at region ends (mod wheel, expression, sustain,
+// channel pressure, pitch bend); others (volume, pan, program, ...) keep their last value.
+[[nodiscard]] constexpr bool resetController(int controller, int& defaultValue) noexcept {
+  switch (controller) {
+    case modWheelController: case sustainController: case channelPressureController: case pitchBendController: defaultValue = 0; return true;
+    case expressionController: defaultValue = 127; return true;
+    default: return false;
+  }
+}
 struct AudioWindow {
   std::int32_t id = 0;
   std::string assetId;
@@ -172,8 +206,46 @@ struct TrackRoute {
   Tap tap = Tap::PostFx;
   bool operator==(const TrackRoute&) const = default;
 };
+// One aux send (docs/SENDS_RETURNS.md): this track's signal into a return track at a linear gain. Post-fader
+// (default) taps after pan, fader, mute and solo; pre-fader taps after the inserts and plug-in delay
+// compensation, before pan/fader, and is still silenced while the track is not audible (mute/solo).
+struct TrackSend {
+  std::string returnId;
+  float gain = 0;
+  bool pre = false;
+  bool operator==(const TrackSend&) const = default;
+};
+// Track automation (docs/AUTOMATION.md), compiled by src/audio/native/timeline.ts. Points sit on project
+// frames (fractional) with values normalized 0..1 in the target's range; `curve` bends the segment to the next
+// point exactly like automationShape() in src/core/automation.ts.
+struct AutomationPoint {
+  double frame = 0, value = 0, curve = 0;
+  bool operator==(const AutomationPoint&) const = default;
+};
+struct AutomationLane {
+  // Insert: a built-in effect parameter (by id) or a VST3 insert ParamID. Instrument: a built-in instrument
+  // parameter, or a VST3 instrument ParamID. Send: this track's send level (linear 0..2) into return `returnId`.
+  enum class Target : std::uint8_t { Volume, Pan, Mute, Insert, Instrument, Send };
+  Target target = Target::Volume;
+  std::string insertId, param, returnId;
+  // Normalized -> target units: options (discrete), logarithmic or linear between minimum and maximum.
+  double minimum = 0, maximum = 1;
+  bool logarithmic = false;
+  std::vector<double> options;
+  std::vector<AutomationPoint> points; // Sorted by frame; two points on one frame make a jump.
+  bool operator==(const AutomationLane&) const = default;
+};
+[[nodiscard]] double automationShape(double t, double curve) noexcept;
+// Normalized value at `frame`. `hint` caches the segment for monotonic calls (any start value is valid).
+[[nodiscard]] double evaluateAutomation(const AutomationLane& lane, double frame, std::size_t& hint) noexcept;
+[[nodiscard]] double automationValue(const AutomationLane& lane, double normalized) noexcept;
+
 struct TrackTimeline {
   std::string id;
+  // A return (aux) track: an Audio source without windows or inputs, fed by other tracks' sends, rendered
+  // after all of them; its output joins the master. Returns never send and are never route sources.
+  bool isReturn = false;
+  std::vector<TrackSend> sends; // Ignored on returns; sends to unknown or non-return ids are silent.
   TrackSource source;
   std::optional<TrackInput> input;
   std::optional<TrackRoute> route; // When set, replaces `input` for monitoring and recording.
@@ -181,8 +253,11 @@ struct TrackTimeline {
   bool enabled = true, mute = false, solo = false, soloSafe = false, audible = true;
   std::vector<BuiltinInsert> inserts;
   std::vector<NotePair> notes;
-  std::vector<ControlEvent> controls; // Sorted by frame.
+  std::vector<ControlEvent> controls; // Sorted by frame; equal frames keep their order.
   std::vector<AudioWindow> audio;
+  std::vector<AutomationLane> automation;
+  // Fader audibility if the track were unmuted (solo state included); used while a mute lane is active.
+  bool unmutedAudible = true;
 };
 struct ProjectTimeline {
   std::uint32_t version = 1;
@@ -190,6 +265,9 @@ struct ProjectTimeline {
   std::uint64_t revision = 0;
   std::uint32_t sampleRate = 48000;
   double bpm = 120, beatsPerBar = 4;
+  // Tempo changes (schema 14): sorted points, the first at beat 0 with `bpm`. Empty = constant `bpm`.
+  // Note/audio/cycle frames already follow it; the host uses it for clicks, synced effects and VST3 time.
+  std::vector<TempoPoint> tempoMap;
   int timeSigNumerator = 4, timeSigDenominator = 4;
   std::int64_t lengthFrames = 1;
   std::optional<std::array<std::int64_t, 2>> cycle;
@@ -221,6 +299,9 @@ struct EngineSnapshot {
   std::uint64_t revision = 0, lastAppliedCommand = 0;
   std::int64_t frame = 0;
   std::uint32_t sampleRate = 48000, trackCount = 0, latencyFrames = 0;
+  // Plug-in delay of the track taps (post-FX, post-fader, sends): latencyFrames minus the extra delay the
+  // dry paths wait for the latent return tracks. Equal to latencyFrames when no return adds latency.
+  std::uint32_t senderLatencyFrames = 0;
   bool ready = false, playing = false;
   float masterPeak = 0;
   std::array<float, 256> trackPeaks{};
@@ -291,6 +372,10 @@ struct RecordingTake {
   // delay (latencyFrames), a PreFx route none: the host subtracts that, never converter latency.
   bool routed = false;
   bool routeDelayed = false;
+  // A delayed route's delay: the master feed carries the whole graph latency (latencyFrames); a track's
+  // post-FX/post-fader tap carries only the sender alignment (senderLatencyFrames), which is smaller when a
+  // return track's inserts add latency (returns are compensated after the taps).
+  bool routeMasterFeed = false;
 };
 constexpr std::size_t maxRecordingTakes = 64;
 
@@ -335,6 +420,7 @@ class PreparedProject {
   [[nodiscard]] std::size_t trackCount() const noexcept;
   [[nodiscard]] double tailSeconds() const noexcept;
   [[nodiscard]] std::uint32_t latencyFrames() const noexcept;
+  [[nodiscard]] std::uint32_t senderLatencyFrames() const noexcept;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
@@ -369,8 +455,9 @@ class RenderEngine {
                                         std::uint32_t durationFrames = 24000);
   [[nodiscard]] std::uint64_t noteOn(std::uint32_t trackIndex, int pitch, float velocity, std::int32_t noteId);
   [[nodiscard]] std::uint64_t noteOff(std::uint32_t trackIndex, int pitch, std::int32_t noteId);
-  // Live MIDI control change (0..127). CC64 sustains live notes: built-in and IEUM WAVE sources defer
-  // live note-offs while the pedal is down; VST3 instruments receive the controller as an event.
+  // Live MIDI controller (ControlEvent numbering and ranges: validControllerValue). CC64 sustains live notes:
+  // built-in and IEUM WAVE sources defer live note-offs while the pedal is down; VST3 instruments receive
+  // every controller as an event. Built-ins follow pitch bend, mod wheel/pressure (vibrato), CC7 and CC11.
   [[nodiscard]] std::uint64_t controlChange(std::uint32_t trackIndex, int controller, int value);
   // Release audition/live notes on this track without touching timeline notes.
   [[nodiscard]] std::uint64_t allNotesOff(std::uint32_t trackIndex);

@@ -56,6 +56,7 @@ void WavetableProcessor::takeStateFrom(WavetableProcessor& previous) noexcept {
   synth_.swap(previous.synth_);
   tables_.swap(previous.tables_);
   std::swap(reset_, previous.reset_);
+  volume_ = previous.volume_; expression_ = previous.expression_; gain_ = previous.gain_;
   bool applied = false;
   if (tables_ != desiredTables_) {
     fadingTables_.swap(tables_); // tables_ is now empty; assigning cannot delete.
@@ -71,12 +72,48 @@ void WavetableProcessor::takeStateFrom(WavetableProcessor& previous) noexcept {
 
 void WavetableProcessor::process(float* stereo, std::uint32_t frames, std::span<const PluginEvent> input,
                                 const ProcessContext& context) noexcept {
-  if (reset_) { synth_->reset(); reset_ = false; }
-  // MIDI controllers have no meaning inside the synth: the host applies the sustain pedal to note-offs.
-  std::size_t count = 0;
+  using ieum::wave::ParameterId;
+  if (reset_) {
+    synth_->reset(); reset_ = false;
+    // Controllers return to the patch: no bend, the macros the mod wheel/pressure drive at their patch values.
+    synth_->setParameter(ParameterId::Macro1, desiredPatch_.params[ieum::wave::parameterIndex(ParameterId::Macro1)], true);
+    synth_->setParameter(ParameterId::Macro2, desiredPatch_.params[ieum::wave::parameterIndex(ParameterId::Macro2)], true);
+    volume_ = expression_ = gain_ = 1;
+  }
+  // Host MIDI controllers (docs/MIDI_CONTROLLERS.md). The sustain pedal never reaches here: the host applies
+  // it to note-offs. Pitch bend uses the patch's bend range; the mod wheel drives Macro 1 and channel
+  // pressure Macro 2 (route them in the patch); CC7/CC11 scale the output. Other controllers are ignored.
+  std::size_t count = 0, gains = 0;
+  const float before = volume_ * expression_;
   for (std::size_t i = 0; i < input.size() && count < events_.size(); ++i) {
-    if (input[i].type == PluginEvent::Type::Controller) continue;
-    const auto& source = input[i]; auto& event = events_[count++];
+    const auto& source = input[i];
+    if (source.type == PluginEvent::Type::Controller) {
+      const auto controller = static_cast<int>(source.parameterId);
+      const double normalized = std::clamp(static_cast<double>(source.value), 0.0, 1.0);
+      if (controller == volumeController || controller == expressionController) {
+        const double v = controller == volumeController ? normalized * 127 / 100 : normalized;
+        (controller == volumeController ? volume_ : expression_) = static_cast<float>(v * v);
+        if (gains < gainChanges_.size()) gainChanges_[gains++] = {source.offset, volume_, expression_};
+        else gainChanges_[gains - 1] = {gainChanges_[gains - 1].offset, volume_, expression_};
+        continue;
+      }
+      auto& event = events_[count];
+      event = {};
+      event.sampleOffset = source.offset;
+      event.channel = source.audition ? 1 : 0;
+      if (controller == pitchBendController) {
+        const double raw = std::round(normalized * 16383) - 8192;
+        event.type = ieum::wave::EventType::PitchBend;
+        event.value = static_cast<float>(std::clamp(raw > 0 ? raw / 8191 : raw / 8192, -1.0, 1.0));
+      } else if (controller == modWheelController || controller == channelPressureController) {
+        event.type = ieum::wave::EventType::Parameter;
+        event.parameter = controller == modWheelController ? ParameterId::Macro1 : ParameterId::Macro2;
+        event.value = static_cast<float>(normalized);
+      } else continue;
+      ++count;
+      continue;
+    }
+    auto& event = events_[count++];
     event = {};
     event.sampleOffset = source.offset;
     // The editor and timeline can use the same host ID/pitch independently.
@@ -98,7 +135,20 @@ void WavetableProcessor::process(float* stereo, std::uint32_t frames, std::span<
   const ieum::wave::ProcessContext transport{context.bpm,
     double(context.projectFrame) * context.bpm / (60.0 * context.sampleRate), context.playing, true};
   synth_->process(left_.data(), right_.data(), frames, events_.data(), count, transport);
-  for (std::uint32_t i = 0; i < frames; ++i) { stereo[i * 2] = left_[i]; stereo[i * 2 + 1] = right_[i]; }
+  if (!gains && gain_ == 1 && before == 1) {
+    for (std::uint32_t i = 0; i < frames; ++i) { stereo[i * 2] = left_[i]; stereo[i * 2 + 1] = right_[i]; }
+    return;
+  }
+  // The gain in effect before this block's first change, then each change from its offset (~5 ms smoothing).
+  float target = before;
+  const float smoothing = static_cast<float>(1 - std::exp(-1 / (synth_->sampleRate() * .005)));
+  std::size_t next = 0;
+  for (std::uint32_t i = 0; i < frames; ++i) {
+    while (next < gains && gainChanges_[next].offset <= i) { target = gainChanges_[next].volume * gainChanges_[next].expression; ++next; }
+    gain_ += (target - gain_) * smoothing;
+    if (std::abs(target - gain_) < 1e-6f) gain_ = target;
+    stereo[i * 2] = left_[i] * gain_; stereo[i * 2 + 1] = right_[i] * gain_;
+  }
 }
 
 double WavetableProcessor::tailSeconds() const noexcept {

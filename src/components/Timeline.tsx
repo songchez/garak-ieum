@@ -1,4 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { TempoTrack, TEMPO_ROW_HEIGHT } from './TempoTrack'
+import { spanBeats, tempoMapOf } from '../core/tempoMap'
 import type { AudioAsset, AudioClip, AudioEngine, Clip, InputChoice, Marker, Project, Track, TrackInput, TrackInputRoute } from '../core/types'
 import { MIN_CLIP_BEATS, setClipLoopEnd, trimClipEnd, trimClipStart, visibleTracks, type ClipStartTrim } from '../core/project'
 import { audibleTracks, effectiveArm, type TrackButtonKind } from '../core/trackActions'
@@ -25,6 +27,8 @@ import { InlineName, TimelineClip, pointerFocus, type ClipActions, type GestureM
 import { envelopeMenuItems, type ClipsEdit, type EnvelopeActions } from './ClipEnvelope'
 import { draggedLibraryRole, readLibraryDrag, type LibraryItem } from '../core/libraryDrag'
 import { formatTranspose, isDefaultTranspose, shiftTranspose, transposeSettings, type TransposeSettings } from '../devices/region-pitch/state'
+import { AutomationLanes } from './AutomationLanes'
+import type { AutomationMode } from '../core/types'
 import './Timeline.css'
 
 /** Default header column width; the live value is `ui.headerWidth`. */
@@ -33,6 +37,7 @@ export const MIN_PPB = ZOOM_LIMITS.timelineX.min, MAX_PPB = ZOOM_LIMITS.timeline
 const RULER_HEIGHT = 38, GLOBAL_ROW_HEIGHT = 22
 const ROW_LIMITS = { min: 36, max: 320 }
 const FOCUS_ZOOM = 2.5
+const RETURN_ROW_ZOOM = 0.6
 /** Legacy six-colour set; the palette (core/colors.ts) replaces it. */
 export const TRACK_COLORS = [['#6f9fd0','하늘'],['#7fb59a','숲'],['#e38457','노을'],['#8cc7c0','물빛'],['#d98a9f','꽃잎'],['#d9b45a','황금']] as const
 const CYCLE_BAND = 16
@@ -69,7 +74,8 @@ export interface TimelineProps {
   onTrackSweep(trackId:string,kind:TrackButtonKind,value:boolean):void
   onTracksChange(patches:{id:string;patch:Partial<Track>}[],key?:string):void
   onTracksReorder(ids:string[],afterId:string|null):void
-  onNewTrack(opts:{kind?:'instrument'|'audio';sameAsFocused?:boolean;empty?:boolean;dialog?:boolean;afterId?:string|null}):void
+  /** kind 'return' adds an empty return track; with effectReturns, the 대청 Hall + 메아리 Echo returns (docs/SENDS_RETURNS.md). */
+  onNewTrack(opts:{kind?:Track['kind'];sameAsFocused?:boolean;empty?:boolean;dialog?:boolean;afterId?:string|null;effectReturns?:boolean}):void
   onDuplicateTracks(ids:string[],mode:'settings'|'content'):void
   onDeleteTracks(ids:string[]):void
   onRenameTracks(ids:string[],name:string|null):void
@@ -78,6 +84,11 @@ export interface TimelineProps {
   onIconMenu(id:string,e:Point):void
   onConfigureHeader(e:Point):void
   onClearRecallSolo():void
+  /** Tracks whose automation lanes are shown under them (docs/AUTOMATION.md). */
+  automationTracks?:ReadonlySet<string>
+  onAutomationToggle?(trackId:string):void
+  onAutomationEdit?(trackId:string,edit:(track:Track)=>Track,label:string):void
+  onAutomationMode?(trackId:string,mode:AutomationMode):void
   onSeek(beat:number):void; onSeekPlay(beat:number):void
   onLoopChange(loop:{enabled:boolean;startBeat:number;endBeat:number}):void
   onSelectClips(ids:string[],anchor:string|null,trackId?:string):void
@@ -96,6 +107,8 @@ export interface TimelineProps {
   /** Window-level entries (zoom, full screen) appended to the 보기 menu by the host frame. */
   viewMenuExtras?():ContextMenuItem[]
   onMarker(action:'add'|'move'|'rename'|'delete',payload:{id?:string;beat?:number;name?:string}):void
+  /** 템포 global track edits (docs/TEMPO_MAP.md); one call = one undo step. Absent = no tempo row. */
+  onTempoChange?(edit:(project:Project)=>Project,label:string):void
   /** Optional extras outside the §3.1 contract: clip double-click opens its editor; inline clip rename state. Without them a double-click only selects. */
   onClipOpen?(trackId:string,clipId:string):void
   renamingClipId?:string|null
@@ -230,7 +243,8 @@ export function Timeline(props:TimelineProps){
   const audible=audibleTracks(project)
   const contentEnd=Math.max(project.lengthBeats,recordingView?recordingView.startBeat+recordingView.lengthBeats:0,...project.tracks.flatMap(t=>t.clips.map(c=>c.startBeat+Math.max(c.lengthBeats,c.loopLengthBeats??0))),...project.markers.map(m=>m.startBeat))
   const width=(contentEnd+beatsPerBar*2)*ppb
-  const heightOf=(track:Track)=>{let f=ui.trackZoom[track.id]??1;if(ui.zoomFocused&&track.id===focusedTrackId)f=Math.max(f,FOCUS_ZOOM);return Math.round(clamp(rowHeight*f,ROW_LIMITS.min,ROW_LIMITS.max))}
+  // Return tracks have no regions: a compact row unless the user zooms it (docs/SENDS_RETURNS.md).
+  const heightOf=(track:Track)=>{let f=ui.trackZoom[track.id]??(track.kind==='return'?RETURN_ROW_ZOOM:1);if(ui.zoomFocused&&track.id===focusedTrackId)f=Math.max(f,FOCUS_ZOOM);return Math.round(clamp(rowHeight*f,ROW_LIMITS.min,ROW_LIMITS.max))}
   const sheetPoint=(clientX:number,clientY:number)=>{const r=sheetRef.current!.getBoundingClientRect();return{x:clientX-r.left,y:clientY-r.top}}
   const rowEls=()=>Array.from(sheetRef.current?.querySelectorAll<HTMLElement>(':scope > .track-row')??[])
   const rowTops=()=>rowEls().map(row=>row.offsetTop)
@@ -286,7 +300,7 @@ export function Timeline(props:TimelineProps){
     if(!scroll||!row)return
     revealedRecording.current=recordingDraft.id
     cancelGesture.current?.();setMenu(null)
-    const stickyHeight=RULER_HEIGHT+(ui.globalTracks?GLOBAL_ROW_HEIGHT:0)
+    const stickyHeight=RULER_HEIGHT+(ui.globalTracks?GLOBAL_ROW_HEIGHT+(props.onTempoChange?TEMPO_ROW_HEIGHT:0):0)
     if(row.offsetTop<scroll.scrollTop+stickyHeight||row.offsetHeight>scroll.clientHeight-stickyHeight)scroll.scrollTop=Math.max(0,row.offsetTop-stickyHeight)
     else if(row.offsetTop+row.offsetHeight>scroll.scrollTop+scroll.clientHeight)scroll.scrollTop=row.offsetTop+row.offsetHeight-scroll.clientHeight
     const start=recordingView.startBeat*ppb,visible=scroll.clientWidth-headerWidth
@@ -337,7 +351,7 @@ export function Timeline(props:TimelineProps){
   function envelopeItems(clip:Clip,ids:string[]):ContextMenuItem[]{
     if(clip.kind!=='audio'||!props.onClipsEdit)return[]
     const chosen=new Set(ids),targets=project.tracks.flatMap(t=>t.clips).filter((c):c is AudioClip=>c.kind==='audio'&&chosen.has(c.id))
-    return[SEP,...envelopeMenuItems(clip,targets.length?targets:[clip],assets,project.bpm,props.onClipsEdit,props.onClipCrossfade?()=>props.onClipCrossfade?.(targets.map(c=>c.id)):undefined)]
+    return[SEP,...envelopeMenuItems(clip,targets.length?targets:[clip],assets,tempoMapOf(project),props.onClipsEdit,props.onClipCrossfade?()=>props.onClipCrossfade?.(targets.map(c=>c.id)):undefined)]
   }
   function clipMenu(e:React.MouseEvent,track:Track,clip:Clip){
     const selected=selectedClipIds.has(clip.id)
@@ -355,6 +369,7 @@ export function Timeline(props:TimelineProps){
       SEP,
       {label:'새 오디오 트랙',icon:'wave',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:track.id})},
       {label:'새 소프트웨어 악기 트랙',icon:'keys',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:track.id})},
+      ...returnItems(track.id),
       {label:'설정을 복제한 새로운 트랙',icon:'copy',shortcut:shortcutLabel('duplicateTrack')||undefined,onSelect:()=>latest.current.onDuplicateTracks(ids,'settings')},
       {label:'설정 및 콘텐츠를 복제한 새로운 트랙',icon:'copy',shortcut:shortcutLabel('duplicateTrackContent')||undefined,onSelect:()=>latest.current.onDuplicateTracks(ids,'content')},
       SEP,
@@ -372,13 +387,18 @@ export function Timeline(props:TimelineProps){
       {label:'트랙 헤더 구성…',icon:'inspector',shortcut:shortcutLabel('configureTrackHeader')||undefined,onSelect:()=>latest.current.onConfigureHeader(at)},
     ],'트랙 메뉴')
   }
+  /** "리턴 트랙 추가" and the "리버브 리턴 추가" quick action (대청 Hall + 메아리 Echo, 100% wet). */
+  function returnItems(afterId:string|null):ContextMenuItem[]{
+    return[{label:'리턴 트랙 추가',icon:'return',onSelect:()=>latest.current.onNewTrack({kind:'return',afterId})},{label:'리버브 리턴 추가',icon:'reverb',onSelect:()=>latest.current.onNewTrack({kind:'return',effectReturns:true,afterId})}]
+  }
   function laneMenu(e:React.MouseEvent,track:Track){
     const bar=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar
     if(!selectedTrackIds.has(track.id))props.onTrackClick(track.id,{...plainMods,trackOnly:true})
+    if(track.kind==='return'){openMenu(e,[{label:'리턴 트랙: 다른 트랙의 센드로 소리를 받습니다',disabled:true,onSelect:()=>{}},SEP,...returnItems(track.id),{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:track.id})}],'레인 메뉴');return}
     openMenu(e,[cmd('붙여넣기','paste',{},{trackIds:[track.id]}),SEP,track.kind==='audio'?{label:'오디오·MIDI 가져오기…',icon:'upload',onSelect:()=>latest.current.onAddClip(track.id,bar)}:{label:'MIDI 클립 만들기',icon:'region',onSelect:()=>latest.current.onAddClip(track.id,bar)},...(track.kind==='instrument'&&props.onImportFiles?[{label:'MIDI 파일 가져오기…',icon:'upload',onSelect:()=>latest.current.onImportFiles?.(track.id,bar)} as ContextMenuItem]:[]),SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:track.id})}],'레인 메뉴')
   }
   function emptyAreaMenu(e:React.MouseEvent){
-    openMenu(e,[{label:'새 오디오 트랙',icon:'wave',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:null})},{label:'새 소프트웨어 악기 트랙',icon:'keys',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:null})},...(props.onImportFiles?[SEP,{label:'오디오·MIDI 가져오기…',icon:'upload',onSelect:()=>latest.current.onImportFiles?.()} as ContextMenuItem]:[]),SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:null})}],'트랙 추가 메뉴')
+    openMenu(e,[{label:'새 오디오 트랙',icon:'wave',shortcut:shortcutLabel('newAudioTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'audio',afterId:null})},{label:'새 소프트웨어 악기 트랙',icon:'keys',shortcut:shortcutLabel('newInstrumentTrack')||undefined,onSelect:()=>latest.current.onNewTrack({kind:'instrument',afterId:null})},...returnItems(null),...(props.onImportFiles?[SEP,{label:'오디오·MIDI 가져오기…',icon:'upload',onSelect:()=>latest.current.onImportFiles?.()} as ContextMenuItem]:[]),SEP,{label:'새 트랙…',icon:'track',shortcut:shortcutLabel('newTracksDialog')||undefined,onSelect:()=>latest.current.onNewTrack({dialog:true,afterId:null})}],'트랙 추가 메뉴')
   }
   function markerMenu(e:React.MouseEvent,marker:Marker){
     setMarkerState({selected:marker.id,renaming:null})
@@ -443,7 +463,7 @@ export function Timeline(props:TimelineProps){
       const destinations=new Set(group.map(g=>rows[g.row+dRow]?.id??g.track.id))
       const targetEdges=rows.filter(t=>destinations.has(t.id)).flatMap(t=>t.clips.filter(c=>(mode==='move'&&mods.copy)||!ids.has(c.id)).flatMap(c=>[c.startBeat,c.startBeat+c.lengthBeats,...(c.loop?[loopEnd(t,c,project.lengthBeats)]:[])]))
       const movingEdges=group.flatMap(g=>mode==='move'?[g.clip.startBeat,g.clip.startBeat+g.clip.lengthBeats]:[g.clip.startBeat+(mode==='trimEnd'?g.clip.lengthBeats:0)])
-      const minDelta=mode==='move'?-minStart:mode==='trimEnd'?Math.max(...group.map(g=>MIN_CLIP_BEATS-g.clip.lengthBeats)):Math.max(...group.map(g=>trimClipStart(g.clip,0,project.bpm).startBeat-g.clip.startBeat))
+      const minDelta=mode==='move'?-minStart:mode==='trimEnd'?Math.max(...group.map(g=>MIN_CLIP_BEATS-g.clip.lengthBeats)):Math.max(...group.map(g=>trimClipStart(g.clip,0,tempoMapOf(project)).startBeat-g.clip.startBeat))
       const maxDelta=mode==='move'?Infinity:mode==='trimStart'?Math.min(...group.map(g=>g.clip.lengthBeats-MIN_CLIP_BEATS)):Math.min(...group.map(g=>trimEndLength(g.clip,Infinity)-g.clip.lengthBeats))
       const snapped=snapToEdges({rawDelta:dx/ppb,gridDelta:dBeat,movingEdges,targetEdges,ppb,enabled:snapBeats>0&&!mods.noSnap&&!verticalOnly,minDelta,maxDelta})
       dBeat=verticalOnly?0:snapped.delta
@@ -473,7 +493,7 @@ export function Timeline(props:TimelineProps){
   }
   function trimEndLength(clip:Clip,dBeat:number){
     const asset=clip.kind==='audio'?assets.get(clip.assetId):undefined
-    const max=asset&&clip.kind==='audio'?Math.max(MIN_CLIP_BEATS,(asset.buffer.duration-clip.offsetSeconds)*project.bpm/60):Infinity
+    const max=asset&&clip.kind==='audio'?Math.max(MIN_CLIP_BEATS,spanBeats(tempoMapOf(project),clip.startBeat,asset.buffer.duration-clip.offsetSeconds)):Infinity
     return Math.min(max,Math.max(MIN_CLIP_BEATS,clip.lengthBeats+dBeat))
   }
 
@@ -670,7 +690,7 @@ export function Timeline(props:TimelineProps){
     if(!drag||!drag.ids.has(clip.id))return undefined
     if(drag.mode==='move'){const row=rowIndex.get(track.id)!,moved={...clip,startBeat:clip.startBeat+drag.dBeat};return{start:moved.startBeat,length:moved.lengthBeats,dy:(drag.rowTops[row+drag.dRow]??0)-(drag.rowTops[row]??0),clip:moved,trackId:rows[row+drag.dRow]?.id??track.id}}
     if(drag.mode==='trimEnd'){const trimmed=trimClipEnd(clip,clip.startBeat+trimEndLength(clip,drag.dBeat));return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0,clip:trimmed,trackId:track.id}}
-    const trimmed=trimClipStart(clip,clip.startBeat+drag.dBeat,project.bpm);return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0,clip:trimmed,trackId:track.id}
+    const trimmed=trimClipStart(clip,clip.startBeat+drag.dBeat,tempoMapOf(project));return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0,clip:trimmed,trackId:track.id}
   }
   const clipPreviews=new Map<string,Preview>(),placements=new Map<string,RegionPlacement>()
   if(drag||clipLoopDraft)for(const track of rows)for(const clip of track.clips){const preview=previewFor(track,clip);if(preview){clipPreviews.set(clip.id,preview);placements.set(clip.id,{clip:preview.clip!,trackId:preview.trackId!})}}
@@ -688,6 +708,7 @@ export function Timeline(props:TimelineProps){
   const grid=musicalGrid(ppb,{snap:snapBeats,beatsPerBar,beatUnit})
   const gridStyle=musicalGridStyle(grid)
   const laneGrid=ui.gridLines?gridStyle:{backgroundImage:'none'}
+  const returnNames=new Map(project.tracks.filter(track=>track.kind==='return').map(track=>[track.id,track.name] as [string,string]))
   const rulerMarks=musicalRulerMarks(grid,Math.max(0,rulerViewport.left/ppb-beatsPerBar),(rulerViewport.left+Math.max(0,rulerViewport.width-headerWidth))/ppb+beatsPerBar)
   const anyHidden=project.tracks.some(t=>t.hidden),anySolo=project.tracks.some(t=>t.solo)
   const focused=project.tracks.find(t=>t.id===focusedTrackId)
@@ -744,12 +765,15 @@ export function Timeline(props:TimelineProps){
             {!markers.length&&<span className="marker-hint">더블 클릭하여 마커 추가</span>}
           </div>
         </div>}
+        {ui.globalTracks&&props.onTempoChange&&<TempoTrack project={project} width={width} ppb={ppb} laneStyle={laneGrid} snapBeat={beat=>snapBeat(beat)} playheadBeat={()=>engine.getSnapshot().beat}
+          onChange={(edit,label)=>latest.current.onTempoChange?.(edit,label)} onSeek={beat=>latest.current.onSeek(beat)} openMenu={(e,items,label)=>openMenu(e,items,label)}/>}
         {rows.map(track=>{const temporary=!projectTrackIds.has(track.id),take=recordingTakes.get(track.id),recordingTarget=!!take
           const h=heightOf(track),selected=selectedTrackIds.has(track.id),isFocused=track.id===focusedTrackId,enabled=isTrackEnabled(track),silent=!temporary&&!audible.has(track.id)&&enabled,hiddenNow=track.hidden&&ui.hideView&&!recordingTarget
           const cls=['track-row',h<48?'row-compact':h>=110?'row-large':'']
           if(selected)cls.push('selected','selected-track');if(isFocused)cls.push('focused');if(silent)cls.push('track-silent');if(!enabled)cls.push('track-off');if(hiddenNow)cls.push('track-hidden');if(trackDrop?.ids.has(track.id))cls.push('track-dragging');if(libraryOver===track.id)cls.push('library-drop')
           if(recordingTarget)cls.push('track-recording-target')
-          return <div className={cls.join(' ')} key={track.id} data-track-row-id={track.id} style={{'--track-color':track.color,'--row-h':`${h}px`,height:h} as React.CSSProperties}
+          const showAutomation=!temporary&&!!props.automationTracks?.has(track.id)&&!!props.onAutomationEdit
+          return <Fragment key={track.id}><div className={cls.join(' ')} data-track-row-id={track.id} style={{'--track-color':track.color,'--row-h':`${h}px`,height:h} as React.CSSProperties}
             onDragOver={e=>{if(temporary||!props.onLibraryDrop||!draggedLibraryRole(e.dataTransfer))return;e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='copy';if(libraryOver!==track.id)setLibraryOver(track.id)}}
             onDrop={e=>{if(temporary||!draggedLibraryRole(e.dataTransfer))return;const item=readLibraryDrag(e.dataTransfer);e.preventDefault();e.stopPropagation();setLibraryOver(null);if(!item)return;const lane=e.target instanceof Element?e.target.closest('.track-lane'):null;latest.current.onLibraryDrop?.(item,{trackId:track.id,beat:lane?Math.floor(laneBeat(lane,e.clientX)/beatsPerBar)*beatsPerBar:undefined})}}>
           {temporary?<div className={`track-header recording-track-header ${ui.headerConfig.colorBar?'with-color-bar':''}`} data-track-id={track.id} title="녹음 완료 후 편집할 수 있습니다" onContextMenu={e=>e.preventDefault()}
@@ -760,20 +784,24 @@ export function Timeline(props:TimelineProps){
             {ui.headerConfig.icon&&<span className="track-icon"><Icon name="wave" size={16}/></span>}
             <div className="track-main"><span className="track-name">{track.name}</span><span className="recording-track-caption">{recordingDraft?.status==='processing'?'녹음 처리 중':'새 트랙에 녹음 중'}</span></div>
           </div>:<TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine} inputChoices={props.inputChoices} onInputChange={props.onTrackInput&&(input=>props.onTrackInput!(track.id,input))} routeTracks={project.tracks} onRouteChange={props.onTrackRoute&&((route,input)=>props.onTrackRoute!(track.id,route,input))}
-            onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}/>}
-          <div className={`track-lane ${ui.gridLines?'':'no-grid'}`} style={{width,...laneGrid}}
+            onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}
+            automation={props.onAutomationToggle?{visible:showAutomation,active:!!track.automation?.some(lane=>lane.points.length>0&&lane.enabled!==false),onToggle:()=>props.onAutomationToggle!(track.id)}:undefined}/>}
+          <div className={`track-lane ${ui.gridLines?'':'no-grid'}${track.kind==='return'?' return-lane':''}`} style={{width,...laneGrid}}
             onPointerDown={e=>{if(!recordingTarget&&!temporary)beginMarquee(e,track)}}
             onContextMenu={e=>{if(e.target!==e.currentTarget)return;if(recordingTarget||temporary){e.preventDefault();return}laneMenu(e,track)}}
-            onDoubleClick={e=>{if(e.target!==e.currentTarget||recordingTarget||temporary)return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/beatsPerBar)*beatsPerBar)}}
+            onDoubleClick={e=>{if(e.target!==e.currentTarget||recordingTarget||temporary||track.kind==='return')return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/beatsPerBar)*beatsPerBar)}}
             onDragOver={e=>{if(e.dataTransfer.files||e.dataTransfer.types.includes('Files')){e.preventDefault();if(temporary){e.stopPropagation();e.dataTransfer.dropEffect='none'}}}}
             onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);if(temporary)return;const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar;props.onAudioDrop(e.dataTransfer.files,track.id,Math.max(0,beat))}}}>
             {drag?.copy&&track.clips.filter(c=>drag.ids.has(c.id)).map(c=><div key={`ghost-${c.id}`} className="clip-ghost" style={musicalSpan(c.startBeat,c.lengthBeats,ppb)}/>)}
-            {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} beatsPerBar={beatsPerBar} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
+            {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} tempo={tempoMapOf(project)} beatsPerBar={beatsPerBar} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
             {take&&<RecordingRegion key={take.draft.id} draft={take.draft} placement={take.view} ppb={ppb}/>}
             {props.midiRecordings?.filter(midi=>midi.trackId===track.id).map(midi=><MidiRecordingRegion key={`midi-${midi.trackId}`} take={midi} ppb={ppb}/>)}
-            {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'MIDI 파일 놓기 · 더블 클릭하여 클립 만들기'}</span>}
+            {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='return'?'리턴 트랙 · 다른 트랙의 센드로 소리를 받습니다':track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'MIDI 파일 놓기 · 더블 클릭하여 클립 만들기'}</span>}
           </div>
-        </div>})}
+        </div>
+        {showAutomation&&<AutomationLanes track={track} returnNames={returnNames} width={width} ppb={ppb} laneHeight={Math.round(Math.min(120,Math.max(44,h*.8)))} snapBeats={snapBeats} lengthBeats={project.lengthBeats} gridClass={ui.gridLines?'':'no-grid'} laneStyle={laneGrid}
+          onEdit={(edit,label)=>latest.current.onAutomationEdit?.(track.id,edit,label)} onModeChange={mode=>latest.current.onAutomationMode?.(track.id,mode)} onSeek={beat=>latest.current.onSeek(beat)}/>}
+        </Fragment>})}
         <div className={`tracks-empty-area${libraryOver===''?' library-drop':''}`} onDragOver={e=>{const role=draggedLibraryRole(e.dataTransfer);if(!props.onLibraryDrop||!role||role==='effect')return;e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='copy';if(libraryOver!=='')setLibraryOver('')}} onDrop={e=>{if(!draggedLibraryRole(e.dataTransfer))return;const item=readLibraryDrag(e.dataTransfer);e.preventDefault();e.stopPropagation();setLibraryOver(null);if(!item)return;const lane=e.currentTarget.querySelector('.empty-lane');latest.current.onLibraryDrop?.(item,{beat:lane&&e.clientX>=lane.getBoundingClientRect().left?Math.floor(laneBeat(lane,e.clientX)/beatsPerBar)*beatsPerBar:undefined})}} title={`더블 클릭: ${focused?.kind==='audio'?'오디오':'소프트웨어 악기'} 트랙 추가 · 우클릭: 트랙 종류 선택`} onDoubleClick={e=>{if(!(e.target instanceof Element)||e.target.closest('button'))return;props.onNewTrack({sameAsFocused:true,afterId:null})}} onContextMenu={emptyAreaMenu}>
           <div className="empty-header"/><div className="empty-lane" style={{width,...laneGrid}}/>
         </div>

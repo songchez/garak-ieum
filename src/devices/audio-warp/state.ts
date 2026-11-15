@@ -1,4 +1,5 @@
 import type { AudioClip, AudioWarp, Project } from '../../core/types'
+import { spanBeats, tempoMapOf } from '../../core/tempoMap'
 import type { WarpDecision } from './tempo'
 import { WARP_RENDER_LIMITS } from './limits'
 import { assetScale, playOriginal, sameTransposeRender, transposeTarget } from '../region-pitch/state'
@@ -141,7 +142,7 @@ export function setClipWarp(clip: AudioClip, enabled: boolean, projectBpm: numbe
  * already has in this project: same detected tempo, warped if the existing region is.
  * A warp render placed directly is replaced by its original so it can follow the tempo.
  */
-export function inheritWarp(clip: AudioClip, project: Pick<Project, 'bpm' | 'tracks'>, durationOf: (assetId: string) => number | undefined): AudioClip {
+export function inheritWarp(clip: AudioClip, project: Pick<Project, 'bpm' | 'tracks' | 'tempoMap'>, durationOf: (assetId: string) => number | undefined): AudioClip {
   if (clip.warp || clip.pitch || clip.regionPitch) return clip
   let source: AudioWarp | undefined
   for (const track of project.tracks) for (const other of track.clips) {
@@ -152,10 +153,10 @@ export function inheritWarp(clip: AudioClip, project: Pick<Project, 'bpm' | 'tra
   const duration = durationOf(source.originalAssetId)
   if (duration === undefined || !Number.isFinite(duration) || duration <= 0) return clip
   const plain: AudioClip = {
-    ...clip, assetId: source.originalAssetId, offsetSeconds: 0, lengthBeats: duration * project.bpm / 60,
+    ...clip, assetId: source.originalAssetId, offsetSeconds: 0, lengthBeats: spanBeats(tempoMapOf(project), clip.startBeat, duration),
     warp: { ...source, enabled: false, renderBpm: source.sourceBpm },
   }
-  return source.enabled ? setClipWarp(plain, true, project.bpm) : plain
+  return source.enabled ? setClipWarp(plain, true, tempoMapOf(project).bpmAt(clip.startBeat)) : plain
 }
 
 /** Warped clips whose audible asset was not rendered for this tempo. */

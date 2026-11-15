@@ -77,8 +77,8 @@ describe('built-in effect modules share one catalog', () => {
       filter: { cutoff: 1200, resonance: 0.7, mode: 0, slope: 0 },
       compressor: { threshold: -18, ratio: 4, attack: 10, release: 150, makeup: 0 },
       drive: { drive: 9, tone: 9000, mix: 1, output: 0 },
-      delay: { amount: 0.3, time: 0.75, feedback: 0.32, tone: 3800, lowcut: 20, age: 0, sync: 1, ms: 375, mode: 0 },
-      reverb: { amount: 0.3, size: 0.35, tone: 9000, type: 0, predelay: 0, lowcut: 20 },
+      delay: { amount: 0.3, time: 0.75, feedback: 0.32, tone: 3800, lowcut: 20, age: 0, sync: 1, ms: 375, mode: 0, dry: 1 },
+      reverb: { amount: 0.3, size: 0.35, tone: 9000, type: 0, predelay: 0, lowcut: 20, dry: 1 },
       chorus: { rate: 0.8, depth: 0.5, mix: 0.5 },
       phaser: { rate: 0.5, depth: 0.7, feedback: 0.4, mix: 1 },
       flanger: { rate: 0.25, depth: 0.7, feedback: 0.6, mix: 1 },
@@ -198,7 +198,7 @@ describe('independent effect processing contracts', () => {
       expect((effect.input as unknown as NodeSpy).connections).toEqual(new Set([worklet]))
       expect(worklet.connections).toEqual(new Set([effect.output]))
       effect.update({ time: 0.5 }, 120, 1, true)
-      expect(posted).toEqual([{ type: 'params', params: { time: 0.5 }, bpm: 120 }])
+      expect(posted).toEqual([{ type: 'params', params: { time: 0.5 }, bpm: 120, at: 1 }])
       effect.dispose!()
       expect(posted.at(-1)).toEqual({ type: 'dispose' })
       expect(owned).toEqual([...nodes, worklet])
