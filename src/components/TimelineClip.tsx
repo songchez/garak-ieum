@@ -1,6 +1,7 @@
 import { memo, useId, useMemo, useRef, useState } from 'react'
 import type { AudioAsset, Clip, Track } from '../core/types'
 import { instrumentDef } from '../core/instruments'
+import { sustainSpans, visibleSustain } from '../core/sustain'
 import { clipOccurrences, isTrackEnabled, loopEnd } from '../core/playback'
 import { regionDisplayName } from '../core/regionDisplay'
 import { visibleMidiNotes } from '../core/midiRegions'
@@ -71,6 +72,8 @@ export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,bpm,p
   const onSelect=(trackId:string,clipId:string)=>actions.current.select(trackId,clipId)
   const displayClip=preview?{...(preview.clip??clip),startBeat:preview.start,lengthBeats:preview.length}:clip
   const notes=displayClip.kind==='midi'?visibleMidiNotes(displayClip):[]
+  // Thin sustain-pedal (CC64) indicator along the region's bottom edge (docs/SUSTAIN_PEDAL.md).
+  const pedalSpans=displayClip.kind==='midi'&&displayClip.sustain?.length?sustainSpans(visibleSustain(displayClip),0,displayClip.lengthBeats):[]
   const min=notes.length?Math.min(...notes.map(n=>n.pitch)):48,max=notes.length?Math.max(...notes.map(n=>n.pitch)):72
   const start=displayClip.startBeat,length=displayClip.lengthBeats,dy=preview?.dy??0
   const repeats=displayClip.loop?clipOccurrences(occurrenceTrack,displayClip,projectEnd).slice(1):[]
@@ -86,6 +89,7 @@ export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,bpm,p
   const contents=(repeat=false)=><>
     <div className="clip-title"><Icon name={clip.kind==='audio'?'wave':'note'} size={11}/>{clip.mute&&<i className="clip-mute-dot" aria-hidden="true"/>}{!repeat&&clip.kind==='audio'&&clip.warp&&!clip.pitch&&<WarpBadge on={clip.warp.enabled} sourceBpm={clip.warp.sourceBpm} bpm={bpm} onToggle={()=>actions.current.warp(track.id,clip.id,!clip.warp!.enabled)}/>}{!repeat&&clip.kind==='audio'&&!clip.pitch&&actions.current.transpose&&<RegionPitchBadge clip={clip} bpm={bpm} selected={selected} onChange={(change,label,key)=>actions.current.transpose?.(track.id,clip.id,change,label,key)}/>}{!repeat&&renaming?<InlineName value={clip.name} label="클립 이름" onDone={name=>actions.current.renameDone(clip.id,name)}/>:<span>{label}</span>}</div>
     <div className="clip-preview">{displayClip.kind==='audio'&&asset?<Waveform peaks={asset.peaks} buffer={asset.buffer} gain={displayClip.gain} fades={{fadeIn:displayClip.fadeIn,fadeOut:displayClip.fadeOut,inCurve:displayClip.fadeInCurve,outCurve:displayClip.fadeOutCurve}} color={repeat?'var(--loop-preview)':'var(--clip-preview-color)'} appearanceKey={waveformAppearance} sourceDuration={asset.buffer.duration} offsetSeconds={displayClip.offsetSeconds} durationSeconds={length*60/bpm}/>:<svg width="100%" height="100%" preserveAspectRatio="none" viewBox={`0 0 ${Math.max(.01,length)*20} 32`} aria-hidden="true">{repeat?<use href={`#${notePreviewId}`}/>:<g id={notePreviewId}>{notes.filter(n=>n.start<length).map(n=><rect key={n.id} x={n.start*20} y={3+(1-(n.pitch-min)/Math.max(12,max-min))*23} width={Math.max(.1,Math.min(n.duration,length-n.start)*20)} height={instrumentDef(track.instrument).isKit?4:2.5} rx=".5" fill="currentColor" opacity={.45+n.velocity*.5}/>)}</g>}</svg>}</div>
+    {pedalSpans.length>0&&<div className="clip-pedal" aria-hidden="true" title="서스테인 페달">{pedalSpans.map(([a,b])=><i key={a} style={{left:`${a/length*100}%`,width:`${(b-a)/length*100}%`}}/>)}</div>}
     {displayClip.kind==='audio'&&<ClipEnvelope clip={displayClip} widthPx={widthPx} ppb={ppb} bpm={bpm} asset={asset} showFades={ppb>=FADE_MIN_PPB} readOnly={repeat||!!preview} actions={envelopeActions}/>}
   </>
   return <>

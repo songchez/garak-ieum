@@ -119,7 +119,7 @@ describe('schema 10', () => {
   it('saves fade curves and region gain above +6 dB, and rejects them in older schemas', () => {
     const project = projectWith(audio('a', { gain: 8, fadeInCurve: 'equalPower', fadeOutCurve: 'linear' }))
     const loaded = validateProject(JSON.parse(JSON.stringify(project)))
-    expect(loaded.schemaVersion).toBe(12)
+    expect(loaded.schemaVersion).toBe(13)
     expect(loaded.tracks[0].clips[0]).toMatchObject({ gain: 8, fadeInCurve: 'equalPower' })
     expect('fadeOutCurve' in loaded.tracks[0].clips[0]).toBe(false)
     expect(() => validateProject({ ...project, schemaVersion: 9 })).toThrow(/gain|schema version 10/)

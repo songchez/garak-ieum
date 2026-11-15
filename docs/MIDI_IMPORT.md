@@ -23,12 +23,12 @@
 | Standard MIDI File | Type 0 / Type 1, PPQ 박자 기반 타이밍 |
 | 음표 | 음높이, 시작, 길이, velocity, velocity 0 Note On의 Note Off 처리 |
 | 반복·겹친 음표 | 같은 음높이도 개별 음표로 가져오며 종료는 먼저 시작한 음에 대응 |
-| 서스테인 | CC64 페달을 음표 길이에 반영 |
+| 서스테인 | CC64 페달을 리전의 서스테인 레인으로 유지 ([SUSTAIN_PEDAL.md](SUSTAIN_PEDAL.md)). **파일 → MIDI 가져오기 · 서스테인을 음 길이로 변환…**을 고르면 이전처럼 음표 길이에 반영 |
 | 노트 종료 컨트롤 | All Sound Off / All Notes Off / Reset Controllers 처리 |
 | 트랙 정보 | 이름, 채널 분리, MIDI 포트 간 구분, 초기 프로그램 정보 |
 | Running status | 정상적인 SMF channel-message running status 지원 |
 | Type 2 / SMPTE | 지원하지 않는 이유와 Type 0/1 PPQ로 다시 저장하는 방법 안내 |
-| 피치 벤드·애프터터치·대부분의 CC·SysEx | 자동화·장치 음색으로 가져오지 않으며 해당 데이터가 있으면 안내 |
+| 피치 벤드·애프터터치·CC64 외의 CC·SysEx | 자동화·장치 음색으로 가져오지 않으며 해당 데이터가 있으면 안내 |
 
 종료 이벤트가 빠진 음표는 해당 트랙 끝에서 마무리하고 안내합니다. 반면 헤더·청크·가변 길이 데이터가 잘렸거나 트랙 종료 구성이 잘못된 파일은 오류로 처리하여 기존 작업을 보존합니다.
 

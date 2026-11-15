@@ -260,6 +260,8 @@ class Host {
       awaitApplied(method=="note.on"?engine_->noteOn(index,pitch,static_cast<float>(number(a,"velocity",0,4,.8)),id):engine_->noteOff(index,pitch,id));
       return Json::object();
     }
+    // Live MIDI control change (CC64 sustain pedal; docs/SUSTAIN_PEDAL.md).
+    if(method=="note.control") { awaitApplied(engine_->controlChange(trackIndex(string(a,"trackId")),static_cast<int>(integer(a,"controller",0,127,64)),static_cast<int>(integer(a,"value",0,127,0)))); return Json::object(); }
     if(method=="note.allOff") { awaitApplied(engine_->allNotesOff(trackIndex(string(a,"trackId")))); return Json::object(); }
     if (method=="latency.measure") return measureLatency(a);
     if (method=="monitor.set") {

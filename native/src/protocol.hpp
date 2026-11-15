@@ -175,6 +175,20 @@ inline ProjectTimeline timeline(const Json& value) {
       note.velocity = static_cast<float>(number(n, "velocity", 0, 4, 1));
       t.notes.push_back(note);
     }
+    if (item.contains("controls")) {
+      const auto& controls = item.at("controls");
+      if (!controls.is_array() || controls.size() > 50000) throw std::runtime_error("Invalid track controls");
+      std::int64_t previous = -1;
+      for (const auto& c : controls) {
+        ControlEvent event;
+        event.frame = integer(c, "frame", 0, p.lengthFrames, 0);
+        event.controller = static_cast<std::uint8_t>(integer(c, "controller", 0, 127, sustainController));
+        event.value = static_cast<std::uint8_t>(integer(c, "value", 0, 127, 0));
+        if (event.frame < previous) throw std::runtime_error("Track controls must be sorted by frame");
+        previous = event.frame;
+        t.controls.push_back(event);
+      }
+    }
     for (const auto& a : audio) {
       AudioWindow w;
       w.id = static_cast<std::int32_t>(integer(a, "id", 0, 2000000000, 0)); w.assetId = string(a, "assetId");

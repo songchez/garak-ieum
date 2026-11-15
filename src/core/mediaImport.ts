@@ -1,4 +1,4 @@
-import { MAX_MIDI_FILE_BYTES, parseMidiFile, type MidiImportResult } from './midiImport'
+import { MAX_MIDI_FILE_BYTES, parseMidiFile, type MidiImportOptions, type MidiImportResult } from './midiImport'
 import { quarterNotesPerBar, validateTimeSignature } from './meter'
 import { createTrack, fitProjectLength, insertTracks, MIN_CLIP_BEATS, uid, validateProject } from './project'
 import type { AudioAsset, AudioClip, MidiClip, Project, Track } from './types'
@@ -16,12 +16,12 @@ export function isMidiFile(file: Pick<File, 'name' | 'type'>): boolean {
 }
 
 /** MIDI is note data, so it must never enter the audio codec or open a device. */
-export async function readMediaFile(file: File, decodeAudio: (file: File, name: string) => Promise<AudioAsset>): Promise<ImportedMedia> {
+export async function readMediaFile(file: File, decodeAudio: (file: File, name: string) => Promise<AudioAsset>, midiOptions: MidiImportOptions = {}): Promise<ImportedMedia> {
   const header = isMidiFile(file) ? null : new Uint8Array(await file.slice(0, 4).arrayBuffer())
   const midi = isMidiFile(file) || (header?.[0] === 0x4d && header[1] === 0x54 && header[2] === 0x68 && header[3] === 0x64)
   if (midi) {
     if (file.size > MAX_MIDI_FILE_BYTES) throw new Error('MIDI 파일은 최대 16 MB까지 가져올 수 있습니다.')
-    return { kind: 'midi', name: file.name, midi: parseMidiFile(await file.arrayBuffer()) }
+    return { kind: 'midi', name: file.name, midi: parseMidiFile(await file.arrayBuffer(), midiOptions) }
   }
   return { kind: 'audio', name: file.name, asset: await decodeAudio(file, file.name) }
 }
@@ -98,7 +98,7 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
       const track = existing ?? { ...createTrack('instrument', part.channel === 9 ? 'drums' : 'keys'), name: partName }
       if (!existing && part.program !== undefined) warnings.add('MIDI 악기 지정은 기본 건반·드럼 음색에 연결했습니다. 라이브러리에서 원하는 음색으로 바꿀 수 있습니다.')
       const clip: MidiClip = { id: uid(), kind: 'midi', name: partName, startBeat: beat, lengthBeats: Math.max(MIN_CLIP_BEATS, item.midi.lengthBeats), gain: 1,
-        notes: part.notes.map(note => ({ ...note, id: uid() })) }
+        notes: part.notes.map(note => ({ ...note, id: uid() })), ...(part.sustain?.length ? { sustain: part.sustain.map(event => ({ ...event })) } : {}) }
       append(track, clip, !!existing)
     }
   }

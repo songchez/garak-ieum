@@ -17,6 +17,7 @@ import { encodePcm16Wav } from './audio/math'
 import { nativeErrorCode, supportedRatesOf } from './audio/native/deviceErrors'
 import { backgroundAction, nearestSampleRate, shouldAlertOverload } from './audio/native/deviceProfile'
 import { importTempoNotice, MEDIA_FILE_ACCEPT, planMediaImport, readMediaFile, type ImportedMedia } from './core/mediaImport'
+import { writeMidiFile } from './core/midiExport'
 import type { AudioAsset, AudioClip, AudioEngine, Clip, EffectType, InputChoice, InstrumentId, MidiClip, Project, Track, TrackInput, TrackInputRoute } from './core/types'
 import { crossfadeClips } from './core/clipEnvelope'
 import { addMarker, applyDragMode, createDevice, createEmptyProject, createGuitarTrack, createMarker, createTrack, cycleClipIds, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength, insertTracks, joinClips, moveDevice, moveMarker, renameMarker, splitClip, trimClipEnd, trimClipStart, trimClipStarts, uid, visibleTracks, withInstrument, withWavetablePatch, type ClipStartTrim } from './core/project'
@@ -229,7 +230,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const recordAttempt=useRef(0)
   const mediaInput=useRef<HTMLInputElement>(null)
   const recordRef=useRef<{capture:TakeCapture;stream:MediaStream|null;drafts:RecordingDraft[]}|null>(null)
-  const importTarget=useRef<{trackId?:string;beat?:number}>({})
+  const importTarget=useRef<{trackId?:string;beat?:number;sustainToLength?:boolean}>({})
   const [inputCapture]=useState(()=>new InputCapture(()=>navigator.mediaDevices.getUserMedia(inputConstraints(audioSettingsRef.current,projectRef.current.sampleRate))))
   const monitorWarned=useRef(false)
   const saveQueue=useRef(Promise.resolve())
@@ -1025,11 +1026,11 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     }
   }
 
-  function openMediaImport(trackId?:string,beat=0){
-    importTarget.current={trackId,beat}
+  function openMediaImport(trackId?:string,beat=0,sustainToLength=false){
+    importTarget.current={trackId,beat,sustainToLength}
     if(mediaInput.current){mediaInput.current.value='';mediaInput.current.click()}
   }
-  async function addMediaFiles(files:FileList,trackId?:string,beat=0){
+  async function addMediaFiles(files:FileList,trackId?:string,beat=0,sustainToLength=false){
     if(importing.current){notify('현재 파일을 불러온 뒤 다음 파일을 추가해주세요.');return}
     if(!loaded||navigating||busy||recordRef.current||recordPreparingRef.current||audioApplyingRef.current||exporting.current){notify('진행 중인 녹음·파일·오디오 설정 작업을 마친 뒤 파일을 가져와 주세요.');return}
     const selected=Array.from(files)
@@ -1040,7 +1041,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     try{
       const media:ImportedMedia[]=[]
       for(const file of selected){
-        const item=await readMediaFile(file,(source,name)=>engine.decodeAsset(source,name))
+        const item=await readMediaFile(file,(source,name)=>engine.decodeAsset(source,name),{sustainToLength})
         if(session!==projectSession.current)return
         media.push(item)
       }
@@ -1128,6 +1129,13 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       const result=await saveExport(await exportProjectBundle(current.project,current.assets),`${safeFilename(current.project.name)}.garak`,'project')
       notify(result.status==='canceled'?'프로젝트 파일 저장을 취소했습니다.':result.status==='saved'?'프로젝트와 원본 음원을 파일로 저장했습니다.':'프로젝트와 원본 음원의 다운로드를 시작했습니다.')
     }catch(e){notify(`프로젝트 내보내기 실패: ${e instanceof Error?e.message:'파일을 저장하지 못했습니다.'}`)}finally{exporting.current=false;setBusy('')}
+  }
+  async function exportMidi(){
+    try{
+      const bytes=writeMidiFile(project)
+      const result=await saveExport(new Blob([bytes],{type:'audio/midi'}),`${safeFilename(project.name)}.mid`,'midi')
+      notify(result.status==='canceled'?'MIDI 파일 저장을 취소했습니다.':result.status==='saved'?'MIDI 파일(서스테인 페달 포함)을 저장했습니다.':'MIDI 파일의 다운로드를 시작했습니다.')
+    }catch(e){notify(`MIDI 내보내기 실패: ${e instanceof Error?e.message:'파일을 저장하지 못했습니다.'}`)}
   }
   async function exportWav(){
     if(warpRenderer.hasPending()){notify('워프·리전 피치 렌더링이 끝난 뒤 다시 내보내 주세요.');return}
@@ -1370,6 +1378,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     {label:'오디오 내보내기…',icon:'download',disabled:fileBusy,onSelect:()=>setModal('export')},
     {type:'separator'},
     {label:'오디오·MIDI 가져오기…',icon:'upload',onSelect:()=>openMediaImport(focusedTrackId||undefined,Math.floor(engine.getSnapshot().beat/project.beatsPerBar)*project.beatsPerBar)},
+    {label:'MIDI 가져오기 · 서스테인을 음 길이로 변환…',icon:'upload',onSelect:()=>openMediaImport(focusedTrackId||undefined,Math.floor(engine.getSnapshot().beat/project.beatsPerBar)*project.beatsPerBar,true)},
+    {label:'MIDI 내보내기…',icon:'download',disabled:fileBusy||!project.tracks.some(t=>t.clips.some(c=>c.kind==='midi')),onSelect:()=>void exportMidi()},
     {type:'separator'},
     {label:'설정…',icon:'settings',shortcut:shortcutText('openSettings')||undefined,onSelect:openAudioSettings},
     {label:bridgeState.status==='connected'?'AI 연결 · 연결됨':'AI 연결…',icon:'ai',onSelect:()=>setModal('mcp')},
@@ -1435,7 +1445,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     {pitchWindow&&<PitchEditorWindow title={selectedClip?.kind==='audio'?selectedClip.name:'오디오 리전을 선택하세요'} busy={pitchBusy} dirty={pitchDirty} onClose={()=>setPitchWindow(false)}>{selectedClip?.kind==='audio'&&selectedClip.regionPitch?<div className="editor-empty"><Icon name="wave" size={32}/><strong>리전 피치가 적용된 리전</strong><p>음표 단위 피치 편집과 리전 피치(조옮김)는 함께 쓸 수 없습니다. 리전의 피치 배지나 인스펙터에서 피치를 초기화한 뒤 다시 열어 주세요.</p></div>:selectedClip?.kind==='audio'?<Suspense fallback={<div className="editor-empty">피치 편집기를 여는 중…</div>}><PitchEditor key={`${project.id}:${selectedClip.id}`} clip={selectedClip} sourceAsset={assets.get(selectedClip.pitch?.sourceAssetId??selectedClip.assetId)} projectId={project.id} bpm={project.bpm} projectClipIds={projectClipIds} disabled={!!busy||recording||recordPreparing||audioApplying} onApply={applyPitchEdit} onReset={resetPitchEdit} onBusyChange={pitchBusyChange} onDirtyChange={pitchDirtyChange}/></Suspense>:<div className="editor-empty"><Icon name="wave" size={32}/><strong>음표 단위 피치 편집</strong><p>오디오 리전을 선택해 단선율 음원을 분석하세요.</p></div>}</PitchEditorWindow>}
     <footer className="status-bar"><div><span className={`status-dot ${saveStatus==='error'?'error':''}`}/><span>{saveStatus==='error'?'저장 공간을 확인해주세요':'로컬 작업 공간'}</span><span className="status-divider"/><span className="footer-caption">소리는 여기에서 시작됩니다.</span></div><div><AudioStatus onOpen={openAudioSettings}/><span className="status-divider"/><button onClick={()=>setModal('help')} title="단축키" aria-label="단축키 도움말"><Icon name="keyboard" size={15}/></button><span className="version-tag">{BRAND.version} DEV</span></div></footer>
 
-    <input ref={mediaInput} type="file" accept={MEDIA_FILE_ACCEPT} aria-label="오디오·MIDI 파일" multiple hidden onChange={e=>{if(e.target.files?.length)void addMediaFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0)}}/>
+    <input ref={mediaInput} type="file" accept={MEDIA_FILE_ACCEPT} aria-label="오디오·MIDI 파일" multiple hidden onChange={e=>{if(e.target.files?.length)void addMediaFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0,importTarget.current.sustainToLength===true)}}/>
     {headerMenu&&<ContextMenu x={headerMenu.x} y={headerMenu.y} items={headerMenu.items} label={`${headerMenu.label} 메뉴`} trigger={headerMenu.trigger} onClose={()=>setHeaderMenu(null)}/>}
     {modal==='mcp'&&<McpConnectionDialog client={bridgeClient} instanceId={instanceId} projectName={project.name} editsAllowed={aiEditsAllowed} onEditsAllowed={value=>{aiEditsAllowedRef.current=value;setAiEditsAllowed(value)}} onClose={()=>setModal(null)}/> }
     {modal==='settings'&&<AudioSettingsDialog initialTab={settingsTab} engine={engine} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}

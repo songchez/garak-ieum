@@ -72,7 +72,7 @@ export function desktopMcpStartupErrorMessage(error: unknown): string {
 }
 
 export function exportExtension(kind: DesktopExportKind): string {
-  return { project: 'garak', audio: 'wav', json: 'json' }[kind]
+  return { project: 'garak', audio: 'wav', json: 'json', midi: 'mid' }[kind]
 }
 
 export function safeSuggestedName(name: string, kind: DesktopExportKind): string {
@@ -85,7 +85,7 @@ export function safeSuggestedName(name: string, kind: DesktopExportKind): string
 export function validateSaveRequest(value: unknown): DesktopSaveRequest {
   if (!value || typeof value !== 'object') throw new Error('저장할 파일이 올바르지 않습니다.')
   const request = value as Partial<DesktopSaveRequest>
-  if (!['project', 'audio', 'json'].includes(request.kind ?? '') || typeof request.name !== 'string' || request.name.length > 1000 || !(request.data instanceof Uint8Array)) {
+  if (!['project', 'audio', 'json', 'midi'].includes(request.kind ?? '') || typeof request.name !== 'string' || request.name.length > 1000 || !(request.data instanceof Uint8Array)) {
     throw new Error('저장할 파일이 올바르지 않습니다.')
   }
   const limit = request.kind === 'project' ? MAX_PROJECT_BYTES : MAX_EXPORT_BYTES

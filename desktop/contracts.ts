@@ -4,7 +4,7 @@ export interface DesktopFile {
   data: Uint8Array
 }
 
-export type DesktopExportKind = 'project' | 'audio' | 'json'
+export type DesktopExportKind = 'project' | 'audio' | 'json' | 'midi'
 
 /** Window-level 보기 commands the in-app menu bar forwards to the native frame. */
 export type DesktopViewCommand = 'zoomIn' | 'zoomOut' | 'resetZoom' | 'toggleFullscreen'

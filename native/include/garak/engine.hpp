@@ -65,7 +65,9 @@ struct ProcessContext {
   std::int64_t cycleStartFrame = 0, cycleEndFrame = 0, continuousFrame = 0;
 };
 struct PluginEvent {
-  enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff };
+  // Controller: MIDI control change; parameterId is the controller number (0..127) and value is
+  // normalized (CC value / 127). VST3 delivers it through the plug-in's IMidiMapping.
+  enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff, Controller };
   Type type = Type::NoteOn;
   std::uint32_t offset = 0;
   std::int32_t noteId = -1;
@@ -115,6 +117,15 @@ struct NotePair {
   float velocity = 1;
   bool operator==(const NotePair&) const = default;
 };
+// A MIDI control change on the timeline (currently CC64 sustain for VST3 instruments; built-in sources get
+// the pedal applied to their note-off frames by the timeline compiler, docs/SUSTAIN_PEDAL.md).
+struct ControlEvent {
+  std::int64_t frame = 0;
+  std::uint8_t controller = 64, value = 0;
+  bool operator==(const ControlEvent&) const = default;
+};
+constexpr int sustainController = 64;
+[[nodiscard]] constexpr bool pedalDown(int value) noexcept { return value >= 64; }
 struct AudioWindow {
   std::int32_t id = 0;
   std::string assetId;
@@ -169,6 +180,7 @@ struct TrackTimeline {
   bool enabled = true, mute = false, solo = false, soloSafe = false, audible = true;
   std::vector<BuiltinInsert> inserts;
   std::vector<NotePair> notes;
+  std::vector<ControlEvent> controls; // Sorted by frame.
   std::vector<AudioWindow> audio;
 };
 struct ProjectTimeline {
@@ -344,6 +356,9 @@ class RenderEngine {
                                         std::uint32_t durationFrames = 24000);
   [[nodiscard]] std::uint64_t noteOn(std::uint32_t trackIndex, int pitch, float velocity, std::int32_t noteId);
   [[nodiscard]] std::uint64_t noteOff(std::uint32_t trackIndex, int pitch, std::int32_t noteId);
+  // Live MIDI control change (0..127). CC64 sustains live notes: built-in and IEUM WAVE sources defer
+  // live note-offs while the pedal is down; VST3 instruments receive the controller as an event.
+  [[nodiscard]] std::uint64_t controlChange(std::uint32_t trackIndex, int controller, int value);
   // Release audition/live notes on this track without touching timeline notes.
   [[nodiscard]] std::uint64_t allNotesOff(std::uint32_t trackIndex);
   [[nodiscard]] std::uint64_t setMonitoring(std::span<const std::uint32_t> tracks);

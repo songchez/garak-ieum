@@ -1,6 +1,7 @@
 import type { AudioClip, Clip, MidiClip, Track } from './types'
 import { midiSourceOffset } from './midiRegions'
 import { fadeLengths } from './clipEnvelope.js'
+import { sustainSpans, sustainedEnds, visibleSustain } from './sustain'
 
 /** Ticks per beat for Track.delayTicks and ClipBase.delayTicks. */
 export const PPQ = 960
@@ -93,8 +94,11 @@ export function trackNote(track: Track | undefined, pitch: number, velocity: num
 /**
  * Notes of one occurrence: quantize+swing → delay → transpose → velocity → limits → crop → gain.
  * The crop window moves with the delay, so a negative delay plays the first notes early instead of dropping them.
+ * The sustain pedal (clip.sustain) is applied per occurrence unless `sustain` is false (docs/SUSTAIN_PEDAL.md):
+ * note-offs inside a pedal-down span move to the pedal-up (or occurrence end), and a re-struck pitch cuts its tail.
+ * Callers that deliver CC64 to the instrument themselves (VST3, MIDI export) pass false and use playbackSustain.
  */
-export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence): PlaybackNote[] {
+export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence, sustain = true): PlaybackNote[] {
   const grid = num(clip.quantize)
   const swing = clip.swing === undefined ? 50 : clamp(clip.swing, 0, 100)
   const delay = trackDelay(track, clip)
@@ -123,9 +127,33 @@ export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence): Pl
     if (local >= window - EPSILON) continue
     const end = Math.min(local + duration, window)
     if (end <= local) continue
-    notes.push({ pitch, start: origin + local, end: origin + end, velocity: velocity / 127 * gain, limit: origin + window })
+    notes.push({ pitch, start: local, end, velocity: velocity / 127 * gain, limit: window })
   }
-  return notes
+  const spans = sustain && clip.sustain?.length ? sustainSpans(visibleSustain(clip), 0, window) : []
+  const ends = spans.length ? sustainedEnds(notes, spans, window) : null
+  return notes.map((note, index) => ({ ...note, start: origin + note.start, end: origin + (ends ? ends[index] : note.end), limit: origin + window }))
+}
+
+/** One CC64 value in absolute project beats. */
+export interface PlaybackSustain { beat: number; value: number }
+
+/**
+ * CC64 events of one occurrence, with track/clip delay applied: the chased value at the occurrence start
+ * (only when down), the visible events, and a release at the occurrence end when the pedal is still down.
+ */
+export function playbackSustain(track: Track, clip: MidiClip, occ: Occurrence): PlaybackSustain[] {
+  if (!clip.sustain?.length) return []
+  const window = occ.end - occ.start
+  const origin = occ.start + trackDelay(track, clip)
+  const events: PlaybackSustain[] = []
+  let value = 0
+  for (const event of visibleSustain(clip)) {
+    if (event.beat >= window - EPSILON) break
+    events.push({ beat: origin + event.beat, value: event.value })
+    value = event.value
+  }
+  if (value >= 64) events.push({ beat: origin + window, value: 0 })
+  return events
 }
 
 /**

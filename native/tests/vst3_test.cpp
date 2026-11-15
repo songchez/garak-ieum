@@ -84,8 +84,24 @@ int main(int argc, char** argv) {
     synth.process(buffer.data(), 64, {notes.data(), 2}, context);
     near(buffer[32], .5f, "Explicit all-notes-off preserves prior samples");
     near(buffer[34], 0, "Explicit all-notes-off sample offset");
+    // CC64 reaches the plug-in through its IMidiMapping as a sample-accurate parameter point; the fixture
+    // defers note-offs while that parameter is down, like a real piano instrument.
+    Vst3Processor pedal(synthSpec, 48000, 64);
+    std::array<PluginEvent, 4> sustain{};
+    sustain[0].type = PluginEvent::Type::NoteOn; sustain[0].pitch = 60; sustain[0].noteId = 5; sustain[0].value = 1; sustain[0].offset = 2;
+    sustain[1].type = PluginEvent::Type::Controller; sustain[1].parameterId = 64; sustain[1].value = 1; sustain[1].offset = 4;
+    sustain[2] = sustain[0]; sustain[2].type = PluginEvent::Type::NoteOff; sustain[2].offset = 10;
+    sustain[3] = sustain[1]; sustain[3].value = 0; sustain[3].offset = 40;
+    buffer.fill(9.f); pedal.process(buffer.data(), 64, sustain, context);
+    near(buffer[2 * 3], .5f, "Note before the pedal");
+    near(buffer[2 * 20], .5f, "Note-off under CC64 must keep ringing");
+    near(buffer[2 * 39], .5f, "Sustained note until the exact pedal-up sample");
+    near(buffer[2 * 40], 0, "CC64 release at its exact sample offset");
+    PluginEvent unmapped{}; unmapped.type = PluginEvent::Type::Controller; unmapped.parameterId = 11; unmapped.value = .5f;
+    pedal.process(buffer.data(), 64, {&unmapped, 1}, context);
+    check(!pedal.status().faulted, "An unmapped controller must be ignored, not fault the plug-in");
     check(!synth.status().faulted && !effect.status().faulted, "Actual VST3 processing fault");
-    std::cout << "PASS real VST3 scan, lifecycle, effect/instrument processing, offsets, parameters, state and note reset\n";
+    std::cout << "PASS real VST3 scan, lifecycle, effect/instrument processing, offsets, parameters, state, note reset and CC64 sustain\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

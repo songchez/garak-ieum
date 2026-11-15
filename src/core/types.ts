@@ -24,6 +24,12 @@ export interface MidiNote {
   duration: number
   velocity: number
 }
+/** One MIDI CC64 (sustain pedal) event. Stored in source beats like MidiNote.start; see core/sustain.ts. */
+export interface SustainEvent {
+  beat: number
+  /** 0…127; 64 or more is pedal down. */
+  value: number
+}
 export interface ClipBase {
   id: string
   name: string
@@ -46,6 +52,8 @@ export interface MidiClip extends ClipBase {
    * Absent = 0, preserving projects written before non-destructive MIDI trimming. */
   sourceOffsetBeats?: number
   notes: MidiNote[]
+  /** Sustain pedal (CC64) controller lane, sorted by beat (schema 13). Absent = no pedal. Never transposed or quantized. */
+  sustain?: SustainEvent[]
   /** Non-destructive playback quantize grid in beats; one of QUANTIZE_VALUES. Absent/0 = off. */
   quantize?: number
   /** Swing 0…100 (50 = straight); only used when quantize is on. Absent = 50. */
@@ -216,8 +224,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  /** 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 12
+  /** 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 13
   id: string
   name: string
   bpm: number

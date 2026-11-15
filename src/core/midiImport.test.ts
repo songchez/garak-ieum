@@ -19,6 +19,8 @@ const chunk = (id: string, data: number[]): number[] => [...ascii(id), ...u32(da
 function smf(tracks: number[][], format = tracks.length > 1 ? 1 : 0, ppq = 480, headerExtra: number[] = []): Uint8Array<ArrayBuffer> {
   return new Uint8Array([...chunk('MThd', [...u16(format), ...u16(tracks.length), ...u16(ppq), ...headerExtra]), ...tracks.flatMap(data => chunk('MTrk', data))])
 }
+/** Legacy import option: the pedal is baked into note lengths (서스테인을 음 길이로 변환). */
+const BAKE = { sustainToLength: true }
 const oneNote = (): number[] => [...event(0, 0x90, 60, 100), ...event(480, 0x80, 60, 0), ...end()]
 
 describe('standard MIDI file import', () => {
@@ -100,12 +102,12 @@ describe('standard MIDI file import', () => {
     expect(result.warnings.filter(value => value.includes('애프터터치'))).toHaveLength(1)
   })
 
-  it('extends released notes to sustain pedal-up and respects the 64 threshold', () => {
+  it('with the bake option, extends released notes to sustain pedal-up and respects the 64 threshold', () => {
     const result = parseMidiFile(smf([[
       ...event(0, 0xb0, 64, 64), ...event(0, 0x90, 60, 100),
       ...event(240, 0x80, 60, 0), ...event(240, 0x90, 60, 80),
       ...event(240, 0x80, 60, 0), ...event(240, 0xb0, 64, 63), ...end(),
-    ]]))
+    ]]), BAKE)
     expect(result.tracks[0].notes.map(note => [note.start, note.duration])).toEqual([[0, 2], [1, 1]])
     expect(result.warnings).toEqual([])
   })
@@ -114,7 +116,7 @@ describe('standard MIDI file import', () => {
     const result = parseMidiFile(smf([
       [...name('Notes'), ...event(240, 0x90, 60, 100), ...event(240, 0x80, 60, 0), ...end(480)],
       [...event(0, 0xc0, 33), ...event(0, 0xb0, 64, 127), ...event(960, 64, 0), ...end()],
-    ]))
+    ]), BAKE)
     expect(result.tracks).toHaveLength(1)
     expect(result.tracks[0]).toMatchObject({ name: 'Notes', program: 33, notes: [{ start: .5, duration: 1.5 }] })
   })
@@ -123,7 +125,7 @@ describe('standard MIDI file import', () => {
     const result = parseMidiFile(smf([
       [...meta(0, 0x21, [0]), ...event(0, 0xc0, 3), ...oneNote()],
       [...meta(0, 0x21, [1]), ...event(0, 0xc0, 40), ...event(0, 0xb0, 64, 127), ...event(0, 0x90, 60, 90), ...event(240, 0x80, 60, 0), ...event(720, 0xb0, 64, 0), ...end()],
-    ]))
+    ]), BAKE)
     expect(result.tracks.map(track => [track.program, track.notes[0].duration])).toEqual([[3, 1], [40, 2]])
   })
 
@@ -133,7 +135,7 @@ describe('standard MIDI file import', () => {
       ...event(240, 0xb0, 123, 0), ...event(240, 121, 0),
       ...event(0, 0x90, 62, 100), ...event(0, 0xb0, 64, 127),
       ...event(120, 0x80, 62, 0), ...event(120, 0xb0, 120, 0), ...end(),
-    ]]))
+    ]]), BAKE)
     expect(result.tracks[0].notes.map(note => [note.pitch, note.start, note.duration])).toEqual([[60, 0, 1], [62, 1, .5]])
     expect(result.warnings).toEqual([])
   })
@@ -142,7 +144,7 @@ describe('standard MIDI file import', () => {
     const result = parseMidiFile(smf([[
       ...event(0, 0xb0, 64, 127), ...event(0, 0x90, 60, 100),
       ...event(240, 0xb0, 121, 0), ...event(240, 0x80, 60, 0), ...end(),
-    ]]))
+    ]]), BAKE)
     expect(result.tracks[0].notes[0].duration).toBe(1)
   })
 
@@ -156,7 +158,7 @@ describe('standard MIDI file import', () => {
     expect(result.warnings.join(' ')).toMatch(/종료\(Note Off\)가 없는/)
     const held = parseMidiFile(smf([[
       ...event(0, 0xb0, 64, 127), ...event(0, 0x90, 60, 100), ...event(240, 0x80, 60, 0), ...end(720),
-    ]]))
+    ]]), BAKE)
     expect(held.tracks[0].notes[0].duration).toBe(2)
     expect(held.warnings.join(' ')).toMatch(/파일 끝까지 유지된 서스테인/)
   })

@@ -895,10 +895,69 @@ void dynamicsMeters(){
 
 #include "eq_test.inc"
 
+// Sustain pedal (docs/SUSTAIN_PEDAL.md). Behavioural comparisons against reference engines, never golden PCM.
+void sustainPedal(){
+  // VST3 timeline: CC64 events arrive at their exact block offsets; same-sample order is controller, off, on.
+  auto plugin=std::make_shared<TestPlugin>();plugin->instrument=true;auto p=project(48000,1000);
+  TrackTimeline track;track.id="vst";track.source.kind=TrackSource::Kind::Vst3;track.source.plugin.instanceId="synth";track.source.plugin.isInstrument=true;
+  track.notes={{1,10,20,1000,60,.7f},{2,20,40,1000,62,.7f}};track.controls={{5,64,127},{20,64,0},{20,64,127},{30,64,0}};p.tracks.push_back(track);
+  RenderEngine e(48000,64);e.submit(e.prepare(p,{}, {},[&](const PluginSpec&,double,unsigned){return plugin;}));check(e.play(),"Play failed");(void)render(e,64,64);
+  std::vector<PluginEvent> got(plugin->received.begin(),plugin->received.begin()+static_cast<std::ptrdiff_t>(plugin->eventCount));
+  const auto controller=[](const PluginEvent&x,std::uint32_t offset,float value){return x.type==PluginEvent::Type::Controller&&x.parameterId==64&&x.offset==offset&&std::abs(x.value-value)<1e-6f;};
+  check(got.size()>=8,"VST3 sustain events were lost");
+  // Play chases the (up) pedal at frame 0 first: a CC64 = 0 at offset 0.
+  check(controller(got[0],0,0),"Play did not chase the pedal state at the start position");
+  check(controller(got[1],5,1),"Pedal down not delivered at its exact sample");
+  check(got[2].type==PluginEvent::Type::NoteOn&&got[2].offset==10,"Note-on offset");
+  check(controller(got[3],20,0)&&controller(got[4],20,1),"Same-sample pedal change lost its order");
+  check(got[5].type==PluginEvent::Type::NoteOff&&got[5].offset==20&&got[6].type==PluginEvent::Type::NoteOn&&got[6].offset==20,"A pedal change must precede note-off and note-on at the same sample");
+  check(controller(got[7],30,0),"Pedal up not delivered at its exact sample");
+  // Seeking into a pedal-down span chases the pedal before any chased note; stopping lifts it.
+  plugin->eventCount=0;check(e.seek(25),"Seek failed");(void)render(e,16,16);
+  check(plugin->eventCount>=1&&controller(plugin->received[0],0,1),"Seek did not chase a held pedal");
+  plugin->eventCount=0;check(e.stop(),"Stop failed");(void)render(e,16,16);
+  check(plugin->eventCount>=1&&controller(plugin->received[0],0,0),"Stop did not lift the timeline pedal");
+  // Live CC to a VST3 instrument is forwarded unchanged.
+  plugin->eventCount=0;check(e.controlChange(0,64,100),"Live control change failed");(void)render(e,16,16);
+  check(plugin->eventCount==1&&controller(plugin->received[0],0,100.f/127),"Live CC64 was not forwarded to the VST3 instrument");
+  // A sustain track without controls never receives stray controller events.
+  auto plain=p;plain.tracks[0].controls.clear();auto quiet=std::make_shared<TestPlugin>();quiet->instrument=true;
+  RenderEngine q(48000,64);q.submit(q.prepare(plain,{}, {},[&](const PluginSpec&,double,unsigned){return quiet;}));check(q.play(),"Play failed");(void)render(q,64,64);
+  check(std::none_of(quiet->received.begin(),quiet->received.begin()+static_cast<std::ptrdiff_t>(quiet->eventCount),[](const PluginEvent&x){return x.type==PluginEvent::Type::Controller;}),"Controller events sent without pedal data");
+
+  // Built-in live sustain: while down, a note-off is deferred (output equals a held note); the release starts on
+  // the exact frame the pedal lifts (output equals a note-off sent there); re-striking ends the sustained note.
+  auto live=project();TrackTimeline t;t.id="live";t.source.kind=TrackSource::Kind::BuiltinSynth;t.source.instrumentId="keys";t.source.params={{"release",.1}};live.tracks.push_back(t);
+  RenderEngine pedal,held,released;for(auto*x:{&pedal,&held,&released})x->submit(x->prepare(live,{}));
+  check(pedal.noteOn(0,60,.8f,1)&&held.noteOn(0,60,.8f,1)&&released.noteOn(0,60,.8f,1),"Live note on failed");
+  auto a=render(pedal,300),b=render(held,300),c=render(released,300);checkSame(a,b,0,"Live voices diverged before the pedal");
+  check(pedal.controlChange(0,64,127)&&pedal.noteOff(0,60,1),"Pedal/note-off failed");
+  a=render(pedal,4000);b=render(held,4000);(void)render(released,4000);checkSame(a,b,0,"A note-off under the pedal was not deferred");
+  check(energy(a)>1e-4,"Sustained live note went silent");
+  check(pedal.controlChange(0,64,0)&&released.noteOff(0,60,1),"Pedal up failed");
+  a=render(pedal,8000);c=render(released,8000);checkSame(a,c,0,"Pedal up did not release exactly like a note-off at that frame");
+  for(std::size_t i=7000*2;i<a.size();++i)near(a[i],0,0,"Released voice kept ringing after the pedal lifted");
+  // Retrigger under the pedal: identical to releasing the first note right at the second strike.
+  RenderEngine restrike,reference;for(auto*x:{&restrike,&reference})x->submit(x->prepare(live,{}));
+  check(restrike.controlChange(0,64,127)&&restrike.noteOn(0,64,.8f,5),"Restrike setup failed");check(reference.noteOn(0,64,.8f,5),"Reference setup failed");
+  (void)render(restrike,500);(void)render(reference,500);
+  check(restrike.noteOff(0,64,5),"Deferred note-off failed");(void)render(restrike,500);(void)render(reference,500);
+  check(restrike.noteOn(0,64,.6f,6)&&reference.noteOff(0,64,5)&&reference.noteOn(0,64,.6f,6),"Restrike failed");
+  checkSame(render(restrike,6000),render(reference,6000),0,"Re-striking a sustained key did not end its previous note");
+  // A panic lifts the live pedal: the next note-off releases immediately.
+  check(restrike.allNotesOff(0)&&reference.allNotesOff(0),"Panic failed");(void)render(restrike,6000);(void)render(reference,6000);
+  check(restrike.noteOn(0,67,.8f,9)&&reference.noteOn(0,67,.8f,9),"Note after panic failed");(void)render(restrike,300);(void)render(reference,300);
+  check(restrike.noteOff(0,67,9)&&reference.noteOff(0,67,9),"Note-off after panic failed");
+  checkSame(render(restrike,6000),render(reference,6000),0,"Pedal survived a panic");
+  // Invalid controller numbers and values are rejected on the control thread.
+  rejects([&]{(void)pedal.controlChange(0,64,128);},"Out-of-range controller value accepted");
+  rejects([&]{(void)pedal.controlChange(0,128,0);},"Out-of-range controller number accepted");
+}
+
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

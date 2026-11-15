@@ -10,6 +10,8 @@ import { musicalGrid, musicalGridStyle, musicalRulerMarks, musicalSpan } from '.
 import { snapToEdges } from '../core/edgeSnap'
 import { editNoteTiming, noteTimingBounds, pianoNoteStart, MIN_PIANO_NOTE_LENGTH as MIN_LENGTH } from '../core/pianoEditing'
 import { ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from '../core/zoom'
+import { bakeSustain, sustainPressCount } from '../core/sustain'
+import SustainLane from './SustainLane'
 import ContextMenu from './ContextMenu'
 import type { ContextMenuItem } from './ContextMenu'
 import { useZoomHandle, useZoomWheel } from './useZoomWheel'
@@ -55,6 +57,7 @@ const COMPACT_ROW = 13
 const RULER_HEIGHT = 24
 const KEY_WIDTH = 70
 const LANE_HEIGHT = 52
+const SUSTAIN_HEIGHT = 26
 const LANE_RANGE = LANE_HEIGHT - 12
 const MIN_VELOCITY = 1 / 127
 
@@ -91,6 +94,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   const [hoveredPitch, setHoveredPitch] = useState<number | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [showVelocity, setShowVelocity] = useState(true)
+  const [showSustainPref, setShowSustain] = useState<boolean | null>(null)
   const [snapState, setSnapState] = useState(0)
   const snap = snapProp ?? snapState
   const previousSnap = useRef(.25)
@@ -98,6 +102,9 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
 
   const def = instrumentDef(instrument)
   const drumMode = def.isKit
+  const pedalPresses = sustainPressCount(sourceClip)
+  // Pitched instruments show the pedal lane by default; drum kits only when the region already has pedal data.
+  const showSustain = showSustainPref ?? (!drumMode || pedalPresses > 0)
   const DRUM_NAMES = def.padNames ?? GM_KIT_NAMES
   const pitches = useMemo(() => {
     if (drumMode) return [...new Set([...Object.keys(DRUM_NAMES).map(Number), ...clip.notes.map(note => note.pitch)])].sort((a, b) => b - a)
@@ -790,6 +797,8 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
       { label: '옥타브 ↓', icon: 'arrowsV', shortcut: `${altLabel}⇧↓`, disabled: !hasSelection, onSelect: () => transposeSelected(-1, true) },
     ]),
     { type: 'separator' },
+    { label: '서스테인을 음 길이로 굳히기', icon: 'keys', disabled: !pedalPresses, onSelect: () => onChange(bakeSustain(sourceClip)) },
+    { type: 'separator' },
     { label: '모두 선택', icon: 'select-all', shortcut: `${modLabel}A`, disabled: !clip.notes.length, onSelect: selectAll },
   ]
 
@@ -821,6 +830,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
             : selectedNotes.length > 1 && <span className="piano-selection-label">{selectedNotes.length}<span>개 선택</span></span>}
           <ZoomControls area={drumMode ? '드럼 에디터' : '피아노롤'} onZoom={zoomCommand} />
           <button type="button" className={`piano-lane-toggle${showVelocity ? ' active' : ''}`} aria-pressed={showVelocity} onClick={() => setShowVelocity(value => !value)} title="벨로시티 레인 보이기/숨기기">VEL</button>
+          <button type="button" className={`piano-lane-toggle${showSustain ? ' active' : ''}`} aria-pressed={showSustain} onClick={() => setShowSustain(!showSustain)} title={`서스테인 페달(CC64) 레인 보이기/숨기기${pedalPresses ? ` · 페달 ${pedalPresses}번` : ''}`}>PED</button>
           <label className="piano-snap" title={`마우스는 기본 자유 이동 · 필요할 때 격자 선택 · ${modLabel}G: 스냅 켬/끔 · 드래그 중 ${mac ? '⌃' : 'Ctrl'}: 세밀하게 · ${mac ? '⌃⇧' : 'Ctrl+Shift'}: 격자 무시 · Shift: 축 고정 · 방향키: 표시 격자 한 칸`}>
             <span aria-hidden="true">▦</span>
             <select value={String(snap)} onChange={event => setSnap(Number(event.currentTarget.value))} aria-label="마우스 스냅 격자">
@@ -831,7 +841,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
       </header>
 
       <div className="piano-scroll" ref={scrollRef} onScroll={event => { const left = event.currentTarget.scrollLeft; setViewport(previous => previous.left === left ? previous : { ...previous, left }) }}>
-        <div className="piano-content" style={{ width: gridWidth + KEY_WIDTH, height: gridHeight + RULER_HEIGHT + (showVelocity ? LANE_HEIGHT : 0) }}>
+        <div className="piano-content" style={{ width: gridWidth + KEY_WIDTH, height: gridHeight + RULER_HEIGHT + (showVelocity ? LANE_HEIGHT : 0) + (showSustain ? SUSTAIN_HEIGHT : 0) }}>
           <div className="piano-ruler" style={{ height: RULER_HEIGHT }}>
             <div className="piano-ruler-corner" style={{ width: KEY_WIDTH }}>NOTE</div>
             <div className="piano-ruler-beats" style={{ width: gridWidth }}>
@@ -909,7 +919,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
             </div>
           </div>
 
-          {showVelocity && <div className="piano-velocity-lane" style={{ height: LANE_HEIGHT }}>
+          {showVelocity && <div className="piano-velocity-lane" style={{ height: LANE_HEIGHT, bottom: showSustain ? SUSTAIN_HEIGHT : 0 }}>
             <div className="piano-velocity-corner" style={{ width: KEY_WIDTH }}>VELOCITY</div>
             <div className="piano-velocity-bars" style={{ width: gridWidth, ...gridStyle }} {...pointerHandlers} aria-hidden="true">
               {[...notes].sort((a, b) => Number(selectedIds.has(a.id)) - Number(selectedIds.has(b.id))).map(note => {
@@ -926,6 +936,8 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
               {showPlayhead && <div className="piano-playhead" style={{ left: localPlayhead! * beatWidth }} />}
             </div>
           </div>}
+          {showSustain && <SustainLane clip={sourceClip} beatWidth={beatWidth} gridWidth={gridWidth} gridStyle={gridStyle} keyWidth={KEY_WIDTH} height={SUSTAIN_HEIGHT}
+            snap={snap} beatsPerBar={beatsPerBar} playhead={showPlayhead ? localPlayhead : null} onChange={onChange} />}
         </div>
       </div>
 
