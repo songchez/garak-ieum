@@ -239,12 +239,24 @@ export interface TimeSignature {
   numerator: number
   denominator: TimeSignatureDenominator
 }
+/** Shape of the tempo segment that starts at a point; see core/tempoMap.ts. */
+export type TempoCurve = 'step' | 'ramp'
+/** One tempo-map point (schema 14). bpm is quarter notes per minute, like Project.bpm. */
+export interface TempoPoint {
+  beat: number
+  bpm: number
+  curve: TempoCurve
+}
 export interface Project {
-  /** 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 13
+  /** 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 14
   id: string
   name: string
+  /** Tempo at beat 0. With a tempo map this mirrors tempoMap[0].bpm. */
   bpm: number
+  /** Tempo changes (schema 14; docs/TEMPO_MAP.md). Sorted by beat, first point at beat 0 with Project.bpm.
+   * Absent (or fewer than two points) = constant Project.bpm. Convert beats↔time only through core/tempoMap.ts. */
+  tempoMap?: TempoPoint[]
   /** Project rendering rate; device preferences are stored separately in this browser. */
   sampleRate: SampleRate
   timeSignature: TimeSignature

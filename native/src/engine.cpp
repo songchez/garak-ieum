@@ -726,7 +726,7 @@ struct TrackRuntime {
     }
     if(monitor&&input)for(std::size_t i=0;i<static_cast<std::size_t>(frames)*2;++i)buffer[i]+=input[i];
     if(!preTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,preTap.data());
-    for(auto& effect:inserts){if(effect.builtin)effect.builtin->process(buffer.data(),frames);else effect.plugin->process(buffer.data(),frames,{},context);}
+    for(auto& effect:inserts){if(effect.builtin){if(context.tempo)effect.builtin->setTempo(context.bpm);effect.builtin->process(buffer.data(),frames);}else effect.plugin->process(buffer.data(),frames,{},context);}
     // A reduced-latency monitor deliberately avoids waiting for unrelated tracks.
     if(!(monitor&&context.playing&&!context.offline&&contextLowLatency))compensation.process(buffer.data(),frames);
     if(!postTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,postTap.data());
@@ -781,7 +781,7 @@ struct ControlRecipe {
 // The callback receives a predecessor serial, not a hash or JSON to compare.
 bool sameStructure(const ControlRecipe& a,const ControlRecipe& b) {
   const auto&x=a.timeline;const auto&y=b.timeline;
-  if(x.projectId!=y.projectId||x.sampleRate!=y.sampleRate||x.bpm!=y.bpm||x.beatsPerBar!=y.beatsPerBar||x.timeSigNumerator!=y.timeSigNumerator||x.timeSigDenominator!=y.timeSigDenominator||x.lengthFrames!=y.lengthFrames||x.cycle!=y.cycle||x.tracks.size()!=y.tracks.size()||a.assets!=b.assets||a.sets!=b.sets)return false;
+  if(x.projectId!=y.projectId||x.sampleRate!=y.sampleRate||x.bpm!=y.bpm||x.beatsPerBar!=y.beatsPerBar||x.timeSigNumerator!=y.timeSigNumerator||x.timeSigDenominator!=y.timeSigDenominator||x.lengthFrames!=y.lengthFrames||x.cycle!=y.cycle||x.tempoMap!=y.tempoMap||x.tracks.size()!=y.tracks.size()||a.assets!=b.assets||a.sets!=b.sets)return false;
   for(std::size_t i=0;i<x.tracks.size();++i) {
     const auto&tx=x.tracks[i];const auto&ty=y.tracks[i];
     const auto samePlugin=[](const PluginSpec&a,const PluginSpec&b){return a.instanceId==b.instanceId&&a.path==b.path&&a.classId==b.classId&&a.state==b.state&&a.controllerState==b.controllerState&&a.isInstrument==b.isInstrument;};
@@ -896,8 +896,16 @@ void LoadMeter::record(double processing,double buffer)noexcept {
 }
 void LoadMeter::reset()noexcept{overloads_.store(0,std::memory_order_relaxed);last_.store(0,std::memory_order_relaxed);}
 
+// Tempo map in a block's process context: the tempo at the block start and frame→beat for plug-ins.
+template<class Graph> void tempoContext(ProcessContext& context,const Graph& g)noexcept {
+  if(g.timeline.tempoMap.empty())return;
+  context.tempo=&g.tempo;context.bpm=g.tempo.bpmAt(g.tempo.beatAtFrame(static_cast<double>(context.projectFrame),context.sampleRate));
+}
+
 struct PreparedProject::Impl {
   ProjectTimeline timeline;
+  // Compiled once on the control thread; null-free for the callback (constant maps use timeline.bpm).
+  TempoMap tempo;
   std::vector<TrackRuntime> tracks;
   dsp::Master master;
   std::uint32_t latency=0;
@@ -909,7 +917,7 @@ struct PreparedProject::Impl {
   // routes, the original single fork. `masterLevel` is the first level holding a master-resampling track.
   std::vector<std::uint32_t> levelOrder,levelStart;
   std::uint32_t masterLevel=std::numeric_limits<std::uint32_t>::max();
-  explicit Impl(const ProjectTimeline& p):timeline(p),master(p.sampleRate){}
+  explicit Impl(const ProjectTimeline& p):timeline(p),tempo(p.bpm,p.tempoMap),master(p.sampleRate){}
   void reset(std::int64_t frame,bool chase,bool effects,std::uint64_t& overflows)noexcept {
     for(auto&track:tracks) track.reset(frame,chase,effects,overflows);
     if(effects) master.reset();
@@ -1088,6 +1096,7 @@ struct RenderEngine::Impl {
       count=static_cast<std::uint32_t>(limit-fill);
     }
     ProcessContext context{static_cast<double>(rate),p.bpm,a.nextFrame,true,false,p.timeSigNumerator,p.timeSigDenominator};
+    tempoContext(context,g);
     context.recording=recordingNow.load(std::memory_order_relaxed);context.continuousFrame=a.continuous;
     if(p.cycle){context.cycleActive=true;context.cycleStartFrame=p.cycle->at(0);context.cycleEndFrame=p.cycle->at(1);}
     std::uint64_t overflows=a.pendingOverflows,invalid=0;a.pendingOverflows=0;
@@ -1416,9 +1425,10 @@ struct RenderEngine::Impl {
     clickPlayer.mix(out,count,gain);
     if(active) {
       const auto&t=active->impl_->timeline;
-      const auto grid=metronome::grid(rate,t.bpm,t.timeSigNumerator,t.timeSigDenominator);
-      if(countingIn)metronome::clicks(grid,*clicks,clickPlayer,out,countInElapsed,count,gain,countInLength);
-      else if(metronomeOn&&playing&&position<t.lengthFrames)metronome::clicks(grid,*clicks,clickPlayer,out,position,count,gain);
+      // The count-in clicks evenly at the tempo where the transport starts; the transport follows the map.
+      const auto&tempo=active->impl_->tempo;const bool mapped=!t.tempoMap.empty();
+      if(countingIn)metronome::clicks(metronome::grid(rate,mapped?tempo.bpmAt(tempo.beatAtFrame(static_cast<double>(position),rate)):t.bpm,t.timeSigNumerator,t.timeSigDenominator),*clicks,clickPlayer,out,countInElapsed,count,gain,countInLength);
+      else if(metronomeOn&&playing&&position<t.lengthFrames)metronome::clicks(metronome::grid(rate,t.bpm,t.timeSigNumerator,t.timeSigDenominator,mapped?&tempo:nullptr),*clicks,clickPlayer,out,position,count,gain);
     }
     if(countingIn)countInElapsed+=count;
   }
@@ -1760,6 +1770,7 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
     if(e.active) {
       auto& p=*e.active->impl_;
       ProcessContext context{static_cast<double>(e.rate),p.timeline.bpm,e.position,e.playing&&e.position<p.timeline.lengthFrames,e.offline,p.timeline.timeSigNumerator,p.timeline.timeSigDenominator};
+      tempoContext(context,p);
       context.recording=e.recording;context.continuousFrame=e.continuousFrame;
       if(p.timeline.cycle&&!e.offline){context.cycleActive=true;context.cycleStartFrame=p.timeline.cycle->at(0);context.cycleEndFrame=p.timeline.cycle->at(1);}
       e.block={&p,&context,input,e.position,count,cursor,channels,e.playing&&e.position<p.timeline.lengthFrames};

@@ -1,6 +1,7 @@
 import { loopRange, normalizedStart } from '../audio/math'
 import type { AudioRecordingCallbacks, AudioRecordingResult } from '../audio/AudioRecording'
 import { recordingPlacement } from './recordingOffset'
+import { beatAfterSeconds, spanSeconds, type Tempo } from './tempoMap'
 import type { AudioClip, Project, Track } from './types'
 
 /** A take keeps one identity from its temporary timeline preview to its committed audio region. */
@@ -11,7 +12,8 @@ export interface RecordingDraft {
   track: Track
   /** May be negative after native driver/PDC compensation; placement trims pre-roll. */
   startBeat: number
-  bpm: number
+  /** The project's tempo map when the take started (a plain number is a constant tempo). */
+  bpm: Tempo
   offsetMs: number
   startedAtMs: number
   status: 'recording' | 'processing'
@@ -41,9 +43,9 @@ export function recordingDraftPlacement(draft: RecordingDraft, nowMs: number): R
 
   // A take can be visible before it contains any samples, or before a negative
   // placement correction has crossed beat zero. Keep its corrected start but no length.
-  const shiftedSeconds = draft.startBeat * 60 / draft.bpm + draft.offsetMs / 1000
+  const shiftedSeconds = spanSeconds(draft.bpm, 0, draft.startBeat) + draft.offsetMs / 1000
   return {
-    startBeat: Math.max(0, shiftedSeconds * draft.bpm / 60),
+    startBeat: Math.max(0, beatAfterSeconds(draft.bpm, 0, shiftedSeconds)),
     lengthBeats: 0,
     offsetSeconds: Math.max(0, -shiftedSeconds),
     elapsedSeconds,

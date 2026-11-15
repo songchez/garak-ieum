@@ -49,7 +49,7 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
   const created = useRef(new Set<string>())
   const failed = useRef(new Set<string>())
   const running = useRef<AbortController | null>(null)
-  const runningBpm = useRef(0)
+  const runningKey = useRef('')
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const { project } = options
 
@@ -86,14 +86,14 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
     const groups = applyImmediate(pendingGroups(project, latest.current.assetsRef.current)).filter(group => !failed.current.has(group.key))
     if (timer.current) { clearTimeout(timer.current); timer.current = null }
     // A tempo change makes an in-flight tempo-dependent render useless.
-    if (running.current && runningBpm.current && runningBpm.current !== project.bpm) { running.current.abort(); running.current = null }
+    if (running.current && runningKey.current && !pendingGroups(project, latest.current.assetsRef.current).some(group => group.key === runningKey.current)) { running.current.abort(); running.current = null }
     if (!groups.length || running.current) return
     const start = async () => {
       timer.current = null
       if (latest.current.blocked()) { timer.current = setTimeout(start, 1000); return }
       const controller = new AbortController()
       running.current = controller
-      runningBpm.current = latest.current.session.getSnapshot().history.present.bpm
+      runningKey.current = ''
       setRendering(true)
       const epoch = latest.current.epoch()
       try {
@@ -101,7 +101,7 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
           const current = latest.current.session.getSnapshot().history.present
           const group = applyImmediate(pendingGroups(current, latest.current.assetsRef.current)).find(item => !failed.current.has(item.key))
           if (!group || controller.signal.aborted) break
-          runningBpm.current = group.tempoDependent ? group.bpm : 0
+          runningKey.current = group.tempoDependent ? group.key : ''
           const { assetsRef, decodeAsset } = latest.current
           const source = assetsRef.current.get(group.originalAssetId)
           try {

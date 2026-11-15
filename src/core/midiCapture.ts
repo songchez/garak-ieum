@@ -1,4 +1,5 @@
 import { parseMidi } from './midiInput'
+import { beatAfterSeconds, type Tempo } from './tempoMap'
 import { SUSTAIN_CONTROLLER, isPedalDown } from './sustain'
 import { MIN_RECORDED_NOTE, type RecordedNote } from './midiRecording'
 import type { StampedMidi } from '../audio/liveMidi'
@@ -47,7 +48,7 @@ export interface CaptureTrack { notes: RecordedNote[]; startBeat: number; endBea
  */
 export function capturePerformance(
   events: readonly CaptureEvent[],
-  options: { bpm: number; playheadBeat: number; gapMs?: number; accepts?: (source: string, channel: number) => boolean },
+  options: { bpm: Tempo; playheadBeat: number; gapMs?: number; accepts?: (source: string, channel: number) => boolean },
 ): CaptureTrack | null {
   const accepts = options.accepts ?? (() => true)
   const gap = options.gapMs ?? CAPTURE_GAP_MS
@@ -76,9 +77,9 @@ export function capturePerformance(
   }
   const phrase = relevant.slice(first)
   const playing = phrase.every(event => event.beat !== null)
-  const beatsPerMs = options.bpm / 60_000
   const origin = phrase[0].time
-  const beatOf = (event: CaptureEvent) => playing ? event.beat! : options.playheadBeat + (event.time - origin) * beatsPerMs
+  // A stopped transport has no beats: times follow the tempo map from the playhead.
+  const beatOf = (event: CaptureEvent) => playing ? event.beat! : beatAfterSeconds(options.bpm, options.playheadBeat, (event.time - origin) / 1000)
   const open = new Map<string, { start: number; velocity: number }>()
   const notes: RecordedNote[] = []
   let lastBeat = beatOf(phrase[phrase.length - 1])

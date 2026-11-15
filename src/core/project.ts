@@ -10,8 +10,9 @@ import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type TempoPoint, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
+import { MAX_TEMPO_POINTS, TEMPO_MAX, TEMPO_MIN, beatAfterSeconds, normalizeTempoPoints, spanSeconds, tempoMapOf, type Tempo } from './tempoMap'
 
 let fallbackSequence = 0
 
@@ -99,7 +100,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 13,
+    schemaVersion: 14,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -241,9 +242,9 @@ export function duplicateClip(clip: Clip, startBeat = clip.startBeat + clip.leng
 }
 
 /** `beat` is an absolute project beat. Each MIDI half keeps an independent, recoverable source. */
-export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
+export function splitClip(clip: Clip, beat: number, tempo: Tempo): Clip[] {
   if (!Number.isFinite(beat)) throw new Error('Split position must be a finite number.')
-  if (!Number.isFinite(bpm) || bpm <= 0) throw new Error('Tempo must be greater than zero.')
+  checkTempo(tempo)
   const endBeat = clip.startBeat + clip.lengthBeats
   if (beat <= clip.startBeat || beat >= endBeat) return [clip]
 
@@ -251,8 +252,8 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
   const rightLength = clip.lengthBeats - cut
   const rightLoop = clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: clip.loopLengthBeats - cut }
   if (clip.kind === 'audio') {
-    const leftSeconds = cut * 60 / bpm
-    const rightSeconds = rightLength * 60 / bpm
+    const leftSeconds = spanSeconds(tempo, clip.startBeat, beat)
+    const rightSeconds = spanSeconds(tempo, beat, endBeat)
     return [
       { ...clip, lengthBeats: cut, fadeIn: Math.min(clip.fadeIn, leftSeconds), fadeOut: 0 },
       {
@@ -276,6 +277,10 @@ export function splitClip(clip: Clip, beat: number, bpm: number): Clip[] {
   ]
 }
 
+function checkTempo(tempo: Tempo): void {
+  if (typeof tempo === 'number' && (!Number.isFinite(tempo) || tempo <= 0)) throw new Error('Tempo must be greater than zero.')
+}
+
 /** Shortest clip a trim can leave: one 1/64 note. */
 export const MIN_CLIP_BEATS = 0.0625
 const EPSILON = 1e-9
@@ -290,22 +295,22 @@ export function cropNotesToClip(clip: MidiClip): MidiClip {
  * survive outside the visible window. Extending before the MIDI source inserts leading
  * silence by rebasing all source notes; audio can never read before the original file.
  */
-export function trimClipStart(clip: Clip, newStartBeat: number, bpm: number): Clip {
+export function trimClipStart(clip: Clip, newStartBeat: number, tempo: Tempo): Clip {
   if (!Number.isFinite(newStartBeat)) throw new Error('Trim position must be a finite number.')
-  if (!Number.isFinite(bpm) || bpm <= 0) throw new Error('Tempo must be greater than zero.')
+  checkTempo(tempo)
   const end = clip.startBeat + clip.lengthBeats
   let start = Math.min(Math.max(0, newStartBeat), end - MIN_CLIP_BEATS)
-  if (clip.kind === 'audio') start = Math.max(start, clip.startBeat - clip.offsetSeconds * bpm / 60)
+  if (clip.kind === 'audio') start = Math.max(start, beatAfterSeconds(tempo, clip.startBeat, -clip.offsetSeconds))
   const delta = start - clip.startBeat
   if (Math.abs(delta) < EPSILON) return clip
   const lengthBeats = end - start
   const loop = clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(lengthBeats, clip.loopLengthBeats - delta) }
   if (clip.kind === 'audio') {
-    const seconds = lengthBeats * 60 / bpm
+    const seconds = spanSeconds(tempo, start, end)
     return {
       ...clip, startBeat: start, lengthBeats,
       ...loop,
-      offsetSeconds: Math.max(0, clip.offsetSeconds + delta * 60 / bpm),
+      offsetSeconds: Math.max(0, clip.offsetSeconds + spanSeconds(tempo, clip.startBeat, start)),
       fadeIn: Math.min(clip.fadeIn, seconds), fadeOut: Math.min(clip.fadeOut, seconds),
     }
   }
@@ -355,7 +360,7 @@ export function transposeClip(clip: MidiClip, semitones: number): MidiClip {
  * Audio: only when every clip reads the same asset with continuous source offsets
  * (within 1 ms) and no gap between them; otherwise null.
  */
-export function joinClips(clips: Clip[], bpm: number): Clip | null {
+export function joinClips(clips: Clip[], tempo: Tempo): Clip | null {
   if (clips.length < 2 || !clips.every(clip => clip.kind === clips[0].kind)) return null
   const sorted = [...clips].sort((a, b) => a.startBeat - b.startBeat)
   const first = sorted[0]
@@ -373,7 +378,7 @@ export function joinClips(clips: Clip[], bpm: number): Clip | null {
   for (const clip of audio.slice(1)) {
     if (clip.assetId !== first.assetId) return null
     if (clip.startBeat > reach + 1e-6) return null
-    const expected = first.offsetSeconds + (clip.startBeat - startBeat) * 60 / bpm
+    const expected = first.offsetSeconds + spanSeconds(tempo, startBeat, clip.startBeat)
     if (Math.abs(clip.offsetSeconds - expected) > 1e-3) return null
     reach = Math.max(reach, clip.startBeat + clip.lengthBeats)
   }
@@ -433,16 +438,16 @@ export function fitProjectLength(project: Project): Project {
 export type DragMode = 'overlap' | 'noOverlap' | 'crossfade'
 
 /** Cuts `piece` so it no longer overlaps [start, end); [] removes it, two clips means it was split around. */
-function cutAround(piece: Clip, start: number, end: number, bpm: number): Clip[] {
+function cutAround(piece: Clip, start: number, end: number, tempo: Tempo): Clip[] {
   const pieceEnd = piece.startBeat + piece.lengthBeats
   if (end <= piece.startBeat + EPSILON || start >= pieceEnd - EPSILON) return [piece]
   const coversStart = start <= piece.startBeat + EPSILON
   const coversEnd = end >= pieceEnd - EPSILON
   if (coversStart && coversEnd) return []
-  if (coversStart) return pieceEnd - end < MIN_CLIP_BEATS ? [] : [trimClipStart(piece, end, bpm)]
+  if (coversStart) return pieceEnd - end < MIN_CLIP_BEATS ? [] : [trimClipStart(piece, end, tempo)]
   if (coversEnd) return start - piece.startBeat < MIN_CLIP_BEATS ? [] : [trimClipEnd(piece, start)]
-  const [left, right] = splitClip(piece, start, bpm)
-  return [left, ...cutAround(right, start, end, bpm)]
+  const [left, right] = splitClip(piece, start, tempo)
+  return [left, ...cutAround(right, start, end, tempo)]
 }
 
 /**
@@ -457,7 +462,7 @@ export function applyDragMode(project: Project, trackIds: readonly string[], mov
   const tracks = project.tracks.map(input => {
     if (!trackIds.includes(input.id)) return input
     // X-Fade: partial audio overlaps become crossfades; covered regions and MIDI still resolve like noOverlap.
-    const track = mode === 'crossfade' ? crossfadeOverlaps(input, moved, project.bpm) : input
+    const track = mode === 'crossfade' ? crossfadeOverlaps(input, moved, tempoMapOf(project)) : input
     if (track !== input) changed = true
     const crossfaded = (mover: Clip, clip: Clip) => mode === 'crossfade' && mover.kind === 'audio' && clip.kind === 'audio'
       && Math.min(mover.startBeat, clip.startBeat) < Math.max(mover.startBeat, clip.startBeat) - EPSILON
@@ -470,7 +475,7 @@ export function applyDragMode(project: Project, trackIds: readonly string[], mov
       if (moved.has(clip.id)) return [clip]
       let pieces = [clip]
       for (const mover of movers) {
-        pieces = pieces.flatMap(piece => crossfaded(mover, piece) ? [piece] : cutAround(piece, mover.startBeat, mover.startBeat + mover.lengthBeats, project.bpm))
+        pieces = pieces.flatMap(piece => crossfaded(mover, piece) ? [piece] : cutAround(piece, mover.startBeat, mover.startBeat + mover.lengthBeats, tempoMapOf(project)))
       }
       if (pieces.length !== 1 || pieces[0] !== clip) trackChanged = true
       return pieces
@@ -506,7 +511,7 @@ export function trimClipStarts(project: Project, trims: readonly ClipStartTrim[]
       if (!own.has(clip.id)) return clip
       trackIds.add(track.id)
       clipIds.push(clip.id)
-      const next = trimClipStart(clip, own.get(clip.id)!, project.bpm)
+      const next = trimClipStart(clip, own.get(clip.id)!, tempoMapOf(project))
       if (next !== clip) trackChanged = true
       return next
     })
@@ -725,11 +730,29 @@ function fadeCurves(clip: Record<string, unknown>, path: string, version: number
   return result
 }
 
+/** Schema 14 tempo map: absent stays absent; the first point must sit at beat 0 with the project tempo. */
+function validateTempoMap(input: unknown, bpm: number): TempoPoint[] | undefined {
+  if (input === undefined) return undefined
+  const points = list(input, 'Tempo map', MAX_TEMPO_POINTS).map((pointInput, index): TempoPoint => {
+    const path = `Tempo point ${index + 1}`
+    const point = object(pointInput, path)
+    if (point.curve !== 'step' && point.curve !== 'ramp') throw new Error(`${path} curve must be step or ramp.`)
+    return { beat: number(point.beat, `${path} position`, 0, 10_000_000), bpm: number(point.bpm, `${path} tempo`, TEMPO_MIN, TEMPO_MAX), curve: point.curve }
+  })
+  if (!points.length) return undefined
+  for (let index = 1; index < points.length; index += 1) {
+    if (!(points[index].beat > points[index - 1].beat)) throw new Error('Tempo points must be sorted by position without duplicates.')
+  }
+  if (points[0].beat !== 0) throw new Error('The first tempo point must be at the project start.')
+  if (Math.abs(points[0].bpm - bpm) > 1e-6) throw new Error('The first tempo point must match the project tempo.')
+  return points.length > 1 ? normalizeTempoPoints(bpm, points) : undefined
+}
+
 /** Parse known fields into fresh objects; never trust JSON casts or imported prototypes. */
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13) throw new Error('This project version is not supported. Expected schema version 1 through 13.')
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 14) throw new Error('This project version is not supported. Expected schema version 1 through 14.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -938,11 +961,14 @@ export function validateProject(input: unknown): Project {
       startBeat: number(marker.startBeat, `${path} position`, 0, MAX_MARKER_BEAT),
     }
   }))
+  const bpm = number(source.bpm, 'Tempo', 30, 300)
+  const tempoMap = version >= 14 ? validateTempoMap(source.tempoMap, bpm) : undefined
   return {
-    schemaVersion: 13,
+    schemaVersion: 14,
     id: projectId,
     name: text(source.name, 'Project name'),
-    bpm: number(source.bpm, 'Tempo', 30, 300),
+    bpm,
+    ...(tempoMap ? { tempoMap } : {}),
     sampleRate: projectSampleRate(source.sampleRate),
     timeSignature,
     beatsPerBar,

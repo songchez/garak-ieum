@@ -1,4 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { TempoTrack, TEMPO_ROW_HEIGHT } from './TempoTrack'
+import { spanBeats, tempoMapOf } from '../core/tempoMap'
 import type { AudioAsset, AudioClip, AudioEngine, Clip, InputChoice, Marker, Project, Track, TrackInput, TrackInputRoute } from '../core/types'
 import { MIN_CLIP_BEATS, setClipLoopEnd, trimClipEnd, trimClipStart, visibleTracks, type ClipStartTrim } from '../core/project'
 import { audibleTracks, effectiveArm, type TrackButtonKind } from '../core/trackActions'
@@ -96,6 +98,8 @@ export interface TimelineProps {
   /** Window-level entries (zoom, full screen) appended to the 보기 menu by the host frame. */
   viewMenuExtras?():ContextMenuItem[]
   onMarker(action:'add'|'move'|'rename'|'delete',payload:{id?:string;beat?:number;name?:string}):void
+  /** 템포 global track edits (docs/TEMPO_MAP.md); one call = one undo step. Absent = no tempo row. */
+  onTempoChange?(edit:(project:Project)=>Project,label:string):void
   /** Optional extras outside the §3.1 contract: clip double-click opens its editor; inline clip rename state. Without them a double-click only selects. */
   onClipOpen?(trackId:string,clipId:string):void
   renamingClipId?:string|null
@@ -286,7 +290,7 @@ export function Timeline(props:TimelineProps){
     if(!scroll||!row)return
     revealedRecording.current=recordingDraft.id
     cancelGesture.current?.();setMenu(null)
-    const stickyHeight=RULER_HEIGHT+(ui.globalTracks?GLOBAL_ROW_HEIGHT:0)
+    const stickyHeight=RULER_HEIGHT+(ui.globalTracks?GLOBAL_ROW_HEIGHT+(props.onTempoChange?TEMPO_ROW_HEIGHT:0):0)
     if(row.offsetTop<scroll.scrollTop+stickyHeight||row.offsetHeight>scroll.clientHeight-stickyHeight)scroll.scrollTop=Math.max(0,row.offsetTop-stickyHeight)
     else if(row.offsetTop+row.offsetHeight>scroll.scrollTop+scroll.clientHeight)scroll.scrollTop=row.offsetTop+row.offsetHeight-scroll.clientHeight
     const start=recordingView.startBeat*ppb,visible=scroll.clientWidth-headerWidth
@@ -337,7 +341,7 @@ export function Timeline(props:TimelineProps){
   function envelopeItems(clip:Clip,ids:string[]):ContextMenuItem[]{
     if(clip.kind!=='audio'||!props.onClipsEdit)return[]
     const chosen=new Set(ids),targets=project.tracks.flatMap(t=>t.clips).filter((c):c is AudioClip=>c.kind==='audio'&&chosen.has(c.id))
-    return[SEP,...envelopeMenuItems(clip,targets.length?targets:[clip],assets,project.bpm,props.onClipsEdit,props.onClipCrossfade?()=>props.onClipCrossfade?.(targets.map(c=>c.id)):undefined)]
+    return[SEP,...envelopeMenuItems(clip,targets.length?targets:[clip],assets,tempoMapOf(project),props.onClipsEdit,props.onClipCrossfade?()=>props.onClipCrossfade?.(targets.map(c=>c.id)):undefined)]
   }
   function clipMenu(e:React.MouseEvent,track:Track,clip:Clip){
     const selected=selectedClipIds.has(clip.id)
@@ -443,7 +447,7 @@ export function Timeline(props:TimelineProps){
       const destinations=new Set(group.map(g=>rows[g.row+dRow]?.id??g.track.id))
       const targetEdges=rows.filter(t=>destinations.has(t.id)).flatMap(t=>t.clips.filter(c=>(mode==='move'&&mods.copy)||!ids.has(c.id)).flatMap(c=>[c.startBeat,c.startBeat+c.lengthBeats,...(c.loop?[loopEnd(t,c,project.lengthBeats)]:[])]))
       const movingEdges=group.flatMap(g=>mode==='move'?[g.clip.startBeat,g.clip.startBeat+g.clip.lengthBeats]:[g.clip.startBeat+(mode==='trimEnd'?g.clip.lengthBeats:0)])
-      const minDelta=mode==='move'?-minStart:mode==='trimEnd'?Math.max(...group.map(g=>MIN_CLIP_BEATS-g.clip.lengthBeats)):Math.max(...group.map(g=>trimClipStart(g.clip,0,project.bpm).startBeat-g.clip.startBeat))
+      const minDelta=mode==='move'?-minStart:mode==='trimEnd'?Math.max(...group.map(g=>MIN_CLIP_BEATS-g.clip.lengthBeats)):Math.max(...group.map(g=>trimClipStart(g.clip,0,tempoMapOf(project)).startBeat-g.clip.startBeat))
       const maxDelta=mode==='move'?Infinity:mode==='trimStart'?Math.min(...group.map(g=>g.clip.lengthBeats-MIN_CLIP_BEATS)):Math.min(...group.map(g=>trimEndLength(g.clip,Infinity)-g.clip.lengthBeats))
       const snapped=snapToEdges({rawDelta:dx/ppb,gridDelta:dBeat,movingEdges,targetEdges,ppb,enabled:snapBeats>0&&!mods.noSnap&&!verticalOnly,minDelta,maxDelta})
       dBeat=verticalOnly?0:snapped.delta
@@ -473,7 +477,7 @@ export function Timeline(props:TimelineProps){
   }
   function trimEndLength(clip:Clip,dBeat:number){
     const asset=clip.kind==='audio'?assets.get(clip.assetId):undefined
-    const max=asset&&clip.kind==='audio'?Math.max(MIN_CLIP_BEATS,(asset.buffer.duration-clip.offsetSeconds)*project.bpm/60):Infinity
+    const max=asset&&clip.kind==='audio'?Math.max(MIN_CLIP_BEATS,spanBeats(tempoMapOf(project),clip.startBeat,asset.buffer.duration-clip.offsetSeconds)):Infinity
     return Math.min(max,Math.max(MIN_CLIP_BEATS,clip.lengthBeats+dBeat))
   }
 
@@ -670,7 +674,7 @@ export function Timeline(props:TimelineProps){
     if(!drag||!drag.ids.has(clip.id))return undefined
     if(drag.mode==='move'){const row=rowIndex.get(track.id)!,moved={...clip,startBeat:clip.startBeat+drag.dBeat};return{start:moved.startBeat,length:moved.lengthBeats,dy:(drag.rowTops[row+drag.dRow]??0)-(drag.rowTops[row]??0),clip:moved,trackId:rows[row+drag.dRow]?.id??track.id}}
     if(drag.mode==='trimEnd'){const trimmed=trimClipEnd(clip,clip.startBeat+trimEndLength(clip,drag.dBeat));return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0,clip:trimmed,trackId:track.id}}
-    const trimmed=trimClipStart(clip,clip.startBeat+drag.dBeat,project.bpm);return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0,clip:trimmed,trackId:track.id}
+    const trimmed=trimClipStart(clip,clip.startBeat+drag.dBeat,tempoMapOf(project));return{start:trimmed.startBeat,length:trimmed.lengthBeats,dy:0,clip:trimmed,trackId:track.id}
   }
   const clipPreviews=new Map<string,Preview>(),placements=new Map<string,RegionPlacement>()
   if(drag||clipLoopDraft)for(const track of rows)for(const clip of track.clips){const preview=previewFor(track,clip);if(preview){clipPreviews.set(clip.id,preview);placements.set(clip.id,{clip:preview.clip!,trackId:preview.trackId!})}}
@@ -744,6 +748,8 @@ export function Timeline(props:TimelineProps){
             {!markers.length&&<span className="marker-hint">더블 클릭하여 마커 추가</span>}
           </div>
         </div>}
+        {ui.globalTracks&&props.onTempoChange&&<TempoTrack project={project} width={width} ppb={ppb} laneStyle={laneGrid} snapBeat={beat=>snapBeat(beat)} playheadBeat={()=>engine.getSnapshot().beat}
+          onChange={(edit,label)=>latest.current.onTempoChange?.(edit,label)} onSeek={beat=>latest.current.onSeek(beat)} openMenu={(e,items,label)=>openMenu(e,items,label)}/>}
         {rows.map(track=>{const temporary=!projectTrackIds.has(track.id),take=recordingTakes.get(track.id),recordingTarget=!!take
           const h=heightOf(track),selected=selectedTrackIds.has(track.id),isFocused=track.id===focusedTrackId,enabled=isTrackEnabled(track),silent=!temporary&&!audible.has(track.id)&&enabled,hiddenNow=track.hidden&&ui.hideView&&!recordingTarget
           const cls=['track-row',h<48?'row-compact':h>=110?'row-large':'']
@@ -768,7 +774,7 @@ export function Timeline(props:TimelineProps){
             onDragOver={e=>{if(e.dataTransfer.files||e.dataTransfer.types.includes('Files')){e.preventDefault();if(temporary){e.stopPropagation();e.dataTransfer.dropEffect='none'}}}}
             onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();e.stopPropagation();setFileOver(false);if(temporary)return;const beat=Math.floor(laneBeat(e.currentTarget,e.clientX)/beatsPerBar)*beatsPerBar;props.onAudioDrop(e.dataTransfer.files,track.id,Math.max(0,beat))}}}>
             {drag?.copy&&track.clips.filter(c=>drag.ids.has(c.id)).map(c=><div key={`ghost-${c.id}`} className="clip-ghost" style={musicalSpan(c.startBeat,c.lengthBeats,ppb)}/>)}
-            {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} beatsPerBar={beatsPerBar} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
+            {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} tempo={tempoMapOf(project)} beatsPerBar={beatsPerBar} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
             {take&&<RecordingRegion key={take.draft.id} draft={take.draft} placement={take.view} ppb={ppb}/>}
             {props.midiRecordings?.filter(midi=>midi.trackId===track.id).map(midi=><MidiRecordingRegion key={`midi-${midi.trackId}`} take={midi} ppb={ppb}/>)}
             {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'MIDI 파일 놓기 · 더블 클릭하여 클립 만들기'}</span>}

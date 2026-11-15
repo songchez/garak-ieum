@@ -6,6 +6,7 @@ import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd
 import type { EffectType, MidiClip, Project, TimeSignature, Track, TrackInputRoute, TrackInputTap } from '../../core/types'
 import { reconcileTrackRoutes, routeOf } from '../../core/trackRouting'
 import { loopRange } from '../math'
+import { tempoMapOf } from '../../core/tempoMap'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVE_CODES, fadeCurveOf, fadeLengths } from '../../core/clipEnvelope.js'
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
 import type { NativePluginInstance } from './contracts'
@@ -152,8 +153,12 @@ export interface NativeProjectTimeline {
   readonly projectId: string
   readonly revision: number
   readonly sampleRate: SampleRate
-  /** Quarter-note tempo even in compound meters. */
+  /** Quarter-note tempo at beat 0, even in compound meters. */
   readonly bpm: number
+  /** Tempo map (docs/TEMPO_MAP.md) when the tempo changes: points sorted by beat, the first at beat 0 with `bpm`.
+   * Every frame in this timeline was already placed through it; the host uses it for the metronome, the
+   * tempo-synced effects and plug-in transport (native/src/tempo.hpp mirrors core/tempoMap.ts). */
+  readonly tempoMap?: readonly { readonly beat: number; readonly bpm: number; readonly curve: 'step' | 'ramp' }[]
   readonly timeSignature: Readonly<TimeSignature>
   readonly beatsPerBar: number
   readonly lengthFrames: number
@@ -274,10 +279,12 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
   if (!Number.isSafeInteger(revision) || revision < 0) throw new NativeTimelineError('INVALID_PROJECT', 'Invalid project revision.')
   const sampleRate = project.sampleRate
   const bpm = number(project.bpm, 20, 400, 'quarter-note tempo')
-  const framesPerBeat = sampleRate * 60 / bpm
+  // Musical positions → project frames through the tempo map, rounded once per endpoint.
+  const tempo = tempoMapOf(project)
+  const frameOf = (beat: number): number => Math.round(tempo.frameAt(beat, sampleRate))
   const lengthBeats = number(project.lengthBeats, 0.001, 10_000_000, 'project length')
-  limit(lengthBeats * 60 / bpm <= NATIVE_TIMELINE_LIMITS.durationSeconds, 'project duration')
-  const lengthFrames = Math.round(lengthBeats * framesPerBeat)
+  limit(tempo.secondsAt(lengthBeats) <= NATIVE_TIMELINE_LIMITS.durationSeconds, 'project duration')
+  const lengthFrames = frameOf(lengthBeats)
   let timeSignature: TimeSignature
   try { timeSignature = validateTimeSignature(project.timeSignature) }
   catch { throw new NativeTimelineError('INVALID_PROJECT', 'Invalid time signature.') }
@@ -285,7 +292,7 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
   number(project.loop.startBeat, 0, lengthBeats, 'cycle start')
   number(project.loop.endBeat, 0, lengthBeats, 'cycle end')
   const loop = loopRange(project)
-  const roundedCycle = loop ? { startFrame: Math.round(loop.start * framesPerBeat), endFrame: Math.round(loop.end * framesPerBeat) } : null
+  const roundedCycle = loop ? { startFrame: frameOf(loop.start), endFrame: frameOf(loop.end) } : null
   const cycle = roundedCycle && roundedCycle.endFrame > roundedCycle.startFrame ? roundedCycle : null
   const prepared = prepareOccurrences(project)
   const audible = audibleTrackIds(project.tracks)
@@ -314,15 +321,15 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
       if (clip.kind !== 'midi' || clip.mute) continue
       for (const occurrence of prepared.get(clip) ?? []) {
         if (pedalEvents) for (const event of playbackSustain(track, clip, occurrence)) {
-          const frame = Math.round(number(event.beat, -10_000_000, 20_000_000, 'sustain position') * framesPerBeat)
+          const frame = frameOf(number(event.beat, -10_000_000, 20_000_000, 'sustain position'))
           if (frame >= lengthFrames) continue
           controls.push({ frame: Math.max(0, frame), controller: 64, value: number(event.value, 0, 127, 'sustain value') })
           limit(controls.length <= NATIVE_TIMELINE_LIMITS.controlsPerTrack, 'sustain events per track')
         }
         for (const note of playbackNotes(track, clip, occurrence, !pedalEvents)) {
-          const onFrame = Math.round(number(note.start, -10_000_000, 20_000_000, 'note onset') * framesPerBeat)
-          const offFrame = Math.min(lengthFrames, Math.round(number(note.end, -10_000_000, 20_000_000, 'note end') * framesPerBeat))
-          const limitFrame = Math.min(lengthFrames, Math.round(number(note.limit, -10_000_000, 20_000_000, 'note occurrence end') * framesPerBeat))
+          const onFrame = frameOf(number(note.start, -10_000_000, 20_000_000, 'note onset'))
+          const offFrame = Math.min(lengthFrames, frameOf(number(note.end, -10_000_000, 20_000_000, 'note end')))
+          const limitFrame = Math.min(lengthFrames, frameOf(number(note.limit, -10_000_000, 20_000_000, 'note occurrence end')))
           if (offFrame <= 0 || onFrame >= lengthFrames || offFrame <= onFrame) continue
           if (!Number.isInteger(note.pitch)) throw new NativeTimelineError('INVALID_PROJECT', 'Invalid note pitch.')
           notes.push({ id: nextId++, clipId: clip.id, occurrenceIndex: occurrence.index, onFrame, offFrame, limitFrame,
@@ -330,17 +337,19 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
         }
       }
     }
-    for (const window of audioWindows(track, lengthBeats, bpm)) {
-      const originFrame = Math.round(number(window.start, -10_000_000, 20_000_000, 'audio onset') * framesPerBeat)
-      const windowEnd = Math.min(lengthFrames, Math.round(number(window.end, -10_000_000, 20_000_000, 'audio end') * framesPerBeat))
+    for (const window of audioWindows(track, lengthBeats, tempo)) {
+      const originFrame = frameOf(number(window.start, -10_000_000, 20_000_000, 'audio onset'))
+      const windowEnd = Math.min(lengthFrames, frameOf(number(window.end, -10_000_000, 20_000_000, 'audio end')))
       if (windowEnd <= 0 || originFrame >= lengthFrames) continue
       const clip = window.clip
       const asset = assetFor(clip.assetId)
       const sourceBase = number(clip.offsetSeconds, 0, 10_000_000, 'audio source offset') * asset.sampleRate
-      const clipLengthFrames = Math.max(0, Math.min(Math.round(clip.lengthBeats * framesPerBeat),
+      // Audio plays at 1×: the region lasts its real duration through the tempo map.
+      const occurrence = window.start - window.sourceOffsetBeats
+      const clipLengthFrames = Math.max(0, Math.min(Math.round(tempo.secondsBetween(occurrence, occurrence + clip.lengthBeats) * sampleRate),
         Math.floor((asset.frames - sourceBase) * sampleRate / asset.sampleRate)))
       const startFrame = Math.max(0, originFrame)
-      const clipOffsetFrames = startFrame - originFrame + Math.round(window.sourceOffsetBeats * framesPerBeat)
+      const clipOffsetFrames = startFrame - originFrame + Math.round(tempo.secondsBetween(occurrence, window.start) * sampleRate)
       const endFrame = Math.min(windowEnd, startFrame + clipLengthFrames - clipOffsetFrames)
       if (endFrame <= startFrame) continue
       audio.push({ id: nextId++, clipId: clip.id, assetId: asset.id, startFrame, endFrame,
@@ -367,7 +376,7 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
         return { id: id(device.id), type: device.type, enabled: device.enabled, params: parameters(EFFECT_DEFS[device.type].params, device.params) }
       }), notes, controls, audio }
   })
-  return { version: 1, projectId: project.id, revision, sampleRate, bpm, timeSignature, beatsPerBar: project.beatsPerBar,
+  return { version: 1, projectId: project.id, revision, sampleRate, bpm, ...(tempo.isConstant ? {} : { tempoMap: tempo.points.map(point => ({ ...point })) }), timeSignature, beatsPerBar: project.beatsPerBar,
     lengthFrames, cycle, masterGain: number(project.masterVolume, 0, 2, 'master gain'), assets: [...usedAssets.values()], tracks }
 }
 

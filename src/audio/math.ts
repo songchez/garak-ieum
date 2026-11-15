@@ -1,5 +1,6 @@
 import type { FadeCurve, Project } from '../core/types'
 import { envelopeAt, fadeLengths } from '../core/clipEnvelope.js'
+import { tempoMapOf } from '../core/tempoMap.js'
 
 export const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? value : minimum))
@@ -20,10 +21,15 @@ export function loopRange(project: Project): LoopRange | null {
 
 /** The audio clock is the transport's clock; UI timers never accumulate beats. */
 export function positionAfter(project: Project, startBeat: number, elapsedSeconds: number): number {
-  const unwrapped = startBeat + Math.max(0, elapsedSeconds) / secondsPerBeat(project.bpm)
+  const tempo = tempoMapOf(project)
+  const elapsed = Math.max(0, elapsedSeconds)
+  const unwrapped = tempo.beatAfter(startBeat, elapsed)
   const loop = loopRange(project)
   if (loop && unwrapped >= loop.end) {
-    return loop.start + ((unwrapped - loop.end) % (loop.end - loop.start))
+    // Wrap in seconds: with tempo changes inside the cycle, each pass takes the cycle's real duration.
+    const cycleSeconds = tempo.secondsBetween(loop.start, loop.end)
+    const past = elapsed - tempo.secondsBetween(startBeat, loop.end)
+    return Math.min(loop.end, tempo.beatAfter(loop.start, cycleSeconds > 0 ? Math.max(0, past) % cycleSeconds : 0))
   }
   return clamp(unwrapped, 0, project.lengthBeats)
 }
