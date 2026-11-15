@@ -444,6 +444,16 @@ body:has([data-guitar-rig-dialog]) .context-menu{z-index:760}
 .gr-stage-head .gr-choice span{display:none}
 .gr-stage-head .gr-choice select{min-height:28px;max-width:240px;border-radius:7px;border-color:#47564a;background-color:#151b17;color:#ebe4cf;font-size:11.5px}
 .gr-stage-head .gr-unit-power{margin-right:-2px}
+/* Cabinet power: the amp head's jewel + toggle + label, laid out as one pill so it reads as a real power switch. */
+.gr-stage-head .gr-unit-power{position:relative;z-index:7;width:auto;height:30px;display:inline-flex;align-items:center;gap:8px;padding:0 12px 0 8px;border:1px solid #000;border-radius:15px;background:linear-gradient(#2a2e2b,#121514);box-shadow:inset 0 1px 0 #ffffff24,0 1px 3px #000b}
+.gr-stage-head .gr-unit-power:hover{background:linear-gradient(#323733,#171a18)}
+.gr-stage-head .gr-unit-power i{width:14px;height:14px;background:radial-gradient(circle at 40% 35%,#ffffff99,#0000 40%),radial-gradient(circle,#4a1a12,#200806);box-shadow:0 0 0 2px #b9beb9,0 0 0 3px #333}
+.gr-stage-head .gr-unit-power[aria-pressed=true] i{background:radial-gradient(circle at 40% 35%,#ffffffcc,#0000 35%),radial-gradient(circle,#b8ec6c,#4f7d22);box-shadow:0 0 0 2px #b9beb9,0 0 0 3px #333,0 0 10px #b8ec6c}
+.gr-unit-power-switch{position:relative;width:14px;height:22px;border-radius:3px;background:linear-gradient(#0d0f0e,#1d201e);box-shadow:inset 0 0 0 1px #000,0 1px 0 #ffffff30}
+.gr-unit-power-switch span{position:absolute;left:3px;top:2px;width:8px;height:10px;border-radius:3px;background:linear-gradient(90deg,#8d938e,#f6f7f5 45%,#9aa09b);box-shadow:0 1px 2px #000b;transition:top .1s}
+.gr-unit-power[aria-pressed=false] .gr-unit-power-switch span{top:10px;background:linear-gradient(90deg,#6f7570,#c9cdc8 45%,#7c827d)}
+.gr-unit-power small{font:800 9px ui-monospace,monospace;letter-spacing:.14em;color:#e3cc93;min-width:44px;white-space:nowrap;text-align:left}
+.gr-unit-power[aria-pressed=false] small{color:#9a9384}
 .gr-stage-amp .gr-amphead{margin-top:14px}
 .gr-stage-cab .gr-cab-face{grid-template-columns:minmax(0,.85fr) minmax(0,1fr);gap:28px;align-items:center;padding:4px 4px 0}
 .gr-stage-cab .gr-cab-face .gr-cabinet-stage{position:relative;max-width:300px;margin:0 auto;filter:drop-shadow(0 16px 18px #000c)}
