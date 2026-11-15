@@ -3,6 +3,13 @@ import type { ProjectSessionSnapshot } from '../../core/ProjectSession'
 import { clipAssetIds, clipNeedsRender, clipRenderIsIdentity, clipRenderKey, warpRatio, warpStretches, withClipRender } from './state'
 import { pitchFactor, transposeTarget } from '../region-pitch/state'
 import type { PcmRenderJob } from './limits'
+import { tempoMapOf } from '../../core/tempoMap'
+
+/**
+ * The tempo a warped clip is rendered for: the tempo at the clip start (docs/TEMPO_MAP.md). Inside a
+ * tempo ramp the render keeps that one tempo; it is not re-stretched along the ramp.
+ */
+export const clipTempo = (project: Project, clip: Pick<Clip, 'startBeat'>): number => tempoMapOf(project).bpmAt(clip.startBeat)
 
 /**
  * One offline render shared by every clip of the same file, tempos and pitch settings.
@@ -58,8 +65,10 @@ export const isIdentityGroup = (group: RenderGroup) => !group.tempoDependent && 
 export function pendingGroups(project: Project, assets: ReadonlyMap<string, AudioAsset>): RenderGroup[] {
   const groups = new Map<string, RenderGroup>()
   for (const track of project.tracks) for (const clip of track.clips) {
-    if (clip.kind !== 'audio' || !needsRender(clip, project.bpm, assets)) continue
-    const group = groupFor(clip, project.bpm)
+    if (clip.kind !== 'audio') continue
+    const bpm = clipTempo(project, clip)
+    if (!needsRender(clip, bpm, assets)) continue
+    const group = groupFor(clip, bpm)
     if (!groups.has(group.key)) groups.set(group.key, group)
   }
   return [...groups.values()]
@@ -92,6 +101,9 @@ export function referencedAssets(snapshot: ProjectSessionSnapshot): Set<string> 
 
 /** Install one render into every clip waiting for it. Returns the same project if none match. */
 export function applyWarpRender(project: Project, group: RenderGroup, assetId: string, assets: ReadonlyMap<string, AudioAsset>): Project {
-  if (group.tempoDependent && project.bpm !== group.bpm) return project
-  return mapAudioClips(project, clip => needsRender(clip, project.bpm, assets) && clipRenderKey(clip, project.bpm) === group.key ? withClipRender(clip, project.bpm, assetId) : clip)
+  // The key carries the tempo of tempo-dependent renders, so a clip whose local tempo changed never matches.
+  return mapAudioClips(project, clip => {
+    const bpm = clipTempo(project, clip)
+    return needsRender(clip, bpm, assets) && clipRenderKey(clip, bpm) === group.key ? withClipRender(clip, bpm, assetId) : clip
+  })
 }

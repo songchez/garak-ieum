@@ -533,7 +533,7 @@ struct Vst3Processor::Impl {
     V::Event event{};
     event.busIndex = 0;
     event.sampleOffset = int32(offset);
-    event.ppqPosition = (double(context.projectFrame) + offset) / context.sampleRate * context.bpm / 60.;
+    event.ppqPosition = context.beatAt(double(context.projectFrame) + offset);
     event.flags = 0;
     auto* tracked = noteSlot(channel, pitch, id, on);
     if (on && !tracked) return false;
@@ -635,8 +635,8 @@ struct Vst3Processor::Impl {
     if (context.recording) timing.state |= V::ProcessContext::kRecording;
     if (context.cycleActive) {
       timing.state |= V::ProcessContext::kCycleActive | V::ProcessContext::kCycleValid;
-      timing.cycleStartMusic = double(context.cycleStartFrame) / sampleRate * context.bpm / 60.;
-      timing.cycleEndMusic = double(context.cycleEndFrame) / sampleRate * context.bpm / 60.;
+      timing.cycleStartMusic = context.beatAt(double(context.cycleStartFrame));
+      timing.cycleEndMusic = context.beatAt(double(context.cycleEndFrame));
     }
     timing.sampleRate = sampleRate;
     timing.projectTimeSamples = context.projectFrame;
@@ -644,7 +644,7 @@ struct Vst3Processor::Impl {
     timing.tempo = context.bpm;
     timing.timeSigNumerator = context.timeSigNumerator;
     timing.timeSigDenominator = context.timeSigDenominator;
-    timing.projectTimeMusic = double(context.projectFrame) / sampleRate * context.bpm / 60.;
+    timing.projectTimeMusic = context.beatAt(double(context.projectFrame)); // through the tempo map (docs/TEMPO_MAP.md)
     const auto bar = std::max(1., context.timeSigNumerator * 4. / std::max(1, context.timeSigDenominator));
     timing.barPositionMusic = std::floor(timing.projectTimeMusic / bar) * bar;
     data.numSamples = int32(frames);

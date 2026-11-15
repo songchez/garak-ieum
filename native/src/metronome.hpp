@@ -14,21 +14,34 @@ namespace garak::metronome {
 // Same grid as src/core/metronome.ts: one pulse per denominator note; groups of
 // three pulses in compound meters (6/8, 9/8, 12/8, 6/16 ...); level 0 = bar
 // downbeat, 1 = group start, 2 = other pulses. Bars start at project frame 0.
+// With a tempo map (docs/TEMPO_MAP.md) pulses stay on the beat grid and their frames follow the map's
+// steps and ramps exactly (garak/tempo.hpp, the mirror of src/core/tempoMap.ts); without one they are
+// evenly `pulseFrames` apart (constant tempo and the count-in).
 struct Grid {
-  double pulseFrames = 0;
+  double pulseFrames = 0, pulseBeats = 1, sampleRate = 48000;
+  const TempoMap* tempo = nullptr;
   int pulsesPerBar = 4, groupPulses = 4;
   [[nodiscard]] int level(std::int64_t pulse) const noexcept {
     const auto inBar = static_cast<int>(((pulse % pulsesPerBar) + pulsesPerBar) % pulsesPerBar);
     if (inBar == 0) return 0;
     return inBar % groupPulses == 0 ? 1 : 2;
   }
-  [[nodiscard]] std::int64_t frameOf(std::int64_t pulse) const noexcept { return std::llround(static_cast<double>(pulse) * pulseFrames); }
+  [[nodiscard]] std::int64_t frameOf(std::int64_t pulse) const noexcept {
+    const double at = static_cast<double>(pulse);
+    return std::llround(tempo ? tempo->frameAt(at * pulseBeats, sampleRate) : at * pulseFrames);
+  }
+  // A pulse at or just before `frame` (never after it).
+  [[nodiscard]] std::int64_t pulseBefore(std::int64_t frame) const noexcept {
+    const double at = static_cast<double>(frame);
+    return static_cast<std::int64_t>(std::floor(tempo ? tempo->beatAtFrame(at, sampleRate) / pulseBeats : at / pulseFrames)) - 1;
+  }
 };
 
-inline Grid grid(double sampleRate, double bpm, int numerator, int denominator) noexcept {
+inline Grid grid(double sampleRate, double bpm, int numerator, int denominator, const TempoMap* tempo = nullptr) noexcept {
   Grid g;
   const bool compound = denominator >= 8 && numerator > 3 && numerator % 3 == 0;
-  g.pulseFrames = sampleRate * 60.0 / std::max(1.0, bpm) * (4.0 / std::max(1, denominator));
+  g.pulseBeats = 4.0 / std::max(1, denominator); g.sampleRate = sampleRate; g.tempo = tempo;
+  g.pulseFrames = sampleRate * 60.0 / std::max(1.0, bpm) * g.pulseBeats;
   g.pulsesPerBar = std::max(1, numerator);
   g.groupPulses = compound ? 3 : g.pulsesPerBar;
   return g;
@@ -72,7 +85,7 @@ inline void clicks(const Grid& g, const MetronomeClicks& set, Player& player, fl
                    std::int64_t begin, std::uint32_t frames, float gain, std::int64_t limit = -1) noexcept {
   if (g.pulseFrames <= 0 || frames == 0) return;
   const auto end = begin + static_cast<std::int64_t>(frames);
-  auto pulse = std::max<std::int64_t>(0, static_cast<std::int64_t>(std::floor(static_cast<double>(begin) / g.pulseFrames)) - 1);
+  auto pulse = std::max<std::int64_t>(0, g.pulseBefore(begin));
   for (auto at = g.frameOf(pulse); at < end; at = g.frameOf(++pulse)) {
     if (at < begin || (limit >= 0 && at >= limit)) continue;
     player.trigger(&set.levels[static_cast<std::size_t>(g.level(pulse))], stereo, static_cast<std::uint32_t>(at - begin), frames, gain);

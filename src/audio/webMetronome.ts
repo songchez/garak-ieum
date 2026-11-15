@@ -1,5 +1,6 @@
 import { countInClicks, DEFAULT_METRONOME_PREFS, effectiveLevel, metronomeGrid, scheduleSegment, type MetronomeEngineState, type MetronomeLevel } from '../core/metronome'
 import type { Project } from '../core/types'
+import { tempoMapOf } from '../core/tempoMap'
 import { metronomeStrokes } from './metronomeSounds'
 
 interface Scheduled { source: AudioBufferSourceNode; start: number }
@@ -26,20 +27,21 @@ export class WebMetronome {
     if (previous.enabled && !this.state.enabled) this.cancel(now)
   }
 
-  countInSeconds(project: Project, bars: number): number {
-    return countInClicks(project.timeSignature, bars).lengthBeats * 60 / project.bpm
+  /** The count-in runs at the tempo in effect where the transport starts (`atBeat`). */
+  countInSeconds(project: Project, bars: number, atBeat = 0): number {
+    return countInClicks(project.timeSignature, bars).lengthBeats * 60 / tempoMapOf(project).bpmAt(atBeat)
   }
 
   /** Count-in clicks play even with the metronome off: they are the cue to start. */
-  scheduleCountIn(context: BaseAudioContext, project: Project, bars: number, startTime: number): void {
-    const beatSeconds = 60 / project.bpm
+  scheduleCountIn(context: BaseAudioContext, project: Project, bars: number, startTime: number, atBeat = 0): void {
+    const beatSeconds = 60 / tempoMapOf(project).bpmAt(atBeat)
     for (const click of countInClicks(project.timeSignature, bars).clicks) this.click(context, startTime + click.beat * beatSeconds, click.level)
   }
 
   /** One transport segment of the engine scheduler: [startBeat, endBeat) starting at `startTime`. */
   scheduleSegment(context: BaseAudioContext, project: Project, startBeat: number, endBeat: number, startTime: number): void {
     if (!this.state.enabled) return
-    for (const click of scheduleSegment(metronomeGrid(project.timeSignature), startBeat, endBeat, startTime, 60 / project.bpm)) this.click(context, click.time, click.level)
+    for (const click of scheduleSegment(metronomeGrid(project.timeSignature), startBeat, endBeat, startTime, tempoMapOf(project))) this.click(context, click.time, click.level)
   }
 
   /** Stops clicks that have not started yet; ringing ones decay naturally. */

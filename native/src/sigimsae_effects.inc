@@ -119,9 +119,10 @@ class PhaserFx final : public KernelBase {
 class TremoloFx final : public KernelBase {
  public:
   TremoloFx(double sr, const Reader& p, double bpm) : KernelBase(sr) {
-    const double sync = p("sync"); rate_ = sync > 0 ? bpm / 60 / sync : p("rate");
+    const double sync = p("sync"); sync_ = sync; rate_ = sync > 0 ? bpm / 60 / sync : p("rate");
     depth_.set(p("depth")); shape_.set(p("shape")); pan_.set(p("pan") >= .5 ? 1 : 0);
   }
+  void setTempo(double bpm) noexcept override { if (sync_ > 0 && std::isfinite(bpm) && bpm > 0) rate_ = bpm / 60 / sync_; }
   void process(float* s, std::uint32_t frames) noexcept override {
     const double step = 2 * pi * rate_ / sampleRate_;
     for (std::uint32_t i = 0; i < frames; ++i) {
@@ -138,7 +139,7 @@ class TremoloFx final : public KernelBase {
     if (auto* p = dynamic_cast<TremoloFx*>(&previous)) { phase_ = p->phase_; depth_.follow(p->depth_); shape_.follow(p->shape_); pan_.follow(p->pan_); }
   }
  private:
-  double rate_ = 4, phase_ = 0; Smooth depth_, shape_, pan_;
+  double rate_ = 4, phase_ = 0, sync_ = 0; Smooth depth_, shape_, pan_;
 };
 
 // Zero-latency peak limiter: instant attack, exponential release, hard ceiling guarantee.
@@ -285,6 +286,7 @@ class StudioDelay final : public KernelBase {
   StudioDelay(double sr, const Reader& p, double bpm) : KernelBase(sr), l_(static_cast<std::size_t>(std::ceil(sr * 4.1)) + 4), r_(l_),
       glide_(1 - std::exp(-1 / (.08 * sr))), lowcut_(p("lowcut") > 20.5), pingPong_(p("mode") >= .5) {
     const double seconds = std::min(3.9, p("sync") >= .5 ? p("time") * 60 / bpm : p("ms") * .001);
+    syncBeats_ = p("sync") >= .5 ? p("time") : 0; bpm_ = bpm;
     wet_.set(p("amount") * .45); feedback_.set(p("feedback")); age_.set(p("age")); time_.set(seconds * sr);
     low_.configure(Filter::Lowpass, sr, p("tone"), 1); high_.configure(Filter::Highpass, sr, p("lowcut"), .5);
     const double fb = p("feedback"), repeats = fb > .01 ? std::ceil(std::log(.001) / std::log(fb)) : 1;
@@ -315,9 +317,14 @@ class StudioDelay final : public KernelBase {
     }
   }
   double tailSeconds() const noexcept override { return tail_; }
+  // A synced delay time glides to the new tempo like a time edit does (glide_ smoothing).
+  void setTempo(double bpm) noexcept override {
+    if (syncBeats_ <= 0 || !std::isfinite(bpm) || bpm <= 0 || std::abs(bpm - bpm_) < 1e-6) return;
+    bpm_ = bpm; time_.target = std::min(3.9, syncBeats_ * 60 / bpm) * sampleRate_;
+  }
  private:
   Ring l_, r_; Biquad low_, high_; Smooth wet_, feedback_, age_, time_;
-  double glide_, tail_ = 0, wow_ = 0, flutter_ = 0; bool lowcut_, pingPong_;
+  double glide_, tail_ = 0, wow_ = 0, flutter_ = 0, syncBeats_ = 0, bpm_ = 120; bool lowcut_, pingPong_;
 };
 
 std::unique_ptr<StereoProcessor> makeSigimsae(std::string_view type, const Parameters& params, double sr, double bpm) {

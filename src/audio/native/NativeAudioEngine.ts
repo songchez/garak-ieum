@@ -12,6 +12,7 @@ import { SampleLibrary } from '../samples'
 import { clamp, normalizedStart } from '../math'
 import { assertNativeInstrumentsSupported, canPlayInstrument, unsupportedNativeInstruments, WAVETABLE_HOST_REQUIRED } from '../instrumentSupport'
 import { compileNativeTimeline, type NativePcmAsset } from './timeline'
+import { tempoMapOf } from '../../core/tempoMap'
 import type {
   NativeAudioBridge, NativeAudioFile, NativeBackend, NativeDevice, NativeDeviceProbe, NativeDeviceState,
   NativeEngineEvent, NativeLatencyMeasurement, NativePluginDescriptor, NativePluginInstance, NativePluginParameter, NativePluginState,
@@ -123,7 +124,7 @@ export class NativeAudioEngine implements AudioEngine {
   private nextWaveNoteId = 1_000_000_000
 
   /** Live MIDI: the host opens devices and plays notes on its audio thread (docs/MIDI_RECORDING.md). */
-  readonly liveMidi = new NativeLiveMidi((method, params) => this.request(method, params), () => this.configured, () => this.project?.bpm ?? 120)
+  readonly liveMidi = new NativeLiveMidi((method, params) => this.request(method, params), () => this.configured, () => this.project ? tempoMapOf(this.project) : 120)
 
   readonly wavetable: WavetableNativeBridge = {
     protocolVersion: 1,
@@ -371,9 +372,8 @@ export class NativeAudioEngine implements AudioEngine {
     this.masterLevel = Math.max(0, finite(event.masterLevel))
     const rate = finite(event.sampleRate, this.nativeDevice?.sampleRate ?? this.desiredSampleRate)
     this.liveMidi.receive(event.midi, rate)
-    const bpm = this.project?.bpm ?? 120
     const beat = typeof event.frame === 'number' && Number.isFinite(event.frame) && rate > 0
-      ? event.frame / rate * bpm / 60 : this.snapshot.beat
+      ? (this.project ? tempoMapOf(this.project).beatAtFrame(event.frame, rate) : event.frame / rate * 2) : this.snapshot.beat
     this.updateTransport({
       ...(typeof event.playing === 'boolean' ? { playing: event.playing } : {}),
       beat: this.project ? clamp(beat, 0, this.project.lengthBeats) : Math.max(0, beat),
@@ -679,8 +679,10 @@ export class NativeAudioEngine implements AudioEngine {
     await this.resume()
     if (generation !== this.generation || this.transportRequest !== request) return
     const project = this.requireProject()
-    const countInFrames = Math.round(countInBeats(project.timeSignature, options.countInBars ?? 0) * 60 / project.bpm * this.desiredSampleRate)
-    await this.startNativePlayback(request, generation, normalizedStart(project, this.snapshot.beat), countInFrames)
+    const start = normalizedStart(project, this.snapshot.beat)
+    // The count-in runs at the tempo where the transport starts (native/src/engine.cpp clicks it the same way).
+    const countInFrames = Math.round(countInBeats(project.timeSignature, options.countInBars ?? 0) * 60 / tempoMapOf(project).bpmAt(start) * this.desiredSampleRate)
+    await this.startNativePlayback(request, generation, start, countInFrames)
   }
 
   /** Shared by Play and playback restoration after opening recording/monitoring input. */
@@ -727,7 +729,7 @@ export class NativeAudioEngine implements AudioEngine {
     if (this.configured) void this.request('transport.seek', { frame: this.frameForBeat(position) }).catch(error => this.fail(error))
   }
 
-  private frameForBeat(beat: number): number { return Math.round(beat * 60 / (this.project?.bpm ?? 120) * this.desiredSampleRate) }
+  private frameForBeat(beat: number): number { return Math.round(this.project ? tempoMapOf(this.project).frameAt(beat, this.desiredSampleRate) : beat * 0.5 * this.desiredSampleRate) }
 
   async previewNote(instrument: InstrumentId, pitch: number, velocity = .8, trackId?: string): Promise<void> {
     const generation = this.generation

@@ -1,6 +1,7 @@
 import type { MidiClip, MidiNote, Project, TrackMidiInput } from './types'
 import { acceptsMidi, parseMidi } from './midiInput'
 import { applyDragMode, fitProjectLength, joinClips, uid } from './project'
+import { beatAfterSeconds, tempoMapOf, type Tempo, type TempoSource } from './tempoMap'
 import { SUSTAIN_CONTROLLER, isPedalDown, spansToSustain } from './sustain'
 import type { StampedMidi } from '../audio/liveMidi'
 
@@ -23,21 +24,25 @@ export const MIDI_RECORD_MODE_LABELS: Record<MidiRecordMode, string> = { merge: 
  * `positionAfter` it may return a beat before the anchor (a note just ahead of the downbeat), and it wraps at the
  * cycle end the same way the scheduler does.
  */
-export function heardTransportBeat(project: Pick<Project, 'bpm' | 'loop' | 'lengthBeats'>, anchorBeat: number, anchorTime: number, contextTime: number): number {
-  const beat = anchorBeat + (contextTime - anchorTime) * project.bpm / 60
+export function heardTransportBeat(project: TempoSource & Pick<Project, 'loop' | 'lengthBeats'>, anchorBeat: number, anchorTime: number, contextTime: number): number {
+  const tempo = tempoMapOf(project)
+  const beat = tempo.beatAfter(anchorBeat, contextTime - anchorTime)
   const loop = project.loop.enabled && project.loop.endBeat - project.loop.startBeat > 0.001 ? project.loop : null
-  if (loop && beat >= loop.endBeat) return loop.startBeat + (beat - loop.endBeat) % (loop.endBeat - loop.startBeat)
+  if (loop && beat >= loop.endBeat) {
+    const cycle = tempo.secondsBetween(loop.startBeat, loop.endBeat)
+    return tempo.beatAfter(loop.startBeat, (tempo.secondsBetween(loop.endBeat, beat)) % cycle)
+  }
   return beat
 }
 
-/** Native host frames (already latency compensated by the host) to beats at the project tempo. */
-export const frameToBeat = (frame: number, sampleRate: number, bpm: number): number => frame / sampleRate * bpm / 60
+/** Native host frames (already latency compensated by the host) to beats through the tempo map. */
+export const frameToBeat = (frame: number, sampleRate: number, tempo: Tempo): number => beatAfterSeconds(tempo, 0, frame / sampleRate)
 
 /**
  * Latency compensation for a timestamp that only knows when the player pressed the key: subtract what the player
  * hears late (output latency) so the note lands on the beat they played along to.
  */
-export const compensatedBeat = (beatAtArrival: number, latencySeconds: number, bpm: number): number => beatAtArrival - Math.max(0, latencySeconds) * bpm / 60
+export const compensatedBeat = (beatAtArrival: number, latencySeconds: number, tempo: Tempo): number => beatAfterSeconds(tempo, beatAtArrival, -Math.max(0, latencySeconds))
 
 export interface RecordedNote { pitch: number; start: number; end: number; velocity: number }
 /** Raw controller data (CC64 becomes the region's sustain pedal; other controllers wait for the controller-lane work). */
@@ -243,7 +248,7 @@ export function commitMidiTake(project: Project, result: MidiTakeResult, options
       const overlapping = track.clips.filter((existing): existing is MidiClip => existing.kind === 'midi'
         && existing.startBeat < span.end - EPSILON && existing.startBeat + existing.lengthBeats > span.start + EPSILON)
       if (overlapping.length) {
-        const joined = joinClips([...overlapping, clip], next.bpm)
+        const joined = joinClips([...overlapping, clip], tempoMapOf(next))
         if (joined && joined.kind === 'midi') clip = joined
       }
       const removed = new Set(overlapping.map(existing => existing.id))

@@ -841,6 +841,34 @@ void checkClicks(const std::vector<float>&out,const std::vector<std::pair<std::s
   std::vector<float>want(out.size()/2,0.f);for(const auto&[frame,value]:expected)want[frame]=value;
   for(std::size_t i=0;i<want.size();++i){near(out[2*i],want[i],1e-7,message);near(out[2*i+1],want[i],1e-7,message);}
 }
+// Tempo map (docs/TEMPO_MAP.md): garak/tempo.hpp must place beats on the same frames as src/core/tempoMap.ts.
+// The expected frames below were computed by the TypeScript map (closed-form ramp integrals, not hashes).
+void tempoMapFrames(){
+  const TempoMap map(100,{{0,100,true},{6,180,false},{10,75,true},{18.5,75.5,true},{30,210,false}});
+  const std::vector<std::pair<double,double>> ts{{0.5,13940.320566},{3,72678.003110},{6,126961.919619},{7.25,146961.919619},{10,190961.919619},{14,344321.481189},{18.5,516278.731125},{22,622951.886684},{30,768181.540361},{33.3,813438.683218}};
+  for(const auto&[beat,frame]:ts){near(map.frameAt(beat,48000),frame,1,"Native tempo map disagrees with the TypeScript frames by more than one sample");near(map.frameAt(beat,48000),frame,1e-3,"Native tempo map drifted from the TypeScript closed form");}
+  for(double beat=-2;beat<40;beat+=.37)near(map.beatAtFrame(map.frameAt(beat,48000),48000),beat,1e-9,"Tempo map beat/frame round trip failed");
+  // An independent midpoint integral of 60/bpm(b) agrees with the closed form inside a ramp.
+  double seconds=0;const int steps=200000;for(int i=0;i<steps;++i)seconds+=60/map.bpmAt(10+8.5*(i+.5)/steps)*8.5/steps;
+  near(map.secondsAt(18.5)-map.secondsAt(10),seconds,1e-8,"Ramp integral is not exact");
+  near(map.bpmAt(3),140,1e-12,"Ramp tempo is not linear in beats");check(map.bpmAt(8)==180&&map.bpmAt(40)==210,"Step tempo is wrong");
+  check(TempoMap(120,{}).constant()&&!map.constant(),"Constant tempo detection failed");
+  // Ramp 90→150 over two bars, then 150: clicks land on the TypeScript frames through the accelerando.
+  auto p=project(48000,48000*6);p.bpm=90;p.tempoMap={{0,90,true},{8,150,false}};
+  const std::vector<std::size_t> frames{0,30736,59194,85687,110470,133750,155699,176460,196157,215357,234557,253757,272957};
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");
+   std::vector<std::pair<std::size_t,float>> want;for(std::size_t i=0;i<frames.size();++i)want.push_back({frames[i],i%4?.25f:1.f});
+   checkClicks(render(e,272958,97),want,"Metronome clicks do not follow the tempo ramp");}
+  // A count-in from inside the ramp clicks evenly at the tempo where the transport starts (120 BPM at beat 4).
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),false,1),"Metronome command failed");check(e.seek(110470),"Seek failed");check(e.play(96000),"Count-in play failed");
+   checkClicks(render(e,96000,89),{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f}},"Count-in inside a tempo map does not use the local tempo");}
+  // Tempo-synced effects follow setTempo: a 1-beat delay at 120 BPM echoes 24000 frames late, at 60 BPM 48000.
+  auto delay=dsp::makeEffect("delay",{{"sync",1},{"time",1},{"amount",1},{"feedback",0},{"tone",16000},{"lowcut",20}},48000,120);
+  delay->setTempo(60);std::vector<float>settle(48000*2,0.f);delay->process(settle.data(),48000);
+  std::vector<float>pulse(60000*2,0.f);pulse[0]=pulse[1]=1;delay->process(pulse.data(),60000);
+  std::size_t peak=1;for(std::size_t i=1;i<60000;++i)if(std::abs(pulse[2*i])>std::abs(pulse[2*peak]))peak=i;
+  check(peak>=47990&&peak<=48010,"Synced delay did not follow the new tempo");
+}
 void metronomeClicks(){
   // 120 BPM 4/4: a quarter is 24000 frames; the bar downbeat is accented.
   auto p=project(48000,48000*8);
@@ -957,7 +985,7 @@ void sustainPedal(){
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

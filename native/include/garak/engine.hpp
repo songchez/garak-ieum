@@ -1,5 +1,6 @@
 #pragma once
 
+#include "garak/tempo.hpp"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -58,12 +59,16 @@ struct PluginSpec {
   bool operator==(const PluginSpec&) const = default;
 };
 struct ProcessContext {
+  // bpm is the tempo at projectFrame; `tempo` (when set) converts any project frame to beats (docs/TEMPO_MAP.md).
   double sampleRate = 48000, bpm = 120;
   std::int64_t projectFrame = 0;
   bool playing = false, offline = false;
   int timeSigNumerator = 4, timeSigDenominator = 4;
   bool cycleActive = false, recording = false;
   std::int64_t cycleStartFrame = 0, cycleEndFrame = 0, continuousFrame = 0;
+  const TempoMap* tempo = nullptr;
+  // Musical position (quarter notes) of a project frame: through the tempo map when there is one.
+  [[nodiscard]] double beatAt(double frame) const noexcept { return tempo ? tempo->beatAtFrame(frame, sampleRate) : frame / sampleRate * bpm / 60.0; }
 };
 struct PluginEvent {
   // Controller: MIDI control change; parameterId is the controller number (0..127) and value is
@@ -190,6 +195,9 @@ struct ProjectTimeline {
   std::uint64_t revision = 0;
   std::uint32_t sampleRate = 48000;
   double bpm = 120, beatsPerBar = 4;
+  // Tempo changes (schema 14): sorted points, the first at beat 0 with `bpm`. Empty = constant `bpm`.
+  // Note/audio/cycle frames already follow it; the host uses it for clicks, synced effects and VST3 time.
+  std::vector<TempoPoint> tempoMap;
   int timeSigNumerator = 4, timeSigDenominator = 4;
   std::int64_t lengthFrames = 1;
   std::optional<std::array<std::int64_t, 2>> cycle;

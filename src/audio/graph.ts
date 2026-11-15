@@ -4,7 +4,8 @@ import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../co
 import type { AudioWindow, PlaybackNote } from '../core/playback'
 import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
 import { masterFeedExcluded, reconcileTrackRoutes, routeOf } from '../core/trackRouting'
-import { clamp, secondsPerBeat } from './math'
+import { clamp } from './math'
+import { tempoMapOf, type TempoMap } from '../core/tempoMap'
 import { AUDIO_CLIP_GAIN_MAX, envelopeAt, envelopeBreakpoints, fadeLengths } from '../core/clipEnvelope.js'
 import { pickZone, releaseNoiseGain, type LoadedSet, type SampleLibrary } from './samples'
 import type { DeviceGraph } from '../devices/contracts'
@@ -93,7 +94,8 @@ function tineShaperCurve(): Float32Array<ArrayBuffer> {
   return tineCurve
 }
 
-export function updateGraph(graph: EngineGraph, project: Project, smooth = true): void {
+/** `bpm` is the tempo tempo-synced effects follow: the tempo at the playhead when the project has a tempo map. */
+export function updateGraph(graph: EngineGraph, project: Project, smooth = true, bpm = project.bpm): void {
   const now = graph.context.currentTime
   const audible = audibleTrackIds(project.tracks)
   setParameter(graph.masterVolume.gain, clamp(project.masterVolume, 0, 2), now, smooth)
@@ -104,13 +106,15 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true)
     setParameter(channel.fader.gain, audible.has(track.id) ? clamp(track.volume, 0, 2) : 0, now, smooth)
     setParameter(channel.panner.pan, clamp(track.pan, -1, 1), now, smooth)
     for (const device of track.devices) {
-      if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, project.bpm, now, smooth)
+      if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, bpm, now, smooth)
     }
   }
 }
 
 export function renderTailSeconds(project: Project): number {
   let tail = 0.85
+  // Synced delays ring longest at the slowest tempo of the map.
+  const slowest = Math.min(...tempoMapOf(project).points.map(point => point.bpm))
   for (const track of project.tracks) {
     if (!isTrackEnabled(track)) continue
     const def = instrumentDef(track.instrument)
@@ -119,7 +123,7 @@ export function renderTailSeconds(project: Project): number {
     } else if (track.kind === 'instrument' && def.kind === 'sampled') tail = Math.max(tail, 2)
     for (const device of track.devices) {
       if (!device.enabled || !isEffectDevice(device)) continue
-      tail = Math.max(tail, EFFECT_MODULES[device.type].tailSeconds(device.params, project.bpm))
+      tail = Math.max(tail, EFFECT_MODULES[device.type].tailSeconds(device.params, slowest))
     }
   }
   return tail
@@ -661,11 +665,12 @@ export function scheduleSampled(
   return voice
 }
 
-/** localSeconds is the position inside the clip content; maxSeconds caps playback at the window or range end. */
-function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: AudioClip, asset: AudioAsset, localSeconds: number, when: number, maxSeconds: number, beatSeconds: number): void {
+/** localSeconds is the position inside the clip content; maxSeconds caps playback at the window or range end;
+ * regionSeconds is the occurrence's real duration through the tempo map. */
+function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: AudioClip, asset: AudioAsset, localSeconds: number, when: number, maxSeconds: number, regionSeconds: number): void {
   const context = graph.context
   const offset = Math.max(0, clip.offsetSeconds) + localSeconds
-  const clipDuration = Math.min(clip.lengthBeats * beatSeconds, asset.buffer.duration - Math.max(0, clip.offsetSeconds))
+  const clipDuration = Math.min(regionSeconds, asset.buffer.duration - Math.max(0, clip.offsetSeconds))
   const duration = Math.min(clipDuration - localSeconds, maxSeconds)
   if (duration <= 0.001 || offset >= asset.buffer.duration) return
   const source = context.createBufferSource()
@@ -704,13 +709,16 @@ export function scheduleRange(
   realtime: boolean,
   library?: SampleLibrary,
 ): void {
-  const beatSeconds = secondsPerBeat(project.bpm)
+  // Every beat→time conversion goes through the tempo map (docs/TEMPO_MAP.md).
+  const tempo = tempoMapOf(project)
+  const startSeconds = tempo.secondsAt(startBeat)
+  const seconds = (from: number, to: number): number => tempo.secondsBetween(from, to)
   const epsilon = 0.0000001
   const adjustStart = (beat: number): [number, number] => {
-    let time = startTime + (beat - startBeat) * beatSeconds
+    let time = startTime + tempo.secondsAt(beat) - startSeconds
     if (realtime && time < graph.context.currentTime) {
       const nextTime = graph.context.currentTime + 0.002
-      beat += (nextTime - time) / beatSeconds
+      beat = tempo.beatAfter(beat, nextTime - time)
       time = nextTime
     }
     return [beat, time]
@@ -729,7 +737,7 @@ export function scheduleRange(
         continue
       }
     }
-    const events = trackEvents(track, project.lengthBeats, project.bpm)
+    const events = trackEvents(track, project.lengthBeats, tempo)
     for (const window of events.windows) {
       const windowEnd = Math.min(window.end, boundary, project.lengthBeats)
       if (windowEnd <= startBeat || window.start >= endBeat) continue
@@ -738,8 +746,9 @@ export function scheduleRange(
       if (!asset) continue
       const [beat, time] = adjustStart(Math.max(window.start, startBeat))
       if (beat >= windowEnd) continue
-      const localSeconds = (beat - window.start + window.sourceOffsetBeats) * beatSeconds
-      scheduleAudioClip(graph, channel.input, window.clip, asset, localSeconds, time, (windowEnd - beat) * beatSeconds, beatSeconds)
+      // Audio plays at 1×: its source position is the real time since the occurrence started.
+      const origin = window.start - window.sourceOffsetBeats
+      scheduleAudioClip(graph, channel.input, window.clip, asset, seconds(origin, beat), time, seconds(beat, windowEnd), seconds(origin, origin + window.clip.lengthBeats))
     }
     for (const note of events.notes) {
       const noteEnd = Math.min(note.end, boundary, project.lengthBeats)
@@ -747,11 +756,11 @@ export function scheduleRange(
       if (!startsInRange(note.start) && !(chase && !def.isKit && note.start < startBeat && noteEnd > startBeat)) continue
       const [beat, time] = adjustStart(Math.max(note.start, startBeat))
       if (beat >= noteEnd) continue
-      const available = (Math.min(note.limit, boundary, project.lengthBeats) - beat) * beatSeconds
+      const available = seconds(beat, Math.min(note.limit, boundary, project.lengthBeats))
       if (loaded) {
-        scheduleSampled(graph, channel.input, loaded, def.isKit, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams, channel.chokes)
+        scheduleSampled(graph, channel.input, loaded, def.isKit, note.pitch, time, seconds(beat, noteEnd), note.velocity, available, track.instrumentParams, channel.chokes)
       } else {
-        scheduleInstrument(graph, channel.input, track.instrument, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams)
+        scheduleInstrument(graph, channel.input, track.instrument, note.pitch, time, seconds(beat, noteEnd), note.velocity, available, track.instrumentParams)
       }
     }
   }
@@ -759,7 +768,7 @@ export function scheduleRange(
 
 interface TrackEvents {
   projectEnd: number
-  bpm: number
+  tempo: TempoMap
   notes: PlaybackNote[]
   windows: AudioWindow[]
 }
@@ -767,10 +776,10 @@ interface TrackEvents {
 // Track objects are immutable snapshots, so the expanded events can be reused across scheduler ticks.
 const eventCache = new WeakMap<Track, TrackEvents>()
 
-function trackEvents(track: Track, projectEnd: number, bpm: number): TrackEvents {
+function trackEvents(track: Track, projectEnd: number, tempo: TempoMap): TrackEvents {
   const cached = eventCache.get(track)
-  if (cached && cached.projectEnd === projectEnd && cached.bpm === bpm) return cached
-  const events: TrackEvents = { projectEnd, bpm, notes: midiEvents(track, projectEnd), windows: audioWindows(track, projectEnd, bpm) }
+  if (cached && cached.projectEnd === projectEnd && cached.tempo === tempo) return cached
+  const events: TrackEvents = { projectEnd, tempo, notes: midiEvents(track, projectEnd), windows: audioWindows(track, projectEnd, tempo) }
   eventCache.set(track, events)
   return events
 }

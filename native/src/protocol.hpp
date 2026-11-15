@@ -110,6 +110,21 @@ inline ProjectTimeline timeline(const Json& value) {
   p.sampleRate = static_cast<std::uint32_t>(integer(value, "sampleRate", 8000, 192000, 48000));
   p.bpm = number(value, "bpm", 20, 400, 120); p.beatsPerBar = number(value, "beatsPerBar", .25, 64, 4);
   p.lengthFrames = integer(value, "lengthFrames", 1, std::int64_t(p.sampleRate) * 3600, 1);
+  // Tempo map (docs/TEMPO_MAP.md): sorted points, the first at beat 0 carrying `bpm`. Absent = constant tempo.
+  if (value.contains("tempoMap") && !value.at("tempoMap").is_null()) {
+    const auto& points = value.at("tempoMap");
+    if (!points.is_array() || points.size() > 4096) throw std::runtime_error("Invalid tempo map");
+    for (const auto& point : points) {
+      TempoPoint t;
+      t.beat = number(point, "beat", 0, 10000000, 0); t.bpm = number(point, "bpm", 20, 400, p.bpm);
+      const auto curve = point.value("curve", std::string("step"));
+      if (curve != "step" && curve != "ramp") throw std::runtime_error("Invalid tempo curve");
+      t.ramp = curve == "ramp";
+      if (p.tempoMap.empty() ? (t.beat != 0 || std::abs(t.bpm - p.bpm) > 1e-6) : !(t.beat > p.tempoMap.back().beat)) throw std::runtime_error("Invalid tempo map order");
+      p.tempoMap.push_back(t);
+    }
+    if (p.tempoMap.size() < 2) p.tempoMap.clear();
+  }
   p.masterGain = static_cast<float>(number(value, "masterGain", 0, 4, 1));
   p.lowLatencyMonitoring = value.value("lowLatencyMonitoring", true);
   const auto signature = value.value("timeSignature", Json::object());

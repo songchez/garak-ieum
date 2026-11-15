@@ -3,6 +3,9 @@
  * Controller reference: https://midi.org/midi-1-0-control-change-messages
  * Parsing never starts audio, creates IDs, or changes the current project.
  */
+import { TEMPO_MAX, TEMPO_MIN, normalizeTempoPoints, tempoPointsFromSteps, type TempoStep } from './tempoMap'
+import type { TempoPoint } from './types'
+
 export const MAX_MIDI_FILE_BYTES = 16 * 1024 * 1024
 const MAX_TRACKS = 256
 const MAX_EVENTS = 500_000
@@ -30,6 +33,8 @@ export interface MidiImportResult {
   lengthBeats: number
   /** Initial SMF tempo; defaults to 120 when no tempo is set at tick zero. */
   bpm?: number
+  /** Tempo changes after the start as tempo-map points (first at beat 0, clamped to 30–300 BPM). Absent = constant. */
+  tempoMap?: TempoPoint[]
   /** Initial SMF meter; defaults to 4/4 when no meter is set at tick zero. */
   timeSignature?: { numerator: number; denominator: number }
   warnings: string[]
@@ -135,8 +140,8 @@ function trackName(data: Uint8Array, warn: (message: string) => void): string {
   return decoded.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180)
 }
 
-/** Read a bounded SMF into editable notes. Tempo maps and expressive automation
- * are explicitly reported, rather than silently changing musical beat positions.
+/** Read a bounded SMF into editable notes. Tempo changes become a tempo map; expressive automation
+ * is explicitly reported, rather than silently changing musical beat positions.
  * Simultaneous events keep file track/event order. Same-pitch note-offs match
  * the oldest held note, because MIDI 1.0 carries no per-note identity.
  */
@@ -336,11 +341,16 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
 
   let microseconds = 500_000, initialMicroseconds = microseconds
   tempos.sort((a, b) => a.tick - b.tick || a.order - b.order)
+  const steps: TempoStep[] = [{ beat: 0, bpm: 120 }]
   for (const tempo of tempos) {
     if (tempo.tick === 0) initialMicroseconds = tempo.microseconds
-    else if (tempo.microseconds !== microseconds) warn('곡 중간의 템포 변경은 가져오지 않았습니다. 노트 위치는 박자 기준으로 유지했습니다.')
+    if (tempo.tick === 0 || tempo.microseconds !== microseconds) steps.push({ beat: tempo.tick / division, bpm: 60_000_000 / tempo.microseconds })
     microseconds = tempo.microseconds
   }
+  // Tempo changes become the project's tempo map (docs/TEMPO_MAP.md); stepped ramps import as ramps.
+  const tempoPoints = tempoPointsFromSteps(steps)
+  if (tempoPoints.some(point => point.bpm < TEMPO_MIN || point.bpm > TEMPO_MAX)) warn(`지원 범위(${TEMPO_MIN}–${TEMPO_MAX} BPM)를 벗어난 템포는 범위 안으로 맞췄습니다.`)
+  const tempoMap = tempoPoints.length > 1 ? normalizeTempoPoints(tempoPoints[0].bpm, tempoPoints) : undefined
   let currentMeter = { numerator: 4, denominator: 4 }, initialMeter = currentMeter
   meters.sort((a, b) => a.tick - b.tick || a.order - b.order)
   for (const meter of meters) {
@@ -363,5 +373,5 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
     notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch || a.duration - b.duration)
     return { name, channel, notes, ...(program === undefined ? {} : { program }), ...(sustain.length ? { sustain } : {}) }
   })
-  return { tracks, lengthBeats: endTick / division, bpm: 60_000_000 / initialMicroseconds, timeSignature: initialMeter, warnings: [...warnings] }
+  return { tracks, lengthBeats: endTick / division, bpm: tempoMap ? tempoPoints[0].bpm : 60_000_000 / initialMicroseconds, ...(tempoMap ? { tempoMap } : {}), timeSignature: initialMeter, warnings: [...warnings] }
 }

@@ -4,6 +4,7 @@ import { createTrack, fitProjectLength, insertTracks, MIN_CLIP_BEATS, uid, valid
 import type { AudioAsset, AudioClip, MidiClip, Project, Track } from './types'
 import { decideWarp, type TempoAnalysis } from '../devices/audio-warp/tempo'
 import { clipWithWarpDecision } from '../devices/audio-warp/state'
+import { spanBeats, tempoMapOf, withTempoPoints } from './tempoMap'
 
 export const MEDIA_FILE_ACCEPT = 'audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aiff,.mid,.midi,.smf'
 export type ImportedMedia =
@@ -53,6 +54,8 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
       if (Number.isFinite(initialMidi.bpm) && initialMidi.bpm >= 30 && initialMidi.bpm <= 300) next = { ...next, bpm: initialMidi.bpm }
       else warnings.add('MIDI의 초기 템포가 지원 범위(30–300 BPM)를 벗어나 프로젝트 템포를 유지했습니다.')
     }
+    // A first MIDI file in an empty project brings its tempo changes along as the tempo map.
+    if (initialMidi.tempoMap) next = withTempoPoints(next, [{ ...initialMidi.tempoMap[0], bpm: next.bpm }, ...initialMidi.tempoMap.slice(1)])
     if (initialMidi.timeSignature) {
       try {
         const timeSignature = validateTimeSignature(initialMidi.timeSignature)
@@ -72,11 +75,11 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
       const existing = !targetUsed && target.trackId ? next.tracks.find(track => track.id === target.trackId && track.kind === 'audio') : undefined
       if (existing) targetUsed = true
       const track = existing ?? { ...createTrack('audio'), name }
-      const plain: AudioClip = { id: uid(), kind: 'audio', name, startBeat: beat, lengthBeats: item.asset.buffer.duration * next.bpm / 60, gain: 1,
+      const plain: AudioClip = { id: uid(), kind: 'audio', name, startBeat: beat, lengthBeats: spanBeats(tempoMapOf(next), beat, item.asset.buffer.duration), gain: 1,
         assetId: item.asset.id, offsetSeconds: 0, fadeIn: .005, fadeOut: .01 }
       // Short loops with a clear tempo fit the project tempo; long files only remember theirs.
       const decision = decideWarp({ name: item.name, durationSeconds: item.asset.buffer.duration, beatsPerBar: next.beatsPerBar, analysis: item.tempo ?? null })
-      const clip = decision ? clipWithWarpDecision(plain, decision, next.bpm) : plain
+      const clip = decision ? clipWithWarpDecision(plain, decision, tempoMapOf(next).bpmAt(beat)) : plain
       if (clip.warp) tempos.push({ clipId: clip.id, name, bpm: clip.warp.sourceBpm, warped: clip.warp.enabled })
       assets.push(item.asset); audioFiles++
       append(track, clip, !!existing)
@@ -87,7 +90,7 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
     if (!Number.isFinite(item.midi.lengthBeats) || item.midi.lengthBeats <= 0) throw new Error(`${item.name}: MIDI 길이가 유효하지 않습니다.`)
     midiFiles++
     for (const warning of item.midi.warnings) warnings.add(`${item.name}: ${warning}`)
-    if (!initialMidi && item.midi.bpm !== undefined && Math.abs(item.midi.bpm - next.bpm) > .000001) warnings.add('기존 작업의 템포를 유지했습니다. MIDI 음표는 프로젝트 템포에 맞춰 재생됩니다.')
+    if (!initialMidi && ((item.midi.bpm !== undefined && Math.abs(item.midi.bpm - next.bpm) > .000001) || item.midi.tempoMap)) warnings.add('기존 작업의 템포를 유지했습니다. MIDI 음표는 프로젝트 템포에 맞춰 재생됩니다.')
     if (!initialMidi && item.midi.timeSignature && (item.midi.timeSignature.numerator !== next.timeSignature.numerator || item.midi.timeSignature.denominator !== next.timeSignature.denominator)) warnings.add('기존 작업의 박자를 유지했습니다. MIDI 음표의 박 위치는 그대로 가져왔습니다.')
     for (const part of parts) {
       // A multi-part file keeps its channel separation. A single part can use

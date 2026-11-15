@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { tempoMapOf } from '../core/tempoMap'
 import type { AudioEngine, Clip, EffectType, InputChoice, InstrumentId, Project, Track, TrackInput, TrackInputRoute } from '../core/types'
 import type { TrackButtonKind, TrackButtonMods } from '../core/trackActions'
 import type { InspectorSections } from '../core/trackUi'
@@ -59,7 +60,7 @@ export function Inspector(props: InspectorProps) {
     : <span onDoubleClick={e => { if (single) { e.stopPropagation(); setRenaming(single.name) } }} title={single ? '더블클릭: 이름 변경' : undefined}>{regionTitle(selection)}</span>
   return <div className="inspector" aria-label="인스펙터">
     <Section id="region" open={sections.region} title={regionHead} onToggle={() => toggle('region')} className="insp-region">
-      {selection.length > 0 && <RegionInspector selection={selection} bpm={project.bpm} beatsPerBar={project.beatsPerBar} onClipsEdit={props.onClipsEdit} warp={props.warp} />}
+      {selection.length > 0 && <RegionInspector selection={selection} bpm={Math.round(tempoMapOf(project).bpmAt(selection[0].clip.startBeat) * 100) / 100} beatsPerBar={project.beatsPerBar} onClipsEdit={props.onClipsEdit} warp={props.warp} />}
     </Section>
     <Section id="track" open={sections.track} title={focusedTrack ? `트랙: ${focusedTrack.name}` : '트랙'} onToggle={() => toggle('track')} className="insp-track">
       {focusedTrack ? <TrackInspector track={focusedTrack} bpm={project.bpm} onTrackChange={props.onTrackChange} onInstrumentChange={props.onInstrumentChange} onOpenColorPalette={props.onOpenColorPalette} onIconMenu={props.onIconMenu} inputChoices={props.inputChoices} onInputChange={props.onTrackInput} tracks={project.tracks} onRouteChange={props.onTrackRoute} /> : <p className="insp-empty">트랙을 선택해주세요</p>}

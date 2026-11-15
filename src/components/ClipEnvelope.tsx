@@ -1,4 +1,5 @@
 import { useContext, useId, useRef, useState } from 'react'
+import { spanSeconds, type Tempo } from '../core/tempoMap'
 import type { AudioAsset, AudioClip, Clip, FadeCurve } from '../core/types'
 import { HistoryGestureContext } from '../core/historyGesture'
 import { FADE_CURVES, FADE_CURVE_LABELS, NORMALIZE_TARGET_DB, clipGainMaxDb, clipSeconds, fadeCurveOf, fadeLengths, fadeShape, gainToDb, normalizeGain, regionPeak, withClipGainDb, withFade, withFadeCurve, type FadeEdge } from '../core/clipEnvelope'
@@ -29,8 +30,8 @@ type Drag = { kind: 'gain' | FadeEdge; id: number; x: number; y: number; moved: 
  * On-region gain line (Reaper/Cubase volume handle) and fade handles at the top corners
  * (Reaper/Studio One/Cubase). Drag edits every selected audio region; double-click resets.
  */
-export function ClipEnvelope({ clip, widthPx, ppb, bpm, asset, showFades, readOnly = false, actions }: {
-  clip: AudioClip; widthPx: number; ppb: number; bpm: number; asset?: AudioAsset; showFades: boolean
+export function ClipEnvelope({ clip, widthPx, tempo, asset, showFades, readOnly = false, actions }: {
+  clip: AudioClip; widthPx: number; tempo: Tempo; asset?: AudioAsset; showFades: boolean
   /** Loop repeats and moving previews show the fades only. */
   readOnly?: boolean
   actions: React.RefObject<EnvelopeActions | null>
@@ -39,8 +40,9 @@ export function ClipEnvelope({ clip, widthPx, ppb, bpm, asset, showFades, readOn
   const gestureId = useId()
   const drag = useRef<Drag | null>(null)
   const [readout, setReadout] = useState<{ kind: Drag['kind']; text: string } | null>(null)
-  const regionSeconds = clipSeconds(clip, bpm, asset?.buffer.duration)
-  const pxPerSecond = ppb * bpm / 60
+  const regionSeconds = clipSeconds(clip, tempo, asset?.buffer.duration)
+  // Across a tempo change the region's pixels per second vary; fades use the region's average.
+  const pxPerSecond = widthPx / Math.max(1e-6, spanSeconds(tempo, clip.startBeat, clip.startBeat + clip.lengthBeats))
   const [fadeIn, fadeOut] = fadeLengths(regionSeconds, clip.fadeIn, clip.fadeOut)
   const inPx = Math.min(widthPx, fadeIn * pxPerSecond), outPx = Math.min(widthPx, fadeOut * pxPerSecond)
   const db = gainToDb(clip.gain)
@@ -73,7 +75,7 @@ export function ClipEnvelope({ clip, widthPx, ppb, bpm, asset, showFades, readOn
       const base = d.start.get(clip.id) ?? 0
       const seconds = Math.max(0, base + (d.kind === 'in' ? dx : -dx) / pxPerSecond * (e.shiftKey ? 0.1 : 1))
       const edge = d.kind
-      act.edit(d.ids, c => c.kind === 'audio' ? withFade(c, edge, seconds, clipSeconds(c, bpm, c.id === clip.id ? asset?.buffer.duration : undefined)) : c, label(edge))
+      act.edit(d.ids, c => c.kind === 'audio' ? withFade(c, edge, seconds, clipSeconds(c, tempo, c.id === clip.id ? asset?.buffer.duration : undefined)) : c, label(edge))
       setReadout({ kind: edge, text: formatFadeSeconds(Math.min(seconds, regionSeconds - (edge === 'in' ? clip.fadeOut : clip.fadeIn))) })
     }
   }
@@ -138,7 +140,7 @@ export function ClipEnvelope({ clip, widthPx, ppb, bpm, asset, showFades, readOn
  * Region-menu entries for gain and fades. `targets` are the audio regions the menu acts on;
  * `onCrossfade` is absent when the host cannot rearrange regions.
  */
-export function envelopeMenuItems(clip: AudioClip, targets: AudioClip[], assets: Map<string, AudioAsset>, bpm: number, edit: ClipsEdit, onCrossfade?: () => void): ContextMenuItem[] {
+export function envelopeMenuItems(clip: AudioClip, targets: AudioClip[], assets: Map<string, AudioAsset>, tempo: Tempo, edit: ClipsEdit, onCrossfade?: () => void): ContextMenuItem[] {
   const ids = targets.map(c => c.id)
   const curveItems = (edge: FadeEdge): ContextMenuItem[] => FADE_CURVES.map(curve => ({
     label: FADE_CURVE_LABELS[curve], checked: fadeCurveOf(edge === 'in' ? clip.fadeInCurve : clip.fadeOutCurve) === curve,
@@ -149,7 +151,7 @@ export function envelopeMenuItems(clip: AudioClip, targets: AudioClip[], assets:
     for (const c of targets) {
       const asset = assets.get(c.assetId); if (!asset) continue
       const channels = Array.from({ length: asset.buffer.numberOfChannels }, (_, i) => asset.buffer.getChannelData(i))
-      const gain = normalizeGain(regionPeak(channels, asset.buffer.sampleRate, c.offsetSeconds, clipSeconds(c, bpm, asset.buffer.duration)))
+      const gain = normalizeGain(regionPeak(channels, asset.buffer.sampleRate, c.offsetSeconds, clipSeconds(c, tempo, asset.buffer.duration)))
       if (gain !== null) gains.set(c.id, gain)
     }
     if (gains.size) edit([...gains.keys()], c => gains.has(c.id) ? { ...c, gain: gains.get(c.id)! } : c, '리전 노멀라이즈')

@@ -174,7 +174,7 @@ describe('standard MIDI file import', () => {
     expect(result.warnings.join(' ')).toMatch(/짝이 없는/)
   })
 
-  it('warns about changing tempo, meter and program while preserving beat positions', () => {
+  it('imports tempo changes as a tempo map and warns about meter and program changes, preserving beat positions', () => {
     const result = parseMidiFile(smf([[
       ...tempo(0, 500_000), ...meter(0, 4, 2), ...event(0, 0xc0, 0),
       ...event(0, 0x90, 60, 100), ...event(480, 0x80, 60, 0),
@@ -185,7 +185,8 @@ describe('standard MIDI file import', () => {
     expect(result.timeSignature).toEqual({ numerator: 4, denominator: 4 })
     expect(result.tracks[0].program).toBe(0)
     expect(result.tracks[0].notes.map(note => [note.start, note.duration])).toEqual([[0, 1], [1, 1]])
-    expect(result.warnings.join(' ')).toMatch(/템포 변경/)
+    expect(result.tempoMap).toEqual([{ beat: 0, bpm: 120, curve: 'step' }, { beat: 1, bpm: 100, curve: 'step' }])
+    expect(result.warnings.join(' ')).not.toMatch(/템포/)
     expect(result.warnings.join(' ')).toMatch(/박자표 변경/)
     expect(result.warnings.join(' ')).toMatch(/Program Change/)
   })
@@ -197,7 +198,8 @@ describe('standard MIDI file import', () => {
     expect(result.bpm).toBe(120)
     expect(result.timeSignature).toEqual({ numerator: 4, denominator: 4 })
     expect(result.tracks[0].notes[0].duration).toBe(2)
-    expect(result.warnings).toHaveLength(2)
+    expect(result.tempoMap).toEqual([{ beat: 0, bpm: 120, curve: 'step' }, { beat: 1, bpm: 60, curve: 'step' }])
+    expect(result.warnings).toHaveLength(1)
   })
 
   it('reports ignored expressive messages once without corrupting following notes', () => {

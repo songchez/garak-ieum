@@ -288,3 +288,27 @@ describe('native timeline bounds', () => {
       .toThrow(expect.objectContaining({ code: 'UNSUPPORTED_SOURCE' }))
   })
 })
+
+describe('native timeline through a tempo map', () => {
+  const tempoMap = [{ beat: 0, bpm: 90, curve: 'ramp' as const }, { beat: 8, bpm: 150, curve: 'step' as const }]
+  // Frames the TypeScript map places beats 0..12 on; native/tests/engine_test.cpp checks garak/tempo.hpp against the same list.
+  const frames = [0, 30736, 59194, 85687, 110470, 133750, 155699, 176460, 196157, 215357, 234557, 253757, 272957]
+
+  it('places notes, the cycle, the length and audio windows on tempo-map frames and carries the map to the host', () => {
+    const notes = Array.from({ length: 12 }, (_, beat) => note(beat, 1))
+    const compiled = compileNativeTimeline(project([
+      track('keys', { clips: [midi('m', { lengthBeats: 12, notes })] }),
+      track('audio', { kind: 'audio', clips: [audio('a', 'pcm', { startBeat: 2, lengthBeats: 4 })] }),
+    ], { bpm: 90, tempoMap, lengthBeats: 12, loop: { enabled: true, startBeat: 4, endBeat: 10 } }), assets(pcm('pcm')))
+    expect(compiled.tempoMap).toEqual(tempoMap)
+    expect(compiled.lengthFrames).toBe(frames[12])
+    expect(compiled.cycle).toEqual({ startFrame: frames[4], endFrame: frames[10] })
+    expect(compiled.tracks[0].notes.map(item => [item.onFrame, item.offFrame])).toEqual(frames.slice(0, 12).map((frame, beat) => [frame, frames[beat + 1]]))
+    // Audio plays at 1x: it starts on beat 2's frame and lasts the region's real duration through the ramp.
+    expect(compiled.tracks[1].audio[0]).toMatchObject({ startFrame: frames[2], endFrame: frames[6], clipLengthFrames: frames[6] - frames[2], sourceStartFrame: 0 })
+  })
+
+  it('omits the map for a constant tempo', () => {
+    expect(compileNativeTimeline(project([], { bpm: 100 })).tempoMap).toBeUndefined()
+  })
+})

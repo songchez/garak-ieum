@@ -60,6 +60,9 @@ class StereoProcessor {
   virtual void takeStateFrom(StereoProcessor& previous) noexcept = 0;
   [[nodiscard]] virtual std::uint32_t latencyFrames() const noexcept { return 0; }
   [[nodiscard]] virtual double tailSeconds() const noexcept { return 0; }
+  // Tempo-synced processors (delay, tremolo) follow the tempo at the playhead (docs/TEMPO_MAP.md).
+  // Called from the audio thread before each block; must not allocate.
+  virtual void setTempo(double /*bpm*/) noexcept {}
 };
 
 // Throws for unsupported processors, unknown keys, invalid ranges or non-finite
