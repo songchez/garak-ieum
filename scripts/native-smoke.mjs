@@ -245,6 +245,33 @@ try {
     assert.ok(state.frame >= 1000 && state.frame < 3000, 'cycle position must stay inside its frame range')
     await service.request('transport.stop')
   })
+  await checked('native incremental sync: binary notes, mixer diffs and single-track replacement', async () => {
+    // Note records (docs/RENDER_DIFF_PROTOCOL.md): int32 id, onFrame, offFrame, limitFrame, pitch; float32 velocity.
+    const encode = notes => {
+      const buffer = new ArrayBuffer(notes.length * 24), view = new DataView(buffer)
+      notes.forEach((n, i) => { const at = i * 24; view.setInt32(at, n.id, true); view.setInt32(at + 4, n.onFrame, true); view.setInt32(at + 8, n.offFrame, true); view.setInt32(at + 12, n.limitFrame, true); view.setInt32(at + 16, n.pitch, true); view.setFloat32(at + 20, n.velocity, true) })
+      return new Uint8Array(buffer)
+    }
+    const notes = Array.from({ length: 80 }, (_, i) => ({ id: i, onFrame: i * 140, offFrame: i * 140 + 600, limitFrame: 12000, pitch: 48 + i % 24, velocity: .5 }))
+    const light = { ...track('dense'), notes: undefined, inserts: [{ id: 'verb', type: 'reverb', enabled: true, params: { amount: .3 } }] }
+    const p = project([track('keys'), { ...light, notesBinary: { offset: 0, count: notes.length } }], 30)
+    const header = { ...p, tracks: undefined, assets: undefined }
+    const set = await service.request('project.set', { timeline: p, binary: encode(notes) })
+    assert.equal(set.revision, 30)
+    await service.request('transport.play')
+    const fader = await service.request('project.patch', { revision: 31, header, order: ['keys', 'dense'], tracks: [{ ...light, gain: .3 }] })
+    assert.equal(fader.applied, 'diff'); assert.equal(fader.revision, 31)
+    const knob = await service.request('project.patch', { revision: 32, header, order: ['keys', 'dense'], tracks: [{ ...light, gain: .3, inserts: [{ ...light.inserts[0], params: { amount: .5 } }] }] })
+    assert.equal(knob.applied, 'diff')
+    const edited = notes.map(n => n.id === 70 ? { ...n, pitch: 90 } : n)
+    const edit = await service.request('project.patch', { revision: 33, header, order: ['keys', 'dense'], tracks: [{ ...light, gain: .3, inserts: [{ ...light.inserts[0], params: { amount: .5 } }], notesBinary: { offset: 0, count: edited.length } }], binary: encode(edited) })
+    assert.equal(edit.applied, 'tracks'); assert.equal(edit.replacedTracks, 1)
+    await assert.rejects(service.request('project.patch', { revision: 34, header, order: ['keys', 'missing'], tracks: [] }), /unknown track/)
+    await assert.rejects(service.request('project.patch', { revision: 34, header, order: ['keys', 'dense'], tracks: [{ ...light, notesBinary: { offset: 0, count: 81 } }], binary: encode(notes) }), /exceeds the request frame/)
+    const state = await service.request('engine.snapshot')
+    assert.equal(state.revision, 33)
+    await service.request('transport.stop')
+  })
   await checked('native recording writes PCM with exact frame metadata and recovers its source', async () => {
     await service.request('engine.configure', { backend: process.platform === 'darwin' ? 'coreaudio' : 'wasapi', sampleRate: 48000, bufferFrames: 128, inputChannels: 2 })
     const p = project([track('record', { kind: 'audio' })]); p.lengthFrames = 48000

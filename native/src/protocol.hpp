@@ -2,6 +2,8 @@
 #include "garak/engine.hpp"
 #include <nlohmann/json.hpp>
 #include <charconv>
+#include <cstring>
+#include <unordered_map>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -103,7 +105,33 @@ inline TrackSource source(const Json& value, bool enabled = true) {
   }
   return result;
 }
-inline ProjectTimeline timeline(const Json& value) {
+// Bulk event arrays may travel as a binary frame next to the JSON request (docs/RENDER_DIFF_PROTOCOL.md):
+// "notesBinary"/"controlsBinary": { "offset": byte offset, "count": records } into that frame, little endian.
+// Note record (24 bytes): int32 id, onFrame, offFrame, limitFrame, pitch; float32 velocity.
+// Control record (12 bytes): int32 frame, controller, value.
+constexpr std::size_t noteRecordBytes = 24, controlRecordBytes = 12;
+inline const std::uint8_t* binaryRecords(const Json& ref, std::string_view blob, std::size_t recordBytes, std::size_t maximum, std::size_t& count) {
+  if (!ref.is_object()) throw std::runtime_error("Invalid binary reference");
+  const auto offset = static_cast<std::size_t>(integer(ref, "offset", 0, 1LL << 32, 0));
+  count = static_cast<std::size_t>(integer(ref, "count", 0, static_cast<std::int64_t>(maximum), 0));
+  if (offset % 4 || offset > blob.size() || count * recordBytes > blob.size() - offset) throw std::runtime_error("Binary reference exceeds the request frame");
+  return reinterpret_cast<const std::uint8_t*>(blob.data()) + offset;
+}
+inline std::int32_t readInt32(const std::uint8_t* at) noexcept { std::int32_t v; std::memcpy(&v, at, 4); return v; }
+inline float readFloat32(const std::uint8_t* at) noexcept { float v; std::memcpy(&v, at, 4); return v; }
+inline void readNote(NotePair& note, std::int64_t id, std::int64_t on, std::int64_t off, std::int64_t limit, std::int64_t pitch, double velocity, std::int64_t lengthFrames) {
+  if (id < 0 || id > 2000000000 || on < -lengthFrames || on > lengthFrames - 1 || off < std::max<std::int64_t>(1, on + 1) || off > lengthFrames ||
+      limit < off || limit > lengthFrames || pitch < 0 || pitch > 127 || !std::isfinite(velocity) || velocity < 0 || velocity > 4) throw std::runtime_error("Invalid native note");
+  note.id = static_cast<std::int32_t>(id); note.onFrame = on; note.offFrame = off; note.limitFrame = limit; note.pitch = static_cast<int>(pitch); note.velocity = static_cast<float>(velocity);
+}
+inline void readControl(ControlEvent& event, std::int64_t frame, std::int64_t controller, std::int64_t value, std::int64_t lengthFrames, std::int64_t& previous) {
+  if (frame < 0 || frame > lengthFrames || controller < 0 || controller >= controllerCount || !validControllerValue(static_cast<int>(controller), static_cast<int>(value))) throw std::runtime_error("Invalid track control value");
+  if (frame < previous) throw std::runtime_error("Track controls must be sorted by frame");
+  previous = frame;
+  event.frame = frame; event.controller = static_cast<std::uint16_t>(controller); event.value = static_cast<std::int32_t>(value);
+}
+// Header fields of a timeline (everything but its tracks).
+inline ProjectTimeline timelineHeader(const Json& value) {
   ProjectTimeline p;
   if (integer(value, "version", 1, 1, 0) != 1) throw std::runtime_error("Unsupported timeline version");
   p.projectId = string(value, "projectId"); p.revision = integer(value, "revision", 0, 9007199254740991LL, 0);
@@ -137,10 +165,12 @@ inline ProjectTimeline timeline(const Json& value) {
     const auto end = integer(cycle, "endFrame", start + 1, p.lengthFrames, p.lengthFrames);
     p.cycle = std::array<std::int64_t, 2>{start, end};
   }
-  const auto& tracks = value.at("tracks");
-  if (!tracks.is_array() || tracks.size() > 256) throw std::runtime_error("Invalid track count");
-  std::size_t totalNotes = 0, totalAudio = 0;
-  for (const auto& item : tracks) {
+  return p;
+}
+// Which heavy fields a track message carried (project.patch keeps the previous value of the others).
+struct TrackFields { bool notes = false, controls = false, audio = false, automation = false; };
+inline TrackTimeline timelineTrack(const Json& item, const ProjectTimeline& p, std::string_view blob, TrackFields& present) {
+  {
     TrackTimeline t; t.id = string(item, "id"); t.enabled = item.value("enabled", true); t.source = source(item.at("source"), t.enabled);
     t.gain = static_cast<float>(number(item, "gain", 0, 4, 1)); t.pan = static_cast<float>(number(item, "pan", -1, 1, 0));
     t.enabled = item.value("enabled", true); t.mute = item.value("mute", false); t.solo = item.value("solo", false);
@@ -191,19 +221,33 @@ inline ProjectTimeline timeline(const Json& value) {
       else b.params = parameters(insert.value("params", Json::object()));
       t.inserts.push_back(std::move(b));
     }
-    const auto& notes = item.at("notes"); const auto& audio = item.at("audio");
-    if (!notes.is_array() || !audio.is_array() || (totalNotes += notes.size()) > 100000 || (totalAudio += audio.size()) > 8192) throw std::runtime_error("Timeline event limit exceeded");
-    for (const auto& n : notes) {
-      NotePair note;
-      note.id = static_cast<std::int32_t>(integer(n, "id", 0, 2000000000, 0));
-      note.onFrame = integer(n, "onFrame", -p.lengthFrames, p.lengthFrames - 1, 0);
-      note.offFrame = integer(n, "offFrame", std::max<std::int64_t>(1,note.onFrame + 1), p.lengthFrames, std::max<std::int64_t>(1,note.onFrame + 1));
-      note.limitFrame = integer(n, "limitFrame", note.offFrame, p.lengthFrames, note.offFrame);
-      note.pitch = static_cast<int>(integer(n, "pitch", 0, 127, 60));
-      note.velocity = static_cast<float>(number(n, "velocity", 0, 4, 1));
-      t.notes.push_back(note);
+    if (item.contains("notesBinary")) {
+      std::size_t count = 0; const auto* at = binaryRecords(item.at("notesBinary"), blob, noteRecordBytes, 100000, count);
+      t.notes.resize(count);
+      for (std::size_t i = 0; i < count; ++i, at += noteRecordBytes)
+        readNote(t.notes[i], readInt32(at), readInt32(at + 4), readInt32(at + 8), readInt32(at + 12), readInt32(at + 16), readFloat32(at + 20), p.lengthFrames);
+      present.notes = true;
+    } else if (item.contains("notes")) {
+      const auto& notes = item.at("notes");
+      if (!notes.is_array() || notes.size() > 100000) throw std::runtime_error("Timeline event limit exceeded");
+      for (const auto& n : notes) {
+        NotePair note;
+        note.id = static_cast<std::int32_t>(integer(n, "id", 0, 2000000000, 0));
+        note.onFrame = integer(n, "onFrame", -p.lengthFrames, p.lengthFrames - 1, 0);
+        note.offFrame = integer(n, "offFrame", std::max<std::int64_t>(1,note.onFrame + 1), p.lengthFrames, std::max<std::int64_t>(1,note.onFrame + 1));
+        note.limitFrame = integer(n, "limitFrame", note.offFrame, p.lengthFrames, note.offFrame);
+        note.pitch = static_cast<int>(integer(n, "pitch", 0, 127, 60));
+        note.velocity = static_cast<float>(number(n, "velocity", 0, 4, 1));
+        t.notes.push_back(note);
+      }
+      present.notes = true;
     }
-    if (item.contains("controls")) {
+    if (item.contains("controlsBinary")) {
+      std::size_t count = 0; const auto* at = binaryRecords(item.at("controlsBinary"), blob, controlRecordBytes, 100000, count);
+      t.controls.resize(count); std::int64_t previous = -1;
+      for (std::size_t i = 0; i < count; ++i, at += controlRecordBytes) readControl(t.controls[i], readInt32(at), readInt32(at + 4), readInt32(at + 8), p.lengthFrames, previous);
+      present.controls = true;
+    } else if (item.contains("controls")) {
       const auto& controls = item.at("controls");
       if (!controls.is_array() || controls.size() > 100000) throw std::runtime_error("Invalid track controls");
       std::int64_t previous = -1;
@@ -217,11 +261,13 @@ inline ProjectTimeline timeline(const Json& value) {
         previous = event.frame;
         t.controls.push_back(event);
       }
+      present.controls = true;
     }
     // Automation lanes (docs/AUTOMATION.md): { target: { kind, insertId?, param?, returnId? }, minimum, maximum, logarithmic?,
     // options?, points: [{ frame, value, curve? }] }.
     t.unmutedAudible = item.value("unmutedAudible", t.audible);
     if (item.contains("automation")) {
+      present.automation = true;
       const auto& lanes = item.at("automation");
       if (!lanes.is_array() || lanes.size() > 256) throw std::runtime_error("Invalid track automation");
       std::size_t totalPoints = 0;
@@ -255,6 +301,10 @@ inline ProjectTimeline timeline(const Json& value) {
         t.automation.push_back(std::move(lane));
       }
     }
+    if (item.contains("audio")) present.audio = true;
+    static const Json noAudio = Json::array();
+    const Json& audio = item.contains("audio") ? item.at("audio") : noAudio;
+    if (!audio.is_array() || audio.size() > 8192) throw std::runtime_error("Timeline event limit exceeded");
     for (const auto& a : audio) {
       AudioWindow w;
       w.id = static_cast<std::int32_t>(integer(a, "id", 0, 2000000000, 0)); w.assetId = string(a, "assetId");
@@ -271,8 +321,63 @@ inline ProjectTimeline timeline(const Json& value) {
       w.fadeOutCurve = static_cast<std::int32_t>(integer(a, "fadeOutCurve", 0, 4, 0));
       t.audio.push_back(std::move(w));
     }
+    return t;
+  }
+}
+// A complete timeline (project.set / render.wav). `blob` is the request's binary frame, if any.
+inline ProjectTimeline timeline(const Json& value, std::string_view blob = {}) {
+  auto p = timelineHeader(value);
+  const auto& tracks = value.at("tracks");
+  if (!tracks.is_array() || tracks.size() > 256) throw std::runtime_error("Invalid track count");
+  std::size_t totalNotes = 0, totalAudio = 0;
+  for (const auto& item : tracks) {
+    TrackFields present;
+    auto t = timelineTrack(item, p, blob, present);
+    if (!present.notes || !present.audio) throw std::runtime_error("A timeline track needs notes and audio");
+    if ((totalNotes += t.notes.size()) > 100000 || (totalAudio += t.audio.size()) > 8192) throw std::runtime_error("Timeline event limit exceeded");
     p.tracks.push_back(std::move(t));
   }
+  return p;
+}
+// project.patch: the next timeline from the current one. `header` replaces every header field; `order` lists all
+// track ids; `tracks` carries the changed tracks only, and a changed track without notes/controls/audio/automation
+// keeps the current track's value of that field. Unlisted tracks are kept as they are.
+inline ProjectTimeline patchTimeline(const ProjectTimeline& current, const Json& value, std::string_view blob) {
+  auto p = timelineHeader(value.at("header"));
+  if (p.projectId != current.projectId || p.sampleRate != current.sampleRate) throw std::runtime_error("A patch must target the current project; send project.set");
+  p.revision = static_cast<std::uint64_t>(integer(value, "revision", 0, 9007199254740991LL, 0));
+  const auto& order = value.at("order");
+  const auto& changed = value.at("tracks");
+  if (!order.is_array() || order.size() > 256 || !changed.is_array() || changed.size() > order.size()) throw std::runtime_error("Invalid track patch");
+  std::unordered_map<std::string, const Json*> patched;
+  for (const auto& item : changed) if (!patched.emplace(string(item, "id"), &item).second) throw std::runtime_error("Duplicate patched track");
+  std::unordered_map<std::string_view, const TrackTimeline*> existing;
+  for (const auto& t : current.tracks) existing.emplace(t.id, &t);
+  std::size_t totalNotes = 0, totalAudio = 0;
+  for (const auto& entry : order) {
+    if (!entry.is_string()) throw std::runtime_error("Invalid track order");
+    const auto id = entry.get<std::string>();
+    const auto before = existing.find(id);
+    const auto change = patched.find(id);
+    if (change == patched.end()) {
+      if (before == existing.end()) throw std::runtime_error("Patch order names an unknown track");
+      p.tracks.push_back(*before->second);
+    } else {
+      TrackFields present;
+      auto t = timelineTrack(*change->second, p, blob, present);
+      if (before == existing.end() && (!present.notes || !present.audio)) throw std::runtime_error("A new track needs notes and audio");
+      if (before != existing.end()) {
+        if (!present.notes) t.notes = before->second->notes;
+        if (!present.controls) t.controls = before->second->controls;
+        if (!present.audio) t.audio = before->second->audio;
+        if (!present.automation) t.automation = before->second->automation;
+      }
+      patched.erase(change);
+      p.tracks.push_back(std::move(t));
+    }
+    if ((totalNotes += p.tracks.back().notes.size()) > 100000 || (totalAudio += p.tracks.back().audio.size()) > 8192) throw std::runtime_error("Timeline event limit exceeded");
+  }
+  if (!patched.empty()) throw std::runtime_error("A patched track is missing from the order");
   return p;
 }
 inline SampleSet sampleSet(const Json& value) {

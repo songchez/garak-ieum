@@ -27,6 +27,7 @@ import { deviceFromVariant, effectDeviceName } from './core/sigimsaeDevices'
 import { EFFECT_DEFS } from './core/devices'
 import { SAMPLE_CREDITS, instrumentDef, previewPitch } from './core/instruments'
 import { exportProjectBundle, loadProject, saveProject } from './core/storage'
+import { autosaveDelay } from './core/autosave'
 import { clearRecallSolo, effectiveArm, implicitlyMuted, monitorModePatch, monitorTargets, pressTrackButton, recordTakeTrackIds, recordTarget, sweepTrackButton, type TrackButtonKind, type TrackButtonMods } from './core/trackActions'
 import { TRACK_ICON_OPTIONS, TRACK_ZOOM_LIMITS, VIEW_STORAGE_KEY, loadTrackHeader, loadTrackZoom, loadView, pruneTrackZoom, resolveSnap, saveTrackHeader, saveTrackZoom, saveView, type TrackHeaderState, type TrackZoom, type ViewState } from './core/trackUi'
 import { Icon } from './components/Icon'
@@ -61,9 +62,8 @@ import { SHORTCUT_TABLE, ZOOM_COMMANDS, isShortcutSuppressed, isUnmodified, reso
 import { bindTransportShortcuts, isTransportTextTarget } from './core/transportShortcuts'
 import { DEVICE_KEY_FACTOR, ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, loadZoom, saveZoom, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from './core/zoom'
 import { ZoomControls } from './components/ZoomControls'
-import AudioSettingsDialog, { type SettingsTab } from './components/AudioSettingsDialog'
+import type { SettingsTab } from './components/AudioSettingsDialog'
 import type { NativePluginDescriptor, NativePluginInstance } from './audio/native/contracts'
-import McpConnectionDialog from './components/McpConnectionDialog'
 import { ProjectSession } from './core/ProjectSession'
 import { HistoryGestureContext } from './core/historyGesture'
 import { createDawRequestHandler } from './automation/host'
@@ -80,6 +80,9 @@ import type { AutomationTarget } from './core/types'
 // An application-session service, independent of React's render/effect lifecycle.
 const initialAudioSettings = loadAudioSettings()
 const PitchEditor = lazy(() => import('./devices/pitch-editor/PitchEditor').then(module => ({ default: module.PitchEditor })))
+// Dialogs load on first open: they are not needed to show or play a project (docs/ARCHITECTURE_REVIEW.md, bottleneck 5).
+const AudioSettingsDialog = lazy(() => import('./components/AudioSettingsDialog'))
+const McpConnectionDialog = lazy(() => import('./components/McpConnectionDialog'))
 const engine = createAudioEngine(initialAudioSettings)
 const subscribeTransport = (cb:()=>void)=>engine.subscribe(cb)
 const readTransport = ()=>engine.getSnapshot()
@@ -250,6 +253,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const monitorWarned=useRef(false)
   const saveQueue=useRef(Promise.resolve())
   const saveTimer=useRef<number|null>(null)
+  /** Wall time of the last autosave; large projects wait longer between saves (core/autosave.ts). */
+  const lastSaveMs=useRef(0)
   const saveRevision=useRef(0)
   const persistedProject=useRef<Project|null>(null)
   const persistedAssets=useRef<Map<string,AudioAsset>|null>(null)
@@ -606,6 +611,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       const first=saved.project.tracks[0]
       if(first?.clips[0])selectClips([first.clips[0].id],first.clips[0].id,first.id);else focusTrack(first?.id??'')
       setSaveStatus('saved');setLoaded(true)
+      if(saved.recovered)notify('마지막 자동 저장을 읽을 수 없어, 마지막으로 검증된 저장본을 열었습니다. 최근 몇 초의 편집이 빠졌을 수 있습니다.')
     }catch(error){if(!cancelled){setRestoreError(error instanceof Error?error.message:'저장소 오류');setSaveStatus('error')}}})()
     return()=>{cancelled=true}
   },[projectId,notify])
@@ -614,7 +620,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     if(!loaded)return
     if(persistedProject.current===project&&persistedAssets.current===assets&&persistedRevision.current===commandState.revision)return
     const revision=++saveRevision.current;setSaveStatus('saving')
-    const timer=window.setTimeout(()=>{saveTimer.current=null;saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{await saveProject(project,assets);if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=commandState.revision;persistedAssets.current=assets;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일로 내보내 보관해주세요.`)}}})},650)
+    const timer=window.setTimeout(()=>{saveTimer.current=null;saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{const started=performance.now();await saveProject(project,assets,{trusted:true});lastSaveMs.current=performance.now()-started;if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=commandState.revision;persistedAssets.current=assets;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일로 내보내 보관해주세요.`)}}})},autosaveDelay(lastSaveMs.current))
     saveTimer.current=timer
     return()=>{window.clearTimeout(timer);if(saveTimer.current===timer)saveTimer.current=null}
   },[project,assets,commandState.revision,loaded,notify])
@@ -1565,8 +1571,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
 
     <input ref={mediaInput} type="file" accept={MEDIA_FILE_ACCEPT} aria-label="오디오·MIDI 파일" multiple hidden onChange={e=>{if(e.target.files?.length)void addMediaFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0,importTarget.current.sustainToLength===true)}}/>
     {headerMenu&&<ContextMenu x={headerMenu.x} y={headerMenu.y} items={headerMenu.items} label={`${headerMenu.label} 메뉴`} trigger={headerMenu.trigger} onClose={()=>setHeaderMenu(null)}/>}
-    {modal==='mcp'&&<McpConnectionDialog client={bridgeClient} instanceId={instanceId} projectName={project.name} editsAllowed={aiEditsAllowed} onEditsAllowed={value=>{aiEditsAllowedRef.current=value;setAiEditsAllowed(value)}} onClose={()=>setModal(null)}/> }
-    {modal==='settings'&&<AudioSettingsDialog initialTab={settingsTab} engine={engine} midi={midi.service} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}
+    <Suspense fallback={null}>{modal==='mcp'&&<McpConnectionDialog client={bridgeClient} instanceId={instanceId} projectName={project.name} editsAllowed={aiEditsAllowed} onEditsAllowed={value=>{aiEditsAllowedRef.current=value;setAiEditsAllowed(value)}} onClose={()=>setModal(null)}/> }
+    {modal==='settings'&&<AudioSettingsDialog initialTab={settingsTab} engine={engine} midi={midi.service} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}</Suspense>
     {palette&&<ColorPalette x={palette.x} y={palette.y} value={project.tracks.find(t=>t.id===palette.ids[0])?.color??''} onPick={hex=>changeTracks(palette.ids.map(id=>({id,patch:{color:hex}})),`${palette.ids.join()}:color`)} onClose={()=>setPalette(null)}/>}
     {headerConfig&&<HeaderConfigPopover x={headerConfig.x} y={headerConfig.y} config={trackHeader.headerConfig} onChange={headerConfig=>setTrackHeader(h=>({...h,headerConfig}))} onClose={()=>setHeaderConfig(null)}/>}
     {iconMenu&&iconTrack&&<ContextMenu x={iconMenu.x} y={iconMenu.y} label="트랙 아이콘" onClose={()=>setIconMenu(null)} items={[{label:'기본',icon:iconTrack.kind==='audio'?'wave':instrumentDef(iconTrack.instrument).icon,checked:!iconTrack.icon,onSelect:()=>editTrack(iconTrack.id,t=>{const {icon:_i,...rest}=t;return rest})},{type:'separator'},...TRACK_ICON_OPTIONS.map(([name,label])=>({label,icon:name,checked:iconTrack.icon===name,onSelect:()=>changeTrack(iconTrack.id,{icon:name})}))]}/>}
@@ -1600,10 +1606,20 @@ function NameInput({value,onCommit,...rest}:{value:string;onCommit:(name:string)
   const [draft,setDraft]=useState<string|null>(null)
   return <input {...rest} value={draft??value} maxLength={512} onChange={e=>{const name=e.target.value;setDraft(name);if(name.trim())onCommit(name)}} onBlur={e=>{setDraft(null);rest.onBlur?.(e)}} onKeyDown={e=>{if(e.key==='Enter'&&!e.nativeEvent.isComposing)e.currentTarget.blur();rest.onKeyDown?.(e)}}/>
 }
-/** Only this subtree re-renders with the transport clock, not the whole App. */
-function PianoRollBridge(props:Omit<ComponentProps<typeof PianoRoll>,'playheadBeat'>){
+/** The piano roll's playhead marks subscribe to the transport clock themselves; the note grid never re-renders with it. */
+const transportPlayhead={subscribe:subscribeTransport,getBeat:()=>engine.getSnapshot().beat}
+function PianoRollBridge(props:Omit<ComponentProps<typeof PianoRoll>,'playheadBeat'|'playhead'>){
+  return <PianoRoll {...props} playhead={transportPlayhead}/>
+}
+/** The bar.beat.tick and clock readout: the only part of the transport bar that follows every transport tick. */
+function TimeDisplay({timeSignature,tempoMap}:{timeSignature:Project['timeSignature'];tempoMap:ReturnType<typeof tempoMapOf>}){
   const snapshot=useSyncExternalStore(subscribeTransport,readTransport,readTransport)
-  return <PianoRoll {...props} playheadBeat={snapshot.beat}/>
+  const notationBeat=snapshot.beat/quarterNotesPerBeat(timeSignature)
+  const bar=Math.floor(notationBeat/timeSignature.numerator)+1
+  const beat=Math.floor(notationBeat%timeSignature.numerator)+1
+  const tick=Math.floor((notationBeat%1)*100)
+  const seconds=tempoMap.secondsAt(snapshot.beat)
+  return <div className="time-display"><strong>{String(bar).padStart(3,'0')}<i>.</i>{beat}<i>.</i>{String(tick).padStart(2,'0')}</strong><span>{String(Math.floor(seconds/60)).padStart(2,'0')}:{(seconds%60).toFixed(2).padStart(5,'0')}</span></div>
 }
 function AudioStatus({onOpen}:{onOpen:()=>void}){
   const audio=useSyncExternalStore(engine.subscribeAudioState,engine.getAudioState,engine.getAudioState)
@@ -1613,14 +1629,11 @@ function AudioStatus({onOpen}:{onOpen:()=>void}){
 }
 function Transport({project,onChange,onPlay,onStop,onRecord,recording,recordPreparing,recordProcessing,canUndo,canRedo,undoLabel,redoLabel,onUndo,onRedo}:{project:Project;onChange:(fn:(p:Project)=>Project,key?:string,label?:string)=>void;onPlay:()=>void;onStop:()=>void;onRecord:()=>void;recording:boolean;recordPreparing:boolean;recordProcessing:boolean;canUndo:boolean;canRedo:boolean;undoLabel:string|null;redoLabel:string|null;onUndo:()=>void;onRedo:()=>void}){
   const undoText=undoLabel?`실행 취소: ${undoLabel}`:'실행 취소',redoText=redoLabel?`다시 실행: ${redoLabel}`:'다시 실행'
-  const snapshot=useSyncExternalStore(subscribeTransport,readTransport,readTransport)
-  const notationBeat=snapshot.beat/quarterNotesPerBeat(project.timeSignature)
-  const bar=Math.floor(notationBeat/project.timeSignature.numerator)+1
-  const beat=Math.floor(notationBeat%project.timeSignature.numerator)+1
-  const tick=Math.floor((notationBeat%1)*100)
+  // Primitive selections: the buttons re-render when play state or the rounded playhead tempo changes, not every tick.
+  const playing=useSyncExternalStore(subscribeTransport,readPlaying,readPlaying)
   const tempoMap=tempoMapOf(project)
-  const seconds=tempoMap.secondsAt(snapshot.beat)
-  const playheadTempo=Math.round(tempoMap.bpmAt(snapshot.beat))
+  const readTempo=()=>Math.round(tempoMap.bpmAt(engine.getSnapshot().beat))
+  const playheadTempo=useSyncExternalStore(subscribeTransport,readTempo,readTempo)
   const mapped=!tempoMap.isConstant||(project.tempoMap?.length??0)>1
   const timingDisabled=recording||recordPreparing||recordProcessing
   const loopLengths=[...new Set([...[1,2,4,8,16,32].map(bars=>bars*project.beatsPerBar),project.loop.endBeat-project.loop.startBeat])].sort((a,b)=>a-b)
@@ -1633,12 +1646,12 @@ function Transport({project,onChange,onPlay,onStop,onRecord,recording,recordPrep
     <div className="transport-buttons">
       <button className="icon-button" onClick={()=>engine.seek(0)} title="처음으로 · Home" aria-label="처음으로"><Icon name="back" size={17}/></button>
       <button className="icon-button stop-button" onClick={onStop} title="정지" aria-label="정지"><Icon name="stop" size={15}/></button>
-      <button className={`play-button ${snapshot.playing?'playing':''}`} onClick={onPlay} title="재생 / 일시 정지 · Space" aria-label={snapshot.playing?'일시 정지':'재생'}><Icon name={snapshot.playing?'pause':'play'} size={18}/></button>
+      <button className={`play-button ${playing?'playing':''}`} onClick={onPlay} title="재생 / 일시 정지 · Space" aria-label={playing?'일시 정지':'재생'}><Icon name={playing?'pause':'play'} size={18}/></button>
       <button className={`record-button ${recording?'recording':''}`} onClick={onRecord} disabled={recordPreparing||recordProcessing} title={recordPreparing?'입력 장치를 준비하는 중…':recordProcessing?'녹음 처리 중…':recording?'녹음 종료':'마이크 녹음 시작'} aria-label={recordProcessing?'녹음 처리 중':recording?'녹음 종료':'마이크 녹음'}><i/></button>
       <button className={`icon-button loop-toggle ${project.loop.enabled?'active':''}`} onClick={()=>onChange(p=>({...p,loop:{...p.loop,enabled:!p.loop.enabled}}))} aria-label="루프 재생" aria-pressed={project.loop.enabled} title="루프 재생"><Icon name="loop" size={18}/></button>
     </div>
     <span className="transport-divider"/>
-    <div className="time-display"><strong>{String(bar).padStart(3,'0')}<i>.</i>{beat}<i>.</i>{String(tick).padStart(2,'0')}</strong><span>{String(Math.floor(seconds/60)).padStart(2,'0')}:{(seconds%60).toFixed(2).padStart(5,'0')}</span></div>
+    <TimeDisplay timeSignature={project.timeSignature} tempoMap={tempoMap}/>
     <div className="tempo-box">
       <TempoInput key={project.id} value={playheadTempo} disabled={timingDisabled} onCommit={bpm=>onChange(p=>setTempoAt(p,engine.getSnapshot().beat,bpm),'tempo',mapped?'템포 포인트 변경':'템포 조절')}/>
       <span>BPM</span>

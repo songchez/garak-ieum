@@ -845,7 +845,20 @@ function parseAutomation(value: unknown, path: string, id: (value: unknown, path
 }
 
 /** Parse known fields into fresh objects; never trust JSON casts or imported prototypes. */
+/** Snapshots that passed validateProject (its input and its normalized result). Immutable updates make this sound. */
+const knownValid = new WeakSet<object>()
+
+/** True when this exact object already passed validateProject (e.g. a ProjectSession command result). */
+export const isKnownValidProject = (project: unknown): boolean => typeof project === 'object' && project !== null && knownValid.has(project)
+
 export function validateProject(input: unknown): Project {
+  const result = validateProjectFields(input)
+  knownValid.add(input as object)
+  knownValid.add(result)
+  return result
+}
+
+function validateProjectFields(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
   if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 17) throw new Error('This project version is not supported. Expected schema version 1 through 17.')

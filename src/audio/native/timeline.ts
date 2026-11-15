@@ -242,20 +242,21 @@ function source(track: Track): NativeTrackSource {
   return { kind: 'builtin-synth', ...common }
 }
 
-/** Preflight before playbackNotes/audioWindows allocate expanded arrangements (audio overlap resolution is quadratic). */
-function prepareOccurrences(project: Project): Map<MidiClip, readonly Occurrence[]> {
+/** Running totals of the expansion limits across tracks, in project track order. */
+interface ExpansionBudget { sourceNotes: number; expandedNotes: number; audioWindows: number }
+
+/** Project-wide identity checks: unique project/track/clip IDs, clip bounds and kinds. Cheap; never expands. */
+function checkIdentities(project: Project): void {
   limit(project.tracks.length <= NATIVE_TIMELINE_LIMITS.tracks, 'tracks')
-  let clips = 0, sourceNotes = 0, expandedNotes = 0, totalAudio = 0
   const seen = new Set<string>([id(project.id)])
   const unique = (value: string) => {
     if (seen.has(id(value))) throw new NativeTimelineError('INVALID_PROJECT', 'Duplicate track or clip ID.')
     seen.add(value)
   }
-  const prepared = new Map<MidiClip, readonly Occurrence[]>()
+  let clips = 0
   for (const track of project.tracks) {
     unique(track.id)
     limit(track.devices.length <= NATIVE_TIMELINE_LIMITS.insertsPerTrack, 'inserts per track')
-    let trackAudio = 0
     clips += track.clips.length
     limit(clips <= NATIVE_TIMELINE_LIMITS.clips, 'clips')
     for (const clip of track.clips) {
@@ -265,27 +266,36 @@ function prepareOccurrences(project: Project): Map<MidiClip, readonly Occurrence
       if ((clip.kind === 'midi') !== (track.kind === 'instrument')) {
         throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Clip and track source kinds must agree.')
       }
-      if (clip.kind === 'midi') {
-        sourceNotes += clip.notes.length
-        limit(sourceNotes <= NATIVE_TIMELINE_LIMITS.sourceNotes, 'source notes')
-        if (!clip.notes.length && !clip.controllers) continue
-      }
-      if (clip.mute) continue
-      const occurrences = clipOccurrences(track, clip, project.lengthBeats)
-      // core/playback intentionally caps its helper at 4096; never silently compile a truncated loop.
-      const end = loopEnd(track, clip, project.lengthBeats)
-      limit(occurrences.length <= NATIVE_TIMELINE_LIMITS.occurrencesPerClip
-        && !!occurrences.length && occurrences[occurrences.length - 1].end >= end - 1e-9, 'region repeat occurrences')
-      if (clip.kind === 'midi') {
-        expandedNotes += occurrences.length * clip.notes.length
-        limit(expandedNotes <= NATIVE_TIMELINE_LIMITS.expandedNotes, 'expanded note candidates')
-        prepared.set(clip, occurrences)
-      } else {
-        trackAudio += occurrences.length
-        totalAudio += occurrences.length
-        limit(trackAudio <= NATIVE_TIMELINE_LIMITS.audioWindowsPerTrack, 'audio windows per track')
-        limit(totalAudio <= NATIVE_TIMELINE_LIMITS.audioWindows, 'audio windows')
-      }
+    }
+  }
+}
+
+/** Preflight of one track before playbackNotes/audioWindows allocate expanded arrangements (audio overlap
+ * resolution is quadratic). `budget` holds the totals of the tracks before it and is advanced here. */
+function prepareOccurrences(track: Track, lengthBeats: number, budget: ExpansionBudget): Map<MidiClip, readonly Occurrence[]> {
+  const prepared = new Map<MidiClip, readonly Occurrence[]>()
+  let trackAudio = 0
+  for (const clip of track.clips) {
+    if (clip.kind === 'midi') {
+      budget.sourceNotes += clip.notes.length
+      limit(budget.sourceNotes <= NATIVE_TIMELINE_LIMITS.sourceNotes, 'source notes')
+      if (!clip.notes.length && !clip.controllers) continue
+    }
+    if (clip.mute) continue
+    const occurrences = clipOccurrences(track, clip, lengthBeats)
+    // core/playback intentionally caps its helper at 4096; never silently compile a truncated loop.
+    const end = loopEnd(track, clip, lengthBeats)
+    limit(occurrences.length <= NATIVE_TIMELINE_LIMITS.occurrencesPerClip
+      && !!occurrences.length && occurrences[occurrences.length - 1].end >= end - 1e-9, 'region repeat occurrences')
+    if (clip.kind === 'midi') {
+      budget.expandedNotes += occurrences.length * clip.notes.length
+      limit(budget.expandedNotes <= NATIVE_TIMELINE_LIMITS.expandedNotes, 'expanded note candidates')
+      prepared.set(clip, occurrences)
+    } else {
+      trackAudio += occurrences.length
+      budget.audioWindows += occurrences.length
+      limit(trackAudio <= NATIVE_TIMELINE_LIMITS.audioWindowsPerTrack, 'audio windows per track')
+      limit(budget.audioWindows <= NATIVE_TIMELINE_LIMITS.audioWindows, 'audio windows')
     }
   }
   return prepared
@@ -306,6 +316,64 @@ function trackInput(track: Track): NativeTrackInput | null {
   return { channels: channels.length === 1 ? [channels[0]] : [channels[0], channels[1]] }
 }
 
+/** Track fields the expanded events (notes, controllers, audio windows) depend on; see core/playback.ts.
+ * Mixer, insert, send, automation and instrument-parameter edits leave a track's events untouched. */
+const EVENT_FIELDS = ['clips', 'kind', 'instrument', 'transpose', 'velocityOffset', 'keyLimit', 'velocityLimit', 'delayTicks'] as const
+
+/** One track's expanded events. Note and window IDs are unique per track (they start at 0 in every track),
+ * so an edit renumbers only its own track. */
+interface TrackEvents {
+  readonly notes: readonly NativeNotePair[]
+  readonly controls: readonly NativeControlEvent[]
+  readonly audio: readonly NativeAudioWindow[]
+  readonly assets: readonly NativePcmAsset[]
+  readonly sourceNotes: number
+  readonly expandedNotes: number
+  readonly audioWindows: number
+}
+interface CacheEntry<T> { readonly key: readonly unknown[]; readonly value: T }
+const sameKey = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, index) => value === b[index])
+
+/**
+ * Incremental compilation for the native host (R3, docs/RENDER_DIFF_PROTOCOL.md). Produces exactly what
+ * compileNativeTimeline() produces, but reuses a track's expanded events and automation lanes while their inputs
+ * are unchanged: projects are immutable with structural sharing, so an untouched track keeps its `clips` array
+ * and a volume edit never re-expands notes. Reused arrays are the same objects, which lets the sync layer send
+ * only what changed.
+ */
+export class NativeTimelineCompiler {
+  private readonly events = new Map<string, CacheEntry<TrackEvents>>()
+  private readonly lanes = new Map<string, CacheEntry<{ automation?: NativeAutomationLane[]; muted: boolean }>>()
+  /** Tracks whose events were expanded (not reused) by the last compile, for tests and diagnostics. */
+  lastExpanded: string[] = []
+
+  compile(project: Project, pcmAssets: ReadonlyMap<string, NativePcmAsset> = new Map(), revision = 0): NativeProjectTimeline {
+    this.lastExpanded = []
+    const timeline = compileTimeline(project, pcmAssets, revision, this)
+    const live = new Set(project.tracks.map(track => track.id))
+    for (const cache of [this.events, this.lanes]) for (const key of [...cache.keys()]) if (!live.has(key)) cache.delete(key)
+    return timeline
+  }
+
+  /** @internal */ reusableEvents(trackId: string, key: readonly unknown[]): TrackEvents | undefined {
+    const hit = this.events.get(trackId)
+    return hit && sameKey(hit.key, key) ? hit.value : undefined
+  }
+
+  /** @internal */ storeEvents(trackId: string, key: readonly unknown[], value: TrackEvents): void {
+    this.events.set(trackId, { key, value })
+    this.lastExpanded.push(trackId)
+  }
+
+  /** @internal */ cachedLanes(trackId: string, key: readonly unknown[], build: () => { automation?: NativeAutomationLane[]; muted: boolean }) {
+    const hit = this.lanes.get(trackId)
+    if (hit && sameKey(hit.key, key)) return hit.value
+    const value = build()
+    this.lanes.set(trackId, { key, value })
+    return value
+  }
+}
+
 /**
  * Pure preparation for the native host; it allocates no realtime audio objects.
  * Input must be a normalized Project (external JSON still goes through validateProject first).
@@ -313,6 +381,10 @@ function trackInput(track: Track): NativeTrackInput | null {
  * events that collapse to zero frames are omitted. Expansion limits reject instead of truncating.
  */
 export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<string, NativePcmAsset> = new Map(), revision = 0): NativeProjectTimeline {
+  return compileTimeline(project, pcmAssets, revision, null)
+}
+
+function compileTimeline(project: Project, pcmAssets: ReadonlyMap<string, NativePcmAsset>, revision: number, cache: NativeTimelineCompiler | null): NativeProjectTimeline {
   if (!isSampleRate(project.sampleRate)) throw new NativeTimelineError('INVALID_PROJECT', 'Invalid project sample rate.')
   if (!Number.isSafeInteger(revision) || revision < 0) throw new NativeTimelineError('INVALID_PROJECT', 'Invalid project revision.')
   const sampleRate = project.sampleRate
@@ -332,92 +404,56 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
   const loop = loopRange(project)
   const roundedCycle = loop ? { startFrame: frameOf(loop.start), endFrame: frameOf(loop.end) } : null
   const cycle = roundedCycle && roundedCycle.endFrame > roundedCycle.startFrame ? roundedCycle : null
-  const prepared = prepareOccurrences(project)
+  checkIdentities(project)
+  // Every cached expansion depends on the frame grid: rate, tempo map and project length.
+  const timing = `${sampleRate}|${lengthBeats}|${tempo.isConstant ? bpm : JSON.stringify(tempo.points)}`
+  const budget: ExpansionBudget = { sourceNotes: 0, expandedNotes: 0, audioWindows: 0 }
   const audible = audibleTrackIds(project.tracks)
-  const usedAssets = new Map<string, NativePcmAsset>()
-  const assetFor = (assetId: string): NativePcmAsset => {
-    const existing = usedAssets.get(assetId)
-    if (existing) return existing
+  const metadata = (assetId: string): NativePcmAsset => {
     const asset = pcmAssets.get(assetId)
     if (!asset) throw new NativeTimelineError('MISSING_PCM_ASSET', `Missing PCM metadata for ${assetId}.`)
     if (asset.id !== assetId || !Number.isInteger(asset.sampleRate) || asset.sampleRate < 8000 || asset.sampleRate > 192000
       || !Number.isSafeInteger(asset.frames) || asset.frames < 1 || !Number.isInteger(asset.channels) || asset.channels < 1 || asset.channels > 32) {
       throw new NativeTimelineError('INVALID_PCM_ASSET', `Invalid PCM metadata for ${assetId}.`)
     }
-    const copy = { id: assetId, sampleRate: asset.sampleRate, frames: asset.frames, channels: asset.channels }
-    usedAssets.set(assetId, copy)
-    return copy
+    return { id: assetId, sampleRate: asset.sampleRate, frames: asset.frames, channels: asset.channels }
   }
-  let nextId = 0
   const routed = new Map(reconcileTrackRoutes(project.tracks).map(track => [track.id, routeOf(track)]))
   const sent = new Map(reconcileSends(project.tracks).map(track => [track.id, sendsOf(track)]))
-  const tracks = project.tracks.map((track): NativeTrackTimeline => {
+  // Preflight every track before any expansion allocates: a reused track contributes its known totals,
+  // another one its occurrences (checked against the running limits in track order).
+  const plans = project.tracks.map(track => {
+    // The PCM metadata a track's windows were cut against is part of its key (a re-decoded asset changes length).
+    const assetKey = track.kind === 'audio' ? track.clips.map(clip => {
+      if (clip.kind !== 'audio') return ''
+      const asset = pcmAssets.get(clip.assetId)
+      return asset ? `${asset.id}:${asset.sampleRate}:${asset.frames}:${asset.channels}` : `${clip.assetId}:missing`
+    }).join('|') : ''
+    const key = [timing, assetKey, !!track.pluginInstrument, ...EVENT_FIELDS.map(field => track[field])]
+    const reused = cache?.reusableEvents(track.id, key)
+    if (reused) {
+      budget.sourceNotes += reused.sourceNotes; budget.expandedNotes += reused.expandedNotes; budget.audioWindows += reused.audioWindows
+      limit(budget.sourceNotes <= NATIVE_TIMELINE_LIMITS.sourceNotes, 'source notes')
+      limit(budget.expandedNotes <= NATIVE_TIMELINE_LIMITS.expandedNotes, 'expanded note candidates')
+      limit(budget.audioWindows <= NATIVE_TIMELINE_LIMITS.audioWindows, 'audio windows')
+      return { key, reused, prepared: null }
+    }
+    const before = { ...budget }
+    const prepared = prepareOccurrences(track, lengthBeats, budget)
+    return { key, reused: undefined, prepared, counts: { sourceNotes: budget.sourceNotes - before.sourceNotes, expandedNotes: budget.expandedNotes - before.expandedNotes, audioWindows: budget.audioWindows - before.audioWindows } }
+  })
+  const usedAssets = new Map<string, NativePcmAsset>()
+  const tracks = project.tracks.map((track, index): NativeTrackTimeline => {
+    const plan = plans[index]
+    let events = plan.reused
+    if (!events) {
+      events = trackEvents(track, { frameOf, lengthFrames, lengthBeats, tempo, sampleRate, metadata }, plan.prepared!, plan.counts!)
+      cache?.storeEvents(track.id, plan.key, events)
+    }
+    for (const asset of events.assets) usedAssets.set(asset.id, asset)
+    const lanesKey = [timing, track.automation, track.devices, track.instrument, track.kind, track.sends, !!track.pluginInstrument]
+    const lanes = cache ? cache.cachedLanes(track.id, lanesKey, () => nativeAutomation(track, tempo, sampleRate)) : nativeAutomation(track, tempo, sampleRate)
     const sends = sent.get(track.id) ?? []
-    const notes: NativeNotePair[] = []
-    const controls: (NativeControlEvent & { reset: boolean; order: number })[] = []
-    const audio: NativeAudioWindow[] = []
-    const pedalEvents = track.kind === 'instrument' && !!track.pluginInstrument
-    const builtin = track.kind === 'instrument' && !track.pluginInstrument && instrumentDef(track.instrument).kind !== 'native'
-    const pushControl = (beat: number, controller: number, value: number, reset: boolean, description: string): void => {
-      const frame = frameOf(number(beat, -10_000_000, 20_000_000, `${description} position`))
-      if (frame >= lengthFrames) return
-      controls.push({ frame: Math.max(0, frame), controller, value, reset, order: controls.length })
-      limit(controls.length <= NATIVE_TIMELINE_LIMITS.controlsPerTrack, 'controller events per track')
-    }
-    for (const clip of track.clips) {
-      if (clip.kind !== 'midi' || clip.mute) continue
-      for (const occurrence of prepared.get(clip) ?? []) {
-        if (pedalEvents) {
-          const events = playbackSustain(track, clip, occurrence)
-          events.forEach((event, index) => pushControl(event.beat, 64, number(event.value, 0, 127, 'sustain value'), index === events.length - 1 && index > 0 && event.value === 0, 'sustain'))
-        }
-        // Built-in instruments take the region's bend range with the first bend event of every occurrence.
-        let bendRange: number | null = null
-        if (track.kind === 'instrument') for (const event of playbackControllers(track, clip, occurrence)) {
-          if (builtin && event.key === 'program') continue
-          const spec = controllerSpec(event.key)
-          if (builtin && event.key === 'pitchBend' && event.range !== bendRange) {
-            bendRange = event.range ?? 2
-            pushControl(event.beat, BEND_RANGE_NUMBER, number(bendRange, 0, 48, 'pitch-bend range'), !!event.reset, 'pitch-bend range')
-          }
-          pushControl(event.beat, controllerNumber(event.key), number(event.value, spec.min, spec.max, 'controller value'), !!event.reset, 'controller')
-        }
-        for (const note of playbackNotes(track, clip, occurrence, !pedalEvents)) {
-          const onFrame = frameOf(number(note.start, -10_000_000, 20_000_000, 'note onset'))
-          const offFrame = Math.min(lengthFrames, frameOf(number(note.end, -10_000_000, 20_000_000, 'note end')))
-          const limitFrame = Math.min(lengthFrames, frameOf(number(note.limit, -10_000_000, 20_000_000, 'note occurrence end')))
-          if (offFrame <= 0 || onFrame >= lengthFrames || offFrame <= onFrame) continue
-          if (!Number.isInteger(note.pitch)) throw new NativeTimelineError('INVALID_PROJECT', 'Invalid note pitch.')
-          notes.push({ id: nextId++, clipId: clip.id, occurrenceIndex: occurrence.index, onFrame, offFrame, limitFrame,
-            pitch: number(note.pitch, 0, 127, 'note pitch'), velocity: number(note.velocity, 0, 2, 'note velocity') })
-        }
-      }
-    }
-    for (const window of audioWindows(track, lengthBeats, tempo)) {
-      const originFrame = frameOf(number(window.start, -10_000_000, 20_000_000, 'audio onset'))
-      const windowEnd = Math.min(lengthFrames, frameOf(number(window.end, -10_000_000, 20_000_000, 'audio end')))
-      if (windowEnd <= 0 || originFrame >= lengthFrames) continue
-      const clip = window.clip
-      const asset = assetFor(clip.assetId)
-      const sourceBase = number(clip.offsetSeconds, 0, 10_000_000, 'audio source offset') * asset.sampleRate
-      // Audio plays at 1×: the region lasts its real duration through the tempo map.
-      const occurrence = window.start - window.sourceOffsetBeats
-      const clipLengthFrames = Math.max(0, Math.min(Math.round(tempo.secondsBetween(occurrence, occurrence + clip.lengthBeats) * sampleRate),
-        Math.floor((asset.frames - sourceBase) * sampleRate / asset.sampleRate)))
-      const startFrame = Math.max(0, originFrame)
-      const clipOffsetFrames = startFrame - originFrame + Math.round(tempo.secondsBetween(occurrence, window.start) * sampleRate)
-      const endFrame = Math.min(windowEnd, startFrame + clipLengthFrames - clipOffsetFrames)
-      if (endFrame <= startFrame) continue
-      audio.push({ id: nextId++, clipId: clip.id, assetId: asset.id, startFrame, endFrame,
-        sourceStartFrame: sourceBase + clipOffsetFrames * asset.sampleRate / sampleRate, sourceSampleRate: asset.sampleRate,
-        clipOffsetFrames, clipLengthFrames, gain: number(clip.gain, 0, AUDIO_CLIP_GAIN_MAX, 'audio gain'),
-        ...fadeFrames(clipLengthFrames, number(clip.fadeIn, 0, 10_000_000, 'fade in') * sampleRate, number(clip.fadeOut, 0, 10_000_000, 'fade out') * sampleRate),
-        fadeInCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeInCurve)], fadeOutCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeOutCurve)] })
-    }
-    notes.sort((a, b) => a.onFrame - b.onFrame || a.offFrame - b.offFrame || a.id - b.id)
-    // At equal frames a release/reset at a region end precedes the next region's chase; otherwise emission order.
-    controls.sort((a, b) => a.frame - b.frame || (a.reset === b.reset ? a.order - b.order : a.reset ? -1 : 1))
-    audio.sort((a, b) => a.startFrame - b.startFrame || a.id - b.id)
     return { id: track.id, ...(track.kind === 'return' ? { return: true } : {}),
       ...(sends.length ? { sends: sends.map(send => ({ returnId: send.returnId, gain: number(send.level, 0, 2, 'send level'), pre: !!send.pre })) } : {}),
       source: source(track), gain: number(track.volume, 0, 2, 'track gain'), pan: number(track.pan, -1, 1, 'track pan'),
@@ -432,10 +468,95 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
         }
         if (!Object.hasOwn(EFFECT_DEFS, device.type)) throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Unknown builtin insert.')
         return { id: id(device.id), type: device.type, enabled: device.enabled, params: parameters(EFFECT_DEFS[device.type].params, device.params) }
-      }), notes, controls: controls.map(({ frame, controller, value }) => ({ frame, controller, value })), audio, ...nativeAutomation(track, tempo, sampleRate, project) }
+      }), notes: events.notes, controls: events.controls, audio: events.audio,
+      ...(lanes.automation ? { automation: lanes.automation } : {}),
+      ...(lanes.muted ? { unmutedAudible: audibleTrackIds(project.tracks.map(item => item.id === track.id ? { ...item, mute: false } : item)).has(track.id) && track.pluginInstrument?.enabled !== false } : {}) }
   })
   return { version: 1, projectId: project.id, revision, sampleRate, bpm, ...(tempo.isConstant ? {} : { tempoMap: tempo.points.map(point => ({ ...point })) }), timeSignature, beatsPerBar: project.beatsPerBar,
     lengthFrames, cycle, masterGain: number(project.masterVolume, 0, 2, 'master gain'), assets: [...usedAssets.values()], tracks }
+}
+
+interface EventContext {
+  readonly frameOf: (beat: number) => number
+  readonly lengthFrames: number
+  readonly lengthBeats: number
+  readonly tempo: TempoMap
+  readonly sampleRate: number
+  readonly metadata: (assetId: string) => NativePcmAsset
+}
+
+/** Expands one track's regions (occurrences from its preflight) into note pairs, controller events and audio windows. */
+function trackEvents(track: Track, context: EventContext, prepared: ReadonlyMap<MidiClip, readonly Occurrence[]>, counts: ExpansionBudget): TrackEvents {
+  const { frameOf, lengthFrames, lengthBeats, tempo, sampleRate } = context
+  const notes: NativeNotePair[] = []
+  const controls: (NativeControlEvent & { reset: boolean; order: number })[] = []
+  const audio: NativeAudioWindow[] = []
+  const assets = new Map<string, NativePcmAsset>()
+  let nextId = 0
+  const pedalEvents = track.kind === 'instrument' && !!track.pluginInstrument
+  const builtin = track.kind === 'instrument' && !track.pluginInstrument && instrumentDef(track.instrument).kind !== 'native'
+  const pushControl = (beat: number, controller: number, value: number, reset: boolean, description: string): void => {
+    const frame = frameOf(number(beat, -10_000_000, 20_000_000, `${description} position`))
+    if (frame >= lengthFrames) return
+    controls.push({ frame: Math.max(0, frame), controller, value, reset, order: controls.length })
+    limit(controls.length <= NATIVE_TIMELINE_LIMITS.controlsPerTrack, 'controller events per track')
+  }
+  for (const clip of track.clips) {
+    if (clip.kind !== 'midi' || clip.mute) continue
+    for (const occurrence of prepared.get(clip) ?? []) {
+      if (pedalEvents) {
+        const events = playbackSustain(track, clip, occurrence)
+        events.forEach((event, index) => pushControl(event.beat, 64, number(event.value, 0, 127, 'sustain value'), index === events.length - 1 && index > 0 && event.value === 0, 'sustain'))
+      }
+      // Built-in instruments take the region's bend range with the first bend event of every occurrence.
+      let bendRange: number | null = null
+      if (track.kind === 'instrument') for (const event of playbackControllers(track, clip, occurrence)) {
+        if (builtin && event.key === 'program') continue
+        const spec = controllerSpec(event.key)
+        if (builtin && event.key === 'pitchBend' && event.range !== bendRange) {
+          bendRange = event.range ?? 2
+          pushControl(event.beat, BEND_RANGE_NUMBER, number(bendRange, 0, 48, 'pitch-bend range'), !!event.reset, 'pitch-bend range')
+        }
+        pushControl(event.beat, controllerNumber(event.key), number(event.value, spec.min, spec.max, 'controller value'), !!event.reset, 'controller')
+      }
+      for (const note of playbackNotes(track, clip, occurrence, !pedalEvents)) {
+        const onFrame = frameOf(number(note.start, -10_000_000, 20_000_000, 'note onset'))
+        const offFrame = Math.min(lengthFrames, frameOf(number(note.end, -10_000_000, 20_000_000, 'note end')))
+        const limitFrame = Math.min(lengthFrames, frameOf(number(note.limit, -10_000_000, 20_000_000, 'note occurrence end')))
+        if (offFrame <= 0 || onFrame >= lengthFrames || offFrame <= onFrame) continue
+        if (!Number.isInteger(note.pitch)) throw new NativeTimelineError('INVALID_PROJECT', 'Invalid note pitch.')
+        notes.push({ id: nextId++, clipId: clip.id, occurrenceIndex: occurrence.index, onFrame, offFrame, limitFrame,
+          pitch: number(note.pitch, 0, 127, 'note pitch'), velocity: number(note.velocity, 0, 2, 'note velocity') })
+      }
+    }
+  }
+  for (const window of audioWindows(track, lengthBeats, tempo)) {
+    const originFrame = frameOf(number(window.start, -10_000_000, 20_000_000, 'audio onset'))
+    const windowEnd = Math.min(lengthFrames, frameOf(number(window.end, -10_000_000, 20_000_000, 'audio end')))
+    if (windowEnd <= 0 || originFrame >= lengthFrames) continue
+    const clip = window.clip
+    const asset = assets.get(clip.assetId) ?? context.metadata(clip.assetId)
+    assets.set(asset.id, asset)
+    const sourceBase = number(clip.offsetSeconds, 0, 10_000_000, 'audio source offset') * asset.sampleRate
+    // Audio plays at 1×: the region lasts its real duration through the tempo map.
+    const occurrence = window.start - window.sourceOffsetBeats
+    const clipLengthFrames = Math.max(0, Math.min(Math.round(tempo.secondsBetween(occurrence, occurrence + clip.lengthBeats) * sampleRate),
+      Math.floor((asset.frames - sourceBase) * sampleRate / asset.sampleRate)))
+    const startFrame = Math.max(0, originFrame)
+    const clipOffsetFrames = startFrame - originFrame + Math.round(tempo.secondsBetween(occurrence, window.start) * sampleRate)
+    const endFrame = Math.min(windowEnd, startFrame + clipLengthFrames - clipOffsetFrames)
+    if (endFrame <= startFrame) continue
+    audio.push({ id: nextId++, clipId: clip.id, assetId: asset.id, startFrame, endFrame,
+      sourceStartFrame: sourceBase + clipOffsetFrames * asset.sampleRate / sampleRate, sourceSampleRate: asset.sampleRate,
+      clipOffsetFrames, clipLengthFrames, gain: number(clip.gain, 0, AUDIO_CLIP_GAIN_MAX, 'audio gain'),
+      ...fadeFrames(clipLengthFrames, number(clip.fadeIn, 0, 10_000_000, 'fade in') * sampleRate, number(clip.fadeOut, 0, 10_000_000, 'fade out') * sampleRate),
+      fadeInCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeInCurve)], fadeOutCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeOutCurve)] })
+  }
+  notes.sort((a, b) => a.onFrame - b.onFrame || a.offFrame - b.offFrame || a.id - b.id)
+  // At equal frames a release/reset at a region end precedes the next region's chase; otherwise emission order.
+  controls.sort((a, b) => a.frame - b.frame || (a.reset === b.reset ? a.order - b.order : a.reset ? -1 : 1))
+  audio.sort((a, b) => a.startFrame - b.startFrame || a.id - b.id)
+  return { notes, controls: controls.map(({ frame, controller, value }) => ({ frame, controller, value })), audio, assets: [...assets.values()], ...counts }
 }
 
 /** Native automation step inside tempo ramps (beats): frame-linear segments this short match beat-linear lanes. */
@@ -486,7 +607,7 @@ export function automationFrames(points: readonly { beat: number; value: number;
 }
 
 /** Active lanes of a track in project frames. Beats map through the project tempo map, like every other event here. */
-function nativeAutomation(track: Track, tempo: TempoMap, sampleRate: number, project: Project): { automation?: NativeAutomationLane[]; unmutedAudible?: boolean } {
+function nativeAutomation(track: Track, tempo: TempoMap, sampleRate: number): { automation?: NativeAutomationLane[]; muted: boolean } {
   const lanes: NativeAutomationLane[] = []
   for (const lane of track.automation ?? []) {
     if (!isActiveLane(track, lane)) continue
@@ -504,9 +625,8 @@ function nativeAutomation(track: Track, tempo: TempoMap, sampleRate: number, pro
       points: automationFrames(points, isDiscrete(def), tempo, sampleRate),
     })
   }
-  if (!lanes.length) return {}
-  const muted = lanes.some(lane => lane.target.kind === 'mute')
-  return { automation: lanes, ...(muted ? { unmutedAudible: audibleTrackIds(project.tracks.map(item => item.id === track.id ? { ...item, mute: false } : item)).has(track.id) && track.pluginInstrument?.enabled !== false } : {}) }
+  if (!lanes.length) return { muted: false }
+  return { automation: lanes, muted: lanes.some(lane => lane.target.kind === 'mute') }
 }
 
 export interface NativeTrackSeek {

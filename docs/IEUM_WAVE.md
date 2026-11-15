@@ -79,7 +79,7 @@ flowchart TD
 3. **수명 관리:** DSP에 전달한 파형은 변경하지 않습니다. 파형 교체 중 이전 뱅크의 수명도 보장하고, 사용이 끝난 뱅크의 메모리 해제는 제어 스레드에서 수행합니다.
 4. **클록:** BPM, 블록 시작의 quarter-note beat, 재생 상태는 네이티브 호스트에서 제공합니다. UI 타이머나 `requestAnimationFrame`으로 오디오 시간을 만들지 않습니다.
 5. **트랙 동기화:** `AudioEngine.setProject(project)`는 열려 있지 않은 편집기의 트랙까지 반영합니다. `compileNativeTimeline()`의 `native-wavetable` 소스는 검증·복사된 전체 `patch`를 보관하며, 전송 시 `patchData`의 base64 `IEWAVE01` 바이너리로 바꿉니다. 공통 호스트의 `WavetableProcessor`가 이를 실제 WAVE DSP로 렌더링합니다.
-6. **제어 응답:** `engine.capabilities`는 장치를 열지 않고 호스트의 `hello.wavetable`을 확인합니다. `project.set { awaitApplied: true }`는 제출한 그래프가 실제 오디오 콜백에 적용된 뒤 revision을 응답합니다. 편집기는 오래된 응답·변경된 프로젝트·장치 재설정 전 응답으로 건반을 다시 활성화하지 않습니다.
+6. **제어 응답:** `engine.capabilities`는 장치를 열지 않고 호스트의 `hello.wavetable`을 확인합니다. `project.set { awaitApplied: true }`(그리고 `project.patch`)는 제출한 그래프가 실제 오디오 콜백에 적용된 뒤 revision을 응답합니다. WAVE 패치가 바뀌면 렌더러는 항상 `project.set`을 보냅니다([RENDER_DIFF_PROTOCOL.md](RENDER_DIFF_PROTOCOL.md)). 편집기는 오래된 응답·변경된 프로젝트·장치 재설정 전 응답으로 건반을 다시 활성화하지 않습니다.
 
 스칼라 노브만 바뀌면 준비된 파형 뱅크를 재사용하고 파라미터만 갱신합니다. 노브를 움직일 때마다 FFT 준비를 반복하지 않습니다. 사용자 프레임 내용이 달라질 때에만 제어 스레드에서 새 뱅크를 만들고, `applyPreparedPatch()`로 패치와 뱅크를 원자적으로 바꿉니다. 교차 전환이 끝난 이전 뱅크는 `takeRetiredWavetables()`로 회수해 오디오 스레드 밖에서 해제합니다.
 

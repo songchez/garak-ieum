@@ -34,6 +34,7 @@ function harness(input = project(), samples?: SampleLibrary, supportsWave = true
     if (method === 'engine.capabilities') return { protocol: 1, ...(supportsWave ? { wavetable: { protocolVersion: 1, schemaFingerprint: WAVE_SCHEMA_FINGERPRINT } } : {}) }
     if (method === 'engine.configure') return { backend: params.backend, inputDeviceId: params.inputDeviceId || 'input', outputDeviceId: params.outputDeviceId || 'output', inputChannels: params.inputChannels, inputChannelOffset: params.inputChannelOffset, outputChannels: 2, sampleRate: params.sampleRate, bufferFrames: 160, inputLatencyFrames: 80, outputLatencyFrames: 240 } as NativeDeviceState
     if (method === 'project.set') return { revision: (params.timeline as NativeProjectTimeline).revision }
+    if (method === 'project.patch') return { revision: params.revision }
     if (method === 'render.wav') return { data: new Uint8Array(48) }
     if (method === 'plugins.state') return { component: 'AQID', controller: 'BA==' }
     if (method === 'plugins.parameters') return [{ id: 1, title: 'Gain', value: .8, defaultValue: .5, stepCount: 0 }]
@@ -674,7 +675,8 @@ describe('offline file decoding and sample transfer', () => {
       zones: [{ file: 'sustain', root: 60, lo: 0, hi: 127, vlo: 0, vhi: 1, loop: [1, 3] }],
       releaseZones: [{ file: 'release', root: 60, lo: 0, hi: 127, vlo: 0, vhi: 1 }], attribution: { title: 'Test', author: 'Test', license: 'CC0' } },
       startOffset: .044, buffers: new Map([['sustain', pcm.buffer], ['release', pcm.buffer]]) }
-    const samples = { load: vi.fn(async () => loaded), get: () => loaded } as unknown as SampleLibrary
+    const release = vi.fn()
+    const samples = { load: vi.fn(async () => loaded), get: () => loaded, release, manifest: () => loaded.set } as unknown as SampleLibrary
     const h = managed(project(), samples)
     const original = new Blob(['compressed bytes'], { type: 'audio/webm' })
     const decoded = await h.engine.decodeAsset(original, 'Imported', 'import-id')
@@ -687,6 +689,12 @@ describe('offline file decoding and sample transfer', () => {
     expect(h.calls('samples.register')).toEqual([{ id: 'sample-set', manifest: loaded.set, startOffset: .044,
       files: { sustain: 'sample:sample-set:sustain', release: 'sample:sample-set:release' } }])
     expect(h.engine.sampleStatus('sample-set')).toBe('ready')
+    // One interleaved float32 attachment per file; the renderer then drops its decoded copy (the host owns it).
+    expect(h.calls('asset.put')[0]).toMatchObject({ id: 'sample:sample-set:sustain', encoding: 'f32le-interleaved', sampleRate: 48000, channels: 1, frames: 4 })
+    expect(Array.from(new Float32Array((h.calls('asset.put')[0]!.data as Uint8Array).buffer))).toEqual(Array.from(new Float32Array([.25, -.25, .1, 0])))
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(release).toHaveBeenCalledWith('sample-set')
+    expect(h.engine.sampleAttribution('sample-set')).toEqual(loaded.set.attribution)
     expect(h.calls('engine.configure')).toHaveLength(0)
     expect(AudioContext).not.toHaveBeenCalled()
     decode.mockRejectedValueOnce(new Error('unsupported codec'))

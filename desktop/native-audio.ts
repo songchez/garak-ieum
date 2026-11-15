@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
+import { readPcmTransfer } from './pcmTransfer.js'
 
 type Json = Record<string, unknown>
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }
@@ -48,6 +49,10 @@ interface ActiveTake { id: string; trackId: string; path: string }
 for (const method of ['devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor']) METHODS.add(method)
 // Live MIDI input (docs/MIDI_RECORDING.md): device list/enable, track routes, injected keyboard notes, panic.
 for (const method of ['midi.devices', 'midi.enable', 'midi.routes', 'midi.inject', 'midi.panic']) METHODS.add(method)
+// Incremental project sync (docs/RENDER_DIFF_PROTOCOL.md): only changed tracks, bulk events as a binary frame.
+METHODS.add('project.patch')
+/** Requests that may carry a binary frame (`params.binary`, a Uint8Array): bulk note/controller records. */
+const BINARY_METHODS = new Set(['project.set', 'project.patch'])
 /** Electron passes only `message` across IPC; the renderer (src/audio/native/deviceErrors.ts) parses this suffix. */
 const NATIVE_ERROR_MARKER = '\n[garak-native-error]'
 export function ipcNativeError(error: unknown): Error {
@@ -167,13 +172,13 @@ export class NativeAudioService {
     }
   }
 
-  private send(method: string, params: Json, timeout = 30_000): Promise<unknown> {
+  private send(method: string, params: Json, timeout = 30_000, binary?: Uint8Array): Promise<unknown> {
     const child = this.child
     if (!child || child.killed) return Promise.reject(new Error('네이티브 오디오 엔진에 연결되지 않았습니다.'))
     if (this.pending.size >= 64) return Promise.reject(new Error('오디오 명령이 너무 많습니다. 잠시 후 다시 시도해주세요.'))
     const id = ++this.sequence
     const line = JSON.stringify({ id, method, params }) + '\n'
-    if (Buffer.byteLength(line) > MAX_MESSAGE_BYTES) return Promise.reject(new Error('오디오 프로젝트 명령이 허용 크기를 초과했습니다.'))
+    if (Buffer.byteLength(line) > MAX_MESSAGE_BYTES || (binary && binary.byteLength > MAX_MESSAGE_BYTES)) return Promise.reject(new Error('오디오 프로젝트 명령이 허용 크기를 초과했습니다.'))
     return new Promise((resolveResult, reject) => {
       const timer = setTimeout(() => {
         // A timed-out mutation must never finish later against a new UI state.
@@ -182,6 +187,8 @@ export class NativeAudioService {
         this.failed(child, error); child.kill()
       }, timeout)
       this.pending.set(id, { resolve: resolveResult, reject, timer })
+      // A binary frame ("#<bytes>" line, then the raw bytes) precedes the request that references it.
+      if (binary?.byteLength) { child.stdin.write(`#${binary.byteLength}\n`); child.stdin.write(binary) }
       child.stdin.write(line, error => { if (error) { clearTimeout(timer); this.pending.delete(id); reject(error) } })
     })
   }
@@ -204,7 +211,14 @@ export class NativeAudioService {
 
   private async resolveTimeline(value: unknown): Promise<Json> {
     const timeline = structuredClone(record(value, 'timeline'))
-    if (!Array.isArray(timeline.tracks) || timeline.tracks.length > 256) throw new Error('Invalid timeline tracks.')
+    timeline.tracks = await this.resolveTracks(timeline.tracks)
+    return timeline
+  }
+
+  /** Approved VST3 module paths for timeline tracks (a whole timeline or a project.patch's changed tracks). */
+  private async resolveTracks(value: unknown): Promise<unknown[]> {
+    if (!Array.isArray(value) || value.length > 256) throw new Error('Invalid timeline tracks.')
+    const tracks = structuredClone(value)
     await this.loadCatalog()
     const resolvePlugin = (input: unknown, enabled: boolean) => {
       const plugin = record(input, 'plugin')
@@ -214,12 +228,12 @@ export class NativeAudioService {
       const { path: _discard, ...safe } = plugin
       return { ...safe, path: selected?.path ?? '' }
     }
-    for (const item of timeline.tracks) {
+    for (const item of tracks) {
       const track = record(item, 'track'), source = record(track.source, 'source')
       if (source.kind === 'vst3') source.plugin = resolvePlugin(source.plugin, track.enabled !== false)
       if (Array.isArray(track.inserts)) for (const item of track.inserts) { const insert = record(item, 'insert'); if (insert.type === 'vst3') insert.plugin = resolvePlugin(insert.plugin, track.enabled !== false && insert.enabled !== false) }
     }
-    return timeline
+    return tracks
   }
 
   private async scanPlugin(): Promise<unknown> {
@@ -266,30 +280,21 @@ export class NativeAudioService {
 
   private async pcmAsset(params: Json): Promise<unknown> {
     const id = text(params.id, 'asset ID')
-    const sampleRate = integer(params.sampleRate, 8000, 192000, 'PCM sample rate')
-    if (!Array.isArray(params.channels) || !params.channels.length || params.channels.length > 32) throw new Error('Invalid PCM channels.')
-    const channels = params.channels as Float32Array[]
-    if (!channels.every(channel => channel instanceof Float32Array)) throw new Error('PCM channels must be Float32Array.')
-    const frames = channels[0].length
-    if (!frames || frames * channels.length * 4 > MAX_PCM_BYTES || !channels.every(channel => channel.length === frames)) throw new Error('PCM asset size is invalid.')
-    const data = Buffer.allocUnsafe(frames * channels.length * 4)
-    for (let frame = 0; frame < frames; frame++) for (let channel = 0; channel < channels.length; channel++) {
-      const value = channels[channel][frame]
-      if (!Number.isFinite(value)) throw new Error('오디오에 유효하지 않은 샘플이 있습니다.')
-      data.writeFloatLE(value, (frame * channels.length + channel) * 4)
-    }
+    // One interleaved float32 attachment from the renderer, written as is (desktop/pcmTransfer.ts).
+    const { sampleRate, channels, frames, data } = readPcmTransfer(params, MAX_PCM_BYTES)
     const path = join(this.directory, `${randomUUID()}.f32`)
     try {
       await writeFile(path, data, { mode: 0o600, flag: 'wx' })
-      return await this.send('asset.load', { id, path, sampleRate, channels: channels.length, frames })
+      return await this.send('asset.load', { id, path, sampleRate, channels, frames })
     } finally { await rm(path, { force: true }).catch(() => {}) }
   }
 
   async request(methodInput: unknown, paramsInput: unknown = {}): Promise<unknown> {
     const method = text(methodInput, 'method')
     if (!METHODS.has(method)) throw new Error('허용되지 않은 네이티브 오디오 요청입니다.')
-    const params = paramsInput === undefined ? {} : record(paramsInput)
+    const { binary, ...params } = paramsInput === undefined ? {} : record(paramsInput)
     if ('path' in params || 'executable' in params) throw new Error('오디오 제어 명령에 파일 경로를 전달할 수 없습니다.')
+    if (binary !== undefined && (!BINARY_METHODS.has(method) || !(binary instanceof Uint8Array))) throw new Error('Invalid native audio binary frame.')
     if (method === 'note.preview' && !(typeof params.trackId === 'string' && params.trackId.length)) {
       const source = record(params.source, 'preview source')
       if (source.kind !== 'builtin-synth' && source.kind !== 'builtin-sampled') throw new Error('독립 미리듣기는 내장 악기에만 사용할 수 있습니다.')
@@ -311,7 +316,8 @@ export class NativeAudioService {
     const opensInput = Number(params.inputChannels) > 0 || (Array.isArray(params.inputChannelList) && params.inputChannelList.length > 0)
     if (method === 'engine.configure' && opensInput && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
     if ((method === 'latency.measure' || (method === 'monitor.set' && params.enabled === true)) && !(await this.options.allowInput())) throw new Error('오디오 입력 사용이 허용되지 않았습니다.')
-    if (method === 'project.set') return this.send(method, { ...params, timeline: await this.resolveTimeline(params.timeline) })
+    if (method === 'project.set') return this.send(method, { ...params, timeline: await this.resolveTimeline(params.timeline) }, undefined, binary)
+    if (method === 'project.patch') return this.send(method, { ...params, tracks: await this.resolveTracks(params.tracks) }, undefined, binary)
     if (method === 'record.start') {
       if (this.activeTakes) throw new Error('이미 녹음 중입니다.')
       const legacy = !('takes' in params)
