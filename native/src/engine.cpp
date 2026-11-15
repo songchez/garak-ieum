@@ -268,6 +268,7 @@ double oscillator(double& phase,double frequency,double sr,int waveform=0) noexc
 struct Voice {
   Synth synth;
   bool active=false,sampled=false,releaseSample=false,releaseSpawned=false,live=false,forcedRelease=false,cut=false;
+  bool sustained=false; // Live note released while the live sustain pedal is down: rings until the pedal lifts.
   std::int32_t id=0;int pitch=60,choke=-1;
   std::int64_t age=0,noteFrames=0,endFrames=0;
   float velocity=1;double samplePosition=0,sampleStep=1,peak=1,naturalFrames=0,releaseGain=0;
@@ -281,6 +282,11 @@ struct Voice {
 };
 struct ResolvedWindow { AudioWindow window; std::shared_ptr<const PcmAsset> asset; };
 struct TimedPluginEvent { std::int64_t frame; PluginEvent event; };
+// Same-sample order: reset, then controllers (a pedal-down catches a note-off at that sample; a pedal-up at
+// the sample does not extend it, docs/SUSTAIN_PEDAL.md), then note-offs, then note-ons and parameters.
+constexpr int eventOrder(PluginEvent::Type type)noexcept{
+  return type==PluginEvent::Type::AllNotesOff?0:type==PluginEvent::Type::Controller?1:type==PluginEvent::Type::NoteOff?2:3;
+}
 struct InsertRuntime {
   InsertRuntime() = default;
   InsertRuntime(const InsertRuntime&) = delete;
@@ -340,6 +346,18 @@ struct TrackRuntime {
   bool releaseAudition=false;
   struct LivePluginNote { bool active=false;std::int32_t id=-1;std::uint8_t pitch=60;std::int64_t remaining=0; };
   std::array<LivePluginNote,maxVoices> pluginNotes{};
+  // Live sustain pedal (CC64 from controlChange). VST3 instruments get the controller itself; built-in
+  // voices and IEUM WAVE notes have their live note-offs deferred here until the pedal lifts.
+  bool livePedal=false;
+  struct DeferredOff { std::int32_t id=-1; std::uint8_t pitch=60; };
+  std::array<DeferredOff,maxVoices> deferredOffs{};
+  std::size_t deferredCount=0;
+  [[nodiscard]] bool vst3()const noexcept{return instrument&&!wavetable;}
+  [[nodiscard]] std::uint8_t controlValueBefore(std::int64_t frame,int controller)const noexcept{
+    std::uint8_t value=0;
+    for(const auto&c:timeline.controls){if(c.frame>=frame)break;if(c.controller==controller)value=c.value;}
+    return value;
+  }
   std::size_t nextNote=0,nextEvent=0;
   std::uint32_t latency=0;
   CompensationDelay compensation;
@@ -372,6 +390,7 @@ struct TrackRuntime {
     // The ring and its producer position belong with the voice/effect state.
     if(ahead&&previous.ahead&&ahead->capacity==previous.ahead->capacity)ahead.swap(previous.ahead);
     voices.swap(previous.voices);std::swap(samples,previous.samples);
+    livePedal=previous.livePedal;deferredOffs=previous.deferredOffs;deferredCount=previous.deferredCount;
     nextNote=previous.nextNote;nextEvent=previous.nextEvent;pendingCount=previous.pendingCount;
     pendingEvents=previous.pendingEvents;pluginNotes=previous.pluginNotes;
     releaseAudition=previous.releaseAudition;
@@ -392,6 +411,8 @@ struct TrackRuntime {
   }
   void spawn(int pitch,float velocity,std::int64_t duration,std::int64_t available,std::int32_t id,bool live,std::uint64_t& overflows)noexcept {
     if(velocity<=0||duration<=0||available<=0||!timeline.enabled||timeline.source.kind==TrackSource::Kind::Audio)return;
+    // Re-striking a key that only rings because of the pedal ends that sustained note first.
+    if(live&&!timeline.source.isKit)retriggerSustained(pitch,overflows);
     if(instrument) {
       if(pendingCount==pendingEvents.size()){++overflows;return;}
       if(live){
@@ -470,7 +491,50 @@ struct TrackRuntime {
     v.peak=dsp::dbToGain(samples.gainDb+zone->zone.gainDb-6)*noise*voiceSynth.level;
     v.endFrames=static_cast<std::int64_t>(std::max(0.0,(zone->asset->frames()-v.samplePosition)/v.sampleStep));
   }
-  void noteOff(int pitch,std::int32_t id,std::uint64_t& overflows)noexcept {
+  void retriggerSustained(int pitch,std::uint64_t& overflows)noexcept {
+    if(wavetable){
+      for(std::size_t i=0;i<deferredCount;){
+        if(deferredOffs[i].pitch==pitch){const auto off=deferredOffs[i];deferredOffs[i]=deferredOffs[--deferredCount];noteOff(off.pitch,off.id,overflows,true);}
+        else ++i;
+      }
+    }
+    for(auto& v:voices)if(v.active&&v.live&&v.sustained&&v.pitch==pitch){v.sustained=false;releaseLive(v);}
+  }
+  void releaseLive(Voice& v)noexcept {
+    if(!timeline.source.isKit&&!v.forcedRelease){v.releaseGain=envelope(v);v.forcedRelease=true;}
+    v.noteFrames=std::min(v.noteFrames,v.age);
+    if(v.sampled&&v.age>=v.naturalFrames)v.releaseZone=nullptr;
+    if (!timeline.source.isKit) v.endFrames=std::min(v.endFrames,v.age+static_cast<std::int64_t>((v.synth.release*1.5+.02)*sampleRate));
+  }
+  // Live MIDI control change. Only CC64 has a built-in meaning; VST3 instruments receive every controller.
+  void controlChange(int controller,int value,std::uint64_t& overflows)noexcept {
+    if(vst3()){
+      if(pendingCount<pendingEvents.size()){PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=static_cast<std::uint32_t>(controller);e.value=static_cast<float>(value)/127.f;e.audition=true;pendingEvents[pendingCount++]=e;}
+      else ++overflows;
+      if(controller==sustainController)livePedal=pedalDown(value);
+      return;
+    }
+    if(controller!=sustainController)return;
+    const bool down=pedalDown(value);
+    if(down==livePedal)return;
+    livePedal=down;
+    if(!down)releaseSustained(overflows);
+  }
+  void releaseSustained(std::uint64_t& overflows)noexcept {
+    const auto count=deferredCount;deferredCount=0;
+    for(std::size_t i=0;i<count;++i)noteOff(deferredOffs[i].pitch,deferredOffs[i].id,overflows,true);
+    for(auto& v:voices)if(v.active&&v.live&&v.sustained){v.sustained=false;releaseLive(v);}
+  }
+  void noteOff(int pitch,std::int32_t id,std::uint64_t& overflows,bool force=false)noexcept {
+    if(livePedal&&!force&&!vst3()&&!timeline.source.isKit) {
+      if(wavetable){
+        if(deferredCount<deferredOffs.size())deferredOffs[deferredCount++]={id,static_cast<std::uint8_t>(pitch)};
+        else noteOff(pitch,id,overflows,true);
+        return;
+      }
+      for(auto& v:voices)if(v.active&&v.live&&(id>=0?v.id==id:v.pitch==pitch))v.sustained=true;
+      return;
+    }
     if(instrument) {
       bool cancelledPending=false;
       for(std::size_t i=0;i<pendingCount;){
@@ -486,14 +550,13 @@ struct TrackRuntime {
       }
       for(auto& n:pluginNotes)if(n.active&&(id>=0?n.id==id:n.pitch==pitch))n.active=false;
     }
-    for(auto& v:voices)if(v.active&&v.live&&(id>=0?v.id==id:v.pitch==pitch)) {
-      if(!timeline.source.isKit&&!v.forcedRelease){v.releaseGain=envelope(v);v.forcedRelease=true;}
-      v.noteFrames=std::min(v.noteFrames,v.age);
-      if(v.sampled&&v.age>=v.naturalFrames)v.releaseZone=nullptr;
-      if (!timeline.source.isKit) v.endFrames=std::min(v.endFrames,v.age+static_cast<std::int64_t>((v.synth.release*1.5+.02)*sampleRate));
-    }
+    for(auto& v:voices)if(v.active&&v.live&&(id>=0?v.id==id:v.pitch==pitch)){v.sustained=false;releaseLive(v);}
   }
   void allNotesOff(std::uint64_t& overflows)noexcept {
+    // A panic also lifts the (live) pedal: nothing may keep ringing afterwards.
+    livePedal=false;deferredCount=0;
+    for(auto&v:voices)v.sustained=false;
+    if(vst3())controlChange(sustainController,0,overflows);
     if(wavetable) {
       // Reserve no per-note queue slots: channel one belongs only to audition.
       // Cancel its queued on/off events before emitting a single release event.
@@ -503,9 +566,9 @@ struct TrackRuntime {
       for(auto&n:pluginNotes)n.active=false;
       releaseAudition=true;
     } else if(instrument) {
-      for(auto&n:pluginNotes)if(n.active)noteOff(n.pitch,n.id,overflows);
+      for(auto&n:pluginNotes)if(n.active)noteOff(n.pitch,n.id,overflows,true);
     } else {
-      for(auto&v:voices)if(v.active&&v.live)noteOff(v.pitch,v.id,overflows);
+      for(auto&v:voices)if(v.active&&v.live)noteOff(v.pitch,v.id,overflows,true);
     }
   }
   double envelope(const Voice& v)const noexcept {
@@ -602,9 +665,15 @@ struct TrackRuntime {
   void reset(std::int64_t frame,bool chase,bool resetEffects,std::uint64_t& overflows)noexcept {
     for(auto& v:voices) v.active=false;
     for(auto& n:pluginNotes) n.active=false;
-    pendingCount=0;
+    pendingCount=0;deferredCount=0;
     releaseAudition=false;
     if(instrument)instrument->requestReset();
+    // Timeline pedal (VST3 only): chase the value in effect at the new position, or lift it when stopping.
+    if(vst3()&&!timeline.controls.empty()){
+      PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=sustainController;
+      e.value=chase&&timeline.enabled?static_cast<float>(controlValueBefore(frame,sustainController))/127.f:0.f;
+      pendingEvents[pendingCount++]=e;
+    }
     if(resetEffects){for(auto& effect:inserts){if(effect.builtin)effect.builtin->reset();if(effect.plugin)effect.plugin->requestReset();}compensation.reset();}
     nextNote=static_cast<std::size_t>(std::lower_bound(timeline.notes.begin(),timeline.notes.end(),frame,[](const NotePair& n,std::int64_t f){return n.onFrame<f;})-timeline.notes.begin());
     nextEvent=static_cast<std::size_t>(std::lower_bound(events.begin(),events.end(),frame,[](const TimedPluginEvent&e,std::int64_t f){return e.frame<f;})-events.begin());
@@ -643,8 +712,7 @@ struct TrackRuntime {
       if(playing||(wavetable&&frame>=projectLength))while(nextEvent<events.size()&&events[nextEvent].frame<frame+frames){const auto& e=events[nextEvent++];if(e.frame>=frame){if(eventCount<blockEvents.size()){blockEvents[eventCount]=e.event;blockEvents[eventCount++].offset=static_cast<std::uint32_t>(e.frame-frame);}else ++overflows;}}
       for(auto& n:pluginNotes)if(n.active){if(n.remaining<frames){if(eventCount<blockEvents.size())blockEvents[eventCount++]={PluginEvent::Type::NoteOff,static_cast<std::uint32_t>(std::max<std::int64_t>(0,n.remaining)),n.id,n.pitch,0,0,0,true};else ++overflows;n.active=false;}else n.remaining-=frames;}
       std::sort(blockEvents.begin(),blockEvents.begin()+static_cast<std::ptrdiff_t>(eventCount),[](const PluginEvent&a,const PluginEvent&b){
-        const auto order=[](PluginEvent::Type type){return type==PluginEvent::Type::AllNotesOff?0:type==PluginEvent::Type::NoteOff?1:2;};
-        return a.offset<b.offset||(a.offset==b.offset&&order(a.type)<order(b.type));});
+        return a.offset<b.offset||(a.offset==b.offset&&eventOrder(a.type)<eventOrder(b.type));});
       instrument->process(buffer.data(),frames,std::span(blockEvents).first(eventCount),context);
     } else {
       std::uint32_t cursor=0;
@@ -864,7 +932,7 @@ double PreparedProject::tailSeconds()const noexcept{return impl_->tail;}
 std::uint32_t PreparedProject::latencyFrames()const noexcept{return impl_->latency;}
 
 struct RenderEngine::Impl {
-  enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Monitor,RecordStart,RecordStop,Master,Input,Layout,Metronome };
+  enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Control,Monitor,RecordStart,RecordStop,Master,Input,Layout,Metronome };
   struct Command {Kind kind=Kind::Stop;std::uint64_t ticket=0;PreparedProject*graph=nullptr;Capture*capture=nullptr;std::uint32_t track=0;std::int64_t frame=0;int pitch=60;std::int32_t noteId=-1;float value=1;std::array<std::uint64_t,4>mask{};std::array<std::uint8_t,maxInputLayout>layout{};const MetronomeClicks*clicks=nullptr;};
   std::uint32_t rate,maxBlock;
   PreparedProject*active=nullptr;
@@ -922,6 +990,34 @@ struct RenderEngine::Impl {
   std::array<std::uint32_t,EngineSnapshot::maxDynamicsReadings>heldIds{};
   std::array<float,EngineSnapshot::maxDynamicsReadings>heldInput{},heldGain{},lastInput{},lastGain{};
   std::uint32_t meterFrames=0;
+  // Live MIDI from the device thread (queueLiveMidi), applied in render() at
+  // sub-block starts, and where each sub-block of the last render() fell on the
+  // transport (renderedTransportFrame). Both fixed, callback-owned.
+  static constexpr std::uint32_t maxLiveMidi=256,maxRendered=256;
+  std::array<LiveMidiEvent,maxLiveMidi>liveMidi{};std::uint32_t liveMidiCount=0,liveMidiNext=0;
+  struct RenderedSpan{std::uint32_t cursor=0,count=0;std::int64_t position=0;bool playing=false;};
+  std::array<RenderedSpan,maxRendered>rendered{};std::uint32_t renderedCount=0;
+  // Applies queued live events due at `cursor`; returns frames until the next one.
+  std::uint32_t applyLiveMidi(std::uint32_t cursor,std::uint32_t frames)noexcept {
+    while(liveMidiNext<liveMidiCount&&liveMidi[liveMidiNext].offset<=cursor) {
+      auto&ev=liveMidi[liveMidiNext];
+      if(active&&ev.track<active->impl_->tracks.size()) {
+        auto&t=active->impl_->tracks[ev.track];
+        // A track rendering ahead drains first: keep the rest for the next call.
+        if(!own(t))break;
+        markLive(t);
+        const auto type=ev.status&0xF0;
+        if(type==0x90&&ev.data2>0)t.spawn(ev.data1&0x7F,static_cast<float>(ev.data2&0x7F)/127.f,unlimitedFrame,unlimitedFrame,ev.noteId,true,voiceOverflows);
+        else if(type==0x80||type==0x90)t.noteOff(ev.data1&0x7F,ev.noteId,voiceOverflows);
+        else if(type==0xB0&&(ev.data1==120||ev.data1==123))t.allNotesOff(voiceOverflows);
+        // CC64 sustain (built-ins defer note-offs) and, for VST3, every controller.
+        else if(type==0xB0)t.controlChange(ev.data1&0x7F,ev.data2&0x7F,voiceOverflows);
+      }
+      ++liveMidiNext;
+    }
+    if(liveMidiNext<liveMidiCount&&liveMidi[liveMidiNext].offset>cursor)return std::min(frames-cursor,liveMidi[liveMidiNext].offset-cursor);
+    return frames-cursor;
+  }
 
   // Multi-core processing. Configured on the control thread before the device
   // starts (setProcessing); the pool's workers live as long as this engine.
@@ -1254,7 +1350,7 @@ struct RenderEngine::Impl {
         case Kind::Pause:countInRemaining=0;reclaimAll(false);playing=false;reset(false,false);break;
         case Kind::Stop:countInRemaining=0;reclaimAll(true);playing=false;position=0;reset(false,true);break;
         case Kind::Seek:reclaimAll(true);position=c.frame;normalize();reset(playing,true);break;
-        case Kind::Preview:case Kind::NoteOn:case Kind::NoteOff:case Kind::AllNotesOff: {
+        case Kind::Preview:case Kind::NoteOn:case Kind::NoteOff:case Kind::AllNotesOff:case Kind::Control: {
           if(!active||c.track>=active->impl_->tracks.size())break;
           auto&t=active->impl_->tracks[c.track];
           // A track rendering ahead finishes its ring first (a few buffers):
@@ -1263,6 +1359,7 @@ struct RenderEngine::Impl {
           markLive(t);
           if(c.kind==Kind::NoteOff)t.noteOff(c.pitch,c.noteId,voiceOverflows);
           else if(c.kind==Kind::AllNotesOff)t.allNotesOff(voiceOverflows);
+          else if(c.kind==Kind::Control)t.controlChange(c.pitch,static_cast<int>(c.value),voiceOverflows);
           else t.spawn(c.pitch,c.value,c.frame,c.frame,c.noteId,true,voiceOverflows);
           break;
         }
@@ -1470,7 +1567,12 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
       if(track.instrument&&n.velocity>0){track.events.push_back({n.onFrame,{PluginEvent::Type::NoteOn,0,n.id,static_cast<std::uint8_t>(n.pitch),0,track.wavetable?n.velocity:std::min(1.f,n.velocity),0}});track.events.push_back({n.offFrame,{PluginEvent::Type::NoteOff,0,n.id,static_cast<std::uint8_t>(n.pitch),0,0,0}});}
     }
     std::stable_sort(track.timeline.notes.begin(),track.timeline.notes.end(),[](const NotePair&a,const NotePair&b){return a.onFrame<b.onFrame||(a.onFrame==b.onFrame&&a.id<b.id);});
-    std::stable_sort(track.events.begin(),track.events.end(),[](const TimedPluginEvent&a,const TimedPluginEvent&b){return a.frame<b.frame||(a.frame==b.frame&&a.event.type==PluginEvent::Type::NoteOff&&b.event.type!=PluginEvent::Type::NoteOff);});
+    if(t.source.kind==TrackSource::Kind::Vst3)for(const auto&c:t.controls){
+      require(c.frame>=0&&c.frame<=p.lengthFrames&&c.controller<=127&&c.value<=127,"Invalid native control event");
+      PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=c.controller;e.value=static_cast<float>(c.value)/127.f;
+      track.events.push_back({c.frame,e});
+    }
+    std::stable_sort(track.events.begin(),track.events.end(),[](const TimedPluginEvent&a,const TimedPluginEvent&b){return a.frame<b.frame||(a.frame==b.frame&&eventOrder(a.event.type)<eventOrder(b.event.type));});
     for(std::size_t begin=0,end=0;end<track.events.size();++end){
       while(track.events[end].frame-track.events[begin].frame>=impl_->maxBlock)++begin;
       // Leave room for all queued live notes and their auto-release events.
@@ -1554,6 +1656,7 @@ std::uint64_t RenderEngine::seek(std::int64_t frame){Impl::Command c;c.kind=Impl
 std::uint64_t RenderEngine::previewNote(std::uint32_t track,int pitch,float velocity,std::uint32_t duration){require(track<256&&pitch>=0&&pitch<=127&&duration>0&&duration<=impl_->rate*30,"Invalid preview note");checked(velocity,0,2,"Invalid preview velocity");Impl::Command c;c.kind=Impl::Kind::Preview;c.track=track;c.pitch=pitch;c.value=velocity;c.frame=duration;c.noteId=-2;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::noteOn(std::uint32_t track,int pitch,float velocity,std::int32_t id){require(track<256&&pitch>=0&&pitch<=127,"Invalid live MIDI note");checked(velocity,0,2,"Invalid MIDI velocity");Impl::Command c;c.kind=Impl::Kind::NoteOn;c.track=track;c.pitch=pitch;c.value=velocity;c.noteId=id;c.frame=unlimitedFrame;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::noteOff(std::uint32_t track,int pitch,std::int32_t id){require(track<256&&pitch>=0&&pitch<=127,"Invalid MIDI note off");Impl::Command c;c.kind=Impl::Kind::NoteOff;c.track=track;c.pitch=pitch;c.noteId=id;return impl_->enqueue(c);}
+std::uint64_t RenderEngine::controlChange(std::uint32_t track,int controller,int value){require(track<256&&controller>=0&&controller<=127&&value>=0&&value<=127,"Invalid MIDI control change");Impl::Command c;c.kind=Impl::Kind::Control;c.track=track;c.pitch=controller;c.value=static_cast<float>(value);return impl_->enqueue(c);}
 std::uint64_t RenderEngine::allNotesOff(std::uint32_t track){require(track<256,"Invalid audition track index");Impl::Command c;c.kind=Impl::Kind::AllNotesOff;c.track=track;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::setMonitoring(std::span<const std::uint32_t> tracks){Impl::Command c;c.kind=Impl::Kind::Monitor;for(const auto t:tracks){require(t<256,"Invalid monitor track index");c.mask[t/64]|=std::uint64_t{1}<<(t%64);}return impl_->enqueue(c);}
 std::vector<RecordingTake> RenderEngine::planRecording(std::span<const std::uint32_t> tracks)const {
@@ -1638,9 +1741,9 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
   if(frames)e.deviceBlock.store(frames,std::memory_order_relaxed);
   e.consume();
   e.recordingNow.store(e.recording,std::memory_order_relaxed);
-  std::uint32_t cursor=0;float masterPeak=0;
+  std::uint32_t cursor=0;float masterPeak=0;e.renderedCount=0;e.liveMidiNext=0;
   while(cursor<frames) {
-    auto count=std::min(e.maxBlock,frames-cursor);
+    auto count=std::min({e.maxBlock,frames-cursor,e.applyLiveMidi(cursor,frames)});
     const bool countingIn=e.countInRemaining>0;
     if(countingIn)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,e.countInRemaining));
     if(e.active&&e.playing) {
@@ -1652,6 +1755,7 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       }
       if(e.playing&&e.position<boundary)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,boundary-e.position));
     }
+    if(e.renderedCount<Impl::maxRendered)e.rendered[e.renderedCount++]={cursor,count,e.position,e.active&&e.playing&&!countingIn};
     auto*out=output+static_cast<std::size_t>(cursor)*2;std::fill_n(out,static_cast<std::size_t>(count)*2,0.f);
     if(e.active) {
       auto& p=*e.active->impl_;
@@ -1724,11 +1828,29 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
     if(p.cycle&&e.position>=p.cycle->at(1)){e.position=p.cycle->at(0);e.reset(true,false);}
     else if(!p.cycle&&e.position>=p.lengthFrames){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
   }
+  // Events left behind (a track still draining its render-ahead ring) apply at the start of the next call.
+  {std::uint32_t kept=0;for(std::uint32_t i=e.liveMidiNext;i<e.liveMidiCount;++i){e.liveMidi[kept]=e.liveMidi[i];e.liveMidi[kept++].offset=0;}e.liveMidiCount=kept;e.liveMidiNext=0;}
   e.promote();
   e.publishDynamics(frames);
   e.publish(masterPeak);
 }
 
+std::uint32_t RenderEngine::queueLiveMidi(std::span<const LiveMidiEvent> events)noexcept {
+  auto&e=*impl_;std::uint32_t accepted=0;
+  for(const auto&ev:events) {
+    if(e.liveMidiCount>=Impl::maxLiveMidi)break;
+    // Insertion keeps offsets ordered (stable for equal offsets).
+    auto at=e.liveMidiCount;while(at>0&&e.liveMidi[at-1].offset>ev.offset){e.liveMidi[at]=e.liveMidi[at-1];--at;}
+    e.liveMidi[at]=ev;++e.liveMidiCount;++accepted;
+  }
+  return accepted;
+}
+std::int64_t RenderEngine::renderedTransportFrame(std::uint32_t offset)const noexcept {
+  const auto&e=*impl_;
+  for(std::uint32_t i=0;i<e.renderedCount;++i){const auto&r=e.rendered[i];
+    if(offset>=r.cursor&&offset<r.cursor+r.count)return r.playing?r.position+(offset-r.cursor):notRenderedFrame;}
+  return notRenderedFrame;
+}
 EngineSnapshot RenderEngine::snapshot()const noexcept {
   const auto&e=*impl_;const auto&p=e.published;EngineSnapshot s;
   s.lastAppliedCommand=p.ticket.load(std::memory_order_acquire);s.revision=p.revision.load(std::memory_order_relaxed);s.frame=p.frame.load(std::memory_order_relaxed);s.sampleRate=e.rate;

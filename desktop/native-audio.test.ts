@@ -140,3 +140,18 @@ describe('native take files', () => {
     expect(host.requests.map(request => request.method)).toEqual(expect.arrayContaining(['devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor']))
   })
 })
+
+describe('live MIDI methods', () => {
+  it('forwards MIDI device, route, inject and panic requests without asking for audio input', async () => {
+    const { service: audio, host, allowInput } = await service({ 'midi.devices': () => ({ supported: true, devices: [{ id: 'Keys', name: 'Keys', enabled: false, open: false }] }) })
+    expect(await audio.request('midi.devices')).toEqual({ supported: true, devices: [{ id: 'Keys', name: 'Keys', enabled: false, open: false }] })
+    await audio.request('midi.enable', { ids: ['Keys'] })
+    await audio.request('midi.routes', { routes: [{ trackId: 't', device: null, channel: 0 }] })
+    await audio.request('midi.inject', { messages: [{ source: 'keyboard', data: [0x90, 60, 100] }] })
+    await audio.request('midi.panic')
+    expect(host.calls('midi.enable')).toEqual([{ ids: ['Keys'] }])
+    expect(host.calls('midi.inject')[0].messages).toEqual([{ source: 'keyboard', data: [0x90, 60, 100] }])
+    expect(host.requests.some(request => request.method === 'midi.panic')).toBe(true)
+    expect(allowInput).not.toHaveBeenCalled()
+  })
+})

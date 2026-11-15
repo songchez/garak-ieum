@@ -21,7 +21,7 @@ const MAX_PCM_BYTES = 512 * 1024 * 1024
 const MAX_TAKES = 64
 /** Several takes reach the renderer in one reply; larger ones stay in the recovery folder. */
 const MAX_TAKES_BYTES = 2 * 1024 * 1024 * 1024
-const METHODS = new Set(['devices.list', 'devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor', 'latency.measure', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'metronome.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
+const METHODS = new Set(['devices.list', 'devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor', 'latency.measure', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'note.control', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'metronome.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
 
 function record(value: unknown, label = 'request'): Json {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid native audio ${label}.`)
@@ -46,6 +46,8 @@ interface ActiveTake { id: string; trackId: string; path: string }
 
 // Device control (docs/AUDIO_CORE_PLAN.md, WP1/WP3). Kept apart from METHODS to keep parallel edits separate.
 for (const method of ['devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor']) METHODS.add(method)
+// Live MIDI input (docs/MIDI_RECORDING.md): device list/enable, track routes, injected keyboard notes, panic.
+for (const method of ['midi.devices', 'midi.enable', 'midi.routes', 'midi.inject', 'midi.panic']) METHODS.add(method)
 /** Electron passes only `message` across IPC; the renderer (src/audio/native/deviceErrors.ts) parses this suffix. */
 const NATIVE_ERROR_MARKER = '\n[garak-native-error]'
 export function ipcNativeError(error: unknown): Error {

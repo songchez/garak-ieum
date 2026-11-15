@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -65,7 +66,9 @@ struct ProcessContext {
   std::int64_t cycleStartFrame = 0, cycleEndFrame = 0, continuousFrame = 0;
 };
 struct PluginEvent {
-  enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff };
+  // Controller: MIDI control change; parameterId is the controller number (0..127) and value is
+  // normalized (CC value / 127). VST3 delivers it through the plug-in's IMidiMapping.
+  enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff, Controller };
   Type type = Type::NoteOn;
   std::uint32_t offset = 0;
   std::int32_t noteId = -1;
@@ -115,6 +118,15 @@ struct NotePair {
   float velocity = 1;
   bool operator==(const NotePair&) const = default;
 };
+// A MIDI control change on the timeline (currently CC64 sustain for VST3 instruments; built-in sources get
+// the pedal applied to their note-off frames by the timeline compiler, docs/SUSTAIN_PEDAL.md).
+struct ControlEvent {
+  std::int64_t frame = 0;
+  std::uint8_t controller = 64, value = 0;
+  bool operator==(const ControlEvent&) const = default;
+};
+constexpr int sustainController = 64;
+[[nodiscard]] constexpr bool pedalDown(int value) noexcept { return value >= 64; }
 struct AudioWindow {
   std::int32_t id = 0;
   std::string assetId;
@@ -169,6 +181,7 @@ struct TrackTimeline {
   bool enabled = true, mute = false, solo = false, soloSafe = false, audible = true;
   std::vector<BuiltinInsert> inserts;
   std::vector<NotePair> notes;
+  std::vector<ControlEvent> controls; // Sorted by frame.
   std::vector<AudioWindow> audio;
 };
 struct ProjectTimeline {
@@ -191,6 +204,18 @@ struct MetronomeClicks {
   std::uint32_t sampleRate = 0;
   std::array<std::vector<float>, 3> levels;
 };
+
+// One live MIDI message for the next render() call (docs/MIDI_RECORDING.md).
+// offset is callback-relative; 0x90 data2 is the MIDI velocity (0 = note off),
+// 0x80 is note off, 0xB0 with data1 120/123 releases this track's live notes.
+// noteId pairs a note-off with its note-on (-1 matches by pitch).
+struct LiveMidiEvent {
+  std::uint32_t offset = 0;
+  std::uint32_t track = 0;
+  std::uint8_t status = 0, data1 = 0, data2 = 0;
+  std::int32_t noteId = -1;
+};
+inline constexpr std::int64_t notRenderedFrame = std::numeric_limits<std::int64_t>::min();
 
 struct EngineSnapshot {
   std::uint64_t revision = 0, lastAppliedCommand = 0;
@@ -344,6 +369,9 @@ class RenderEngine {
                                         std::uint32_t durationFrames = 24000);
   [[nodiscard]] std::uint64_t noteOn(std::uint32_t trackIndex, int pitch, float velocity, std::int32_t noteId);
   [[nodiscard]] std::uint64_t noteOff(std::uint32_t trackIndex, int pitch, std::int32_t noteId);
+  // Live MIDI control change (0..127). CC64 sustains live notes: built-in and IEUM WAVE sources defer
+  // live note-offs while the pedal is down; VST3 instruments receive the controller as an event.
+  [[nodiscard]] std::uint64_t controlChange(std::uint32_t trackIndex, int controller, int value);
   // Release audition/live notes on this track without touching timeline notes.
   [[nodiscard]] std::uint64_t allNotesOff(std::uint32_t trackIndex);
   [[nodiscard]] std::uint64_t setMonitoring(std::span<const std::uint32_t> tracks);
@@ -368,6 +396,15 @@ class RenderEngine {
   // Calls may be subdivided internally at maxBlockFrames; no allocations/locks/IO.
   void render(float* stereoOutput, const float* input, std::uint32_t frames,
               std::uint32_t inputChannels = 2) noexcept;
+  // Render thread only, immediately before render(): live MIDI applied at its
+  // sample offset inside that call (sub-blocks split there). Fixed capacity, no
+  // locks or allocation; returns how many were accepted. Events for a track that
+  // is rendering ahead wait for the next call (offset 0).
+  std::uint32_t queueLiveMidi(std::span<const LiveMidiEvent> events) noexcept;
+  // Render thread only, after render(): the transport frame that callback-relative
+  // `offset` was rendered at, or notRenderedFrame when the transport was not
+  // playing there (stopped, paused or counting in).
+  [[nodiscard]] std::int64_t renderedTransportFrame(std::uint32_t offset) const noexcept;
   [[nodiscard]] EngineSnapshot snapshot() const noexcept;
   // Returns frames written; each frame holds recordingChannels() samples
   // (stereo for the legacy take). One control-thread consumer.

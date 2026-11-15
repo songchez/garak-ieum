@@ -94,6 +94,13 @@
 .piano-velocity-bar:hover::before, .piano-velocity-bar:hover::after { filter: brightness(1.2); }
 .piano-velocity-bar--selected::before { opacity: 1; background: color-mix(in srgb, var(--piano-color) 75%, #fff); }
 .piano-velocity-bar--selected::after { opacity: 1; background: var(--ink-99); box-shadow: 0 0 0 1px color-mix(in srgb, var(--piano-color) 60%, transparent); }
+.piano-sustain-lane { position: sticky; bottom: 0; z-index: 4; display: flex; box-sizing: border-box; background: var(--surface-panel); border-top: 1px solid var(--border-default); }
+.piano-sustain-corner { align-items: center; padding-top: 0; }
+.piano-sustain-track { position: relative; flex-shrink: 0; cursor: crosshair; touch-action: none; background-image: repeating-linear-gradient(to right, var(--grid-minor) 0, var(--grid-minor) 1px, transparent 1px, transparent var(--piano-beat)); }
+.piano-sustain-span { position: absolute; top: 6px; bottom: 6px; box-sizing: border-box; border-radius: 3px; border-left: 2px solid var(--piano-color); background: color-mix(in srgb, var(--piano-color) 38%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--piano-color) 55%, transparent); overflow: hidden; pointer-events: none; }
+.piano-sustain-span::after { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 2px; background: color-mix(in srgb, var(--piano-color) 70%, #fff); opacity: .7; }
+.piano-sustain-span--draft { opacity: .75; }
+.piano-sustain-label { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); font-size: 8px; font-style: italic; font-weight: 700; letter-spacing: .02em; color: var(--text-primary); opacity: .8; }
 .piano-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 0 0 34px; padding: 0 13px; background: var(--surface-panel-soft); border-top: 1px solid var(--border-subtle); }
 .piano-velocity-control { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .piano-velocity-label { color:var(--text-muted); font-size: 8px; font-weight: 650; letter-spacing: .12em; }
@@ -135,3 +142,14 @@
   .piano-selection-label { display: none; }
   .piano-footer { padding: 0 10px; }
 }
+/* Quantize popover (QuantizePopover.tsx) */
+.piano-quantize-anchor { position: relative; display: inline-flex; }
+.piano-quantize-popover { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 236px; display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 8px 24px rgb(0 0 0 / .28); font-size: 11px; color: var(--text-primary); }
+.piano-quantize-popover label { display: grid; grid-template-columns: 34px 1fr 34px; align-items: center; gap: 6px; }
+.piano-quantize-popover label select { grid-column: 2 / 4; }
+.piano-quantize-popover output { font-variant-numeric: tabular-nums; text-align: right; color: var(--text-secondary); }
+.piano-quantize-popover .piano-quantize-check { display: flex; gap: 6px; }
+.piano-quantize-actions { display: flex; justify-content: flex-end; }
+.piano-quantize-actions button { height: 24px; padding: 0 10px; border-radius: 4px; border: 1px solid var(--accent-border); background: var(--accent-soft); color: var(--accent); font: inherit; cursor: pointer; }
+.piano-quantize-actions button:disabled { opacity: .5; cursor: default; }
+.piano-quantize-popover small { color: var(--text-muted); font-size: 10px; }

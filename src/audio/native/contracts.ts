@@ -136,6 +136,8 @@ export interface NativeEngineEvent {
   latencyFrames?: number
   commandOverflows?: number
   voiceOverflows?: number
+  /** Live MIDI the host played since the last snapshot (see nativeLiveMidi.ts). */
+  midi?: unknown
 }
 
 export interface NativeAudioFile {

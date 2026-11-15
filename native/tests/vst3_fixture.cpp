@@ -8,6 +8,8 @@
 #include <pluginterfaces/base/ustring.h>
 #include <pluginterfaces/vst/ivstevents.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
+#include <pluginterfaces/vst/ivstmidicontrollers.h>
+#include <pluginterfaces/vst/ivsteditcontroller.h>
 
 #include <array>
 #include <cmath>
@@ -23,7 +25,9 @@ const FUID kControllerId(0x71949A01, 0xCC064E86, 0xA10DB06A, 0x05710003);
 const FUID kProcessorOnlyId(0x71949A01, 0xCC064E86, 0xA10DB06A, 0x05710004);
 constexpr std::size_t kParameterCount = 260;
 using Values = std::array<float, kParameterCount>;
-Values initialValues() { Values v{}; v.fill(1.f); v[0] = .5f; return v; }
+// Parameter 1 is the sustain pedal, mapped from MIDI CC64 through IMidiMapping (starts up).
+constexpr ParamID kSustainParameter = 1;
+Values initialValues() { Values v{}; v.fill(1.f); v[0] = .5f; v[kSustainParameter] = 0.f; return v; }
 tresult readState(IBStream* stream, Values& values) {
   if (!stream) return kInvalidArgument;
   IBStreamer io(stream, kLittleEndian);
@@ -42,8 +46,18 @@ tresult writeState(IBStream* stream, const Values& values) {
   return kResultOk;
 }
 
-class TestController final : public EditController {
+class TestController final : public EditController, public IMidiMapping {
  public:
+  tresult PLUGIN_API getMidiControllerAssignment(int32 busIndex, int16, CtrlNumber number, ParamID& id) override {
+    if (busIndex != 0 || number != kCtrlSustainOnOff) return kResultFalse;
+    id = kSustainParameter;
+    return kResultTrue;
+  }
+  OBJ_METHODS(TestController, EditController)
+  DEFINE_INTERFACES
+    DEF_INTERFACE(IMidiMapping)
+  END_DEFINE_INTERFACES(EditController)
+  REFCOUNT_METHODS(EditController)
   static FUnknown* createInstance(void*) { return static_cast<IEditController*>(new TestController); }
   tresult PLUGIN_API initialize(FUnknown* context) override {
     const auto result = EditController::initialize(context);
@@ -119,14 +133,17 @@ class TestProcessor final : public AudioEffect {
         if (data.inputEvents->getEvent(e, event) != kResultOk || event.sampleOffset != frame) continue;
         if (event.type == Event::kNoteOnEvent) {
           for (auto& voice : voices_) if (!voice.active) {
-            voice = {true, event.noteOn.noteId, event.noteOn.channel, event.noteOn.pitch, event.noteOn.velocity};
+            voice = {true, event.noteOn.noteId, event.noteOn.channel, event.noteOn.pitch, event.noteOn.velocity, false};
             break;
           }
         } else if (event.type == Event::kNoteOffEvent) {
           for (auto& voice : voices_) if (voice.active && voice.channel == event.noteOff.channel &&
-              (event.noteOff.noteId >= 0 ? voice.id == event.noteOff.noteId : voice.pitch == event.noteOff.pitch)) voice.active = false;
+              (event.noteOff.noteId >= 0 ? voice.id == event.noteOff.noteId : voice.pitch == event.noteOff.pitch)) {
+            if (values_[kSustainParameter] >= .5f) voice.sustained = true; else voice.active = false;
+          }
         }
       }
+      if (values_[kSustainParameter] < .5f) for (auto& voice : voices_) if (voice.sustained) { voice.active = false; voice.sustained = false; }
       float generated = 0;
       if (instrument_) for (const auto& voice : voices_) if (voice.active) generated += voice.velocity;
       if (data.numOutputs) for (int32 channel = 0; channel < data.outputs[0].numChannels; ++channel) {
@@ -139,7 +156,7 @@ class TestProcessor final : public AudioEffect {
     return kResultOk;
   }
  private:
-  struct Voice { bool active = false; int32 id = -1; int16 channel = 0, pitch = 0; float velocity = 0; };
+  struct Voice { bool active = false; int32 id = -1; int16 channel = 0, pitch = 0; float velocity = 0; bool sustained = false; };
   bool instrument_;
   Values values_ = initialValues();
   std::array<Voice, 128> voices_{};

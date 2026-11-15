@@ -72,9 +72,11 @@ void WavetableProcessor::takeStateFrom(WavetableProcessor& previous) noexcept {
 void WavetableProcessor::process(float* stereo, std::uint32_t frames, std::span<const PluginEvent> input,
                                 const ProcessContext& context) noexcept {
   if (reset_) { synth_->reset(); reset_ = false; }
-  const auto count = std::min(input.size(), events_.size());
-  for (std::size_t i = 0; i < count; ++i) {
-    const auto& source = input[i]; auto& event = events_[i];
+  // MIDI controllers have no meaning inside the synth: the host applies the sustain pedal to note-offs.
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < input.size() && count < events_.size(); ++i) {
+    if (input[i].type == PluginEvent::Type::Controller) continue;
+    const auto& source = input[i]; auto& event = events_[count++];
     event = {};
     event.sampleOffset = source.offset;
     // The editor and timeline can use the same host ID/pitch independently.
@@ -90,6 +92,7 @@ void WavetableProcessor::process(float* stereo, std::uint32_t frames, std::span<
         event.type = ieum::wave::EventType::Parameter;
         event.parameter = static_cast<ieum::wave::ParameterId>(source.parameterId);
         break;
+      case PluginEvent::Type::Controller: break;
     }
   }
   const ieum::wave::ProcessContext transport{context.bpm,

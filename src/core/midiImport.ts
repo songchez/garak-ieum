@@ -17,6 +17,8 @@ export interface MidiImportNote {
 }
 export interface MidiImportTrack {
   name: string
+  /** CC64 sustain pedal of this part's port/channel, in beats (absent when the file has none or it was baked). */
+  sustain?: { beat: number; value: number }[]
   /** Zero-based MIDI channel; channel 9 is the General MIDI percussion channel. */
   channel: number
   /** Zero-based program at this track/channel's first note, when specified. */
@@ -31,6 +33,11 @@ export interface MidiImportResult {
   /** Initial SMF meter; defaults to 4/4 when no meter is set at tick zero. */
   timeSignature?: { numerator: number; denominator: number }
   warnings: string[]
+}
+
+export interface MidiImportOptions {
+  /** Legacy "서스테인을 음 길이로 변환": lengthen notes through the pedal instead of keeping CC64 events. */
+  sustainToLength?: boolean
 }
 
 function invalid(detail: string): never {
@@ -90,8 +97,29 @@ interface NoteQueue { notes: ActiveNote[]; next: number }
 interface ChannelState {
   program?: number
   sustain: boolean
+  /** Kept CC64 events (tick, value) when the pedal is not baked into note lengths. */
+  pedal: { tick: number; value: number }[]
   held: Map<number, NoteQueue>
   sustained: Set<ActiveNote>
+}
+
+/** Last value per tick wins; repeated on/off states are dropped; a leading pedal-up is meaningless. */
+function pedalEvents(events: readonly { tick: number; value: number }[], division: number): { beat: number; value: number }[] {
+  const byTick: { tick: number; value: number }[] = []
+  for (const event of events) {
+    const last = byTick[byTick.length - 1]
+    if (last && last.tick === event.tick) last.value = event.value
+    else byTick.push({ ...event })
+  }
+  const result: { beat: number; value: number }[] = []
+  let down = false
+  for (const event of byTick) {
+    const next = event.value >= 64
+    if (next === down) continue
+    result.push({ beat: event.tick / division, value: event.value })
+    down = next
+  }
+  return result
 }
 
 function trackName(data: Uint8Array, warn: (message: string) => void): string {
@@ -112,7 +140,8 @@ function trackName(data: Uint8Array, warn: (message: string) => void): string {
  * Simultaneous events keep file track/event order. Same-pitch note-offs match
  * the oldest held note, because MIDI 1.0 carries no per-note identity.
  */
-export function parseMidiFile(data: ArrayBuffer | Uint8Array): MidiImportResult {
+export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImportOptions = {}): MidiImportResult {
+  const bakeSustain = options.sustainToLength === true
   if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) invalid('올바른 파일 데이터가 아닙니다.')
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
   if (bytes.byteLength > MAX_MIDI_FILE_BYTES) invalid('MIDI 파일은 16 MiB 이하로 나누어 가져와 주세요.')
@@ -229,7 +258,7 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array): MidiImportResult 
   const channelState = (port: number, channel: number): ChannelState => {
     const key = port * 16 + channel
     let state = channels.get(key)
-    if (!state) { state = { sustain: false, held: new Map(), sustained: new Set() }; channels.set(key, state) }
+    if (!state) { state = { sustain: false, pedal: [], held: new Map(), sustained: new Set() }; channels.set(key, state) }
     return state
   }
   const finish = (note: ActiveNote, tick: number): void => {
@@ -252,9 +281,12 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array): MidiImportResult 
     if (event.type === 0xc0) { state.program = event.first; continue }
     if (event.type === 0xb0) {
       if (event.first === 64) {
+        if (!bakeSustain) { state.pedal.push({ tick: event.tick, value: event.second }); continue }
         state.sustain = event.second >= 64
         if (!state.sustain) releaseSustain(state, event.tick)
       } else if (event.first === 121) {
+        // Reset All Controllers lifts the pedal.
+        if (!bakeSustain) { state.pedal.push({ tick: event.tick, value: 0 }); continue }
         state.sustain = false
         releaseSustain(state, event.tick)
       } else {
@@ -325,10 +357,11 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array): MidiImportResult 
     ports.get(track.source)!.add(track.port)
   }
   const tracks: MidiImportTrack[] = sorted.map(({ source, port, channel, program, notes }) => {
+    const sustain = pedalEvents(channels.get(port * 16 + channel)?.pedal ?? [], division)
     const base = sourceTracks[source].name || `MIDI 트랙 ${source + 1}`
     const name = `${base}${ports.get(source)!.size > 1 ? ` · Port ${port + 1}` : ''}${counts.get(source)! > 1 ? ` · Ch ${channel + 1}` : ''}`
     notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch || a.duration - b.duration)
-    return { name, channel, notes, ...(program === undefined ? {} : { program }) }
+    return { name, channel, notes, ...(program === undefined ? {} : { program }), ...(sustain.length ? { sustain } : {}) }
   })
   return { tracks, lengthBeats: endTick / division, bpm: 60_000_000 / initialMicroseconds, timeSignature: initialMeter, warnings: [...warnings] }
 }

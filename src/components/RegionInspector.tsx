@@ -168,11 +168,12 @@ function WarpSection({ clip, bpm, controls, onClipsEdit }: { clip: AudioClip; bp
 }
 
 type NumField = { get: (c: Clip) => number; set: (c: Clip, v: number) => Clip; min: number; max: number }
-const midiNum = (field: 'transpose' | 'velocity' | 'swing' | 'quantize', fallback: number) => ({ get: (c: Clip) => (c.kind === 'midi' ? c[field] : undefined) ?? fallback, set: (c: Clip, v: number): Clip => c.kind === 'midi' ? { ...c, [field]: v } : c })
+const midiNum = (field: 'transpose' | 'velocity' | 'swing' | 'quantize' | 'qStrength', fallback: number) => ({ get: (c: Clip) => (c.kind === 'midi' ? c[field] : undefined) ?? fallback, set: (c: Clip, v: number): Clip => c.kind === 'midi' ? { ...c, [field]: v } : c })
 const FIELDS = {
   transpose: { ...midiNum('transpose', 0), min: -96, max: 96 },
   velocity: { ...midiNum('velocity', 0), min: -99, max: 99 },
   swing: { ...midiNum('swing', 50), min: 0, max: 100 },
+  qStrength: { ...midiNum('qStrength', 100), min: 0, max: 100 },
   delay: { get: (c: Clip) => c.delayTicks ?? 0, set: (c: Clip, v: number): Clip => ({ ...c, delayTicks: v }), min: -1920, max: 1920 },
   gain: { get: (c: Clip) => gainToDb(c.gain), set: (c: Clip, v: number): Clip => ({ ...c, gain: dbToGain(v, clipGainMax(c)) }), min: -60, max: AUDIO_CLIP_GAIN_MAX_DB },
   fadeIn: { get: (c: Clip) => c.kind === 'audio' ? c.fadeIn : 0, set: (c: Clip, v: number): Clip => c.kind === 'audio' ? { ...c, fadeIn: Math.max(0, v) } : c, min: 0, max: 30 },
@@ -214,6 +215,7 @@ export function RegionInspector({ selection, bpm, beatsPerBar = 4, onClipsEdit, 
     {allMidi && <>
       <div className="insp-row"><span className="insp-label">퀀타이즈</span><select className="insp-select" aria-label="리전 퀀타이즈" value={qMixed ? '' : qIndex} onChange={e => { const q = QUANTIZE_VALUES[Number(e.target.value)]; onClipsEdit(c => c.kind === 'midi' ? { ...c, quantize: q } : c) }}>{qMixed && <option value="">*</option>}{QUANTIZE_LABELS.map((label, i) => <option key={label} value={i}>{label}</option>)}</select></div>
       {num('swing', 'Q-스윙', { disabled: qIndex <= 0 && !qMixed, format: v => `${v}%` })}
+      {num('qStrength', 'Q-강도', { disabled: qIndex <= 0 && !qMixed, format: v => `${v}%` })}
       {num('transpose', '트랜스포즈', { format: signed })}
       {num('velocity', '벨로시티', { format: signed })}
     </>}

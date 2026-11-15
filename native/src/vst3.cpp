@@ -24,6 +24,7 @@
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
+#include <pluginterfaces/vst/ivstmidicontrollers.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
 #include <pluginterfaces/vst/ivstprocesscontext.h>
 #include <pluginterfaces/vst/vstspeaker.h>
@@ -291,6 +292,9 @@ struct Vst3Processor::Impl {
   std::size_t activeNoteCount = 0, syncParameterIndex = 0;
   bool syncingParameters = false;
   std::vector<PluginParameter> parameterInfo;
+  // MIDI CC -> parameter (VST3 has no CC events; IMidiMapping is the standard route, e.g. CC64 sustain).
+  // Channel 1 / event bus 0, resolved on the control thread. -1 = the plug-in does not map that controller.
+  std::array<std::int64_t, 128> controllerParameters{};
   std::unique_ptr<NativePluginWindow> window;
   S::IPtr<S::IPlugView> view;
   std::string name;
@@ -342,6 +346,7 @@ struct Vst3Processor::Impl {
     data.inputParameterChanges = &inputParameters;
     data.outputParameterChanges = &outputParameters;
     refreshParameters();
+    mapControllers();
     active = true;
     require(component->setActive(true), "activate its audio buses");
     processing = true;
@@ -406,6 +411,16 @@ struct Vst3Processor::Impl {
       if (direction == V::kInput) hasEventInput = count > 0;
     }
     if (isInstrument && !hasEventInput) throw std::runtime_error("The selected VST3 instrument has no MIDI/event input.");
+  }
+  void mapControllers() {
+    controllerParameters.fill(-1);
+    if (!controller || !hasEventInput) return;
+    const auto mapping = S::U::cast<V::IMidiMapping>(controller);
+    if (!mapping) return;
+    for (int cc = 0; cc < 128; ++cc) {
+      V::ParamID id = 0;
+      if (mapping->getMidiControllerAssignment(0, 0, V::CtrlNumber(cc), id) == S::kResultTrue) controllerParameters[std::size_t(cc)] = id;
+    }
   }
   void refreshParameters() {
     parameterInfo.clear();
@@ -582,6 +597,11 @@ struct Vst3Processor::Impl {
         case PluginEvent::Type::NoteOff: valid = addNote(false, event.channel, event.pitch, event.noteId, event.value, event.offset, context) && valid; break;
         case PluginEvent::Type::Parameter: valid = inputParameters.add(event.parameterId, int32(event.offset), std::clamp(double(event.value), 0., 1.)) && valid; break;
         case PluginEvent::Type::AllNotesOff: valid = allNotesOff(context, event.offset) && valid; break;
+        case PluginEvent::Type::Controller:
+          // Unmapped controllers are ignored, as in other hosts; a mapped one is a sample-accurate parameter point.
+          if (event.parameterId < controllerParameters.size() && controllerParameters[event.parameterId] >= 0)
+            valid = inputParameters.add(V::ParamID(controllerParameters[event.parameterId]), int32(event.offset), std::clamp(double(event.value), 0., 1.)) && valid;
+          break;
       }
     }
     if (!valid) {

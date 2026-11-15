@@ -23,7 +23,7 @@
 | 길이 | 12 → 10 → 9초 순으로 줄여 20 MB 안에 들어가는 첫 값을 사용. 지금은 **9초**, 끝 300 ms 페이드 | `CAPS`, `BUDGET_MB` |
 | 인코딩 | 48 kHz 스테레오, Opus **64 kbps**(pitched) + AAC 128 kbps | `scripts/samples/common.py` |
 | 릴리즈 | 세트 전체에 0.3초 엔벨로프 하나를 씀. 88개 해머 릴리즈 노이즈를 0.35배로 재생 | `graph.ts` |
-| 페달 | 엔진에 CC64가 없음. MIDI 가져오기에서 서스테인을 노트 길이 연장으로 바꿈. 페달 공명·페달 노이즈 없음 | `src/core/midiImport.ts` |
+| 페달 | CC64를 리전 데이터로 보관하고 두 엔진이 노트 오프를 페달을 뗄 때까지 미룸([SUSTAIN_PEDAL.md](SUSTAIN_PEDAL.md)). 페달 공명·페달 노이즈·반 페달은 아직 없음 | `src/core/sustain.ts` |
 | 라운드 로빈 | 없음 | 매니페스트 형식 |
 | 루프 | 형식은 지원(`loop`). 피아노는 쓰지 않음 | `SampleZone.loop` |
 | 로딩 | 매니페스트의 모든 파일을 동시 6개씩 받아 **전부 디코딩**한 뒤 준비 완료 | `SampleLibrary.fetchSet` |

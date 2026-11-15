@@ -4,6 +4,7 @@ import type { WavetableState } from '../devices/wavetable-synth/model'
 import type { WavetableNativeBridge } from '../devices/wavetable-synth/bridge'
 import type { NativePluginInstance } from '../audio/native/contracts'
 import type { MetronomeEngineState, PlayOptions } from './metronome'
+import type { LiveMidiPort } from '../audio/liveMidi'
 
 /** A key of INSTRUMENTS in core/instruments.ts. Saved files store it as plain text. */
 export type InstrumentId = string
@@ -23,6 +24,12 @@ export interface MidiNote {
   start: number
   duration: number
   velocity: number
+}
+/** One MIDI CC64 (sustain pedal) event. Stored in source beats like MidiNote.start; see core/sustain.ts. */
+export interface SustainEvent {
+  beat: number
+  /** 0…127; 64 or more is pedal down. */
+  value: number
 }
 export interface ClipBase {
   id: string
@@ -46,6 +53,8 @@ export interface MidiClip extends ClipBase {
    * Absent = 0, preserving projects written before non-destructive MIDI trimming. */
   sourceOffsetBeats?: number
   notes: MidiNote[]
+  /** Sustain pedal (CC64) controller lane, sorted by beat (schema 13). Absent = no pedal. Never transposed or quantized. */
+  sustain?: SustainEvent[]
   /** Non-destructive playback quantize grid in beats; one of QUANTIZE_VALUES. Absent/0 = off. */
   quantize?: number
   /** Swing 0…100 (50 = straight); only used when quantize is on. Absent = 50. */
@@ -54,6 +63,8 @@ export interface MidiClip extends ClipBase {
   transpose?: number
   /** Velocity offset −99…99 (MIDI units). Absent = 0. */
   velocity?: number
+  /** Q-강도 0…100: how far quantize moves each note toward its grid line. Absent = 100. */
+  qStrength?: number
 }
 export interface AudioClip extends ClipBase {
   kind: 'audio'
@@ -157,6 +168,17 @@ export interface InputChoice {
   label: string
 }
 
+/** Instrument tracks: the live MIDI a track hears and records (docs/MIDI_RECORDING.md). */
+export interface TrackMidiInput {
+  /** `all` = every enabled input including the computer keyboard; `device` = deviceId only. */
+  source: 'all' | 'none' | 'device'
+  deviceId?: string
+  /** Device name when chosen, shown while the device is unplugged. */
+  deviceName?: string
+  /** 1…16; absent = every channel. */
+  channel?: number
+}
+
 export interface Track {
   id: string
   name: string
@@ -204,6 +226,8 @@ export interface Track {
   /** Audio tracks only. When present it replaces `input` (which is kept for switching back): the track
    * records and monitors another track or the master instead of a physical input. Undoable (schema 11). */
   inputRoute?: TrackInputRoute
+  /** Instrument tracks only. Absent = every MIDI input, every channel. Undoable. */
+  midiInput?: TrackMidiInput
 }
 export interface Marker {
   id: string
@@ -216,8 +240,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  /** 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 12
+  /** 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 13
   id: string
   name: string
   bpm: number
@@ -285,5 +309,7 @@ export interface AudioEngine {
   getInputChoices?(): InputChoice[]
   /** How many tracks can record at once: 1 in a browser, more on the native engine (WP2 implements). */
   readonly maxSimultaneousRecordings?: number
+  /** Live MIDI playing and timestamping (docs/MIDI_RECORDING.md). */
+  readonly liveMidi?: LiveMidiPort
   dispose(): void
 }

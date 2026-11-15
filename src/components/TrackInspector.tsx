@@ -3,6 +3,7 @@ import type { InputChoice, InstrumentId, Track, TrackInput, TrackInputRoute, Tra
 import { instrumentDef } from '../core/instruments'
 import { monitorModeOf, monitorModePatch } from '../core/trackActions'
 import { InputSelect, TapSelect } from './InputSelect'
+import { MidiInputSelect } from './MidiInputSelect'
 import { parsePitchName, pitchName } from '../core/pitch'
 import { Icon } from './Icon'
 import { InstrumentOptions } from './InstrumentOptions'
@@ -68,6 +69,11 @@ export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, 
       </span></div>
     </>}
     {track.kind === 'instrument' && <>
+      <div className="insp-row"><span className="insp-label">MIDI 입력</span><MidiInputSelect value={track.midiInput} onChange={midiInput => patch({ midiInput: midiInput ?? undefined }, 'midiInput')} /></div>
+      <div className="insp-row"><span className="insp-label">모니터</span><span className="insp-pair insp-monitor-modes" role="radiogroup" aria-label="MIDI 입력 모니터링">
+        {MONITOR_MODES.map(({ mode, label }) => <button key={mode} type="button" role="radio" aria-checked={monitorModeOf(track) === mode} className={`insp-mode${monitorModeOf(track) === mode ? ' active' : ''}`} title={`${label}: ${mode === 'auto' ? '녹음 활성화했거나 선택한 트랙에서 연주가 들립니다' : mode === 'in' ? '항상 MIDI 입력을 연주합니다' : 'MIDI 입력을 연주하지 않습니다'}`}
+          onClick={() => onTrackChange(id, monitorModePatch(mode), `${id}:monitorMode`)}>{label}</button>)}
+      </span></div>
       <div className="insp-row"><span className="insp-label">악기</span><select className="insp-select" aria-label="악기 변경" value={track.pluginInstrument ? 'vst3' : track.instrument} onChange={e => { if (e.target.value !== 'vst3') onInstrumentChange(id, e.target.value) }}>{track.pluginInstrument && <optgroup label="VST3 악기"><option value="vst3">{track.pluginInstrument.name}</option></optgroup>}<InstrumentOptions /></select></div>
       <div className="insp-row"><span className="insp-label">트랜스포즈</span><ValueField value={track.transpose} min={-96} max={96} format={signed} ariaLabel="트랙 트랜스포즈" onChange={transpose => patch({ transpose }, 'transpose')} /></div>
       <div className="insp-row"><span className="insp-label">벨로시티 오프셋</span><ValueField value={track.velocityOffset} min={-99} max={99} format={signed} ariaLabel="트랙 벨로시티 오프셋" onChange={velocityOffset => patch({ velocityOffset }, 'velocityOffset')} /></div>

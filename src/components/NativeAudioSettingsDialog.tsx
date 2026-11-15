@@ -16,6 +16,8 @@ import { NativeChannelConfig } from './NativeChannelConfig'
 import { NativeLatencyWizard } from './NativeLatencyWizard'
 import { Icon } from './Icon'
 import './AudioSettingsDialog.css'
+import { MidiDevicesSection } from './MidiSettings'
+import type { MidiInputService } from '../audio/MidiInput'
 
 interface Props {
   engine: NativeAudioEngine
@@ -25,6 +27,7 @@ interface Props {
   onApply(settings: AudioSettings, rate: SampleRate): Promise<{ persisted: boolean }>
   onClose(): void
   initialTab?: Tab
+  midi?: MidiInputService | null
 }
 export type Tab = 'devices' | 'channels' | 'recording' | 'project' | 'plugins' | 'appearance' | 'status'
 const tabs: { id: Tab; label: string; icon: string }[] = [
@@ -74,7 +77,7 @@ function useDeviceProbe(engine: NativeAudioEngine, backend: NativeBackend, devic
   return { probe: current?.probe ?? null, error: current?.error ?? null, loading: !!deviceId && !paused && !current }
 }
 
-export default function NativeAudioSettingsDialog({ engine, settings, project, blockedReason, onApply, onClose, initialTab = 'devices' }: Props) {
+export default function NativeAudioSettingsDialog({ engine, settings, project, blockedReason, onApply, onClose, initialTab = 'devices', midi }: Props) {
   const audio = useSyncExternalStore(engine.subscribeAudioState, engine.getAudioState, engine.getAudioState)
   const [tab, setTab] = useState<Tab>(initialTab)
   const [draft, setDraft] = useState({ ...settings })
@@ -301,6 +304,7 @@ export default function NativeAudioSettingsDialog({ engine, settings, project, b
                 <option value="off">끔</option><option value="normal">보통</option><option value="high">높음</option>
               </select>
             </Row>
+            <MidiDevicesSection service={midi} disabled={applying}/>
           </>}
           {tab === 'channels' && <NativeChannelConfig inputs={inputChannels} outputs={outputChannels} inputProfile={inputProfile} outputProfile={outputProfile} disabled={locked} note={channelNote}
             onInputs={change => changeProfile(inputKey, change)} onOutputs={change => changeProfile(outputKey, change)}/>}

@@ -19,6 +19,8 @@ type SourceNode = AudioBufferSourceNode | OscillatorNode
 
 export interface Voice {
   stop(at: number): void
+  /** Live MIDI note-off: from `at`, fade over the instrument's release instead of the 3 ms stop. */
+  release(at: number, seconds: number): void
   disconnect(): void
 }
 
@@ -342,6 +344,19 @@ function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNo
         try { source.stop(when + 0.015) } catch { /* A completed source is already silent. */ }
       }
     },
+    release(at, seconds) {
+      if (stopped || disconnected) return
+      stopped = true
+      const when = Math.max(graph.context.currentTime, at)
+      const tail = Math.max(0.005, seconds)
+      const gain = envelope.gain as AudioParam & { cancelAndHoldAtTime?: (time: number) => AudioParam }
+      if (gain.cancelAndHoldAtTime) gain.cancelAndHoldAtTime(when)
+      else { gain.cancelScheduledValues(when); gain.setValueAtTime(gain.value, when) }
+      gain.setTargetAtTime(0, when, tail / 4)
+      for (const source of sources) {
+        try { source.stop(when + tail * 1.5 + 0.02) } catch { /* A completed source is already silent. */ }
+      }
+    },
     disconnect() {
       if (disconnected) return
       disconnected = true
@@ -383,7 +398,7 @@ export function scheduleInstrument(
   velocity: number,
   availableSeconds: number,
   params?: Record<string, number>,
-): void {
+): Voice | undefined {
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
   // Native instruments are rendered by their host; never use the browser's keys fallback.
   if (instrumentDef(instrument).kind === 'native') return
@@ -545,8 +560,9 @@ export function scheduleInstrument(
       }
     }
   }
-  registerVoice(graph, sources, nodes, envelope)
+  const voice = registerVoice(graph, sources, nodes, envelope)
   for (const source of sources) { source.start(when); source.stop(end) }
+  return voice
 }
 
 /** Plays one zone of a loaded sample set. Layers already carry dynamics, so velocity only trims. */
@@ -562,7 +578,7 @@ export function scheduleSampled(
   availableSeconds: number,
   params?: Record<string, number>,
   chokes?: ChokeMap,
-): void {
+): Voice | undefined {
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
   const { set, startOffset } = loaded
   const zone = pickZone(set, pitch, clamp(velocity, 0, 1))
@@ -642,6 +658,7 @@ export function scheduleSampled(
     if (previous && previous.when <= when) previous.voice.stop(when)
     chokes.set(zone.choke, { voice, when })
   }
+  return voice
 }
 
 /** localSeconds is the position inside the clip content; maxSeconds caps playback at the window or range end. */

@@ -173,9 +173,9 @@ function installIpc(): void {
     try {
       const extension = exportExtension(request.kind)
       const result = await dialog.showSaveDialog(window, {
-        title: request.kind === 'audio' ? 'WAV 오디오 내보내기' : '프로젝트 파일 저장',
+        title: request.kind === 'audio' ? 'WAV 오디오 내보내기' : request.kind === 'midi' ? 'MIDI 파일 내보내기' : '프로젝트 파일 저장',
         defaultPath: request.name,
-        filters: [{ name: request.kind === 'audio' ? 'WAV 오디오' : '가락이음 프로젝트', extensions: [extension] }],
+        filters: [{ name: request.kind === 'audio' ? 'WAV 오디오' : request.kind === 'midi' ? 'Standard MIDI File' : '가락이음 프로젝트', extensions: [extension] }],
         properties: ['showOverwriteConfirmation', 'createDirectory'],
       })
       if (result.canceled || !result.filePath) return { canceled: true }

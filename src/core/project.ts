@@ -2,6 +2,7 @@ import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
 import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { midiEditorClip, midiSourceOffset } from './midiRegions'
+import { joinSustain } from './sustain'
 import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
@@ -9,7 +10,7 @@ import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMonitorMode } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
 
 let fallbackSequence = 0
@@ -98,7 +99,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 12,
+    schemaVersion: 13,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -312,7 +313,8 @@ export function trimClipStart(clip: Clip, newStartBeat: number, bpm: number): Cl
   const { sourceOffsetBeats: _offset, ...source } = clip
   return { ...source, startBeat: start, lengthBeats, ...loop,
     ...(offset > 0 ? { sourceOffsetBeats: offset } : {}),
-    notes: offset < 0 ? clip.notes.map(value => ({ ...value, start: value.start - offset })) : clip.notes }
+    notes: offset < 0 ? clip.notes.map(value => ({ ...value, start: value.start - offset })) : clip.notes,
+    ...(offset < 0 && clip.sustain ? { sustain: clip.sustain.map(event => ({ ...event, beat: event.beat - offset })) } : {}) }
 }
 
 /** Moves the right edge. `maxLengthBeats` lets callers clamp audio to the source length. */
@@ -361,8 +363,9 @@ export function joinClips(clips: Clip[], bpm: number): Clip | null {
   const endBeat = Math.max(...sorted.map(clip => clip.startBeat + clip.lengthBeats))
   if (first.kind === 'midi') {
     const notes = (sorted as MidiClip[]).flatMap(clip => cropNotesToClip(clip).notes.map(value => ({ ...value, start: value.start + clip.startBeat - startBeat })))
-    const { sourceOffsetBeats: _offset, ...base } = first
-    return { ...base, startBeat, lengthBeats: endBeat - startBeat, notes,
+    const { sourceOffsetBeats: _offset, sustain: _sustain, ...base } = first
+    const sustain = joinSustain(sorted as MidiClip[], startBeat)
+    return { ...base, startBeat, lengthBeats: endBeat - startBeat, notes, ...(sustain.length ? { sustain } : {}),
       ...(first.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(endBeat - startBeat, first.loopLengthBeats) }) }
   }
   const audio = sorted as Extract<Clip, { kind: 'audio' }>[]
@@ -645,6 +648,19 @@ function parseTrackInputRoute(value: unknown, path: string): TrackInputRoute {
   return { kind: 'track', trackId: text(source.trackId, `${path} track ID`, 200), tap: source.tap as TrackInputTap }
 }
 
+/** docs/MIDI_RECORDING.md: an optional field, so no schema bump; older readers ignore it. */
+function parseTrackMidiInput(value: unknown, path: string): TrackMidiInput {
+  const input = object(value, path)
+  if (input.source !== 'all' && input.source !== 'none' && input.source !== 'device') throw new Error(`${path} source must be all, none or device.`)
+  if (input.source === 'device' && input.deviceId === undefined) throw new Error(`${path} needs a device.`)
+  return {
+    source: input.source,
+    ...(input.source === 'device' ? { deviceId: text(input.deviceId, `${path} device`, 512) } : {}),
+    ...(input.source === 'device' && input.deviceName !== undefined ? { deviceName: text(input.deviceName, `${path} device name`, 512) } : {}),
+    ...(input.channel === undefined ? {} : { channel: integer(input.channel, `${path} channel`, 1, 16) }),
+  }
+}
+
 function monitorMode(value: unknown, path: string): TrackMonitorMode {
   if (!MONITOR_MODES.includes(value as TrackMonitorMode)) throw new Error(`${path} must be off, auto or in.`)
   return value as TrackMonitorMode
@@ -655,6 +671,20 @@ function quantize(value: unknown, path: string): number {
   const match = QUANTIZE_VALUES.find(grid => Math.abs(grid - parsed) <= 1e-6)
   if (match === undefined) throw new Error(`${path} must be one of the supported quantize grids.`)
   return match
+}
+
+/** CC64 lane (schema 13): sorted, unique beats, integer values 0…127. */
+function sustainEvents(value: unknown, path: string, version: number): SustainEvent[] {
+  if (version < 13) throw new Error(`${path} sustain pedal data requires project schema version 13 or later.`)
+  let previous = -1
+  return list(value, `${path} sustain pedal`, 100_000).map((input, index): SustainEvent => {
+    const eventPath = `${path}, sustain event ${index + 1}`
+    const event = object(input, eventPath)
+    const beat = number(event.beat, `${eventPath} position`, 0, 10_000_000)
+    if (beat <= previous) throw new Error(`${eventPath} must come after the previous sustain event.`)
+    previous = beat
+    return { beat, value: integer(event.value, `${eventPath} value`, 0, 127) }
+  })
 }
 
 function list(value: unknown, path: string, maxLength: number): unknown[] {
@@ -699,7 +729,7 @@ function fadeCurves(clip: Record<string, unknown>, path: string, version: number
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12) throw new Error('This project version is not supported. Expected schema version 1 through 12.')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13) throw new Error('This project version is not supported. Expected schema version 1 through 13.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -786,6 +816,8 @@ export function validateProject(input: unknown): Project {
     if (track.kind !== 'audio' && track.inputRoute !== undefined) throw new Error(`${path} input route requires an audio track.`)
     const inputRoute = track.inputRoute === undefined ? undefined : parseTrackInputRoute(track.inputRoute, `${path} input route`)
     const mode = track.monitorMode === undefined ? undefined : monitorMode(track.monitorMode, `${path} monitor mode`)
+    if (track.kind !== 'instrument' && track.midiInput !== undefined) throw new Error(`${path} MIDI input requires an instrument track.`)
+    const midiInput = track.midiInput === undefined ? undefined : parseTrackMidiInput(track.midiInput, `${path} MIDI input`)
     // Schema ≤7 has only the I flag, and an absent mode keeps deriving from it. A saved mode is authoritative.
     const monitor = mode === undefined ? optional(track.monitor, false, value => flag(value, `${path} monitor`)) : mode === 'in'
     const clips = list(track.clips, `${path} clips`, 100_000).map((clipInput, clipIndex): Clip => {
@@ -842,8 +874,10 @@ export function validateProject(input: unknown): Project {
         ...(clip.sourceOffsetBeats === undefined ? {} : { sourceOffsetBeats: number(clip.sourceOffsetBeats, `${clipPath} MIDI source offset`, 0, 10_000_000) }),
         ...(clip.quantize === undefined ? {} : { quantize: quantize(clip.quantize, `${clipPath} quantize`) }),
         ...(clip.swing === undefined ? {} : { swing: number(clip.swing, `${clipPath} swing`, 0, 100) }),
+        ...(clip.qStrength === undefined ? {} : { qStrength: number(clip.qStrength, `${clipPath} quantize strength`, 0, 100) }),
         ...(clip.transpose === undefined ? {} : { transpose: integer(clip.transpose, `${clipPath} transpose`, -96, 96) }),
         ...(clip.velocity === undefined ? {} : { velocity: integer(clip.velocity, `${clipPath} velocity`, -99, 99) }),
+        ...(clip.sustain === undefined ? {} : { sustain: sustainEvents(clip.sustain, clipPath, version) }),
         notes: list(clip.notes, `${clipPath} notes`, 100_000).map((noteInput, noteIndex): MidiNote => {
           noteCount += 1
           if (noteCount > 1_000_000) throw new Error('The project contains too many notes.')
@@ -890,6 +924,7 @@ export function validateProject(input: unknown): Project {
       ...(pluginInstrument ? { pluginInstrument } : {}),
       ...(input ? { input } : {}),
       ...(inputRoute ? { inputRoute } : {}),
+      ...(midiInput ? { midiInput } : {}),
     }
   })
   // Routes to deleted tracks read as 'none'; a saved loop (only possible by hand-editing) is broken the same way.
@@ -904,7 +939,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 12,
+    schemaVersion: 13,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

@@ -1,6 +1,8 @@
 import type { AudioClip, Clip, MidiClip, Track } from './types'
 import { midiSourceOffset } from './midiRegions'
 import { fadeLengths } from './clipEnvelope.js'
+import { sustainSpans, sustainedEnds, visibleSustain } from './sustain'
+import { quantizePosition } from './quantize'
 
 /** Ticks per beat for Track.delayTicks and ClipBase.delayTicks. */
 export const PPQ = 960
@@ -91,12 +93,16 @@ export function trackNote(track: Track | undefined, pitch: number, velocity: num
 }
 
 /**
- * Notes of one occurrence: quantize+swing → delay → transpose → velocity → limits → crop → gain.
+ * Notes of one occurrence: quantize+swing (× Q-강도) → delay → transpose → velocity → limits → crop → gain.
  * The crop window moves with the delay, so a negative delay plays the first notes early instead of dropping them.
+ * The sustain pedal (clip.sustain) is applied per occurrence unless `sustain` is false (docs/SUSTAIN_PEDAL.md):
+ * note-offs inside a pedal-down span move to the pedal-up (or occurrence end), and a re-struck pitch cuts its tail.
+ * Callers that deliver CC64 to the instrument themselves (VST3, MIDI export) pass false and use playbackSustain.
  */
-export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence): PlaybackNote[] {
+export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence, sustain = true): PlaybackNote[] {
   const grid = num(clip.quantize)
   const swing = clip.swing === undefined ? 50 : clamp(clip.swing, 0, 100)
+  const strength = clip.qStrength === undefined ? 100 : clamp(clip.qStrength, 0, 100)
   const delay = trackDelay(track, clip)
   const transpose = num(clip.transpose) + num(track.transpose)
   const velocityOffset = num(clip.velocity) + num(track.velocityOffset)
@@ -112,10 +118,7 @@ export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence): Pl
     let local = Math.max(0, sourceStart)
     const duration = note.duration + Math.min(0, sourceStart)
     if (duration <= EPSILON) continue
-    if (grid > 0) {
-      const step = Math.round(local / grid)
-      local = clamp(step * grid + (step % 2 ? (swing - 50) / 50 * grid : 0), 0, clip.lengthBeats)
-    }
+    if (grid > 0) local = clamp(quantizePosition(local, grid, swing, strength), 0, clip.lengthBeats)
     const pitch = note.pitch + transpose
     if (pitch < 0 || pitch > 127) continue
     const velocity = clamp(Math.round(clamp(note.velocity, 0, 1) * 127) + velocityOffset, 1, 127)
@@ -123,9 +126,33 @@ export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence): Pl
     if (local >= window - EPSILON) continue
     const end = Math.min(local + duration, window)
     if (end <= local) continue
-    notes.push({ pitch, start: origin + local, end: origin + end, velocity: velocity / 127 * gain, limit: origin + window })
+    notes.push({ pitch, start: local, end, velocity: velocity / 127 * gain, limit: window })
   }
-  return notes
+  const spans = sustain && clip.sustain?.length ? sustainSpans(visibleSustain(clip), 0, window) : []
+  const ends = spans.length ? sustainedEnds(notes, spans, window) : null
+  return notes.map((note, index) => ({ ...note, start: origin + note.start, end: origin + (ends ? ends[index] : note.end), limit: origin + window }))
+}
+
+/** One CC64 value in absolute project beats. */
+export interface PlaybackSustain { beat: number; value: number }
+
+/**
+ * CC64 events of one occurrence, with track/clip delay applied: the chased value at the occurrence start
+ * (only when down), the visible events, and a release at the occurrence end when the pedal is still down.
+ */
+export function playbackSustain(track: Track, clip: MidiClip, occ: Occurrence): PlaybackSustain[] {
+  if (!clip.sustain?.length) return []
+  const window = occ.end - occ.start
+  const origin = occ.start + trackDelay(track, clip)
+  const events: PlaybackSustain[] = []
+  let value = 0
+  for (const event of visibleSustain(clip)) {
+    if (event.beat >= window - EPSILON) break
+    events.push({ beat: origin + event.beat, value: event.value })
+    value = event.value
+  }
+  if (value >= 64) events.push({ beat: origin + window, value: 0 })
+  return events
 }
 
 /**

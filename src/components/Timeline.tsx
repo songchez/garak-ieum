@@ -19,6 +19,8 @@ import { useZoomWheel } from './useZoomWheel'
 import { ZoomControls } from './ZoomControls'
 import { TrackHeader } from './TrackHeader'
 import { RecordingRegion, formatRecordingElapsed } from './RecordingRegion'
+import { MidiRecordingRegion } from './MidiRecordingRegion'
+import type { MidiRecordingPreview } from './useMidiPerformance'
 import { InlineName, TimelineClip, pointerFocus, type ClipActions, type GestureMode, type Preview } from './TimelineClip'
 import { envelopeMenuItems, type ClipsEdit, type EnvelopeActions } from './ClipEnvelope'
 import { draggedLibraryRole, readLibraryDrag, type LibraryItem } from '../core/libraryDrag'
@@ -51,6 +53,8 @@ export interface TimelineProps {
   project:Project; assets:Map<string,AudioAsset>; engine:AudioEngine
   /** One draft per take; a multi-track pass shows a growing region on every recording track. */
   recordingDrafts?:readonly RecordingDraft[]
+  /** MIDI takes being recorded (docs/MIDI_RECORDING.md). */
+  midiRecordings?:readonly MidiRecordingPreview[]
   inputChoices?:readonly InputChoice[]
   onTrackInput?(trackId:string,input:TrackInput|null):void
   onTrackRoute?(trackId:string,route:TrackInputRoute|null,input?:TrackInput|null):void
@@ -766,6 +770,7 @@ export function Timeline(props:TimelineProps){
             {drag?.copy&&track.clips.filter(c=>drag.ids.has(c.id)).map(c=><div key={`ghost-${c.id}`} className="clip-ghost" style={musicalSpan(c.startBeat,c.lengthBeats,ppb)}/>)}
             {track.clips.map(clip=><TimelineClip key={clip.id} clip={clip} track={track} asset={clip.kind==='audio'?assets.get(clip.assetId):undefined} ppb={ppb} bpm={project.bpm} beatsPerBar={beatsPerBar} projectEnd={project.lengthBeats} selected={marquee?(marquee.ids.has(clip.id)||(marquee.add&&selectedClipIds.has(clip.id))):selectedClipIds.has(clip.id)} preview={clipPreviews.get(clip.id)} occurrenceTrack={projected?.tracks.get(clipPreviews.get(clip.id)?.trackId??track.id)} silent={silent} renaming={props.renamingClipId===clip.id} actions={actions}/>)}
             {take&&<RecordingRegion key={take.draft.id} draft={take.draft} placement={take.view} ppb={ppb}/>}
+            {props.midiRecordings?.filter(midi=>midi.trackId===track.id).map(midi=><MidiRecordingRegion key={`midi-${midi.trackId}`} take={midi} ppb={ppb}/>)}
             {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'MIDI 파일 놓기 · 더블 클릭하여 클립 만들기'}</span>}
           </div>
         </div>})}
