@@ -179,6 +179,35 @@ export interface TrackMidiInput {
   channel?: number
 }
 
+/**
+ * What an automation lane drives (schema 17, docs/AUTOMATION.md). Device lanes follow the device by id, so
+ * moving a 시김새 keeps its lanes and deleting it removes them. `param` is a ParamDef id for built-in devices
+ * and instruments, and the decimal VST3 ParamID for plug-ins. New kinds (send levels, return tracks) add a
+ * member here and a case in core/automation.ts targetKey/targetDef; nothing else keys on the shape.
+ */
+export type AutomationTarget =
+  | { kind: 'track'; param: 'volume' | 'pan' | 'mute' }
+  | { kind: 'device'; deviceId: string; param: string }
+  | { kind: 'instrument'; param: string }
+  | { kind: 'plugin-instrument'; param: string }
+/** One breakpoint. value is normalized 0…1 in the target's own range (core/devices.ts toNormalized). */
+export interface AutomationPoint {
+  beat: number
+  value: number
+  /** Curvature of the segment to the next point, −1…1 (0 = straight). Absent = 0. */
+  curve?: number
+}
+export interface AutomationLane {
+  id: string
+  target: AutomationTarget
+  /** Sorted by beat; two points on one beat make a jump. */
+  points: AutomationPoint[]
+  /** Off = the static value plays (Ableton's override, Logic's lane off). Absent = true. */
+  enabled?: boolean
+}
+/** Logic's automation modes: 읽기 plays lanes, 터치/래치/쓰기 also record knob moves during playback. */
+export type AutomationMode = 'read' | 'touch' | 'latch' | 'write'
+
 export interface Track {
   id: string
   name: string
@@ -228,6 +257,10 @@ export interface Track {
   inputRoute?: TrackInputRoute
   /** Instrument tracks only. Absent = every MIDI input, every channel. Undoable. */
   midiInput?: TrackMidiInput
+  /** Track automation lanes (schema 17, docs/AUTOMATION.md). Absent = none. Independent of regions. */
+  automation?: AutomationLane[]
+  /** Absent = 'read'. */
+  automationMode?: AutomationMode
 }
 export interface Marker {
   id: string
@@ -240,8 +273,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  /** 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 13
+  /** 17: track automation lanes (Track.automation, Track.automationMode). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 17
   id: string
   name: string
   bpm: number

@@ -70,6 +70,10 @@ import { getDesktopBridge, isDesktopApp, saveExport } from './platform/desktop'
 import { useMidiPerformance } from './components/useMidiPerformance'
 import { MidiControls } from './components/MidiControls'
 import { midiRecordTrackIds } from './core/midiInput'
+import { automationState, changedTargets, laneFor, pruneProjectAutomation, removeLane, staticValue, targetKey, updateLane, withStaticValue } from './core/automation'
+import { AutomationPass, recordsAutomation } from './core/automationRecording'
+import { AutomationDisplay, AutomationDisplayContext, AutomationUi, type AutomationUiHost } from './components/automationUi'
+import type { AutomationTarget } from './core/types'
 
 // An application-session service, independent of React's render/effect lifecycle.
 const initialAudioSettings = loadAudioSettings()
@@ -181,6 +185,12 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const [palette,setPalette]=useState<{ids:string[];x:number;y:number}|null>(null)
   const [headerConfig,setHeaderConfig]=useState<{x:number;y:number}|null>(null)
   const [iconMenu,setIconMenu]=useState<{id:string;x:number;y:number}|null>(null)
+  // Track automation (docs/AUTOMATION.md): lanes shown per track, the display store controls follow, the recording pass.
+  const [automationTracks,setAutomationTracks]=useState<ReadonlySet<string>>(()=>new Set())
+  const [automationMenu,setAutomationMenu]=useState<{trackId:string;target:AutomationTarget;x:number;y:number}|null>(null)
+  const [automationDisplay]=useState(()=>new AutomationDisplay())
+  const automationPass=useRef<AutomationPass|null>(null)
+  const automationTouches=useRef(new Map<string,{trackId:string;target:AutomationTarget}>())
   const [headerMenu,setHeaderMenu]=useState<{x:number;y:number;trigger:HTMLElement;label:string;items:ContextMenuItem[]}|null>(null)
   const projectSession=useRef(0)
   const importing=useRef(false)
@@ -269,7 +279,36 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
 
   const notify=useCallback((message:string,actions:NoticeAction[]=[])=>{setNotice(message);setNoticeActions(actions)},[])
   useEffect(()=>{pitchDirtyChange(reconcilePitchDrafts(project.id,project.tracks.flatMap(track=>track.clips),project.bpm,notify))},[project,pitchDirtyChange,notify])
-  const commit=commandSession.edit
+  /** Static edits to automated targets: written by a recording pass (터치/래치/쓰기), otherwise the lane is
+   * switched off so the new value plays (Ableton's override). Removed devices take their lanes along. */
+  const automationEdit=useCallback((prev:Project,next:Project):Project=>{
+    if(next===prev)return next
+    next=pruneProjectAutomation(next)
+    const pass=automationPass.current,snap=engine.getSnapshot()
+    let touched=false
+    const tracks=next.tracks.map(track=>{
+      const before=prev.tracks.find(item=>item.id===track.id)
+      if(!before||before===track)return track
+      const recording=!!pass&&snap.playing&&pass.handles(track.id)
+      const targets=changedTargets(before,track).filter(target=>recording||!!laneFor(track,target)?.points.length)
+      if(!targets.length)return track
+      let result=track
+      for(const target of targets){
+        const value=staticValue(track,target)
+        if(value===undefined)continue
+        if(recording&&pass!.touch(before,target,value,snap.beat)){
+          // The pass writes the move; the saved value stays, so the edit itself adds no undo step.
+          result=withStaticValue(result,target,staticValue(before,target)!)
+          automationTouches.current.set(`${track.id}\n${targetKey(target)}`,{trackId:track.id,target});touched=true
+        }else if(laneFor(result,target)?.enabled!==false)result=updateLane(result,target,lane=>({...lane,enabled:false}))
+      }
+      return touched&&JSON.stringify(result)===JSON.stringify(before)?before:result
+    })
+    if(touched)queueMicrotask(()=>{const present=commandSession.getSnapshot().history.present;const active=automationPass.current;if(!active)return;engine.setProject(active.engineProject(present));automationDisplay.update(present,track=>active.engineProject({...present,tracks:[track]}).tracks[0])})
+    const same=tracks.every((track,index)=>track===prev.tracks[index])&&tracks.length===prev.tracks.length&&Object.keys(next).every(key=>key==='tracks'||next[key as keyof Project]===prev[key as keyof Project])
+    return same?prev:{...next,tracks}
+  },[commandSession,automationDisplay])
+  const commit=useCallback((edit:(project:Project)=>Project,key='',label?:string)=>commandSession.edit(p=>automationEdit(p,edit(p)),key,label),[commandSession,automationEdit])
   const breakHistoryMerge=commandSession.breakMerge
   function pitchPending(){
     if(!pitchBusyRef.current&&!pitchDirtyRef.current)return false
@@ -486,7 +525,54 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     if(renamingClipId&&!clipIndex.has(renamingClipId))setRenamingClipId(null)
   },[clipIndex])
 
-  useEffect(()=>{engine.setProject(commandSession.getSnapshot().history.present)},[project,commandSession])
+  useEffect(()=>{
+    const present=commandSession.getSnapshot().history.present,pass=automationPass.current
+    engine.setProject(pass?pass.engineProject(present):present)
+    automationDisplay.update(present,pass?track=>pass.engineProject({...present,tracks:[track]}).tracks[0]:null)
+  },[project,commandSession,automationDisplay])
+  // Recording passes follow the transport: play starts one when a track is in 터치/래치/쓰기, stop commits it as one undo step.
+  useEffect(()=>engine.subscribe(()=>{
+    const snap=engine.getSnapshot()
+    automationDisplay.setBeat(snap.beat)
+    const pass=automationPass.current
+    if(snap.playing&&!pass){
+      const present=commandSession.getSnapshot().history.present
+      if(recordsAutomation(present))automationPass.current=new AutomationPass(present,snap.beat)
+    }else if(snap.playing&&pass)pass.advance(snap.beat)
+    else if(!snap.playing&&pass){
+      pass.stop();automationPass.current=null;automationTouches.current.clear()
+      if(!pass.isEmpty)commandSession.edit(p=>pass.apply(p),'','오토메이션 기록')
+      const present=commandSession.getSnapshot().history.present
+      engine.setProject(present);automationDisplay.update(present)
+    }
+  }),[commandSession,automationDisplay])
+  // A knob or fader let go during a pass: 터치 stops writing it (래치/쓰기 keep the last value).
+  const gestureHost=useMemo(()=>({
+    beginGesture:commandSession.beginGesture,cancelGesture:commandSession.cancelGesture,
+    endGesture:(id:string)=>{
+      commandSession.endGesture(id)
+      const pass=automationPass.current
+      if(!pass||!automationTouches.current.size)return
+      const beat=engine.getSnapshot().beat
+      for(const {trackId,target} of automationTouches.current.values())pass.release(trackId,target,beat)
+      automationTouches.current.clear()
+      const present=commandSession.getSnapshot().history.present
+      engine.setProject(pass.engineProject(present));automationDisplay.update(present,track=>pass.engineProject({...present,tracks:[track]}).tracks[0])
+    },
+  }),[commandSession,automationDisplay])
+  const automationUi=useMemo<AutomationUiHost>(()=>({
+    state:(trackId,target)=>{
+      const pass=automationPass.current
+      if(pass?.writing(trackId).includes(targetKey(target)))return 'writing'
+      return automationState(project.tracks.find(track=>track.id===trackId),target)
+    },
+    openMenu:(trackId,target,at)=>setAutomationMenu({trackId,target,...at}),
+  }),[project])
+  const toggleAutomation=useCallback((ids:readonly string[])=>setAutomationTracks(current=>{
+    const next=new Set(current),show=ids.some(id=>!current.has(id))
+    for(const id of ids)if(show)next.add(id);else next.delete(id)
+    return next
+  }),[])
   // Opening a project or undoing its sample rate must also update an existing context.
   useEffect(()=>{
     const state=engine.getAudioState()
@@ -1015,6 +1101,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       case 'hideSelectedTracks':hideSelected();break
       case 'unhideAllTracks':changeTracks(project.tracks.filter(t=>t.hidden).map(t=>({id:t.id,patch:{hidden:false}})),'unhide');break
       case 'toggleHideView':setHideView(v=>!v);break
+      case 'toggleAutomation':{const ids=selectedTrackIds.size?[...selectedTrackIds]:focusedTrackId?[focusedTrackId]:[];if(ids.length)toggleAutomation(ids);break}
       case 'colorPalette':openPalette(trackIds,anchorAt(document.querySelector(`.track-header[data-track-id="${CSS.escape(focusedTrackId)}"]`)));break
       case 'configureTrackHeader':setHeaderConfig(anchorAt(document.querySelector('.tracks-menubar [data-menu="view"]')));break
       case 'trackZoomIn':zoomTracks(trackIds,f=>f*1.2);break
@@ -1407,7 +1494,9 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const timelineUi:TimelineUi={headerWidth:trackHeader.headerWidth,headerConfig:trackHeader.headerConfig,hideView,recording:recording||midi.recording,catch:view.catch,scrollInPlay:view.scrollInPlay,snap:view.snap,dragMode:view.dragMode,globalTracks:view.globalTracks,gridLines:view.gridLines,trackZoom,zoomFocused:view.zoomFocused,soloRecall,renamingTrackId}
   const iconTrack=iconMenu?project.tracks.find(t=>t.id===iconMenu.id):undefined
   const trackProps={project,engine,recording,onTrackChange:changeTrack,onTrackButton:trackButton,onTrackSweep:trackSweep,onInstrumentChange:changeInstrument,onAddDevice:addDevice,onToggleDevice:toggleDevice,onMoveDevice:(id:string,deviceId:string,offset:number)=>editTrack(id,t=>moveDevice(t,deviceId,offset)),onRemoveDevice:(id:string,deviceId:string)=>editTrack(id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)})),onOpenDevices:openDevices,onMasterChange:(value:number)=>commit(p=>p.masterVolume===value?p:{...p,masterVolume:value},'master-volume','마스터 볼륨 조절'),onOpenColorPalette:paletteFor,onIconMenu:(id:string,e:React.MouseEvent)=>setIconMenu({id,...anchorAt(e.currentTarget)})}
-  return <HistoryGestureContext.Provider value={commandSession}><div className="studio-app">
+  const automationMenuTrack=automationMenu?project.tracks.find(track=>track.id===automationMenu.trackId):undefined
+  const automationMenuLane=automationMenu&&automationMenuTrack?laneFor(automationMenuTrack,automationMenu.target):undefined
+  return <HistoryGestureContext.Provider value={gestureHost}><AutomationDisplayContext.Provider value={automationDisplay}><AutomationUi.Provider value={automationUi}><div className="studio-app">
     <header className="app-header">
       <div className="header-start">
         {headerLocation!=='desktop'&&<img className="header-logo" src={BRAND.mark} width="20" height="20" alt={BRAND.name}/>}
@@ -1443,7 +1532,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       {view.browserOpen&&<Browser assets={assets} hiddenAssetIds={warpRenderIds} engine={engine} focusedTrack={focusedTrack} tab={libraryTab} onTabChange={setLibraryTab} onUse={(item,opts)=>applyLibraryItem(item,{newTrack:opts?.newTrack})} onPreview={previewInstrument} onImport={()=>openMediaImport()} onOpenPluginSettings={()=>openAudioSettings('plugins')} pluginsLocked={!!busy||recording||recordPreparing||audioApplying}/>}
 
       <main className="studio-main">
-        <Timeline project={project} assets={assets} engine={engine} recordingDrafts={recordingDrafts} midiRecordings={midi.previews} inputChoices={inputChoices} onTrackInput={setTrackInput} onTrackRoute={setTrackRoute} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} selectedClipIds={selectedClipIds} anchorClipId={anchorClipId} ui={timelineUi} zoom={zoom.timeline} onUiChange={applyUi} onZoomChange={patch=>patchZoom('timeline',z=>({ppb:patch.ppb===undefined?z.ppb:clampZoom(patch.ppb,ZOOM_LIMITS.timelineX),rowHeight:patch.rowHeight===undefined?z.rowHeight:clampZoom(patch.rowHeight,ZOOM_LIMITS.timelineY)}))} onTrackClick={trackClick} onTrackFocus={trackFocus} onTrackButton={trackButton} onTrackSweep={trackSweep} onTracksChange={changeTracks} onTracksReorder={reorderTracks} onNewTrack={newTrack} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onRenameTracks={renameTracks} onOpenLibrary={openLibrary} onOpenColorPalette={openPalette} onIconMenu={(id,at)=>setIconMenu({id,...at})} onConfigureHeader={at=>setHeaderConfig(at)} onClearRecallSolo={clearRecall} onSeek={beat=>engine.seek(Math.max(0,beat))} onSeekPlay={seekPlay} onLoopChange={loop=>changeLoop(loop.startBeat,loop.endBeat,loop.enabled)} onSelectClips={selectFromMarquee} onClipMove={moveClips} onClipTrimStart={trimStart} onClipLoopToggle={(_trackId,clipId)=>apply(mapClips(project,new Set([clipId]),c=>({...c,loop:!c.loop})))} onClipLoopEnd={(_trackId,clipId,endBeat)=>commit(p=>fitProjectLength(mapClips(p,new Set([clipId]),c=>setClipLoopEnd(c,endBeat))),undefined,'리전 반복 길이')} onAddClip={addMidiClip} onAudioDrop={(files,id,beat)=>void addMediaFiles(files,id,beat)} onLibraryDrop={(item,target)=>applyLibraryItem(item,{trackId:target.trackId??null,beat:target.beat})} onImportFiles={openMediaImport} onCommand={(command,ctx)=>run(command,ctx)} onMenuFocus={()=>{lastShortcutEditor.current='timeline'}} menusDisabled={menusDisabled} viewMenuExtras={viewMenuExtras} onMarker={marker} onClipOpen={(trackId,clipId)=>{selectClips([clipId],clipId,trackId);setBottomTab('editor')}} renamingClipId={renamingClipId} onClipRename={renameClip} onClipWarp={setClipsWarp} onClipTranspose={transposeClips} onClipsEdit={(ids,fn,label)=>commit(p=>mapClips(p,new Set(ids),c=>fn(c)),`envelope:${label}`,label)} onClipCrossfade={ids=>{const made=crossfadeClips(project,new Set(ids),id=>assets.get(id)?.buffer.duration??Infinity);if(made.count)apply(made.project,'','크로스페이드 만들기');else notify('크로스페이드를 만들 수 없습니다. 같은 트랙에서 서로 붙어 있거나 겹친 오디오 리전을 두 개 이상 선택해 주세요.')}}/>
+        <Timeline project={project} assets={assets} engine={engine} recordingDrafts={recordingDrafts} midiRecordings={midi.previews} inputChoices={inputChoices} onTrackInput={setTrackInput} onTrackRoute={setTrackRoute} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} selectedClipIds={selectedClipIds} anchorClipId={anchorClipId} ui={timelineUi} zoom={zoom.timeline} onUiChange={applyUi} onZoomChange={patch=>patchZoom('timeline',z=>({ppb:patch.ppb===undefined?z.ppb:clampZoom(patch.ppb,ZOOM_LIMITS.timelineX),rowHeight:patch.rowHeight===undefined?z.rowHeight:clampZoom(patch.rowHeight,ZOOM_LIMITS.timelineY)}))} onTrackClick={trackClick} onTrackFocus={trackFocus} onTrackButton={trackButton} onTrackSweep={trackSweep} onTracksChange={changeTracks} onTracksReorder={reorderTracks} onNewTrack={newTrack} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onRenameTracks={renameTracks} onOpenLibrary={openLibrary} onOpenColorPalette={openPalette} onIconMenu={(id,at)=>setIconMenu({id,...at})} onConfigureHeader={at=>setHeaderConfig(at)} onClearRecallSolo={clearRecall} automationTracks={automationTracks} onAutomationToggle={id=>toggleAutomation([id])} onAutomationEdit={(id,edit,label)=>editTrack(id,edit,'',label)} onAutomationMode={(id,mode)=>editTrack(id,t=>{const {automationMode:_mode,...rest}=t;return mode==='read'?rest:{...rest,automationMode:mode}},'','오토메이션 모드')} onSeek={beat=>engine.seek(Math.max(0,beat))} onSeekPlay={seekPlay} onLoopChange={loop=>changeLoop(loop.startBeat,loop.endBeat,loop.enabled)} onSelectClips={selectFromMarquee} onClipMove={moveClips} onClipTrimStart={trimStart} onClipLoopToggle={(_trackId,clipId)=>apply(mapClips(project,new Set([clipId]),c=>({...c,loop:!c.loop})))} onClipLoopEnd={(_trackId,clipId,endBeat)=>commit(p=>fitProjectLength(mapClips(p,new Set([clipId]),c=>setClipLoopEnd(c,endBeat))),undefined,'리전 반복 길이')} onAddClip={addMidiClip} onAudioDrop={(files,id,beat)=>void addMediaFiles(files,id,beat)} onLibraryDrop={(item,target)=>applyLibraryItem(item,{trackId:target.trackId??null,beat:target.beat})} onImportFiles={openMediaImport} onCommand={(command,ctx)=>run(command,ctx)} onMenuFocus={()=>{lastShortcutEditor.current='timeline'}} menusDisabled={menusDisabled} viewMenuExtras={viewMenuExtras} onMarker={marker} onClipOpen={(trackId,clipId)=>{selectClips([clipId],clipId,trackId);setBottomTab('editor')}} renamingClipId={renamingClipId} onClipRename={renameClip} onClipWarp={setClipsWarp} onClipTranspose={transposeClips} onClipsEdit={(ids,fn,label)=>commit(p=>mapClips(p,new Set(ids),c=>fn(c)),`envelope:${label}`,label)} onClipCrossfade={ids=>{const made=crossfadeClips(project,new Set(ids),id=>assets.get(id)?.buffer.duration??Infinity);if(made.count)apply(made.project,'','크로스페이드 만들기');else notify('크로스페이드를 만들 수 없습니다. 같은 트랙에서 서로 붙어 있거나 겹친 오디오 리전을 두 개 이상 선택해 주세요.')}}/>
         <EditorPanel kind={bottomTab==='editor'?(selectedClip?.kind==='audio'?'audio':'piano'):bottomTab} openRequest={editorOpenRequest}><div className="editor-toolbar"><div className="editor-tabs"><button className={bottomTab==='editor'?'active':''} onClick={()=>setBottomTab('editor')}><Icon name={selectedClip?.kind==='audio'?'wave':'keys'} size={15}/>{selectedClip?.kind==='audio'?'오디오 편집':'피아노롤'}</button><button className={bottomTab==='mixer'?'active':''} onClick={()=>setBottomTab('mixer')} title={`믹서 · ${shortcutText('toggleMixer')}`}><Icon name="mixer" size={15}/>믹서</button><button className={bottomTab==='devices'?'active':''} onClick={()=>setBottomTab('devices')}><Icon name="plug" size={15}/>시김새 체인</button>{selectedClip?.kind==='audio'&&<button className={pitchWindow?'active':''} aria-pressed={pitchWindow} onClick={()=>setPitchWindow(true)} title="피치 편집 창 열기"><Icon name="wave" size={15}/>피치 편집{pitchDirty?' •':''}<Icon name="external" size={11}/></button>}</div><div className="editor-selection">{selectedClip&&<><span className="color-dot" style={{background:focusedTrack?.color}}/><span>{selectedClip.name}</span><small>{+(selectedClip.lengthBeats/project.beatsPerBar).toFixed(2)} bars{selection.length>1?` · 클립 ${selection.length}개 선택`:''}</small></>}</div><div className="editor-actions">{bottomTab==='mixer'?<ZoomControls area="믹서" onZoom={command=>zoomArea(command,'mixer')} focusTarget={()=>document.querySelector<HTMLElement>('[data-keyboard-scope="mixer"]')}/>:bottomTab==='devices'&&focusedTrack?<ZoomControls area="시김새 체인" axes="one" labels={{zoomOut:'축소',zoomIn:'확대',zoomToFit:'기본 크기'}} onZoom={command=>zoomArea(command,'devices')} focusTarget={()=>document.querySelector<HTMLElement>('[data-keyboard-scope="devices"]')}/>:null}<button className="icon-button small" onClick={splitSelection} disabled={!selection.length&&!focusedTrack?.clips.length} title={`재생 커서에서 클립 분할 · ${shortcutText('split')}`} aria-label="클립 분할"><Icon name="scissors" size={15}/></button><button className="icon-button small" onClick={duplicateSelection} disabled={!selection.length} title={`선택 클립 복제 · ${shortcutText('repeat')}`} aria-label="클립 복제"><Icon name="copy" size={15}/></button><button className="icon-button small" onClick={()=>{if(selection.length)deleteClips();else deleteTracks([...selectedTrackIds])}} disabled={!focusedTrack&&!selection.length} title={selection.length?`선택 클립 ${selection.length}개 삭제`:`선택 트랙 삭제 · ${shortcutText('deleteTrack')}`} aria-label={selection.length?'클립 삭제':'트랙 삭제'}><Icon name="trash" size={15}/></button><EditorPanelActions/></div></div>
           <EditorPanelBody>{bottomTab==='mixer'?<Mixer {...trackProps} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} onTrackClick={trackClick} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onColorPalette={openPalette} zoom={zoom.mixer} onZoomChange={mixer=>setZoom(z=>({...z,mixer:{channelWidth:clampZoom(mixer.channelWidth,ZOOM_LIMITS.mixerWidth),faderHeight:clampZoom(mixer.faderHeight,ZOOM_LIMITS.mixerFader)}}))} zoomRef={mixerZoom}/>:bottomTab==='devices'?focusedTrack?<div className="device-workspace"><DeviceChain track={focusedTrack} engine={engine} bpm={project.bpm} onSave={()=>void saveBundle()} pitchAvailable={selectedClip?.kind==='audio'} onOpenPitch={()=>setPitchWindow(true)} scale={zoom.devices.scale} onScaleChange={scale=>patchZoom('devices',()=>({scale:clampZoom(scale,ZOOM_LIMITS.deviceScale)}))} zoomRef={deviceZoom} onInstrumentChange={instrument=>changeInstrument(focusedTrack.id,instrument)} onInstrumentParam={(key,value)=>editTrack(focusedTrack.id,t=>({...t,instrumentParams:{...t.instrumentParams,[key]:value}}),`${focusedTrack.id}:inst:${key}`)} onWavetablePatch={(patch,label,mergeKey)=>editTrack(focusedTrack.id,t=>withWavetablePatch(t,patch),mergeKey?`${focusedTrack.id}:wave:${mergeKey}`:undefined,label)} onDeviceParam={(deviceId,key,value)=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.map(d=>d.id===deviceId&&d.type!=='vst3'?{...d,params:{...d.params,[key]:value}}:d)}),`${focusedTrack.id}:dev:${deviceId}:${key}`)} onDeviceParams={(deviceId,params,options)=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.map(d=>d.id===deviceId&&d.type!=='vst3'?{...d,params:{...d.params,...params}}:d)}),options?.mergeKey?`${focusedTrack.id}:dev:${deviceId}:${options.mergeKey}`:'',options?.label??'시김새 편집')} onOpenAudioSettings={openAudioSettings} onAddDevice={(type,variantId)=>addDevice(focusedTrack.id,type,variantId)} onRenameDevice={(deviceId,name)=>renameDevice(focusedTrack.id,deviceId,name)} onRemoveDevice={deviceId=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)}))} onMoveDevice={(deviceId,offset)=>editTrack(focusedTrack.id,t=>moveDevice(t,deviceId,offset))} onToggleDevice={deviceId=>toggleDevice(focusedTrack.id,deviceId)} onTrackChange={patch=>changeTrack(focusedTrack.id,patch)} onPreview={()=>previewTrack(focusedTrack)} onAddPlugin={plugin=>addPlugin(focusedTrack.id,plugin)} onPluginChange={(instanceId,update,label)=>changePlugin(focusedTrack.id,instanceId,update,label)} onOpenPluginSettings={()=>openAudioSettings('plugins')} onOpenLibrary={()=>{patchView({browserOpen:true});setLibraryTab('effect')}} pluginsLocked={!!busy||recording||recordPreparing||audioApplying}/></div>:<div className="editor-empty"><Icon name="plug" size={32}/><strong>소리의 흐름을 한눈에</strong><p>트랙 헤더를 클릭하면 악기와 연결된 시김새가 여기에 열립니다.</p></div>:selectedClip?.kind==='midi'&&focusedTrack?<PianoRollBridge beatsPerBar={project.beatsPerBar} beatUnit={quarterNotesPerBeat(project.timeSignature)} clip={selectedClip} color={focusedTrack.color} instrument={focusedTrack.instrument} zoom={zoom.piano} onZoomChange={piano=>setZoom(z=>({...z,piano}))} zoomRef={pianoZoom} commandRef={pianoCommand} onChange={clip=>changeClip(clip)} onPreview={pitch=>void engine.previewNote(focusedTrack.instrument,pitch,undefined,focusedTrack.id).catch(e=>notify(String(e)))}/>:selectedClip?.kind==='audio'?<div className="audio-editor"><div className="audio-wave-large">{assets.get(selectedClip.assetId)&&<Waveform peaks={assets.get(selectedClip.assetId)!.peaks} buffer={assets.get(selectedClip.assetId)!.buffer} offsetSeconds={selectedClip.offsetSeconds} durationSeconds={selectedClip.lengthBeats*60/project.bpm} gain={selectedClip.gain} fades={{fadeIn:selectedClip.fadeIn,fadeOut:selectedClip.fadeOut,inCurve:selectedClip.fadeInCurve,outCurve:selectedClip.fadeOutCurve}} color={focusedTrack?.color}/>}</div><div className="audio-editor-settings"><label>클립 게인<input type="range" min="0" max="2" step=".01" value={selectedClip.gain} onChange={e=>changeClip({...selectedClip,gain:+e.target.value},`${selectedClip.id}:gain`)}/><span>{db(selectedClip.gain)} dB</span></label><label>페이드 인<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeIn} onChange={e=>changeClip({...selectedClip,fadeIn:+e.target.value},`${selectedClip.id}:fadeIn`)}/><span>{selectedClip.fadeIn.toFixed(2)} s</span></label><label>페이드 아웃<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeOut} onChange={e=>changeClip({...selectedClip,fadeOut:+e.target.value},`${selectedClip.id}:fadeOut`)}/><span>{selectedClip.fadeOut.toFixed(2)} s</span></label></div></div>:<div className="editor-empty"><Icon name="keys" size={32}/><strong>아이디어를 음표로</strong><p>클립을 선택하거나 타임라인을 더블 클릭해 패턴을 만드세요.</p>{focusedTrack?.kind==='instrument'&&<button onClick={()=>addMidiClip(focusedTrack.id,0)}><Icon name="plus" size={14}/> MIDI 클립 만들기</button>}</div>}
           </EditorPanelBody>
@@ -1480,7 +1569,12 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
           <p>샘플 음원·아이콘·글꼴은 각 제공자의 라이선스를 따릅니다.</p>
         </nav><div className="about-meta" data-selectable-text="" tabIndex={0}><a href="https://lucide.dev" target="_blank" rel="noreferrer">Lucide Icons</a> · <a href="/licenses/lucide-LICENSE.txt" target="_blank" rel="noreferrer">ISC / MIT 라이선스</a></div><div className="sample-credits" data-selectable-text="" tabIndex={0}><strong>샘플 악기 출처</strong>{SAMPLE_CREDITS.map(c=><span key={c.title}>{c.url?<a href={c.url} target="_blank" rel="noreferrer">{c.title}</a>:c.title} — {c.author}, {c.license} <small>{c.instruments}</small></span>)}</div>{SOURCE_REPOSITORY_URL&&<a className="modal-save" href={SOURCE_REPOSITORY_URL} target="_blank" rel="noreferrer"><Icon name="external" size={16}/> GitHub 소스 코드</a>}<div className="font-credit" data-selectable-text="" tabIndex={0}>이름 글꼴: <a href={BRAND.fontSource} target="_blank" rel="noreferrer">{BRAND.fontName}</a><br/>국립한글박물관 · ㈜윤디자인그룹<br/><a href={BRAND.fontLicense} target="_blank" rel="noreferrer">공공누리 제3유형 · 글꼴 이용 조건</a></div></>}
     </section></div>}
-  </div></HistoryGestureContext.Provider>
+    {automationMenu&&automationMenuTrack&&<ContextMenu x={automationMenu.x} y={automationMenu.y} label="오토메이션" onClose={()=>setAutomationMenu(null)} items={[
+      {label:'오토메이션 보기',icon:'automation',onSelect:()=>{const {trackId,target}=automationMenu;setAutomationTracks(current=>new Set([...current,trackId]));if(!laneFor(automationMenuTrack,target))editTrack(trackId,t=>updateLane(t,target,lane=>lane),'','오토메이션 레인 추가')}},
+      ...(automationMenuLane?.enabled===false&&automationMenuLane.points.length?[{label:'오토메이션 다시 켜기',onSelect:()=>editTrack(automationMenu.trackId,t=>updateLane(t,automationMenu.target,lane=>(({enabled:_off,...rest})=>rest)(lane)),'','오토메이션 다시 켜기')}]:[]),
+      {label:'오토메이션 지우기',icon:'trash',disabled:!automationMenuLane,onSelect:()=>{if(automationMenuLane)editTrack(automationMenu.trackId,t=>removeLane(t,automationMenuLane.id),'','오토메이션 지우기')}},
+    ]}/>}
+  </div></AutomationUi.Provider></AutomationDisplayContext.Provider></HistoryGestureContext.Provider>
 }
 
 /** Edits commit while typing; an emptied field is never committed and reverts on blur. */

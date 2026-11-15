@@ -14,6 +14,9 @@ import { bindGuitarRigDevice, createGuitarRigMaster } from '../devices/guitar-ri
 import { bindDeviceAnalysis } from '../devices/effects/analysis'
 import { bindDynamicsMeter } from '../devices/effects/dynamicsMeter'
 import { dbToGain, randomGenerator, setParameter } from '../devices/effects/shared'
+import { automationValue, evaluateLane, isActiveLane, isDiscrete, targetDef, trackAt } from '../core/automation'
+import type { AutomationLane } from '../core/types'
+import type { ParamDef } from '../core/devices'
 
 type SourceNode = AudioBufferSourceNode | OscillatorNode
 
@@ -93,8 +96,11 @@ function tineShaperCurve(): Float32Array<ArrayBuffer> {
   return tineCurve
 }
 
-export function updateGraph(graph: EngineGraph, project: Project, smooth = true): void {
+/** Static parameters; automated targets take their value at `beat` (docs/AUTOMATION.md). While playing, the
+ * engine reschedules automation from now on afterwards, since this cancels what was scheduled. */
+export function updateGraph(graph: EngineGraph, project: Project, smooth = true, beat?: number): void {
   const now = graph.context.currentTime
+  if (beat !== undefined) project = { ...project, tracks: project.tracks.map(track => trackAt(track, beat)) }
   const audible = audibleTrackIds(project.tracks)
   setParameter(graph.masterVolume.gain, clamp(project.masterVolume, 0, 2), now, smooth)
   if (graph.resampleVolume) setParameter(graph.resampleVolume.gain, clamp(project.masterVolume, 0, 2), now, smooth)
@@ -107,6 +113,100 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true)
       if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, project.bpm, now, smooth)
     }
   }
+}
+
+/** Automation evaluation step: one render quantum. AudioParams glide between steps with a ~1 ms time constant;
+ * worklet 시김새 apply each step at its block and smooth internally (12 ms), so steps never zipper. */
+export const AUTOMATION_STEP_FRAMES = 128
+interface CompiledLane { lane: AutomationLane; def: ParamDef; discrete: boolean }
+interface CompiledAutomation { volume?: CompiledLane; pan?: CompiledLane; mute?: CompiledLane; devices: Map<string, CompiledLane[]> }
+const compiledAutomation = new WeakMap<Track, CompiledAutomation | null>()
+function compileAutomation(track: Track): CompiledAutomation | null {
+  if (compiledAutomation.has(track)) return compiledAutomation.get(track)!
+  let result: CompiledAutomation | null = null
+  for (const lane of track.automation ?? []) {
+    if (!isActiveLane(track, lane)) continue
+    const def = targetDef(track, lane.target)!
+    const compiled = { lane, def, discrete: isDiscrete(def) }
+    const target = lane.target
+    result ??= { devices: new Map() }
+    if (target.kind === 'track') result[target.param] = compiled
+    else if (target.kind === 'device') {
+      const device = track.devices.find(item => item.id === target.deviceId)
+      if (device && device.enabled && isEffectDevice(device)) result.devices.set(device.id, [...result.devices.get(device.id) ?? [], compiled])
+    }
+    // Instrument parameters apply per note onset in scheduleRange; VST3 lanes are native-only.
+  }
+  compiledAutomation.set(track, result)
+  return result
+}
+const laneValue = (compiled: CompiledLane, beat: number) => automationValue(compiled.def, evaluateLane(compiled.lane.points, beat, compiled.discrete)!)
+/** Last values sent per device graph, so flat stretches send nothing. */
+const sentParams = new WeakMap<DeviceGraph, Record<string, number>>()
+
+/**
+ * Schedules track volume, pan, mute and 시김새 parameter automation for context times [startTime, endTime).
+ * beatAt maps a context time to the project beat heard then (loops included). Steps sit on an absolute grid of
+ * AUTOMATION_STEP_FRAMES so consecutive calls neither overlap nor leave gaps.
+ */
+export function scheduleAutomation(graph: EngineGraph, project: Project, startTime: number, endTime: number, beatAt: (time: number) => number): void {
+  if (!(endTime > startTime)) return
+  const step = AUTOMATION_STEP_FRAMES / graph.context.sampleRate
+  const first = Math.ceil(startTime / step - 1e-9)
+  const count = Math.max(0, Math.ceil(endTime / step - 1e-9) - first)
+  if (!count) return
+  let audible: Set<string> | null = null
+  for (const track of project.tracks) {
+    const channel = graph.tracks.get(track.id)
+    const compiled = channel && isTrackEnabled(track) ? compileAutomation(track) : null
+    if (!channel || !compiled) continue
+    const tau = step / 3
+    if (compiled.volume || compiled.mute) {
+      audible ??= audibleTrackIds(project.tracks)
+      // Mute automation only changes this track's own audibility; solo state comes from the static flags.
+      const unmuted = compiled.mute ? audibleTrackIds(project.tracks.map(item => item.id === track.id ? { ...item, mute: false } : item)).has(track.id) : audible.has(track.id)
+      for (let i = 0; i < count; i++) {
+        const time = (first + i) * step, beat = beatAt(time)
+        const muted = compiled.mute ? laneValue(compiled.mute, beat) >= 0.5 : false
+        const gain = muted || !unmuted ? 0 : clamp(compiled.volume ? laneValue(compiled.volume, beat) : track.volume, 0, 2)
+        channel.fader.gain.setTargetAtTime(gain, time, tau)
+      }
+    }
+    if (compiled.pan) for (let i = 0; i < count; i++) {
+      const time = (first + i) * step
+      channel.panner.pan.setTargetAtTime(clamp(laneValue(compiled.pan, beatAt(time)), -1, 1), time, tau)
+    }
+    for (const [deviceId, lanes] of compiled.devices) {
+      const node = channel.devices.get(deviceId)
+      const device = track.devices.find(item => item.id === deviceId)
+      if (!node || !device || !isEffectDevice(device)) continue
+      const events: { at: number; params: Record<string, number> }[] = []
+      let last = sentParams.get(node)
+      for (let i = 0; i < count; i++) {
+        const at = (first + i) * step, beat = beatAt(at)
+        const params = { ...device.params }
+        let changed = !last || Object.keys(params).some(key => last![key] !== params[key] && !lanes.some(lane => lane.def.id === key))
+        for (const compiled of lanes) {
+          const value = laneValue(compiled, beat)
+          params[compiled.def.id] = value
+          const previous = last?.[compiled.def.id]
+          if (previous === undefined || Math.abs(previous - value) > Math.abs(value) * 1e-7) changed = true
+        }
+        if (!changed) continue
+        events.push({ at, params })
+        last = params
+      }
+      if (!events.length) continue
+      sentParams.set(node, last!)
+      if (node.schedule) node.schedule(events, project.bpm)
+      else for (const event of events) node.update(event.params, project.bpm, event.at, true)
+    }
+  }
+}
+
+/** Forget what was sent (a static update or a new graph replaced the scheduled values). */
+export function resetAutomationState(graph: EngineGraph): void {
+  for (const channel of graph.tracks.values()) for (const node of channel.devices.values()) sentParams.delete(node)
 }
 
 export function renderTailSeconds(project: Project): number {
@@ -748,10 +848,12 @@ export function scheduleRange(
       const [beat, time] = adjustStart(Math.max(note.start, startBeat))
       if (beat >= noteEnd) continue
       const available = (Math.min(note.limit, boundary, project.lengthBeats) - beat) * beatSeconds
+      // Instrument parameter automation is read at each note onset, as the native engine does.
+      const params = track.automation ? trackAt(track, beat).instrumentParams : track.instrumentParams
       if (loaded) {
-        scheduleSampled(graph, channel.input, loaded, def.isKit, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams, channel.chokes)
+        scheduleSampled(graph, channel.input, loaded, def.isKit, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, params, channel.chokes)
       } else {
-        scheduleInstrument(graph, channel.input, track.instrument, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams)
+        scheduleInstrument(graph, channel.input, track.instrument, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, params)
       }
     }
   }

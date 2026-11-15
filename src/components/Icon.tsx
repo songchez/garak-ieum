@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import {
-  Activity, AudioLines, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleSmall, GripVertical,
+  Activity, AudioLines, Spline, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleSmall, GripVertical,
   ClipboardPaste, Combine, Copy, Download, Drum, EighthNotes, ExternalLink, Eye, EyeOff,
   FileHeadphone, FilePlus, FileText, Flag, Flame, FolderOpen, Funnel, Guitar, Headphones,
   Info, Keyboard, LayoutGrid, LibraryBig, ListMusic, LocateFixed, LockKeyhole, Magnet,
@@ -31,7 +31,7 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   refresh: RefreshCw, locate: LocateFixed, capture: History,
   close: X, check: Check, info: Info, grid: LayoutGrid, magnet: Magnet,
   keyboard: Keyboard, panel: PanelLeft, external: ExternalLink, bolt: Zap,
-  moon: Moon, metronome: Metronome, plug: Plug, power: Power, ai: Sparkles,
+  moon: Moon, metronome: Metronome, plug: Plug, power: Power, ai: Sparkles, automation: Spline,
   fit: Maximize, arrowsH: MoveHorizontal, arrowsV: MoveVertical,
   lock: LockKeyhole, snowflake: Snowflake, eye: Eye, 'eye-off': EyeOff, dot: CircleSmall,
   eq: SlidersVertical, filter: Funnel, compressor: Minimize2,

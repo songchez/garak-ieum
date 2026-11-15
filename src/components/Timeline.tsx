@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AudioAsset, AudioClip, AudioEngine, Clip, InputChoice, Marker, Project, Track, TrackInput, TrackInputRoute } from '../core/types'
 import { MIN_CLIP_BEATS, setClipLoopEnd, trimClipEnd, trimClipStart, visibleTracks, type ClipStartTrim } from '../core/project'
 import { audibleTracks, effectiveArm, type TrackButtonKind } from '../core/trackActions'
@@ -25,6 +25,8 @@ import { InlineName, TimelineClip, pointerFocus, type ClipActions, type GestureM
 import { envelopeMenuItems, type ClipsEdit, type EnvelopeActions } from './ClipEnvelope'
 import { draggedLibraryRole, readLibraryDrag, type LibraryItem } from '../core/libraryDrag'
 import { formatTranspose, isDefaultTranspose, shiftTranspose, transposeSettings, type TransposeSettings } from '../devices/region-pitch/state'
+import { AutomationLanes } from './AutomationLanes'
+import type { AutomationMode } from '../core/types'
 import './Timeline.css'
 
 /** Default header column width; the live value is `ui.headerWidth`. */
@@ -78,6 +80,11 @@ export interface TimelineProps {
   onIconMenu(id:string,e:Point):void
   onConfigureHeader(e:Point):void
   onClearRecallSolo():void
+  /** Tracks whose automation lanes are shown under them (docs/AUTOMATION.md). */
+  automationTracks?:ReadonlySet<string>
+  onAutomationToggle?(trackId:string):void
+  onAutomationEdit?(trackId:string,edit:(track:Track)=>Track,label:string):void
+  onAutomationMode?(trackId:string,mode:AutomationMode):void
   onSeek(beat:number):void; onSeekPlay(beat:number):void
   onLoopChange(loop:{enabled:boolean;startBeat:number;endBeat:number}):void
   onSelectClips(ids:string[],anchor:string|null,trackId?:string):void
@@ -749,7 +756,8 @@ export function Timeline(props:TimelineProps){
           const cls=['track-row',h<48?'row-compact':h>=110?'row-large':'']
           if(selected)cls.push('selected','selected-track');if(isFocused)cls.push('focused');if(silent)cls.push('track-silent');if(!enabled)cls.push('track-off');if(hiddenNow)cls.push('track-hidden');if(trackDrop?.ids.has(track.id))cls.push('track-dragging');if(libraryOver===track.id)cls.push('library-drop')
           if(recordingTarget)cls.push('track-recording-target')
-          return <div className={cls.join(' ')} key={track.id} data-track-row-id={track.id} style={{'--track-color':track.color,'--row-h':`${h}px`,height:h} as React.CSSProperties}
+          const showAutomation=!temporary&&!!props.automationTracks?.has(track.id)&&!!props.onAutomationEdit
+          return <Fragment key={track.id}><div className={cls.join(' ')} data-track-row-id={track.id} style={{'--track-color':track.color,'--row-h':`${h}px`,height:h} as React.CSSProperties}
             onDragOver={e=>{if(temporary||!props.onLibraryDrop||!draggedLibraryRole(e.dataTransfer))return;e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='copy';if(libraryOver!==track.id)setLibraryOver(track.id)}}
             onDrop={e=>{if(temporary||!draggedLibraryRole(e.dataTransfer))return;const item=readLibraryDrag(e.dataTransfer);e.preventDefault();e.stopPropagation();setLibraryOver(null);if(!item)return;const lane=e.target instanceof Element?e.target.closest('.track-lane'):null;latest.current.onLibraryDrop?.(item,{trackId:track.id,beat:lane?Math.floor(laneBeat(lane,e.clientX)/beatsPerBar)*beatsPerBar:undefined})}}>
           {temporary?<div className={`track-header recording-track-header ${ui.headerConfig.colorBar?'with-color-bar':''}`} data-track-id={track.id} title="녹음 완료 후 편집할 수 있습니다" onContextMenu={e=>e.preventDefault()}
@@ -760,7 +768,8 @@ export function Timeline(props:TimelineProps){
             {ui.headerConfig.icon&&<span className="track-icon"><Icon name="wave" size={16}/></span>}
             <div className="track-main"><span className="track-name">{track.name}</span><span className="recording-track-caption">{recordingDraft?.status==='processing'?'녹음 처리 중':'새 트랙에 녹음 중'}</span></div>
           </div>:<TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine} inputChoices={props.inputChoices} onInputChange={props.onTrackInput&&(input=>props.onTrackInput!(track.id,input))} routeTracks={project.tracks} onRouteChange={props.onTrackRoute&&((route,input)=>props.onTrackRoute!(track.id,route,input))}
-            onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}/>}
+            onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}
+            automation={props.onAutomationToggle?{visible:showAutomation,active:!!track.automation?.some(lane=>lane.points.length>0&&lane.enabled!==false),onToggle:()=>props.onAutomationToggle!(track.id)}:undefined}/>}
           <div className={`track-lane ${ui.gridLines?'':'no-grid'}`} style={{width,...laneGrid}}
             onPointerDown={e=>{if(!recordingTarget&&!temporary)beginMarquee(e,track)}}
             onContextMenu={e=>{if(e.target!==e.currentTarget)return;if(recordingTarget||temporary){e.preventDefault();return}laneMenu(e,track)}}
@@ -773,7 +782,10 @@ export function Timeline(props:TimelineProps){
             {props.midiRecordings?.filter(midi=>midi.trackId===track.id).map(midi=><MidiRecordingRegion key={`midi-${midi.trackId}`} take={midi} ppb={ppb}/>)}
             {!track.clips.length&&!recordingTarget&&<span className="empty-lane-hint">{track.kind==='audio'?'오디오 파일을 여기에 놓으세요':'MIDI 파일 놓기 · 더블 클릭하여 클립 만들기'}</span>}
           </div>
-        </div>})}
+        </div>
+        {showAutomation&&<AutomationLanes track={track} width={width} ppb={ppb} laneHeight={Math.round(Math.min(120,Math.max(44,h*.8)))} snapBeats={snapBeats} lengthBeats={project.lengthBeats} gridClass={ui.gridLines?'':'no-grid'} laneStyle={laneGrid}
+          onEdit={(edit,label)=>latest.current.onAutomationEdit?.(track.id,edit,label)} onModeChange={mode=>latest.current.onAutomationMode?.(track.id,mode)} onSeek={beat=>latest.current.onSeek(beat)}/>}
+        </Fragment>})}
         <div className={`tracks-empty-area${libraryOver===''?' library-drop':''}`} onDragOver={e=>{const role=draggedLibraryRole(e.dataTransfer);if(!props.onLibraryDrop||!role||role==='effect')return;e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='copy';if(libraryOver!=='')setLibraryOver('')}} onDrop={e=>{if(!draggedLibraryRole(e.dataTransfer))return;const item=readLibraryDrag(e.dataTransfer);e.preventDefault();e.stopPropagation();setLibraryOver(null);if(!item)return;const lane=e.currentTarget.querySelector('.empty-lane');latest.current.onLibraryDrop?.(item,{beat:lane&&e.clientX>=lane.getBoundingClientRect().left?Math.floor(laneBeat(lane,e.clientX)/beatsPerBar)*beatsPerBar:undefined})}} title={`더블 클릭: ${focused?.kind==='audio'?'오디오':'소프트웨어 악기'} 트랙 추가 · 우클릭: 트랙 종류 선택`} onDoubleClick={e=>{if(!(e.target instanceof Element)||e.target.closest('button'))return;props.onNewTrack({sameAsFocused:true,afterId:null})}} onContextMenu={emptyAreaMenu}>
           <div className="empty-header"/><div className="empty-lane" style={{width,...laneGrid}}/>
         </div>

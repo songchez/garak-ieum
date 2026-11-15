@@ -4,9 +4,10 @@ import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
 import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
 import { numberedInputChoices } from '../core/trackInputs'
 import {
-  connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
+  connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
   setRouteMonitoring, trackLayoutKey, updateGraph,
 } from './graph'
+import { hasActiveAutomation } from '../core/automation'
 import type { EngineGraph } from './graph'
 import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter, secondsPerBeat } from './math'
 import { SampleLibrary } from './samples'
@@ -407,7 +408,7 @@ export class WebAudioEngine implements AudioEngine {
       try {
         if (this.playing && (changedArrangement || changedLayout)) this.restartAt(this.position)
         else if (!this.graph || changedLayout || changedRate) this.replaceGraph()
-        else updateGraph(this.graph, project)
+        else this.applyStatic(project)
       } catch (error) {
         this.blockEffectGraph(this.context, error)
       }
@@ -508,7 +509,21 @@ export class WebAudioEngine implements AudioEngine {
     if (!this.project) return
     this.position = clamp(beat, 0, this.project.lengthBeats)
     if (this.playing) this.restartAt(this.position)
+    else if (this.graph && hasActiveAutomation(this.project)) this.applyStatic(this.project)
     this.publishSnapshot()
+  }
+
+  /** Static parameter edit. Automated targets keep their lane value at the heard beat; while playing, the
+   * automation already scheduled ahead is replaced from now on (docs/AUTOMATION.md). */
+  private applyStatic(project: Project): void {
+    if (!this.graph || !this.context) return
+    const automated = hasActiveAutomation(project)
+    updateGraph(this.graph, project, true, automated ? this.currentBeat() : undefined)
+    resetAutomationState(this.graph)
+    if (automated && this.playing && this.cursorTime > this.context.currentTime) {
+      const anchorBeat = this.anchorBeat, anchorTime = this.anchorTime
+      scheduleAutomation(this.graph, project, this.context.currentTime, this.cursorTime, time => positionAfter(project, anchorBeat, time - anchorTime))
+    }
   }
 
   async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8, trackId?: string): Promise<void> {
@@ -710,6 +725,12 @@ export class WebAudioEngine implements AudioEngine {
     const graph = createGraph(offline, project)
     try {
       scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
+      // Automation is scheduled for the whole render before it starts, so worklet events are queued first.
+      const beatSeconds = secondsPerBeat(project.bpm)
+      if (hasActiveAutomation(project)) {
+        updateGraph(graph, project, false, 0)
+        scheduleAutomation(graph, project, 0, duration, time => Math.min(project.lengthBeats, time / beatSeconds))
+      }
       const rendered = await offline.startRendering()
       assertGuitarRigHealthy(offline)
       const bytes = encodePcm16Wav([rendered.getChannelData(0), rendered.getChannelData(1)], rendered.sampleRate)
@@ -780,6 +801,7 @@ export class WebAudioEngine implements AudioEngine {
       // Construct before retiring the current graph. A failed effect must never leave
       // a partly connected replacement or quietly substitute the old/dry signal.
       replacement = createGraph(context, this.project)
+      if (hasActiveAutomation(this.project)) updateGraph(replacement, this.project, false, this.currentBeat())
       if (this.graph) {
         const old = this.graph
         if (context.state === 'running') {
@@ -859,6 +881,8 @@ export class WebAudioEngine implements AudioEngine {
       if (segmentSeconds <= 0.00000001) break
       const endBeat = this.cursorBeat + segmentSeconds / beatSeconds
       scheduleRange(this.graph, project, this.assets, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true, this.samples)
+      const segmentBeat = this.cursorBeat, segmentTime = this.cursorTime
+      scheduleAutomation(this.graph, project, segmentTime, segmentTime + segmentSeconds, time => segmentBeat + (time - segmentTime) / beatSeconds)
       if (!this.outputFault) this.metronome.scheduleSegment(this.context, project, this.cursorBeat, endBeat, this.cursorTime)
       this.cursorTime += segmentSeconds
       this.cursorBeat = endBeat

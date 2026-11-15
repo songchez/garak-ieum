@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 namespace garak::dsp {
 
@@ -26,7 +27,8 @@ class Biquad {
  public:
   // Persisted parameters retain Web Audio's units: low/high-pass Q is in dB;
   // band-pass, notch and peaking Q is linear. Shelf slope is fixed at one.
-  void configure(Filter type, double rate, double frequency, double q = 1, double gainDb = 0) noexcept;
+  // glide: keep the current coefficients and move toward the new ones over ~12 ms (automation, no zipper).
+  void configure(Filter type, double rate, double frequency, double q = 1, double gainDb = 0, bool glide = false) noexcept;
   [[nodiscard]] float sample(float input, unsigned channel = 0) noexcept;
   void takeHistoryFrom(const Biquad& previous) noexcept;
   void reset() noexcept { z1_ = {}; z2_ = {}; }
@@ -50,6 +52,9 @@ struct DynamicsTap {
   }
 };
 
+// Parameter view used to build effects and to automate them (defined in dsp.cpp).
+class Reader;
+
 class StereoProcessor {
  public:
   virtual ~StereoProcessor() = default;
@@ -60,6 +65,29 @@ class StereoProcessor {
   virtual void takeStateFrom(StereoProcessor& previous) noexcept = 0;
   [[nodiscard]] virtual std::uint32_t latencyFrames() const noexcept { return 0; }
   [[nodiscard]] virtual double tailSeconds() const noexcept { return 0; }
+  // Automation (docs/AUTOMATION.md): re-read the parameters from `p` in place. Real-time safe: no allocation,
+  // buffers keep their size; new targets glide in like the worklet's configure(). Parameters that need a
+  // rebuild (reverb size/type/pre-delay, rig reverb decay) keep their prepared value.
+  virtual void automate(const Reader&) noexcept {}
+};
+
+// Live parameter control of one makeEffect() processor. Created on the control thread with the insert's
+// parameters; index() resolves an id once, then set() and apply() are real-time safe.
+class EffectControl {
+ public:
+  EffectControl(std::string_view type, const Parameters& initial);
+  ~EffectControl();
+  EffectControl(EffectControl&&) noexcept;
+  EffectControl& operator=(EffectControl&&) noexcept;
+  // -1 when the effect has no such parameter.
+  [[nodiscard]] int index(std::string_view id) const noexcept;
+  // Clamped to the parameter's range; apply() later pushes every change at once.
+  void set(int index, double value) noexcept;
+  [[nodiscard]] double get(int index) const noexcept;
+  void apply(StereoProcessor& effect) noexcept;
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 // Throws for unsupported processors, unknown keys, invalid ranges or non-finite

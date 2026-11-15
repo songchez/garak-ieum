@@ -17,6 +17,10 @@ class BiquadChain final : public StereoProcessor {
     if (outputGain != 1) for (std::uint32_t i = 0; i < 2 * frames; ++i) s[i] = static_cast<float>(s[i] * outputGain);
   }
   void reset() noexcept override { for (auto& f : filters) f.reset(); }
+  void automate(const Reader& p) noexcept override { if (reconfigure) reconfigure(*this, p); }
+  // Set by the factory: re-derives the stages from the parameters with glide (EQ or sweep filter).
+  void (*reconfigure)(BiquadChain&, const Reader&) noexcept = nullptr;
+  double sampleRate = 48000;
   void takeStateFrom(StereoProcessor& previous) noexcept override {
     if (auto* p = dynamic_cast<BiquadChain*>(&previous))
       for (std::size_t i = 0; i < slots; ++i) if (used[i] && p->used[i]) filters[i].takeHistoryFrom(p->filters[i]);
@@ -73,18 +77,25 @@ const std::vector<Def>& eqDefs() {
   return defs;
 }
 
-std::string eqId(unsigned band, const char* field) {
-  const std::string f = field;
-  if (band == 1 && f == "Gain") return "low";
-  if (band == 2 && f == "Gain") return "mid";
-  if (band == 2 && f == "Freq") return "midFreq";
-  if (band == 3 && f == "Gain") return "high";
-  return "b" + std::to_string(band) + f;
+// Parameter ids per band and field (On, Type, Freq, Gain, Q, Slope), built once so automation never allocates.
+const char* eqId(unsigned band, const char* field) {
+  static const std::array<std::array<std::string, 6>, eqBands> ids = [] {
+    std::array<std::array<std::string, 6>, eqBands> t;
+    const char* fields[6] = {"On", "Type", "Freq", "Gain", "Q", "Slope"};
+    for (unsigned b = 1; b <= eqBands; ++b) for (unsigned f = 0; f < 6; ++f) {
+      const std::string name = fields[f];
+      t[b - 1][f] = b == 1 && name == "Gain" ? "low" : b == 2 && name == "Gain" ? "mid" : b == 2 && name == "Freq" ? "midFreq" : b == 3 && name == "Gain" ? "high" : "b" + std::to_string(b) + name;
+    }
+    return t;
+  }();
+  const std::string_view f = field;
+  const unsigned index = f == "On" ? 0 : f == "Type" ? 1 : f == "Freq" ? 2 : f == "Gain" ? 3 : f == "Q" ? 4 : 5;
+  return ids[band - 1][index].c_str();
 }
 
-std::unique_ptr<StereoProcessor> makeParametricEq(const Parameters& params, double sr) {
-  Reader p(params, eqDefs());
-  auto chain = std::make_unique<BiquadChain>();
+void configureEq(BiquadChain& chain, const Reader& p, bool glide) noexcept {
+  const double sr = chain.sampleRate;
+  std::array<bool, BiquadChain::slots> used{};
   for (unsigned b = 1; b <= eqBands; ++b) {
     if (std::round(p(eqId(b, "On"))) != 1) continue;  // 0 unused, 2 bypassed
     const double hz = bounded(p(eqId(b, "Freq")), 10, sr * .45), gain = p(eqId(b, "Gain")), q = p(eqId(b, "Q"));
@@ -100,16 +111,25 @@ std::unique_ptr<StereoProcessor> makeParametricEq(const Parameters& params, doub
     }
     for (unsigned s = 0; s < count; ++s) {
       const std::size_t slot = (b - 1) * eqStagesPerBand + s;
-      chain->filters[slot].configure(stages[s].type, sr, stages[s].hz, stages[s].q, stages[s].gain); chain->used[slot] = true;
+      // A stage that was idle starts from its new response; running stages glide.
+      chain.filters[slot].configure(stages[s].type, sr, stages[s].hz, stages[s].q, stages[s].gain, glide && chain.used[slot]); used[slot] = true;
     }
   }
-  chain->outputGain = dbToGain(p("output"));
+  chain.used = used;
+  chain.outputGain = dbToGain(p("output"));
+}
+
+std::unique_ptr<StereoProcessor> makeParametricEq(const Parameters& params, double sr) {
+  Reader p(params, eqDefs());
+  auto chain = std::make_unique<BiquadChain>();
+  chain->sampleRate = sr;
+  configureEq(*chain, p, false);
+  chain->reconfigure = [](BiquadChain& c, const Reader& r) noexcept { configureEq(c, r, true); };
   return chain;
 }
 
-std::unique_ptr<StereoProcessor> makeSweepFilter(const Parameters& params, double sr) {
-  Reader p(params, {{"cutoff", 1200, 20, 20000}, {"resonance", .7, .1, 18}, {"mode", 0, 0, 2}, {"slope", 0, 0, 2}});
-  auto chain = std::make_unique<BiquadChain>();
+void configureSweep(BiquadChain& chain, const Reader& p, bool glide) noexcept {
+  const double sr = chain.sampleRate;
   const unsigned stages = std::array<unsigned, 3>{1, 2, 4}[static_cast<unsigned>(std::round(p("slope")))];
   const auto mode = static_cast<unsigned>(std::round(p("mode")));
   const double hz = p("cutoff"), resonance = p("resonance");
@@ -117,6 +137,17 @@ std::unique_ptr<StereoProcessor> makeSweepFilter(const Parameters& params, doubl
   if (mode == 2) for (unsigned k = 0; k < stages; ++k) s[k] = {Filter::Bandpass, hz, resonance, 0};
   else if (stages == 1) s[0] = {mode == 0 ? Filter::Lowpass : Filter::Highpass, hz, resonance, 0};
   else passStages(s, mode == 0 ? Filter::Lowpass : Filter::Highpass, hz, std::sqrt(.5) * dbToGain(resonance - .7), stages);  // default 0.7 is flat
-  for (unsigned k = 0; k < stages; ++k) { chain->filters[k].configure(s[k].type, sr, s[k].hz, s[k].q, s[k].gain); chain->used[k] = true; }
+  for (unsigned k = 0; k < BiquadChain::slots; ++k) {
+    if (k < stages) chain.filters[k].configure(s[k].type, sr, s[k].hz, s[k].q, s[k].gain, glide && chain.used[k]);
+    chain.used[k] = k < stages;
+  }
+}
+
+std::unique_ptr<StereoProcessor> makeSweepFilter(const Parameters& params, double sr) {
+  Reader p(params, {{"cutoff", 1200, 20, 20000}, {"resonance", .7, .1, 18}, {"mode", 0, 0, 2}, {"slope", 0, 0, 2}});
+  auto chain = std::make_unique<BiquadChain>();
+  chain->sampleRate = sr;
+  configureSweep(*chain, p, false);
+  chain->reconfigure = [](BiquadChain& c, const Reader& r) noexcept { configureSweep(c, r, true); };
   return chain;
 }

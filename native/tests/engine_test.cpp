@@ -954,10 +954,99 @@ void sustainPedal(){
   rejects([&]{(void)pedal.controlChange(0,128,0);},"Out-of-range controller number accepted");
 }
 
+
+// Track automation (docs/AUTOMATION.md): curve math, per-sample fader ramps, chunked effect parameters,
+// VST3 parameter points at sample offsets, and an allocation-free callback throughout (render() checks).
+AutomationLane lane(AutomationLane::Target target,double minimum,double maximum,std::vector<AutomationPoint> points){AutomationLane l;l.target=target;l.minimum=minimum;l.maximum=maximum;l.points=std::move(points);return l;}
+void trackAutomation(){
+  near(automationShape(.5,0),.5,1e-12,"Straight automation segment");
+  near(automationShape(.5,1),(std::exp(3.0)-1)/(std::exp(6.0)-1),1e-12,"Curved automation segment matches automation.ts");
+  near(automationShape(.5,-1),(std::exp(-3.0)-1)/(std::exp(-6.0)-1),1e-12,"Negative curvature");
+  auto ramp=lane(AutomationLane::Target::Volume,0,2,{{1000,0,0},{2000,1,0},{2000,.25,0},{3000,.25,0}});
+  std::size_t hint=0;
+  near(evaluateAutomation(ramp,0,hint),0,0,"Before the first point the first value holds");
+  near(evaluateAutomation(ramp,1500,hint),.5,1e-12,"Linear interpolation");
+  near(evaluateAutomation(ramp,2000,hint),.25,0,"Two points on one frame jump");
+  near(evaluateAutomation(ramp,1250,hint),.25,1e-12,"A backwards evaluation re-searches from the hint");
+  near(evaluateAutomation(ramp,9000,hint),.25,0,"After the last point the last value holds");
+  near(automationValue(ramp,.5),1,1e-12,"Linear mapping");
+  auto cutoff=lane(AutomationLane::Target::Insert,20,20000,{});cutoff.logarithmic=true;near(automationValue(cutoff,.5),std::sqrt(20.0*20000),1e-9,"Logarithmic mapping");
+  auto mode=lane(AutomationLane::Target::Insert,0,2,{{0,0,0},{100,1,0}});mode.options={0,1,2};std::size_t h=0;
+  near(evaluateAutomation(mode,99,h),0,0,"Discrete lanes hold until the next point");near(automationValue(mode,.5),1,0,"Option mapping");
+
+  // Volume ramp on a DC region: the fader follows the lane at every sample (no smoothing lag).
+  auto p=project(48000,8000);TrackTimeline t;t.id="audio";t.audio.push_back({1,"dc",0,8000,0,48000,0,8000,1.f,0,0});
+  t.automation.push_back(lane(AutomationLane::Target::Volume,0,2,{{2000,0,0},{6000,.5,0}}));p.tracks.push_back(t);
+  AssetStore assets{{"dc",asset("dc",48000,std::vector<float>(8000,.1f))}};
+  const double center=1/std::sqrt(2.0);
+  {RenderEngine e(48000,256);e.setOffline(true);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");const auto out=render(e,8000,97);
+    near(out[1000*2],0,1e-9,"Volume lane before its first point");
+    for(std::int64_t f:{2500,4000,5999})near(out[f*2],.1*(f-2000)/4000.0*center,2e-6,"Volume ramp applied at its exact frame");
+    near(out[7000*2],.1*center,2e-6,"Volume holds after the last point");}
+
+  // A mute lane fades over 12 ms instead of clicking.
+  auto m=p;m.tracks[0].automation={lane(AutomationLane::Target::Mute,0,1,{{0,0,0},{4000,1,0}})};m.tracks[0].automation[0].options={0,1};
+  {RenderEngine e(48000,256);e.setOffline(true);e.submit(e.prepare(m,assets));check(e.play(),"Play failed");const auto out=render(e,8000,128);
+    near(out[3000*2],.1*center,1e-6,"Unmuted before the mute point");check(std::abs(out[4010*2])>1e-3,"Mute ramps instead of clicking");near(out[6000*2],0,1e-6,"Muted after the mute point");}
+
+  // Built-in insert (stereo, so no mono pan law): utility gain jumps -36 dB -> 0 dB at frame 4800; the chunked update lands within 32 frames.
+  auto u=project(48000,9600);TrackTimeline g;g.id="gain";g.audio.push_back({1,"dc",0,9600,0,48000,0,9600,1.f,0,0});
+  BuiltinInsert utility;utility.id="utility";utility.type="utility";utility.params["gain"]=-36;g.inserts.push_back(utility);
+  g.automation.push_back(lane(AutomationLane::Target::Insert,-36,24,{{4800,0,0},{4800,.6,0}}));g.automation[0].insertId="utility";g.automation[0].param="gain";u.tracks.push_back(g);
+  AssetStore longAssets{{"dc",asset("dc",48000,std::vector<float>(9600,.1f))}};
+  {RenderEngine e(48000,512);e.setOffline(true);e.submit(e.prepare(u,longAssets));check(e.play(),"Play failed");const auto out=render(e,9600,512);
+    near(out[4700*2],.1*dsp::dbToGain(-36),1e-6,"Automated insert parameter before its point");
+    check(std::abs(out[(4800+31)*2])>std::abs(out[4700*2])*1.05,"Insert automation did not start within one 32-frame chunk");
+    near(out[9000*2],.1,1e-4,"Insert automation reached its value (12 ms glide)");}
+
+  // A falling filter cutoff darkens noise.
+  auto f=project(48000,48000);TrackTimeline n;n.id="noise";std::vector<float>noise(48000);std::uint32_t seed=1;for(auto&value:noise){seed=seed*1664525u+1013904223u;value=static_cast<float>(seed)/4294967295.f*.2f-.1f;}
+  n.audio.push_back({1,"noise",0,48000,0,48000,0,48000,1.f,0,0});BuiltinInsert filter;filter.id="filter";filter.type="filter";n.inserts.push_back(filter);
+  auto sweep=lane(AutomationLane::Target::Insert,20,20000,{{0,1,0},{48000,0,0}});sweep.logarithmic=true;sweep.insertId="filter";sweep.param="cutoff";n.automation.push_back(sweep);f.tracks.push_back(n);
+  AssetStore noiseAssets{{"noise",asset("noise",48000,std::move(noise))}};
+  {RenderEngine e(48000,1024);e.setOffline(true);e.submit(e.prepare(f,noiseAssets));check(e.play(),"Play failed");const auto out=render(e,48000,1024);
+    double early=0,late=0;for(std::size_t i=1000;i<6000;++i)early+=out[i*2]*out[i*2];for(std::size_t i=42000;i<47000;++i)late+=out[i*2]*out[i*2];
+    check(early>late*20,"A falling cutoff lane did not darken the noise");}
+
+  // VST3 insert: parameter points arrive with sample offsets on a fixed grid; flat stretches are not repeated.
+  auto v=project(48000,4096);TrackTimeline fx;fx.id="fx";fx.audio.push_back({1,"dc",0,4096,0,48000,0,4096,1.f,0,0});
+  BuiltinInsert vst;vst.id="vstfx";vst.type="vst3";vst.plugin.instanceId="effect";fx.inserts.push_back(vst);
+  auto param=lane(AutomationLane::Target::Insert,0,1,{{0,0,0},{512,1,0}});param.insertId="vstfx";param.param="7";fx.automation.push_back(param);v.tracks.push_back(fx);
+  auto plugin=std::make_shared<TestPlugin>();
+  {RenderEngine e(48000,512);e.submit(e.prepare(v,assets,{},[&](const PluginSpec&,double,unsigned){return plugin;}));check(e.play(),"Play failed");(void)render(e,1024,512);
+    check(plugin->eventCount>=8,"VST3 parameter points missing");
+    for(std::size_t i=0;i<plugin->eventCount;++i){const auto&ev=plugin->received[i];check(ev.type==PluginEvent::Type::Parameter&&ev.parameterId==7,"Unexpected VST3 automation event");check(ev.offset%64==0&&ev.offset<512,"VST3 parameter point off its grid");}
+    near(plugin->received[1].value,64.f/512,1e-6,"VST3 parameter value at its sample offset");
+    const auto flat=plugin->eventCount;(void)render(e,1024,512);check(plugin->eventCount==flat,"Flat VST3 automation repeated its value");}
+
+  // Built-in instrument parameter: level is read at each note onset.
+  auto s=project(48000,48000);auto keys=synthTrack();keys.source.params["level"]=1;keys.notes={{1,100,1000,48000,60,.8f},{2,30000,31000,48000,60,.8f}};
+  auto level=lane(AutomationLane::Target::Instrument,0,2,{{0,.5,0},{20000,.5,0},{20000,0,0}});level.param="level";keys.automation.push_back(level);s.tracks.push_back(keys);
+  {RenderEngine e(48000,256);e.setOffline(true);e.submit(e.prepare(s,{}));check(e.play(),"Play failed");const auto out=render(e,48000,256);
+    double first=0,second=0;for(std::size_t i=100;i<2000;++i)first+=out[i*2]*out[i*2];for(std::size_t i=30000;i<32000;++i)second+=out[i*2]*out[i*2];
+    check(first>1e-4&&second<first*1e-6,"Instrument level automation not applied at note onsets");}
+
+  // Every built-in effect re-reads every parameter in place without allocating (EffectControl + automate()).
+  for(const char* type:{"eq","filter","compressor","drive","reverb","delay","chorus","phaser","flanger","tremolo","limiter","gate","tape","bitcrusher","utility","guitar-rig"}){
+    Parameters params;if(std::string_view(type)=="guitar-rig"){params["rackSlot0"]=3;params["rackSlot1"]=2+16;params["rackSlot2"]=10;}
+    auto effect=dsp::makeEffect(type,params,48000,120);dsp::EffectControl control(type,params);
+    std::vector<int> indices;for(const char* id:{"cutoff","b1Freq","threshold","drive","amount","rate","depth","mix","gain","bits","ampGain","driveGain_2","reverbMix","tone","feedback","width"}){const int i=control.index(id);if(i>=0)indices.push_back(i);}
+    check(!indices.empty(),"Effect has no automatable parameter");
+    std::vector<float> buffer(512,.1f);
+    allocations=deallocations=0;watchAllocations=true;
+    for(int step=0;step<8;++step){for(int i:indices)control.set(i,control.get(i)*(step%2?1.1:.9));control.apply(*effect);effect->process(buffer.data(),256);}
+    watchAllocations=false;check(!allocations&&!deallocations,"Effect automation allocated");
+    for(auto value:buffer)check(std::isfinite(value),"Effect automation produced non-finite audio");
+  }
+
+  // Invalid lanes are rejected on the control thread.
+  auto bad=p;bad.tracks[0].automation[0].points={{100,0,0},{50,1,0}};bool rejected=false;try{RenderEngine e(48000,256);(void)e.prepare(bad,assets);}catch(const std::exception&){rejected=true;}check(rejected,"Unsorted automation points were accepted");
+}
+
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"track automation lanes",trackAutomation}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

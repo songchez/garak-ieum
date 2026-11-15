@@ -9,6 +9,7 @@ import { loopRange } from '../math'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVE_CODES, fadeCurveOf, fadeLengths } from '../../core/clipEnvelope.js'
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
 import type { NativePluginInstance } from './contracts'
+import { isActiveLane, isDiscrete, targetDef } from '../../core/automation'
 
 /** Compilation limits, not promises about native device or plugin capacity. No PCM is allocated here. */
 export const NATIVE_TIMELINE_LIMITS = {
@@ -121,6 +122,21 @@ export type NativeTrackRoute =
   | { readonly kind: 'master' }
   | { readonly kind: 'none' }
 
+/** A compiled automation lane (docs/AUTOMATION.md). Values stay normalized; the host maps them with
+ * minimum/maximum/logarithmic/options exactly like core/automation.ts automationValue(). */
+export interface NativeAutomationLane {
+  readonly target:
+    | { readonly kind: 'volume' | 'pan' | 'mute' }
+    | { readonly kind: 'insert'; readonly insertId: string; readonly param: string }
+    | { readonly kind: 'instrument'; readonly param: string }
+  readonly minimum: number
+  readonly maximum: number
+  readonly logarithmic?: boolean
+  readonly options?: readonly number[]
+  /** Fractional project frames, sorted. */
+  readonly points: readonly { readonly frame: number; readonly value: number; readonly curve?: number }[]
+}
+
 export interface NativeTrackTimeline {
   readonly id: string
   readonly source: NativeTrackSource
@@ -145,6 +161,10 @@ export interface NativeTrackTimeline {
    * IEUM WAVE sources get it applied to their note-off frames instead, identically to the Web Audio engine. */
   readonly controls: readonly NativeControlEvent[]
   readonly audio: readonly NativeAudioWindow[]
+  /** Active lanes only; absent when the track has none. */
+  readonly automation?: readonly NativeAutomationLane[]
+  /** Fader audibility with the track unmuted (solo applied); present when a mute lane is active. */
+  readonly unmutedAudible?: boolean
 }
 
 export interface NativeProjectTimeline {
@@ -365,10 +385,32 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
         }
         if (!Object.hasOwn(EFFECT_DEFS, device.type)) throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Unknown builtin insert.')
         return { id: id(device.id), type: device.type, enabled: device.enabled, params: parameters(EFFECT_DEFS[device.type].params, device.params) }
-      }), notes, controls, audio }
+      }), notes, controls, audio, ...nativeAutomation(track, framesPerBeat, project) }
   })
   return { version: 1, projectId: project.id, revision, sampleRate, bpm, timeSignature, beatsPerBar: project.beatsPerBar,
     lengthFrames, cycle, masterGain: number(project.masterVolume, 0, 2, 'master gain'), assets: [...usedAssets.values()], tracks }
+}
+
+/** Active lanes of a track in project frames. Beats map through the project tempo, like every other event here. */
+function nativeAutomation(track: Track, framesPerBeat: number, project: Project): { automation?: NativeAutomationLane[]; unmutedAudible?: boolean } {
+  const lanes: NativeAutomationLane[] = []
+  for (const lane of track.automation ?? []) {
+    if (!isActiveLane(track, lane)) continue
+    const def = targetDef(track, lane.target)!
+    const target = lane.target
+    const native: NativeAutomationLane['target'] = target.kind === 'track' ? { kind: target.param }
+      : target.kind === 'device' ? { kind: 'insert', insertId: target.deviceId, param: target.param }
+        : { kind: 'instrument', param: target.param }
+    lanes.push({
+      target: native, minimum: def.min, maximum: def.max,
+      ...(def.scale === 'log' && !def.options ? { logarithmic: true } : {}),
+      ...(isDiscrete(def) ? { options: def.options!.map(option => option.value) } : {}),
+      points: lane.points.map(point => ({ frame: number(point.beat, 0, 10_000_000, 'automation position') * framesPerBeat, value: number(point.value, 0, 1, 'automation value'), ...(point.curve ? { curve: number(point.curve, -1, 1, 'automation curve') } : {}) })),
+    })
+  }
+  if (!lanes.length) return {}
+  const muted = lanes.some(lane => lane.target.kind === 'mute')
+  return { automation: lanes, ...(muted ? { unmutedAudible: audibleTrackIds(project.tracks.map(item => item.id === track.id ? { ...item, mute: false } : item)).has(track.id) && track.pluginInstrument?.enabled !== false } : {}) }
 }
 
 export interface NativeTrackSeek {

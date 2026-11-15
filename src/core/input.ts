@@ -37,7 +37,7 @@ export type ProjectShortcut =
   | 'trackZoomIn' | 'trackZoomOut' | 'trackZoomToggle' | 'trackZoomReset' | 'zoomFocusedTrack'
   | 'toggleInspector' | 'toggleMixer' | 'toggleBrowser' | 'globalTracks' | 'createMarker'
   | 'deleteNotes' | 'quantize' | 'transposeUp' | 'transposeDown' | 'transposeOctaveUp' | 'transposeOctaveDown'
-  | 'musicalTyping' | 'captureMidi'
+  | 'musicalTyping' | 'captureMidi' | 'toggleAutomation'
 
 export function isShortcutSuppressed(event: ShortcutEvent, allowRepeat = false, platform: ShortcutPlatform = shortcutPlatform()): boolean {
   // Firefox on macOS can report Option as AltGraph. Only that Option-only
@@ -165,7 +165,7 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('duplicateTrack', letter('D'), 'mod', TW), bind('duplicateTrackContent', letter('D'), 'modAltShift', TW),
   bind('deleteTrack', BACK, 'mod', TW), bind('deleteTrack', DEL, 'mod', TW),
   bind('renameTrack', ENTER, 'shift', TW),
-  bind('toggleHideView', letter('H'), '', TW), bind('colorPalette', letter('C'), 'alt', TW), bind('configureTrackHeader', letter('T'), 'alt', TW),
+  bind('toggleHideView', letter('H'), '', TW), bind('toggleAutomation', letter('A'), '', TW), bind('colorPalette', letter('C'), 'alt', TW), bind('configureTrackHeader', letter('T'), 'alt', TW),
   bind('trackZoomIn', DOWN, 'modAlt', TW), bind('trackZoomOut', UP, 'modAlt', TW), bind('trackZoomToggle', letter('Z'), 'modAlt', TW), bind('trackZoomReset', BACK, 'modAlt', TW),
   bind('toggleInspector', letter('I'), '', TW), bind('toggleMixer', letter('X'), '', TW), bind('toggleBrowser', letter('F'), '', TW), bind('globalTracks', letter('G'), '', TW),
   bind('createMarker', punct('Quote', "'"), 'alt', TW),
@@ -302,6 +302,7 @@ const META: Record<ProjectShortcut, { label: string; logic: string }> = {
   transposeOctaveDown: { label: '옥타브 내리기', logic: '⌥⇧↓' },
   musicalTyping: { label: '컴퓨터 키보드 연주 켜기/끄기', logic: '⌘K' },
   captureMidi: { label: '마지막 MIDI 연주 캡처', logic: '⇧R' },
+  toggleAutomation: { label: '트랙 오토메이션 보기/가리기', logic: 'A' },
 }
 
 export interface ShortcutRow { command: ProjectShortcut; label: string; mac: string; win: string; scopes: readonly ShortcutEditScope[]; logic: string }

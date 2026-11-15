@@ -59,7 +59,7 @@ function kernelEffect(type: KernelType): RealtimeEffectModule {
       } : undefined
       return {
         input, output, dynamicsMeter, ...(analysisTap ? { analysisTap } : {}),
-        update(params, bpm) {
+        update(params, bpm, now) {
           if (!node) {
             node = remember(new AudioWorkletNode(context, 'garak-sigimsae-v1', {
               numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
@@ -69,7 +69,12 @@ function kernelEffect(type: KernelType): RealtimeEffectModule {
             input.connect(node).connect(output)
             return
           }
-          node.port.postMessage({ type: 'params', params: { ...params }, bpm })
+          node.port.postMessage({ type: 'params', params: { ...params }, bpm, at: now })
+        },
+        schedule(events, bpm) {
+          if (!events.length) return
+          if (!node) this.update(events[0].params, bpm, events[0].at, false)
+          node!.port.postMessage({ type: 'schedule', events: events.map(event => ({ at: event.at, params: { ...event.params } })), bpm })
         },
         dispose() {
           if (dynamicsMeter) dynamicsMeter.disposed = true
