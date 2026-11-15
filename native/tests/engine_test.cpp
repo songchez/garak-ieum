@@ -1278,10 +1278,61 @@ void trackAutomation(){
   auto bad=p;bad.tracks[0].automation[0].points={{100,0,0},{50,1,0}};bool rejected=false;try{RenderEngine e(48000,256);(void)e.prepare(bad,assets);}catch(const std::exception&){rejected=true;}check(rejected,"Unsorted automation points were accepted");
 }
 
+// Cross-feature (docs/AUTOMATION.md): lanes placed through a tempo map, send-level lanes and return-track lanes.
+// Frames come from the native TempoMap exactly as timeline.ts places them (a lane segment crossing a tempo point
+// is split there, so the frame-linear segments stay beat-linear).
+void automationTempoSendsReturns(){
+  const std::uint32_t rate=48000;
+  const TempoMap tempo(240,{{0,240,false},{2,120,false}}); // Beat 2 at 0.5 s, beat 3 at 1 s, beat 4 at 1.5 s.
+  const auto at=[&](double beat){return tempo.frameAt(beat,rate);};
+  const auto frame=[&](double beat){return static_cast<std::size_t>(std::llround(at(beat)));};
+  const auto length=static_cast<std::int64_t>(std::llround(at(4)));
+  AssetStore assets{{"dc",asset("dc",rate,std::vector<float>(static_cast<std::size_t>(length)*2,.1f),2)}};
+  const std::vector<AutomationPoint> rise{{at(1),0,0},{at(2),.25,0},{at(3),.5,0}}; // Normalized 0 -> .5 = gain 0 -> 1 over beats 1..3.
+  for(const std::uint32_t threads:{0u,2u}) {
+    // Volume lane under the tempo step, then a jump to silence at beat 3.5.
+    auto p=project(rate,length);p.bpm=240;p.tempoMap=tempo.points();
+    auto a=regionTrack("a","dc",1.f,length);
+    auto volume=lane(AutomationLane::Target::Volume,0,2,rise);volume.points.push_back({at(3.5),.5,0});volume.points.push_back({at(3.5),0,0});
+    a.automation={volume};p.tracks={a};
+    RenderEngine e(rate,64);e.setProcessing(processing(threads));e.setOffline(true);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");
+    const auto out=render(e,static_cast<std::size_t>(length),64);
+    near(out[2*frame(.5)],0,1e-9,"Volume lane before its first beat");
+    near(out[2*frame(1.5)],.1*.25,1e-6,"Volume lane at beat 1.5 under the fast tempo");
+    near(out[2*frame(2.5)],.1*.75,1e-6,"Volume lane at beat 2.5 after the tempo step");
+    near(out[2*(frame(3.5)-1)],.1,1e-6,"Volume lane holds until its jump");
+    near(out[2*(frame(3.5)+1)],0,1e-9,"Volume jump lands on the tempo-mapped frame");
+  }
+  for(const std::uint32_t threads:{0u,2u}) {
+    // A silent sender (fader 0) feeds a return only through its automated pre-fader send level; the return's
+    // own volume lane halves it from beat 3.5.
+    auto p=project(rate,length);p.bpm=240;p.tempoMap=tempo.points();
+    auto a=regionTrack("a","dc",0.f,length);a.sends={{"ret",0.f,true}};
+    auto send=lane(AutomationLane::Target::Send,0,2,rise);send.returnId="ret";a.automation={send};
+    auto ret=returnTrack("ret");ret.automation={lane(AutomationLane::Target::Volume,0,2,{{0,.5,0},{at(3.5),.5,0},{at(3.5),.25,0}})};
+    p.tracks={ret,a};
+    RenderEngine e(rate,64);e.setProcessing(processing(threads));e.setOffline(true);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");
+    const auto out=render(e,static_cast<std::size_t>(length),64);
+    near(out[2*frame(.5)],0,1e-9,"Send lane before its first beat");
+    near(out[2*frame(1.5)],.1*.25,1e-6,"Send level lane at beat 1.5");
+    near(out[2*frame(2.5)+1],.1*.75,1e-6,"Send level lane at beat 2.5 after the tempo step");
+    near(out[2*frame(3.25)],.1,1e-6,"Send level holds after its last point");
+    near(out[2*frame(3.75)],.05,1e-6,"Return-track volume lane");
+  }
+  // Editing only a lane is a structural change: render-ahead audio made with the old lane is not reused.
+  {
+    auto p=project(rate,length);auto a=regionTrack("a","dc",1.f,length);a.automation={lane(AutomationLane::Target::Volume,0,2,{{0,.5,0}})};p.tracks={a};
+    RenderEngine e(rate,64);e.setProcessing(processing(2,RenderAhead::High,64));e.submit(e.prepare(p,assets));check(e.play(),"Play failed");(void)render(e,640,64);
+    p.tracks[0].automation[0].points[0].value=.25;e.submit(e.prepare(p,assets));
+    const auto out=render(e,640,64);
+    near(out[2*600],.05,1e-6,"An edited lane did not replace the playing one");
+  }
+}
+
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation},{"automation x tempo map x sends x returns",automationTempoSendsReturns}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }
