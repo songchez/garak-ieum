@@ -13,6 +13,8 @@
 .region-pitch-controls{display:flex;flex-direction:column;gap:6px}
 .rp-row{display:flex;align-items:center;gap:4px;min-width:0}
 .rp-label{width:32px;flex-shrink:0;color:var(--text-muted);font-size:10px;white-space:nowrap}
+/* GuitarRig.css has its own .rp-label/.rp-check (preset picker, gold on dark); scope ours so they never leak in. */
+.region-pitch-controls .rp-label{padding:0;font-weight:400;letter-spacing:0;color:var(--text-muted)}
 .rp-row button{height:18px;min-width:20px;padding:0 5px;border:1px solid var(--border-subtle);border-radius:3px;background:var(--surface-input);color:var(--text-secondary);font-size:10px;cursor:pointer}
 .rp-row button:hover:not(:disabled){border-color:var(--border-default);color:var(--text-primary)}
 .rp-row button:disabled{opacity:.4;cursor:default}
@@ -23,7 +25,7 @@
 .rp-modes button:first-child{border-radius:3px 0 0 3px}
 .rp-modes button:last-child{border-radius:0 3px 3px 0;border-left:0}
 .rp-modes button.on{background:color-mix(in srgb,var(--accent) 28%,var(--surface-input));border-color:var(--accent);color:var(--text-primary)}
-.region-pitch-controls .rp-check{display:flex;align-items:center;width:auto;gap:6px;font-size:10px;cursor:pointer}
+.region-pitch-controls .rp-check{display:flex;place-items:normal;align-items:center;width:auto;gap:6px;font-size:10px;color:var(--text-secondary);cursor:pointer}
 .rp-check span{flex:1;white-space:nowrap}
 .rp-check input:disabled+span{opacity:.45}
 .rp-foot{align-items:flex-start;justify-content:space-between;gap:8px}

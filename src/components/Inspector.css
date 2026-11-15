@@ -21,7 +21,7 @@
 .value-field.mixed{color:var(--accent-hover)}
 .value-field:disabled{opacity:.4;cursor:default}
 .value-field[data-daw-gesture]{border-color:var(--accent-strong)!important}
-.insp-select{flex:1;min-width:0;height:18px;padding:0 2px;border:1px solid var(--border-subtle);border-radius:3px;background:var(--surface-input);color:var(--text-primary);font-size:10px}
+.insp-select{flex:1;min-width:0;height:18px;padding:0 2px;border:1px solid var(--border-subtle);border-radius:3px;background:var(--surface-input);color:var(--text-primary);font-size:10px;text-overflow:ellipsis;white-space:nowrap}
 .insp-text{flex:1;min-width:0;height:18px;padding:0 6px;border:1px solid var(--border-subtle)!important;border-radius:3px;background:var(--surface-input);color:var(--text-primary);font-size:10px;outline:0}
 .insp-text:focus{border-color:var(--accent)!important}
 .insp-check{cursor:pointer}
