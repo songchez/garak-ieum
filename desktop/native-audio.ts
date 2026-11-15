@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
+import { readPcmTransfer } from './pcmTransfer.js'
 
 type Json = Record<string, unknown>
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }
@@ -266,22 +267,12 @@ export class NativeAudioService {
 
   private async pcmAsset(params: Json): Promise<unknown> {
     const id = text(params.id, 'asset ID')
-    const sampleRate = integer(params.sampleRate, 8000, 192000, 'PCM sample rate')
-    if (!Array.isArray(params.channels) || !params.channels.length || params.channels.length > 32) throw new Error('Invalid PCM channels.')
-    const channels = params.channels as Float32Array[]
-    if (!channels.every(channel => channel instanceof Float32Array)) throw new Error('PCM channels must be Float32Array.')
-    const frames = channels[0].length
-    if (!frames || frames * channels.length * 4 > MAX_PCM_BYTES || !channels.every(channel => channel.length === frames)) throw new Error('PCM asset size is invalid.')
-    const data = Buffer.allocUnsafe(frames * channels.length * 4)
-    for (let frame = 0; frame < frames; frame++) for (let channel = 0; channel < channels.length; channel++) {
-      const value = channels[channel][frame]
-      if (!Number.isFinite(value)) throw new Error('오디오에 유효하지 않은 샘플이 있습니다.')
-      data.writeFloatLE(value, (frame * channels.length + channel) * 4)
-    }
+    // One interleaved float32 attachment from the renderer, written as is (desktop/pcmTransfer.ts).
+    const { sampleRate, channels, frames, data } = readPcmTransfer(params, MAX_PCM_BYTES)
     const path = join(this.directory, `${randomUUID()}.f32`)
     try {
       await writeFile(path, data, { mode: 0o600, flag: 'wx' })
-      return await this.send('asset.load', { id, path, sampleRate, channels: channels.length, frames })
+      return await this.send('asset.load', { id, path, sampleRate, channels, frames })
     } finally { await rm(path, { force: true }).catch(() => {}) }
   }
 

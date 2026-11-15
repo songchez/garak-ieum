@@ -9,6 +9,7 @@ import { isRouted } from '../../core/trackRouting'
 import { isPluginDevice, type AudioAsset, type AudioEngine, type InputChoice, type InstrumentId, type Project, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot } from '../../core/types'
 import type { AudioRecordingCallbacks } from '../AudioRecording'
 import { SampleLibrary } from '../samples'
+import { packAudioBuffer } from './pcmTransfer'
 import { clamp, normalizedStart } from '../math'
 import { assertNativeInstrumentsSupported, canPlayInstrument, unsupportedNativeInstruments, WAVETABLE_HOST_REQUIRED } from '../instrumentSupport'
 import { compileNativeTimeline, type NativePcmAsset } from './timeline'
@@ -70,7 +71,8 @@ export class NativeAudioEngine implements AudioEngine {
   private settings: AudioSettings
   private desiredSampleRate: SampleRate = DEFAULT_SAMPLE_RATE
   private decodeContext: OfflineAudioContext | null = null
-  private uploaded = new Map<string, AudioBuffer>()
+  /** Weak: an uploaded buffer the renderer no longer needs (released sample sets) must not be kept alive here. */
+  private uploaded = new Map<string, WeakRef<AudioBuffer>>()
   private uploadTasks = new Map<string, Promise<void>>()
   private registeredSets = new Set<string>()
   private sampleTasks = new Map<string, Promise<void>>()
@@ -171,7 +173,7 @@ export class NativeAudioEngine implements AudioEngine {
   readonly subscribeInputState = (callback: () => void): (() => void) => { this.inputListeners.add(callback); return () => { this.inputListeners.delete(callback) } }
   readonly subscribeSamples = (callback: () => void): (() => void) => { this.sampleListeners.add(callback); return () => { this.sampleListeners.delete(callback) } }
   readonly sampleStatus = (setId: string): SampleStatus => this.sampleErrors.has(setId) ? 'error' : this.registeredSets.has(setId) ? 'ready' : this.sampleTasks.has(setId) ? 'loading' : 'idle'
-  readonly sampleAttribution = (setId: string): SampleAttribution | undefined => this.samples.get(setId)?.set.attribution
+  readonly sampleAttribution = (setId: string): SampleAttribution | undefined => this.samples.manifest(setId)?.attribution
 
   private connect(): NativeAudioBridge {
     if (!this.bridge) throw new Error(this.audioSnapshot.error ?? '네이티브 오디오 연결부가 없습니다.')
@@ -548,15 +550,16 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   private async putPcm(id: string, buffer: AudioBuffer): Promise<void> {
-    if (this.uploaded.get(id) === buffer) return
+    if (this.uploaded.get(id)?.deref() === buffer) return
     const pending = this.uploadTasks.get(id)
-    if (pending) { await pending; if (this.uploaded.get(id) === buffer) return }
+    if (pending) { await pending; if (this.uploaded.get(id)?.deref() === buffer) return }
     const generation = this.generation
     const task = (async () => {
       // The bridge writes a private PCM asset, not a path supplied by project JSON.
-      await this.request('asset.put', { id, sampleRate: buffer.sampleRate, channels: Array.from({ length: buffer.numberOfChannels }, (_, channel) => buffer.getChannelData(channel)) })
+      // One interleaved float32 attachment (pcmTransfer.ts); the main process writes it without per-sample work.
+      await this.request('asset.put', { id, ...packAudioBuffer(buffer) })
       if (generation !== this.generation) throw abortError()
-      this.uploaded.set(id, buffer)
+      this.uploaded.set(id, new WeakRef(buffer))
     })()
     this.uploadTasks.set(id, task)
     try { await task } finally { if (this.uploadTasks.get(id) === task) this.uploadTasks.delete(id) }
@@ -580,6 +583,9 @@ export class NativeAudioEngine implements AudioEngine {
       await this.request('samples.register', { id: setId, manifest: decoded.set, startOffset: decoded.startOffset, files })
       if (generation !== this.generation) throw abortError()
       this.registeredSets.add(setId); this.sampleErrors.delete(setId)
+      // The host owns the decoded PCM now (a piano is ~270 MiB of float32): keep only the manifest in the renderer.
+      // A host restart clears registeredSets and decodes the set again.
+      this.samples.release(setId)
     })()
     this.sampleTasks.set(setId, task); this.publishSamples()
     try { await task }
