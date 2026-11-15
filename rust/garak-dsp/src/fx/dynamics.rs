@@ -220,11 +220,10 @@ impl SettledFrame for Limiter {
         let xr = f64::from(r) * pre;
         let peak = std_max(xl.abs(), xr.abs());
         let target = if peak > c { c / peak } else { 1.0 };
-        if target < self.gain {
-            self.gain = target;
-        } else {
-            self.gain = math::mul_add(target - self.gain, self.release, self.gain);
-        }
+        // Both sides computed, then an explicit select: as an if / else, the (opaque) fused form on
+        // Apple arm64 became a data-dependent branch that noise mispredicts, instead of fcsel.
+        let released = math::mul_add(target - self.gain, self.release, self.gain);
+        self.gain = core::hint::select_unpredictable(target < self.gain, target, released);
         if SETTLED {
             self.block_peak = std_max(self.block_peak, peak);
             self.meter.lowest = std_min(self.meter.lowest, self.gain);
