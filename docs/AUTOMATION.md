@@ -1,8 +1,9 @@
 # 트랙 오토메이션
 
-트랙 볼륨·팬·뮤트, 모든 시김새 파라미터(기타 앰프 포함), 내장 악기 파라미터, VST3 파라미터를 시간에 따라
-움직이는 트랙 오토메이션입니다. 리전과 무관하게 트랙에 붙고, 두 엔진(Web Audio·네이티브)과 WAV 내보내기가
-같은 규칙으로 재생합니다. 프로젝트 스키마 17에서 도입했습니다.
+트랙 볼륨·팬·뮤트, 센드 레벨, 모든 시김새 파라미터(기타 앰프 포함), 내장 악기 파라미터, VST3 파라미터를 시간에
+따라 움직이는 트랙 오토메이션입니다. 리전과 무관하게 트랙에 붙고, 두 엔진(Web Audio·네이티브)과 WAV 내보내기가
+같은 규칙으로 재생합니다. 리턴 트랙도 볼륨·팬·뮤트와 시김새를 오토메이션할 수 있습니다. 프로젝트 스키마 17에서
+도입했습니다(14 = 템포 맵, 15 = 센드/리턴, 16 = MIDI 컨트롤러; 1–17을 모두 엽니다).
 
 ## 벤치마크 요약
 
@@ -24,6 +25,7 @@ target = { kind: 'track', param: 'volume'|'pan'|'mute' }
        | { kind: 'device', deviceId, param }       // 시김새·기타 앰프 ParamDef id, VST3는 ParamID(10진수)
        | { kind: 'instrument', param }             // 내장 악기 ParamDef id
        | { kind: 'plugin-instrument', param }      // VST3 악기 ParamID
+       | { kind: 'send', returnId }                // 이 트랙의 센드 레벨(0…2 선형 게인), 키 send:<returnId>
 ```
 
 - 값은 대상 파라미터 범위 안의 **정규화 값 0…1**입니다(`toNormalized`). 로그 파라미터(컷오프 등)는 로그 축,
@@ -34,8 +36,29 @@ target = { kind: 'track', param: 'volume'|'pan'|'mute' }
   (`pruneAutomation`, UI 편집·AI 명령·불러오기 모두). 악기를 바꾸면 새 악기에 없는 파라미터 레인이 지워집니다.
   트랙 복제는 레인을 복사본의 장치로 옮겨 붙입니다.
 - `rackSlot*`(기타 앰프 랙 배치)처럼 프로세서를 다시 만들어야 하는 구조 값은 대상에서 빠집니다.
-- 새 대상(예: 센드 레벨, 리턴 트랙)은 `AutomationTarget`에 종류 하나, `targetKey/targetDef/staticValue/
-  withStaticValue`에 분기 하나, 네이티브 `AutomationLane::Target`에 하나를 더하면 됩니다.
+- 센드 레인은 센드가 있는 오디오·악기 트랙에만 있고(대상 선택의 "센드" 그룹), 센드를 지우거나 리턴 트랙을
+  지우면 레인도 지워집니다. 리턴 트랙은 센드가 없으므로 트랙·시김새 그룹만 보입니다.
+- 새 대상은 `AutomationTarget`에 종류 하나, `targetKey/targetDef/staticValue/withStaticValue`에 분기 하나,
+  네이티브 `AutomationLane::Target`에 하나를 더하면 됩니다.
+
+## 템포 맵 (docs/TEMPO_MAP.md)
+
+포인트는 **박** 위에 있고 박 단위로 보간합니다. 시간 변환은 언제나 템포 맵을 거칩니다.
+- Web Audio: 재생 스케줄러가 `tempo.beatAfter(구간 시작 박, 경과 초)`로, 내보내기는 `tempo.beatAt(초)`로 각
+  128프레임 단계의 박을 구합니다. 워클릿 시김새 이벤트는 그 박의 템포를 함께 실어 싱크 딜레이·트레몰로가
+  오토메이션 중에도 템포 맵을 따릅니다. 템포 추종(`updateEffectTempo`)은 레인이 없는 시김새만 다시 맞추므로
+  예약된 오토메이션을 지우지 않습니다. `updateGraph(graph, project, smooth, beat, bpm)`의 bpm 기본값은
+  `beat`(재생 위치)의 템포입니다.
+- 네이티브: 타임라인 컴파일러가 포인트를 `tempoMapOf(project).frameAt()`으로 프레임에 놓고, 구간 안에서 템포가
+  바뀌면 템포 포인트마다, 램프 안에서는 1/16박마다 나눕니다(`automationFrames`). 곡선 구간을 나눈 조각은
+  곡률 × 조각 비율로 같은 모양을 정확히 유지하므로, 남는 오차는 램프 1/16박 안의 프레임·박 휨뿐입니다.
+
+## MIDI 컨트롤러와의 우선순위 (docs/MIDI_CONTROLLERS.md)
+
+- CC7(볼륨)×CC11(익스프레션)은 악기 음성 뒤, 시김새 체인 **앞**의 별도 게인 단계입니다(두 엔진 동일).
+  볼륨 오토메이션은 그 뒤의 페이더를 움직이므로 두 값은 곱해집니다: 최종 = CC 게인 × 시김새 × 페이더(레인).
+- CC10(팬)은 내장 악기에서 의미가 없고(VST3 악기에는 그대로 전달), 팬 오토메이션만 트랙 패너를 움직입니다.
+- 피치 벤드·모듈레이션·애프터터치는 음성에 적용되고 오토메이션 대상과 겹치지 않습니다.
 
 ## 엔진
 
@@ -54,7 +77,11 @@ target = { kind: 'track', param: 'volume'|'pan'|'mute' }
 - VST3 인서트·악기는 `IParameterChanges`로 샘플 오프셋이 붙은 포인트를 받습니다(블록당 파라미터마다 최대 32개,
   64프레임 격자, 같은 값 반복 없음).
 - 내장 악기 파라미터는 블록 시작에서 갱신되어 음 시작 시점에 적용됩니다(Web Audio와 동일).
+- 센드 레벨 레인은 그 센드를 받는 리턴 트랙이 샘플마다 평가합니다(`TrackRuntime::Feed::lane`). 프리 페이더
+  센드는 트랙이 들리지 않으면(뮤트/솔로) 여전히 0입니다.
 - 타임라인은 TS가 컴파일합니다(`src/audio/native/timeline.ts` → `automation[]`, 프레임 단위, 범위·로그·선택지 정보).
+- 레인이 바뀌면 `sameStructure`가 다른 구조로 보아 미리 렌더한 오디오를 버립니다(오래된 레인으로 렌더한
+  render-ahead 버퍼를 이어 쓰지 않도록).
 
 ## 기록 (`src/core/automationRecording.ts`)
 
@@ -82,5 +109,6 @@ target = { kind: 'track', param: 'volume'|'pan'|'mute' }
 ## 남은 일
 
 - 레인 미리보기는 정지 후 갱신됩니다(기록 중 그려지는 실시간 레인은 다음 단계).
-- IEUM WAVE 패치 파라미터, 마스터 볼륨, 센드 레벨(센드 브랜치 병합 후) 대상.
+- IEUM WAVE 패치 파라미터, 마스터 볼륨 대상.
+- 네이티브 리버브 크기·종류·프리딜레이는 오토메이션되지 않습니다(임펄스 응답을 다시 만들어야 함).
 - 영역 복사·붙여넣기, 리전과 함께 이동, 레인 높이 개별 조절.
