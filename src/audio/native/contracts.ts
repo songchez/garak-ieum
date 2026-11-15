@@ -124,6 +124,8 @@ export interface NativeEngineEvent {
   sampleRate?: number
   ready?: boolean
   levels?: Record<string, number>
+  /** Built-in compressor/limiter/gate inserts by device id: detector peak and lowest gain (linear). */
+  dynamics?: Record<string, { input: number; gain: number }>
   masterLevel?: number
   device?: NativeDeviceState
   error?: string | null

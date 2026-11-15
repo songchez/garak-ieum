@@ -1,97 +1,61 @@
-"""Build public/samples/salamander — Salamander Grand Piano V3 (Alexander Holm, CC BY 3.0).
+"""Build public/samples/salamander — Accurate-Salamander Grand Piano V6.2e (CC BY 3.0).
 
-Source files are the MP3 encodings shipped with https://github.com/tambien/Piano
-(served from https://tambien.github.io/Piano/audio/). 16 velocity layers exist
-upstream; we keep LAYERS of them plus the 88 key-release noises.
+Lossless 48 kHz/24-bit FLAC remaster of Alexander Holm's Salamander Grand Piano V3 (Yamaha C5)
+by the Accurate-Salamander Project (Chisato Yamauchi). Earlier builds of this set used the MP3
+encodings from @tonejs/piano; this one reads the official FLAC archive directly. The shared
+pipeline (layers, register length caps, fades, encoding) is in piano.py.
+
+    python -I scripts/samples/salamander.py --archive /path/to/AccurateSalamanderGrandPianoV6.2e_48khz24bit_flac.zip
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-import numpy as np
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import (CACHE, PUBLIC, Manifest, Zone, clear_set, decode, download_many, encode_many,
-                    key_ranges, log, normalize_set, peak_db, set_size_mb, trim, velocity_ranges,
-                    write_license)
+from piano import NOTES, PianoSpec, build, veltrack_layer_gains  # noqa: E402
 
-SET = "salamander"
-BASE = "https://tambien.github.io/Piano/audio/"
-NOTES = ("A0 C1 Ds1 Fs1 A1 C2 Ds2 Fs2 A2 C3 Ds3 Fs3 A3 C4 Ds4 Fs4 A4 C5 Ds5 Fs5 A5 C6 Ds6 Fs6 A6 "
-         "C7 Ds7 Fs7 A7 C8").split()  # 'Ds' = D#
-LAYERS = [3, 8, 13]  # upstream velocity layers (1..16), soft → loud
-BUDGET_MB = 20
-CAPS = [12.0, 10.0, 9.0]  # pitched length cap candidates; the first that fits BUDGET_MB wins
-RELEASE = 0.3
-KEY_LO, KEY_HI = 21, 108
-
-SEMITONE = {"C": 0, "Cs": 1, "D": 2, "Ds": 3, "E": 4, "F": 5, "Fs": 6, "G": 7, "Gs": 8, "A": 9, "As": 10, "B": 11}
+ITEM = "https://archive.org/download/httpswww.ir.isas.jaxa.jpcyamauchaccuratesalamander/"
+ARCHIVE = "AccurateSalamanderGrandPianoV6.2e_48khz24bit_flac.zip"
+LAYERS = [3, 7, 11, 15]  # of 16, soft → loud
+ROOTS = dict(NOTES)
 
 ATTRIBUTION = {
-    "title": "Salamander Grand Piano V3",
-    "author": "Alexander Holm",
-    "url": "https://archive.org/details/SalamanderGrandPianoV3",
+    "title": "Accurate-Salamander Grand Piano V6.2e (remaster of Salamander Grand Piano V3)",
+    "author": "Alexander Holm (Salamander Grand Piano V3); remaster by Chisato Yamauchi, Accurate-Salamander Project",
+    "url": "https://www.ir.isas.jaxa.jp/~cyamauch/AccurateSalamander/",
     "license": "CC BY 3.0",
     "licenseUrl": "https://creativecommons.org/licenses/by/3.0/",
-    "changes": (f"30 notes × {len(LAYERS)} velocity layers and 88 key-release samples selected, trimmed, "
-                "normalized, encoded to Opus/AAC (via MP3 encodings from https://github.com/tambien/Piano)"),
+    "changes": (f"30 notes × {len(LAYERS)} of 16 velocity layers (v{', v'.join(map(str, LAYERS))}) and 88 key-release "
+                "samples selected from the 48 kHz/24-bit FLAC bank; trimmed with per-register length caps and "
+                "fade-outs, one common gain for the whole set, encoded to Opus 96 kbps (webm) and AAC 128 kbps (m4a)"),
 }
 
+LICENSE_EXTRA = """Original soundbank: Salamander Grand Piano V3 by Alexander Holm
+(https://archive.org/details/SalamanderGrandPianoV3), CC BY 3.0.
+Remaster: Accurate-Salamander Grand Piano V6.2e, Accurate-Salamander Project, Chisato Yamauchi
+(https://www.ir.isas.jaxa.jp/~cyamauch/AccurateSalamander/), "CC-by (same licence as the original
+version)" — CC BY 3.0. Downloaded from
+https://archive.org/details/httpswww.ir.isas.jaxa.jpcyamauchaccuratesalamander
+(AccurateSalamanderGrandPianoV6.2e_48khz24bit_flac.zip, MD5 c2803eaa235a28af5c11e4a504ad337e).
+The archive.org item page shows CC BY 4.0; we follow the project page (CC BY 3.0, same as the original).
+Neither the original author nor the Accurate-Salamander Project endorses this project."""
 
-def midi(note: str) -> int:
-    name, octave = note[:-1], int(note[-1])
-    return 12 * (octave + 1) + SEMITONE[name]
-
-
-def main() -> None:
-    cache = CACHE / SET
-    pitched_names = [f"{n}v{v}" for n in NOTES for v in LAYERS]
-    release_names = [f"rel{i}" for i in range(1, 89)]
-    download_many([(BASE + f"{name}.mp3", cache / f"{name}.mp3") for name in pitched_names + release_names])
-
-    log("decode", len(pitched_names) + len(release_names), "files")
-    raw = {name: decode(cache / f"{name}.mp3") for name in pitched_names + release_names}
-    # MP3 has ~50 ms encoder delay and a soft pre-roll: trim at -50 dB so the attack is not cut.
-    releases = {name: trim(raw[name], start_db=-50) for name in release_names}
-
-    roots = [midi(n) for n in NOTES]
-    ranges = dict(zip(roots, key_ranges(roots, KEY_LO, KEY_HI)))
-    vel = velocity_ranges(len(LAYERS))
-
-    for cap in CAPS:
-        log(f"trim pitched @ max {cap:g} s")
-        pitched = {name: trim(raw[name], start_db=-50, max_seconds=cap, fade_out=RELEASE) for name in pitched_names}
-        clips = normalize_set({**pitched, **releases})
-
-        clear_set(SET)
-        out = PUBLIC / SET
-        encode_many(clips, out, pitched=True)
-        size = set_size_mb(SET)
-        log(f"cap {cap:g} s → {size:.2f} MB")
-        if size <= BUDGET_MB:
-            break
-    else:
-        raise SystemExit(f"{SET}: {size:.2f} MB exceeds {BUDGET_MB} MB even at {CAPS[-1]:g} s")
-
-    zones = []
-    for n in NOTES:
-        r = midi(n)
-        lo, hi = ranges[r]
-        for v, (vlo, vhi) in zip(LAYERS, vel):
-            zones.append(Zone(file=f"{n}v{v}", root=r, lo=lo, hi=hi, vlo=round(vlo, 4), vhi=round(vhi, 4)))
-    release_zones = [Zone(file=f"rel{i}", root=20 + i, lo=20 + i, hi=20 + i) for i in range(1, 89)]
-
-    Manifest(id=SET, name="Grand Piano", nameKo="그랜드 피아노", kind="pitched", category="piano",
-             attribution=ATTRIBUTION, release=RELEASE, zones=zones, releaseZones=release_zones).write()
-    write_license(SET, ATTRIBUTION,
-                  "Original samples: Alexander Holm, Salamander Grand Piano V3 "
-                  "(https://archive.org/details/SalamanderGrandPianoV3), CC BY 3.0.\n"
-                  "MP3 intermediates: https://github.com/tambien/Piano (same license).")
-
-    for name in (f"{NOTES[13]}v{LAYERS[0]}", f"{NOTES[13]}v{LAYERS[-1]}", "rel40"):
-        c = clips[name]
-        log(f"{name}: {len(c) / 48000:.2f} s, peak {peak_db(c):.1f} dBFS")
-    log(f"{SET}: {len(list(out.glob('*.webm')))} clips, {set_size_mb(SET):.2f} MB")
-
+SPEC = PianoSpec(
+    set_id="salamander", name="Grand Piano", name_ko="그랜드 피아노",
+    archive_url=ITEM + ARCHIVE, archive_md5="c2803eaa235a28af5c11e4a504ad337e",
+    layers=LAYERS,
+    pitched_member=lambda note, v: f"48khz24bit/{ROOTS[note]:03d}_{note}v{v:02d}.flac",
+    release_member=lambda key: f"48khz24bit/rel{key}.flac",
+    attribution=ATTRIBUTION, license_extra=LICENSE_EXTRA,
+    # The remaster matches the loudness of all 16 layers and leaves dynamics to the SFZ
+    # amp_veltrack=98.5 (its sfz_*/ *.Recommended.sfz); restore that curve per layer.
+    layer_gain_db=veltrack_layer_gains(LAYERS, 0.985),
+    # The key-release files are normalized near 0 dBFS (its SFZ plays them at volume=-37 dB).
+    # Bring them to about the same distance below the notes as the bitklavier set (~30 dB).
+    release_gain_db=-25,
+)
 
 if __name__ == "__main__":
-    main()
+    build(SPEC)

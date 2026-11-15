@@ -1,4 +1,4 @@
-import { INSTRUMENT_PARAMS, SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, type ParamDef, type SynthId } from './devices'
+import { INSTRUMENT_PARAMS, SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, SAMPLED_PIANO_PARAMS, type ParamDef, type SynthId } from './devices'
 import type { SampleAttribution } from './types'
 import { WAVETABLE_DEFINITION } from '../devices/wavetable-synth/definition'
 
@@ -44,7 +44,7 @@ const SAMPLED_ICONS: Readonly<Record<string, string>> = {
 }
 
 const sampled = (id: string, set: string, name: string, nameKo: string, type: string, category: InstrumentCategory, isKit: boolean, color: string, description: string, padNames?: Readonly<Record<number, string>>): InstrumentDef =>
-  ({ id, name, nameKo, type, category, kind: 'sampled', isKit, icon: SAMPLED_ICONS[id] ?? categoryIcon(category), color, description, set, padNames, params: isKit ? SAMPLED_KIT_PARAMS : SAMPLED_PARAMS })
+  ({ id, name, nameKo, type, category, kind: 'sampled', isKit, icon: SAMPLED_ICONS[id] ?? categoryIcon(category), color, description, set, padNames, params: isKit ? SAMPLED_KIT_PARAMS : category === 'piano' ? SAMPLED_PIANO_PARAMS : SAMPLED_PARAMS })
 
 export function categoryIcon(category: InstrumentCategory): string {
   switch (category) {
@@ -64,7 +64,8 @@ export const INSTRUMENTS: readonly InstrumentDef[] = [
   synth('drums', 'Pocket Drums', '포켓 드럼', 'DRUM MACHINE', 'synth', 'drum', '#e38457', '킥 · 스네어 · 하이햇 · 퍼커션'),
   synth('pad', 'Cloud Pad', '클라우드 패드', 'ATMOSPHERIC', 'synth', 'pad', '#8cc7c0', '공간을 채우는 부드러운 패드'),
   synth('pluck', 'Glass Pluck', '글라스 플럭', 'PLUCK SYNTH', 'synth', 'note', '#d98a9f', '반짝이는 짧은 플럭 사운드'),
-  sampled('grand', 'salamander', 'Grand Piano', '그랜드 피아노', 'SAMPLED GRAND', 'piano', false, '#d9b45a', '세 단계 세기로 녹음한 콘서트 그랜드'),
+  sampled('grand', 'salamander', 'Grand Piano', '그랜드 피아노', 'SAMPLED GRAND', 'piano', false, '#d9b45a', '네 단계 세기로 녹음한 밝고 또렷한 그랜드'),
+  sampled('concert-grand', 'bitklavier', 'Concert Grand', '콘서트 그랜드', 'SAMPLED CONCERT GRAND', 'piano', false, '#c79a4b', '공연장에서 녹음한 깊고 풍성한 콘서트 그랜드'),
   sampled('wurlitzer', 'wurlitzer', 'Wurlitzer EP', '월리처', 'SAMPLED EP', 'keys', false, '#6f9fd0', '따뜻하게 일그러지는 빈티지 전기 피아노'),
   sampled('kit-acoustic', 'kit-acoustic', 'Studio Kit', '스튜디오 드럼', 'ACOUSTIC KIT', 'drums', true, '#e38457', '자연스러운 어쿠스틱 스튜디오 드럼'),
   sampled('kit-808', 'kit-808', '808 Kit', '808 드럼', 'ELECTRONIC KIT', 'drums', true, '#d96f5a', '묵직한 808 킥과 전자 퍼커션'),
@@ -97,7 +98,8 @@ export const SAMPLE_SETS: readonly string[] = [...new Set(INSTRUMENTS.flatMap(de
 
 /** Static mirror of the manifest attributions, shown in the about dialog before any set loads. */
 export const SAMPLE_CREDITS: readonly (SampleAttribution & { instruments: string })[] = [
-  { title: 'Salamander Grand Piano V3', author: 'Alexander Holm', license: 'CC BY 3.0', url: 'https://archive.org/details/SalamanderGrandPianoV3', instruments: 'Grand Piano' },
+  { title: 'Accurate-Salamander Grand Piano V6.2e (Salamander Grand Piano V3)', author: 'Alexander Holm · Chisato Yamauchi (Accurate-Salamander Project)', license: 'CC BY 3.0', url: 'https://www.ir.isas.jaxa.jp/~cyamauch/AccurateSalamander/', instruments: 'Grand Piano' },
+  { title: 'The bitKlavier Grand', author: 'Dan Trueman · Andrés Villalta · Matt Wang et al. (Princeton University)', license: 'CC BY 4.0', url: 'https://bitklavier.com/the-bitklavier-grand/', instruments: 'Concert Grand' },
   { title: 'Wurlitzer EP200', author: 'Greg Sullivan', license: 'CC BY 3.0 / 4.0', instruments: 'Wurlitzer EP' },
   { title: 'Virtuosity Drums', author: 'Versilian Studios · Karoryfer Samples', license: 'CC0', instruments: 'Studio Kit' },
   { title: 'VCSL (Versilian Community Sample Library)', author: 'Versilian Studios', license: 'CC0', url: 'https://github.com/sgossner/VCSL', instruments: 'Studio Kit · Lo-fi Kit' },

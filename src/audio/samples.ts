@@ -94,6 +94,26 @@ export function pickZone(set: Pick<SampleSet, 'kind' | 'zones'>, pitch: number, 
   })
 }
 
+/** Time constant (s) of the key-release noise fade with hold time; mirrors native engine.cpp. */
+export const RELEASE_NOISE_HOLD_SECONDS = 2
+/** Velocity at or below which a note makes no key-release noise. */
+export const RELEASE_NOISE_MIN_VELOCITY = 0.02
+
+/**
+ * Level multiplier for a piano key-release ("damper") noise, 0 = do not play it. Same rules as
+ * releaseNoiseGain in native/src/engine.cpp:
+ * - follows note-on velocity and the "릴리즈 소리" amount (0 turns it off);
+ * - fades with how long the key was held, roughly like the string decay (tau 2 s);
+ * - skipped when the note already rang out (held >= natural length), is very soft, or was cut
+ *   off by the clip end, loop boundary or project end rather than released by the player.
+ * Transport stop and voice stealing never reach this: those voices are stopped outright.
+ */
+export function releaseNoiseGain(velocity: number, heldSeconds: number, naturalSeconds: number, amount: number, cut: boolean): number {
+  if (cut || !(amount > 0) || !(velocity > RELEASE_NOISE_MIN_VELOCITY) || !(heldSeconds < naturalSeconds)) return 0
+  const gain = Math.min(1, amount) * Math.min(1, velocity) * Math.exp(-Math.max(0, heldSeconds) / RELEASE_NOISE_HOLD_SECONDS)
+  return gain >= 0.002 ? gain : 0
+}
+
 export function chooseFormat(formats: readonly string[]): string {
   const probe = typeof Audio === 'function' ? new Audio() : null
   const supported = (format: string): boolean => !probe || probe.canPlayType(MIME[format] ?? '') !== ''

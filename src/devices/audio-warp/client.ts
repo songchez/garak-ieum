@@ -1,5 +1,5 @@
 import { prepareTempoSignal, type TempoAnalysis } from './tempo'
-import { validateStretchJob } from './limits'
+import { validateRenderJob, validateStretchJob, type PcmRenderJob } from './limits'
 
 export interface WarpTaskOptions { signal?: AbortSignal; onProgress?: (fraction: number) => void }
 const aborted = () => new DOMException('워프 작업을 취소했습니다.', 'AbortError')
@@ -50,4 +50,12 @@ export function stretchInWorker(buffer: Pick<AudioBuffer, 'numberOfChannels' | '
   // Transfer copies only: detaching a playing AudioBuffer's data would break playback.
   const copies = channels.map(channel => channel.slice())
   return run<Float32Array[]>({ kind: 'stretch', channels: copies, sampleRate: buffer.sampleRate, ratio }, copies.map(channel => channel.buffer), options)
+}
+
+/** Combined warp + region-pitch render (stretch.renderPcm) off the main thread. */
+export function renderInWorker(buffer: Pick<AudioBuffer, 'numberOfChannels' | 'getChannelData' | 'sampleRate'>, job: PcmRenderJob, options?: WarpTaskOptions): Promise<Float32Array[]> {
+  const channels = channelsOf(buffer)
+  try { validateRenderJob(channels, buffer.sampleRate, job) } catch (error) { return Promise.reject(error) }
+  const copies = channels.map(channel => channel.slice())
+  return run<Float32Array[]>({ kind: 'render', channels: copies, sampleRate: buffer.sampleRate, job }, copies.map(channel => channel.buffer), options)
 }

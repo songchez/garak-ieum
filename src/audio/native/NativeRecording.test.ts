@@ -138,6 +138,15 @@ describe('native multi-track recording', () => {
     expect(h.request.mock.calls.map(([method]) => method)).toEqual(['record.start', 'record.stop'])
   })
 
+  it('places a routed take by its own compensation on the same raw start (docs/TRACK_INPUT_ROUTING.md)', async () => {
+    const h = multiHarness(['mic', 'resample']), started = h.recording.start()
+    // The physical take subtracts converter + plug-in latency; the post-FX route only the graph's 7 frames.
+    h.start.resolve({ takes: [h.take('mic'), h.take('resample', { channels: 2, startFrame: 893, compensationFrames: 7 })], sampleRate: 48000 }); await started
+    expect(h.recording.startFrameOf('mic')).toBe(-100)
+    expect(h.recording.startFrameOf('resample')).toBe(893)
+    expect(h.recording.startedTakes.map(take => take.rawStartFrame)).toEqual([900, 900])
+  })
+
   it('keeps the good takes and reports a failed or missing one once', async () => {
     const h = multiHarness(['a', 'b', 'c']), started = h.recording.start()
     h.start.resolve({ takes: [h.take('a'), h.take('b'), h.take('c')], sampleRate: 48000 }); await started

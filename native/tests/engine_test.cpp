@@ -155,6 +155,28 @@ void sampledZonesAndMissingAssets(){
   check(std::abs(h[29000*2])>.001,"A looped sample ended at the original PCM length");
 }
 
+void pianoReleaseNoise(){
+  near(dsp::releaseNoiseGain(1,0,5,1,false),1,1e-12,"Release noise ignored velocity 1");
+  near(dsp::releaseNoiseGain(.5,2,5,.5,false),.25*std::exp(-1.0),1e-12,"Release noise did not follow velocity, amount and hold time");
+  check(dsp::releaseNoiseGain(1,.5,5,0,false)==0,"Release noise amount 0 did not turn it off");
+  check(dsp::releaseNoiseGain(1,.5,5,1,true)==0,"Cut-off note played a release noise");
+  check(dsp::releaseNoiseGain(.01,.5,5,1,false)==0,"Very soft note played a release noise");
+  check(dsp::releaseNoiseGain(1,5,5,1,false)==0,"Rang-out note played a release noise");
+  AssetStore assets{{"tone",asset("tone",48000,std::vector<float>(20000))},{"short",asset("short",48000,std::vector<float>(2000))},{"release",asset("release",48000,std::vector<float>(100,.01f))}};
+  SampleSet set;set.id="piano";set.zones={{"tone",60,0,127,0,1,0,0,{},-1}};set.releaseZones={{"release",60,0,127,0,1,0,0,{},-1}};
+  SampleSet shortSet=set;shortSet.id="short";shortSet.zones[0].assetId="short";
+  const auto run=[&](NotePair note,double amount,const char*setId){
+    auto p=project(48000,8000);TrackTimeline t;t.id="piano";t.source.kind=TrackSource::Kind::BuiltinSampled;t.source.instrumentId="grand";t.source.sampleSetId=setId;
+    t.source.params={{"releaseNoise",amount}};t.notes={note};p.tracks.push_back(t);
+    RenderEngine e;e.submit(e.prepare(p,assets,{{"piano",set},{"short",shortSet}}));check(e.play(),"Play failed");return render(e,6000);
+  };
+  const auto released=run({1,0,1000,4000,60,.8f},.5,"piano");
+  near(released[1000*2],dsp::dbToGain(-6)*.01*.5*.8*std::exp(-1000.0/48000/2)/std::sqrt(2.0),1e-8,"Release noise missed the note-off or its level");
+  check(energy(run({1,0,4000,4000,60,.8f},.5,"piano"))==0,"A note cut off at its clip end played a release noise");
+  check(energy(run({1,0,1000,4000,60,.8f},0,"piano"))==0,"Release noise amount 0 still played");
+  check(energy(run({1,0,3000,4000,60,.8f},.5,"short"))==0,"A note held past its sample length played a release noise");
+}
+
 void liveMidiAndPanning(){
   auto p=project();TrackTimeline t;t.id="live";t.source.kind=TrackSource::Kind::BuiltinSampled;t.source.instrumentId="piano";t.source.sampleSetId="live";t.source.params={{"attack",.2},{"release",.1}};p.tracks.push_back(t);
   SampleSet set;set.id="live";set.gainDb=6;set.zones={{"tone",60,0,127,0,1,0,0,{},-1}};
@@ -168,7 +190,7 @@ void liveMidiAndPanning(){
   assets["tone"]=asset("tone",48000,std::vector<float>(20000));assets["release"]=asset("release",48000,std::vector<float>(100,.01f));
   set.releaseZones={{"release",60,0,127,0,1,0,0,{},-1}};
   RenderEngine released;released.submit(released.prepare(p,assets,{{"live",set}}));check(released.noteOn(0,60,.8f,7),"Live note on failed");(void)render(released,200);check(released.noteOff(0,60,7),"Live note off failed");const auto r=render(released,150);
-  near(r[0],.01*.35*.8/std::sqrt(2.0),1e-8,"Live sample release zone missed its exact note-off");
+  near(r[0],.01*.5*.8*std::exp(-200.0/48000/2)/std::sqrt(2.0),1e-8,"Live sample release zone missed its exact note-off");
   near(r[99*2],r[0],1e-8,"Sample release zone was truncated");near(r[100*2],0,0,"Sample release zone extended past its PCM");
 
   auto audio=project(48000,1000);TrackTimeline a;a.id="mono";a.pan=-1;a.audio={{1,"pan",0,1000,0,48000,0,1000,1,0,0}};audio.tracks.push_back(a);
@@ -497,6 +519,72 @@ Busy busyProject(std::size_t tracks,std::uint32_t seed,bool plugin){
   if(plugin){TrackTimeline t;t.id="plugin";t.gain=.3f;t.source.kind=TrackSource::Kind::Vst3;t.source.plugin.instanceId="plugin";t.source.plugin.isInstrument=true;t.notes={{1,1000,30000,30000,60,.8f},{2,40000,58000,58000,64,.8f}};b.project.tracks.push_back(std::move(t));}
   return b;
 }
+// Track-input routing (docs/TRACK_INPUT_ROUTING.md): destinations listed before their source, so the
+// engine must order the source first. Source: a VST instrument (.02 while its note plays, frames
+// 100..900) into a 7-frame-latency effect, fader .5. Graph latency is therefore 7.
+ProjectTimeline routedProject(){
+  auto p=project(48000,4000);
+  const auto audio=[](const char*id,std::optional<TrackRoute>route){TrackTimeline t;t.id=id;t.route=std::move(route);return t;};
+  const auto from=[](TrackRoute::Tap tap){TrackRoute r;r.kind=TrackRoute::Kind::Track;r.trackId="synth";r.tap=tap;return r;};
+  TrackRoute master;master.kind=TrackRoute::Kind::Master;
+  TrackTimeline synth;synth.id="synth";synth.gain=.5f;synth.source.kind=TrackSource::Kind::Vst3;synth.source.plugin.instanceId="inst";synth.source.plugin.isInstrument=true;
+  synth.notes={{1,100,900,4000,60,.8f}};BuiltinInsert fx;fx.id="fx";fx.type="vst3";fx.plugin.instanceId="delay7";synth.inserts.push_back(fx);
+  p.tracks={audio("pre",from(TrackRoute::Tap::PreFx)),audio("post",from(TrackRoute::Tap::PostFx)),audio("fader",from(TrackRoute::Tap::PostFader)),audio("resample",master),synth};
+  return p;
+}
+PluginResolver routedPlugins(){return [](const PluginSpec&spec,double,std::uint32_t)->std::shared_ptr<PluginProcessor>{
+  if(spec.instanceId=="inst"){auto p=std::make_shared<TestPlugin>();p->instrument=true;return p;}
+  return std::make_shared<TestPlugin>(7);};}
+void trackInputRoutes(){
+  for(const std::uint32_t threads:{0u,2u}) {
+    auto p=routedProject();RenderEngine e(48000,64,8192);e.setProcessing(processing(threads));e.submit(e.prepare(p,{},{},routedPlugins()));
+    const std::array<std::uint32_t,4>takes{0,1,2,3};const auto plan=e.planRecording(takes);
+    check(plan.size()==4&&std::all_of(plan.begin(),plan.end(),[](const RecordingTake&t){return t.routed&&t.route.channels==2&&!t.route.missing;}),"Routed takes were not planned as internal stereo inputs");
+    check(!plan[0].routeDelayed&&plan[1].routeDelayed&&plan[2].routeDelayed&&plan[3].routeDelayed,"Only post-insert taps carry the graph's plug-in delay");
+    // The resampling track is monitored: its own output reaches the master but never its own input.
+    const std::array<std::uint32_t,1>monitored{3};check(e.setMonitoring(monitored),"Monitor failed");
+    check(e.startRecording(plan),"Routed recording failed to start");check(e.play(),"Play failed");
+    (void)render(e,1200,64);
+    check(e.snapshot().latencyFrames==7&&e.snapshot().recordingStartFrame==0,"Unexpected graph latency or take start");
+    const auto stop=e.stopRecording();(void)render(e,64,64);check(e.snapshot().lastAppliedCommand>=stop,"Routed stop was not acknowledged");
+    std::vector<float>frames(1300*8);const auto got=e.drainRecording(frames.data(),1300);check(got==1200,"Routed takes lost frames");
+    for(std::size_t f=0;f<got;++f){
+      const float*x=frames.data()+f*8;const bool on=f>=100&&f<900,late=f>=107&&f<907;
+      for(int c=0;c<2;++c){
+        near(x[c],on?.02:0,1e-7,"Pre-FX take is not the instrument output on its exact timeline frames");
+        near(x[2+c],late?.02:0,1e-7,"Post-FX take is not the insert output delayed by exactly the graph latency");
+        near(x[4+c],late?.01:0,1e-7,"Post-fader take did not apply the source fader");
+        near(x[6+c],late?.01:0,1e-7,"Master resampling take heard itself or missed the source");
+      }
+    }
+  }
+  // Monitoring a post-FX route: the source is muted, the destination plays its input in place.
+  {
+    auto p=routedProject();p.tracks[4].audible=false;RenderEngine e(48000,64);e.submit(e.prepare(p,{},{},routedPlugins()));
+    const std::array<std::uint32_t,1>monitored{1};check(e.setMonitoring(monitored)&&e.play(),"Monitor or play failed");
+    const auto out=render(e,1000,64);
+    for(std::size_t f=0;f<1000;++f)near(out[2*f],f>=107&&f<907?.02:0,1e-7,"A monitored track route was not heard on the source's frames");
+  }
+  // Loops (a<->b, c->c) and a deleted source turn into silent inputs; nothing hangs or throws.
+  {
+    auto p=project(48000,2000);
+    const auto routed=[](const char*id,const char*source){TrackTimeline t;t.id=id;TrackRoute r;r.kind=TrackRoute::Kind::Track;r.trackId=source;r.tap=TrackRoute::Tap::PostFader;t.route=r;
+      t.audio={{1,"a",0,2000,0,48000,0,2000,1.f,0,0}};return t;};
+    p.tracks={routed("a","b"),routed("b","a"),routed("c","c"),routed("orphan","gone")};
+    AssetStore assets{{"a",asset("a",48000,std::vector<float>(4000,.1f),2)}};
+    RenderEngine e(48000,64,4096);e.setProcessing(processing(2));e.submit(e.prepare(p,assets));
+    const std::array<std::uint32_t,4>all{0,1,2,3};check(e.setMonitoring(all),"Monitor failed");
+    const auto plan=e.planRecording(all);check(e.startRecording(plan)&&e.play(),"Loop recording failed to start");
+    const auto out=render(e,512,64);for(const auto v:out)check(std::isfinite(v)&&std::abs(v)<1,"A routing loop fed back");
+    const auto stop=e.stopRecording();(void)render(e,64,64);check(e.snapshot().lastAppliedCommand>=stop,"Stop was not acknowledged");
+    std::vector<float>frames(600*8);const auto got=e.drainRecording(frames.data(),600);check(got==512,"Loop takes lost frames");
+    // a's route was broken (silence); b hears a's region output; c (self) and the orphan record silence.
+    for(std::size_t f=200;f<got;++f){const float*x=frames.data()+f*8;
+      near(x[0],0,0,"A loop member kept its input");check(std::abs(x[2])>.01,"The surviving route of a broken loop went silent");
+      near(x[4],0,0,"A self route recorded audio");near(x[6],0,0,"A route to a deleted track recorded audio");}
+  }
+}
+
 PluginResolver testInstruments(){return [](const PluginSpec&,double,std::uint32_t){auto p=std::make_shared<TestPlugin>();p->instrument=true;return p;};}
 std::unique_ptr<RenderEngine> busyEngine(const Busy&b,const ProcessingOptions&options,bool offline=false,std::uint32_t maxBlock=512){
   auto e=std::make_unique<RenderEngine>(48000,maxBlock);if(offline)e->setOffline(true);e->setProcessing(options);
@@ -738,10 +826,73 @@ void guitarRigInstances(){
   std::vector<float>silence(12000*2);after->process(silence.data(),12000);check(energy(silence)>1e-4,"Rebuilt rig dropped the second delay's echoes");
   check(dsp::makeEffect("guitar-rig",rigRack({6,6+16},{{"delayEnabled",1},{"delayEnabled_2",1}}),48000,120)->tailSeconds()>dsp::makeEffect("guitar-rig",rigRack({6},{{"delayEnabled",1}}),48000,120)->tailSeconds(),"Delay instances did not sum their tails");
 }
+// Dynamics meters for the compressor/limiter/gate views: per-insert input peak and
+// gain reduction reach the snapshot keyed by the timeline insert index, with no
+// allocation in the callback (render() checks every block).
+// Unit impulses per level make every click's exact frame and level visible.
+std::shared_ptr<const MetronomeClicks> impulseClicks(){auto c=std::make_shared<MetronomeClicks>();c->sampleRate=48000;c->levels={std::vector<float>{1.f},std::vector<float>{.5f},std::vector<float>{.25f}};return c;}
+void checkClicks(const std::vector<float>&out,const std::vector<std::pair<std::size_t,float>>&expected,const char*message){
+  std::vector<float>want(out.size()/2,0.f);for(const auto&[frame,value]:expected)want[frame]=value;
+  for(std::size_t i=0;i<want.size();++i){near(out[2*i],want[i],1e-7,message);near(out[2*i+1],want[i],1e-7,message);}
+}
+void metronomeClicks(){
+  // 120 BPM 4/4: a quarter is 24000 frames; the bar downbeat is accented.
+  auto p=project(48000,48000*8);
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");
+   checkClicks(render(e,48000*2+10,77),{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f},{96000,1.f}},"4/4 clicks are not on exact sample frames");}
+  // 6/8: eighth pulses (12000 frames), dotted-quarter group accent on pulse 3.
+  {auto m=p;m.timeSigNumerator=6;m.timeSigDenominator=8;RenderEngine e(48000,256);e.submit(e.prepare(m,{}));check(e.setMetronome(impulseClicks(),true,.5f),"Metronome command failed");check(e.play(),"Play failed");
+   checkClicks(render(e,72001,61),{{0,.5f},{12000,.125f},{24000,.125f},{36000,.25f},{48000,.125f},{60000,.125f},{72000,.5f}},"Compound meter grouping or volume is wrong");}
+  // Cycle 12000-36000: the click at 24000 repeats on every pass, never doubled at the wrap.
+  {auto c=p;c.cycle=std::array<std::int64_t,2>{12000,36000};RenderEngine e(48000,256);e.submit(e.prepare(c,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");
+   checkClicks(render(e,36000+48000,100),{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f}},"Clicks did not follow the loop wrap");}
+  // Count-in: one bar while the transport holds; it starts exactly after, as does a waiting capture.
+  {auto r=p;TrackTimeline t;t.id="input";r.tracks.push_back(t);RenderEngine e(48000,256,48000*4);e.submit(e.prepare(r,{}));check(e.setMetronome(impulseClicks(),false,1),"Metronome command failed");
+   check(e.seek(4800),"Seek failed");check(e.play(96000),"Count-in play failed");std::array<float,2>none{};rt(e,none.data(),nullptr,0);
+   check(e.snapshot().playing&&e.snapshot().frame==4800,"Count-in did not hold the transport while reporting playback");
+   check(e.startRecording(),"Record start failed");
+   const auto counting=render(e,96000,89);check(e.snapshot().frame==4800&&e.snapshot().recordedFrames==0,"Transport or capture moved during the count-in");
+   check(e.snapshot().recordingStartFrame==4800,"Count-in take does not start at the transport position");
+   checkClicks(counting,{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f}},"Count-in clicks are wrong");
+   const auto after=render(e,48000,89);check(e.snapshot().frame==4800+48000&&e.snapshot().recordedFrames==48000,"Transport and capture did not start right after the count-in");
+   checkClicks(after,{},"Metronome off still clicked after the count-in");(void)e.stopRecording();}
+  // Export: an offline engine never clicks, even with a metronome set.
+  {RenderEngine e(48000,256);e.setOffline(true);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(96000),"Play failed");
+   checkClicks(render(e,48000,128),{},"Offline export rendered metronome clicks");check(e.snapshot().frame==48000,"Offline engine honored a count-in");}
+  // A click set for another rate is ignored rather than played at the wrong speed.
+  {RenderEngine e(44100,256);auto q=project(44100,44100*4);e.submit(e.prepare(q,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");checkClicks(render(e,1000),{},"Mismatched-rate clicks played");}
+}
+
+void dynamicsMeters(){
+  auto p=project(48000,96000);TrackTimeline t;t.id="audio";t.audio.push_back({1,"sine",0,24000,0,48000,0,24000,1,0,0});
+  std::vector<float>pcm(24000);for(std::size_t i=0;i<pcm.size();++i)pcm[i]=static_cast<float>(.5*std::sin(2*dsp::pi*220*i/48000));
+  AssetStore assets{{"sine",asset("sine",48000,std::move(pcm))}};
+  t.inserts.push_back({"off","eq",false,{},{}});
+  t.inserts.push_back({"comp","compressor",true,{{"threshold",-40},{"ratio",10},{"attack",1}},{}});
+  t.inserts.push_back({"open","gate",true,{{"threshold",-80}},{}});
+  t.inserts.push_back({"lim","limiter",true,{{"gain",24},{"ceiling",-24}},{}});
+  p.tracks.push_back(t);
+  RenderEngine e(48000,512);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");(void)render(e,20000,256);
+  const auto s=e.snapshot();check(s.dynamicsCount==3,"Expected one dynamics reading per enabled compressor/gate/limiter");
+  const auto&comp=s.dynamics[0],&gate=s.dynamics[1],&lim=s.dynamics[2];
+  check(comp.track==0&&comp.insert==1&&gate.insert==2&&lim.insert==3,"Dynamics readings lost their timeline insert index");
+  check(comp.input>.05&&comp.input<4,"Compressor input level is not plausible");
+  const double compDb=20*std::log10(comp.gain),inDb=20*std::log10(comp.input);
+  // Hard-knee expectation: (in - threshold) * (1 - 1/ratio) dB of reduction; allow the envelope ripple.
+  near(-compDb,(inDb+40)*.9,1.5,"Compressor gain reduction does not follow threshold/ratio");
+  check(gate.gain>.9,"An open gate reported reduction");
+  check(lim.gain<.5&&lim.input>.005,"Limiter driven 24 dB into a -24 dB ceiling reported no reduction");
+  // After the note ends the hold falls: input decays and the gain recovers.
+  (void)render(e,48000,256);const auto quiet=e.snapshot();
+  check(quiet.dynamics[0].input<comp.input*.5&&quiet.dynamics[0].gain>comp.gain,"Dynamics meter did not fall back after the signal stopped");
+}
+
+#include "eq_test.inc"
+
 int main(){
-  const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
+  const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

@@ -1,6 +1,7 @@
 import type { EffectDef, RealtimeEffectModule } from '../contracts.js'
 import { clamp } from '../../audio/math.js'
 import { parameterReader, setParameter, dbToGain, noTail } from './shared.js'
+import { analyserPeak, type DynamicsMeterSource } from './dynamicsMeter.js'
 
 const definition: EffectDef = {
   name: 'Glue 76', short: '컴프', label: '컴프레서',
@@ -20,9 +21,22 @@ export const compressorEffect: RealtimeEffectModule = {
     const makeup = remember(context.createGain())
     compressor.knee.value = 6
     compressor.connect(makeup)
+    // Realtime only: an input analyser for the view's live level (DynamicsCompressorNode reports reduction itself).
+    const realtime = !('startRendering' in context) && typeof context.createAnalyser === 'function'
+    const entry = realtime ? remember(context.createGain()) : null
+    let dynamicsMeter: DynamicsMeterSource | undefined
+    if (entry) {
+      const analyser = remember(context.createAnalyser())
+      analyser.fftSize = 2048
+      entry.connect(compressor); entry.connect(analyser)
+      const scratch = new Float32Array(analyser.fftSize)
+      dynamicsMeter = { read: () => ({ input: analyserPeak(analyser, scratch), gain: Math.min(1, dbToGain(Math.min(0, compressor.reduction || 0))) }) }
+    }
     return {
-      input: compressor,
+      input: entry ?? compressor,
       output: makeup,
+      dynamicsMeter,
+      dispose() { if (dynamicsMeter) dynamicsMeter.disposed = true },
       update(params, _bpm, now, smooth) {
         const p = parameterReader(definition.params, params)
         setParameter(compressor.threshold, clamp(p('threshold'), -100, 0), now, smooth)

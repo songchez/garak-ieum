@@ -70,37 +70,28 @@ class Compressor final : public StereoProcessor {
       : threshold_(threshold), strength_(1 - 1 / ratio), attack_(std::exp(-1 / (std::max(.00001, attack) * rate))),
         release_(std::exp(-1 / (std::max(.00001, release) * rate))), makeup_(makeup), knee_(knee) {}
   void process(float* s, std::uint32_t frames) noexcept override {
+    double loudest = 0, lowest = 1;
     for (std::uint32_t i = 0; i < frames; ++i) {
       const double peak = std::max(std::abs(s[2 * i]), std::abs(s[2 * i + 1]));
       const double c = peak > envelope_ ? attack_ : release_;
       envelope_ = peak + c * (envelope_ - peak);
       const double above = 20 * std::log10(std::max(1e-12, envelope_)) - threshold_;
       const double over = above < -knee_ / 2 ? 0 : above < knee_ / 2 ? (above + knee_ / 2) * (above + knee_ / 2) / (2 * knee_) : above;
-      const float gain = static_cast<float>(dbToGain(-strength_ * over) * makeup_);
+      const double reduction = dbToGain(-strength_ * over);
+      const float gain = static_cast<float>(reduction * makeup_);
       s[2 * i] *= gain; s[2 * i + 1] *= gain;
+      loudest = std::max(loudest, peak); lowest = std::min(lowest, reduction);
     }
+    tap_.add(static_cast<float>(loudest), static_cast<float>(lowest));
   }
+  DynamicsTap* dynamics() noexcept override { return &tap_; }
   void reset() noexcept override { envelope_ = 0; }
   void takeStateFrom(StereoProcessor& previous) noexcept override {
     if (auto* p = dynamic_cast<Compressor*>(&previous)) envelope_ = p->envelope_;
   }
  private:
   double threshold_, strength_, attack_, release_, makeup_, knee_, envelope_ = 0;
-};
-
-class Filters final : public StereoProcessor {
- public:
-  std::vector<Biquad> filters;
-  void process(float* s, std::uint32_t frames) noexcept override {
-    for (auto& f : filters) for (std::uint32_t i = 0; i < frames; ++i) {
-      s[2 * i] = f.sample(s[2 * i], 0); s[2 * i + 1] = f.sample(s[2 * i + 1], 1);
-    }
-  }
-  void reset() noexcept override { for (auto& f : filters) f.reset(); }
-  void takeStateFrom(StereoProcessor& previous) noexcept override {
-    if (auto* p = dynamic_cast<Filters*>(&previous); p && p->filters.size() == filters.size())
-      for (std::size_t i = 0; i < filters.size(); ++i) filters[i].takeHistoryFrom(p->filters[i]);
-  }
+  DynamicsTap tap_;
 };
 
 // 17-tap half-band interpolator and decimator. Together they introduce eight
@@ -802,21 +793,25 @@ class GuitarRig final : public StereoProcessor {
 };
 
 #include "sigimsae_effects.inc"
+#include "eq_effects.inc"
 
 } // namespace
 
 void Biquad::configure(Filter type, double sr, double hz, double q, double gain) noexcept {
-  hz = bounded(hz, 1, sr * .45); q = bounded(q, .0001, 40);
+  // Low/high-pass Q is in dB and may be negative (cascaded Butterworth stages below Q 1).
+  const bool passQ = type == Filter::Lowpass || type == Filter::Highpass;
+  hz = bounded(hz, 1, sr * .45); q = passQ ? bounded(q, -60, 60) : bounded(q, .0001, 40);
   const double omega = 2 * pi * hz / sr, cosine = std::cos(omega), sine = std::sin(omega);
   // Match the original BiquadFilterNode response, including its distinct Q
   // units for low/high-pass (W3C Web Audio 1.13.5, alpha_Q_dB).
-  const double quality = type == Filter::Lowpass || type == Filter::Highpass ? dbToGain(q) : q;
+  const double quality = passQ ? dbToGain(q) : q;
   const double a = std::pow(10, gain / 40), alpha = sine / (2 * quality);
   double b0=1,b1=0,b2=0,a0=1,a1=0,a2=0;
   switch (type) {
     case Filter::Lowpass: b0=(1-cosine)/2; b1=1-cosine; b2=b0; a0=1+alpha; a1=-2*cosine; a2=1-alpha; break;
     case Filter::Highpass: b0=(1+cosine)/2; b1=-(1+cosine); b2=b0; a0=1+alpha; a1=-2*cosine; a2=1-alpha; break;
     case Filter::Bandpass: b0=alpha; b1=0; b2=-alpha; a0=1+alpha; a1=-2*cosine; a2=1-alpha; break;
+    case Filter::Notch: b0=1; b1=-2*cosine; b2=1; a0=1+alpha; a1=-2*cosine; a2=1-alpha; break;
     case Filter::Peak: b0=1+alpha*a; b1=-2*cosine; b2=1-alpha*a; a0=1+alpha/a; a1=-2*cosine; a2=1-alpha/a; break;
     case Filter::LowShelf: {
       const double beta = std::sqrt(2*a)*sine;
@@ -861,16 +856,8 @@ void Master::process(float* s, std::uint32_t frames) noexcept {
 
 std::unique_ptr<StereoProcessor> makeEffect(std::string_view type,const Parameters& params,double sr,double bpm) {
   if (!std::isfinite(sr)||sr<8000||sr>192000||!std::isfinite(bpm)||bpm<20||bpm>400) throw std::invalid_argument("Invalid DSP rate or tempo");
-  if (type=="eq") {
-    Reader p(params,{{"low",0,-18,18},{"mid",0,-18,18},{"midFreq",1000,200,5000},{"high",0,-18,18}});
-    auto f=std::make_unique<Filters>();f->filters.resize(3);
-    f->filters[0].configure(Filter::LowShelf,sr,220,1,p("low"));f->filters[1].configure(Filter::Peak,sr,p("midFreq"),.9,p("mid"));f->filters[2].configure(Filter::HighShelf,sr,4500,1,p("high"));return f;
-  }
-  if (type=="filter") {
-    Reader p(params,{{"cutoff",1200,20,20000},{"resonance",.7,.1,18},{"mode",0,0,2}});
-    auto f=std::make_unique<Filters>();f->filters.resize(1);const std::array<Filter,3> modes{Filter::Lowpass,Filter::Highpass,Filter::Bandpass};
-    f->filters[0].configure(modes[static_cast<unsigned>(std::round(p("mode")))],sr,p("cutoff"),p("resonance"));return f;
-  }
+  if (type=="eq") return makeParametricEq(params,sr);
+  if (type=="filter") return makeSweepFilter(params,sr);
   if (type=="compressor") {
     Reader p(params,{{"threshold",-18,-60,0},{"ratio",4,1,20},{"attack",10,.1,100},{"release",150,10,1000},{"makeup",0,0,24}});
     return std::make_unique<Compressor>(sr,p("threshold"),p("ratio"),p("attack")*.001,p("release")*.001,dbToGain(p("makeup")));

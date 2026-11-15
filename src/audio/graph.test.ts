@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDevice, createEmptyProject, createTrack } from '../core/project'
 import type { MidiClip, Project } from '../core/types'
-import { connectMonitor, createGraph, disconnectMonitor, disposeGraph, scheduleRange, trackLayoutKey, updateGraph } from './graph'
+import { connectMonitor, createGraph, disconnectMonitor, disposeGraph, scheduleRange, setRouteMonitoring, trackLayoutKey, updateGraph } from './graph'
 import type { LoadedSet, SampleLibrary } from './samples'
 import { EFFECT_MODULES } from '../devices/effects/registry'
 import * as guitarRig from '../devices/guitar-rig'
@@ -279,5 +279,96 @@ describe('effect resources and master selection', () => {
       disposeGraph(graph)
     }
     expect(masterDispose).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('piano key-release noise', () => {
+  const releaseLibrary = (toneSeconds: number) => ({ get: () => ({
+    ...sample,
+    set: { ...sample.set, releaseZones: [{ file: 'rel', root: 60, lo: 0, hi: 127, vlo: 0, vhi: 1 }] },
+    buffers: new Map([['tone', { duration: toneSeconds } as AudioBuffer], ['rel', { duration: 0.4 } as AudioBuffer]]),
+  }) }) as unknown as SampleLibrary
+  const run = (region: MidiClip, params?: Record<string, number>, toneSeconds = 4) => {
+    const { context, sources } = contextSpy()
+    const project = projectFor(region)
+    if (params) project.tracks[0] = { ...project.tracks[0], instrumentParams: { ...project.tracks[0].instrumentParams, ...params } }
+    const graph = createGraph(context, project)
+    scheduleRange(graph, project, new Map(), 0, 4, 0, 4, true, false, releaseLibrary(toneSeconds))
+    disposeGraph(graph)
+    return sources
+  }
+
+  it('plays at note-off of a released note', () => {
+    const sources = run(clip())
+    expect(sources).toHaveLength(2)
+    expect(sources[1].start.mock.calls[0][0]).toBeCloseTo((0.3 + 0.2) / 2)
+  })
+
+  it('is skipped when the note runs into the clip end, rang out, or the amount is 0', () => {
+    expect(run(clip({ notes: [{ id: 'n', pitch: 60, start: 0.5, duration: 0.5, velocity: 0.8 }] }))).toHaveLength(1)
+    expect(run(clip({ lengthBeats: 4, notes: [{ id: 'n', pitch: 60, start: 0, duration: 3, velocity: 0.8 }] }), undefined, 1)).toHaveLength(1)
+    expect(run(clip(), { releaseNoise: 0 })).toHaveLength(1)
+  })
+})
+
+describe('track-input routes (docs/TRACK_INPUT_ROUTING.md)', () => {
+  const routedProject = (): Project => {
+    const synth = { ...createTrack('instrument'), id: 'synth', name: '신스', devices: [createDevice('eq')] }
+    const pre = { ...createTrack('audio'), id: 'pre', inputRoute: { kind: 'track' as const, trackId: 'synth', tap: 'preFx' as const } }
+    const post = { ...createTrack('audio'), id: 'post', inputRoute: { kind: 'track' as const, trackId: 'synth', tap: 'postFx' as const } }
+    const fader = { ...createTrack('audio'), id: 'fader', inputRoute: { kind: 'track' as const, trackId: 'synth', tap: 'postFader' as const } }
+    const resample = { ...createTrack('audio'), id: 'resample', inputRoute: { kind: 'master' as const } }
+    const downstream = { ...createTrack('audio'), id: 'downstream', inputRoute: { kind: 'track' as const, trackId: 'resample', tap: 'postFader' as const } }
+    return { ...createEmptyProject(), masterVolume: 0.8, tracks: [pre, post, fader, resample, downstream, synth] }
+  }
+
+  it('connects each tap of the source into the routed input, behind a closed monitor gate', () => {
+    const { context } = contextSpy()
+    const graph = createGraph(context, routedProject())
+    const synth = graph.tracks.get('synth')!
+    const input = (id: string) => graph.routes.get(id)!.input as unknown as AudioNodeSpy
+    expect((synth.input as unknown as AudioNodeSpy).connections.has(input('pre'))).toBe(true)
+    expect((synth.postFx as unknown as AudioNodeSpy).connections.has(input('post'))).toBe(true)
+    expect((synth.fader as unknown as AudioNodeSpy).connections.has(input('fader'))).toBe(true)
+    // The route input reaches the track only through its monitor gate, closed until monitoring.
+    const route = graph.routes.get('post')!
+    expect((route.input as unknown as AudioNodeSpy).connections).toEqual(new Set([route.monitor]))
+    expect((route.monitor as unknown as AudioNodeSpy).connections).toEqual(new Set([graph.tracks.get('post')!.input]))
+    expect(route.monitor.gain.value).toBe(0)
+    setRouteMonitoring(graph, ['post'])
+    expect(route.monitor.gain.value).toBe(1)
+    expect(graph.routes.get('pre')!.monitor.gain.value).toBe(0)
+    setRouteMonitoring(graph, [])
+    expect(route.monitor.gain.value).toBe(0)
+  })
+
+  it('feeds resampling from the master volume over every track except itself and its downstream', () => {
+    const { context } = contextSpy()
+    const graph = createGraph(context, routedProject())
+    const volume = graph.resampleVolume as unknown as AudioNodeSpy
+    expect(volume.gain.value).toBe(0.8)
+    expect(volume.connections.has(graph.routes.get('resample')!.input)).toBe(true)
+    const feed = [...graph.tracks.values()].map(track => track.fader as unknown as AudioNodeSpy).flatMap(fader => [...fader.connections])
+      .find(node => (node as AudioNodeSpy).connections.has(volume)) as AudioNodeSpy
+    const feeding = [...graph.tracks].filter(([, track]) => (track.fader as unknown as AudioNodeSpy).connections.has(feed)).map(([id]) => id).sort()
+    expect(feeding).toEqual(['fader', 'post', 'pre', 'synth'])
+    updateGraph(graph, { ...routedProject(), masterVolume: 0.5 }, false)
+    expect(volume.gain.value).toBe(0.5)
+  })
+
+  it('rebuilds the graph when a route or tap changes and wires no loop or deleted source', () => {
+    const project = routedProject()
+    const retapped = { ...project, tracks: project.tracks.map(track => track.id === 'post' ? { ...track, inputRoute: { kind: 'track' as const, trackId: 'synth', tap: 'preFx' as const } } : track) }
+    expect(trackLayoutKey(retapped.tracks)).not.toBe(trackLayoutKey(project.tracks))
+    const a = { ...createTrack('audio'), id: 'a', inputRoute: { kind: 'track' as const, trackId: 'b', tap: 'postFx' as const } }
+    const b = { ...createTrack('audio'), id: 'b', inputRoute: { kind: 'track' as const, trackId: 'a', tap: 'postFx' as const } }
+    const orphan = { ...createTrack('audio'), id: 'orphan', inputRoute: { kind: 'track' as const, trackId: 'gone', tap: 'postFx' as const } }
+    const { context } = contextSpy()
+    const graph = createGraph(context, { ...createEmptyProject(), tracks: [a, b, orphan] })
+    const into = (id: string) => [...graph.tracks.values()].some(track => (track.postFx as unknown as AudioNodeSpy).connections.has(graph.routes.get(id)!.input))
+    // The loop is broken at its first member; b still hears a.
+    expect(into('a')).toBe(false)
+    expect((graph.tracks.get('a')!.postFx as unknown as AudioNodeSpy).connections.has(graph.routes.get('b')!.input)).toBe(true)
+    expect(into('orphan')).toBe(false)
   })
 })

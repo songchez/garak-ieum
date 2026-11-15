@@ -73,7 +73,7 @@ describe('one device chain for builtin and VST3 effects', () => {
     track.devices = [createDevice('eq'), { id: 'fx', type: 'vst3', pluginId: 'approved-fx', classId: '0123456789ABCDEF0123456789ABCDEF', name: 'Space Echo', enabled: false, parameters: {} }, createDevice('reverb')]
     const markup = render(track)
     const cards = [...markup.matchAll(/<section class="dc-card dc-effect[^"]*"[^>]*aria-label="([^"]+)"/g)].map(match => match[1])
-    expect(cards).toEqual(['1번 Curve 3', '2번 Space Echo (VST3) (바이패스)', '3번 대청 Hall'])
+    expect(cards).toEqual(['1번 Curve 8', '2번 Space Echo (VST3) (바이패스)', '3번 대청 Hall'])
     expect(markup).toContain('aria-label="Space Echo 왼쪽으로 이동"')
     expect(markup).not.toContain('VST3 인서트')
   })

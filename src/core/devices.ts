@@ -46,6 +46,12 @@ export const SAMPLED_PARAMS: readonly ParamDef[] = [
   { id: 'release', label: '릴리즈', min: 0.02, max: 5, default: 0.25, unit: 's', scale: 'log' },
   level,
 ]
+/** Acoustic pianos add the key-release noise amount (0 = off). */
+export const SAMPLED_PIANO_PARAMS: readonly ParamDef[] = [
+  ...SAMPLED_PARAMS.slice(0, -1),
+  { id: 'releaseNoise', label: '릴리즈 소리', min: 0, max: 1, default: 0.5, unit: 'pct' },
+  level,
+]
 export const SAMPLED_KIT_PARAMS: readonly ParamDef[] = [
   tune,
   { id: 'decay', label: '디케이', min: 0.1, max: 1, default: 1, unit: 'x' },

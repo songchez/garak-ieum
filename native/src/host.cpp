@@ -51,7 +51,9 @@ void waveHeader(std::ostream& out, std::uint32_t rate, std::uint16_t channels, s
  * take), and the thread starts only after the engine holds the new ring. */
 class RecordingSession {
  public:
-  struct Take { std::string trackId, takeId, path; std::uint16_t channels = 1; std::ofstream file; std::vector<float> pcm; };
+  struct Take { std::string trackId, takeId, path; std::uint16_t channels = 1; std::ofstream file; std::vector<float> pcm;
+    // Per take: a physical input subtracts converter + plug-in latency, an internal route only what its tap carries.
+    std::uint64_t compensation = 0; bool compensationKnown = false; bool routed = false; };
   RecordingSession(RenderEngine& engine, std::uint32_t rate, std::vector<Take> takes, bool legacy)
       : engine_(engine), rate_(rate), legacy_(legacy), takes_(std::move(takes)) {
     for (auto& take : takes_) {
@@ -69,6 +71,8 @@ class RecordingSession {
   [[nodiscard]] bool failed() const noexcept { return failed_.load(); }
   [[nodiscard]] bool legacy() const noexcept { return legacy_; }
   [[nodiscard]] const std::vector<Take>& takes() const noexcept { return takes_; }
+  // Control thread, before begin()'s writer reads anything but the file/pcm fields.
+  [[nodiscard]] std::vector<Take>& mutableTakes() noexcept { return takes_; }
   std::int64_t rawStart = 0; std::uint64_t compensation = 0; bool compensationKnown = false;
  private:
   void header() { for (auto& take : takes_) { waveHeader(take.file,rate_,take.channels,frames_.load(),true); take.file.seekp(0,std::ios::end); take.file.flush(); } }
@@ -222,7 +226,7 @@ class Host {
     if (method=="project.set") {
       auto project=timeline(a.at("timeline"));
       if (engine_ && configured_ && project.sampleRate!=engine_->snapshot().sampleRate) throw std::runtime_error("Project and device sample rates differ; configure the device first");
-      if (!engine_) { engine_=std::make_unique<RenderEngine>(project.sampleRate,scratchFrames); engine_->setProcessing(processingOptions(true)); }
+      if (!engine_) { engine_=std::make_unique<RenderEngine>(project.sampleRate,scratchFrames); engine_->setProcessing(processingOptions(true)); applyMetronome(); }
       auto prepared=engine_->prepare(project,assets_,sets_,resolver(false));
       if(a.value("awaitApplied",false))requireEngine();
       const auto ticket=engine_->submit(std::move(prepared)); project_=std::move(project); prunePlugins();
@@ -230,12 +234,13 @@ class Host {
       return {{"revision",project_.revision}};
     }
     if (method=="render.wav") return render(a);
+    if (method=="metronome.set") return setMetronome(a);
     if (method=="device.controlPanel" || method=="devices.controlPanel") { if(test_) return Json::object(); device_.showControlPanel(a.value("backend",std::string{}),a.value("deviceId",std::string{})); return Json::object(); }
     if (method=="devices.probe") return probeJson(test_?testProbe():device_.probe(string(a,"backend",32),a.value("deviceId",std::string{})));
     if (method.rfind("device.",0)==0) return deviceRequest(method,a);
     // A device/plugin fault must not prevent a captured take being finalized.
     if(method!="record.stop") requireEngine();
-    if (method=="transport.play") { awaitApplied(engine_->play()); return snapshot(); }
+    if (method=="transport.play") { awaitApplied(engine_->play(integer(a,"countInFrames",0,std::int64_t(engine_->snapshot().sampleRate)*60,0))); return snapshot(); }
     if (method=="transport.pause") { awaitApplied(engine_->pause()); return snapshot(); }
     if (method=="transport.stop") { awaitApplied(engine_->stop()); clearPreview(); return snapshot(); }
     if (method=="transport.seek") { awaitApplied(engine_->seek(integer(a,"frame",0,project_.lengthFrames,0))); return snapshot(); }
@@ -260,9 +265,11 @@ class Host {
     if (method=="monitor.set") {
       std::vector<std::uint32_t> tracks;
       if(a.value("enabled",false)) {
-        if(!currentDevice().inputChannels) throw std::runtime_error("Enable the native input device before monitoring");
         const auto& ids=a.at("trackIds"); if(!ids.is_array() || ids.size()>256) throw std::runtime_error("Invalid monitor tracks");
         for(const auto& id:ids) tracks.push_back(trackIndex(id.get<std::string>()));
+        // Tracks whose input is another track or the master monitor the graph, not the device input.
+        const bool physical=std::any_of(tracks.begin(),tracks.end(),[&](std::uint32_t t){const auto& track=project_.tracks[t];return !(track.route&&track.source.kind==TrackSource::Kind::Audio);});
+        if(physical && !currentDevice().inputChannels) throw std::runtime_error("Enable the native input device before monitoring");
       }
       awaitApplied(engine_->setMonitoring(tracks)); return Json::object();
     }
@@ -282,8 +289,8 @@ class Host {
       const auto& r=*recording_; const bool failed=recordingError_ || r.failed() || s.recordingDroppedFrames;
       Json takes=Json::array();
       for(const auto& take:r.takes()) {
-        Json item={{"trackId",take.trackId},{"takeId",take.takeId},{"path",take.path},{"startFrame",r.rawStart-std::int64_t(r.compensation)},{"rawStartFrame",r.rawStart},
-          {"compensationFrames",r.compensation},{"compensationKnown",r.compensationKnown},{"frames",r.frames()},{"sampleRate",s.sampleRate},{"channels",take.channels}};
+        Json item={{"trackId",take.trackId},{"takeId",take.takeId},{"path",take.path},{"startFrame",r.rawStart-std::int64_t(take.compensation)},{"rawStartFrame",r.rawStart},
+          {"compensationFrames",take.compensation},{"compensationKnown",take.compensationKnown},{"frames",r.frames()},{"sampleRate",s.sampleRate},{"channels",take.channels}};
         if(failed) item["error"]="장치·플러그인 또는 녹음 오류로 중단되었습니다. 복구 폴더에 받은 오디오를 보관했습니다.";
         takes.push_back(std::move(item));
       }
@@ -385,7 +392,6 @@ class Host {
   Json startRecording(const Json& a) {
     if(recording_) throw std::runtime_error("Recording is already active");
     const auto device=currentDevice();
-    if(!device.inputChannels) throw std::runtime_error("Native input is not configured");
     if(!engine_->snapshot().playing) throw std::runtime_error("Start transport playback before recording");
     // { trackId, path } is the former single take; { takes: [{ trackId, path, takeId? }] } records them all at once.
     const bool legacy=!a.contains("takes");
@@ -407,10 +413,12 @@ class Host {
       indices.push_back(index); takes.push_back(std::move(take));
     }
     const auto plan=engine_->planRecording(indices);
+    // Tracks whose input is another track or the master (docs/TRACK_INPUT_ROUTING.md) need no device input.
+    if(!device.inputChannels && std::any_of(plan.begin(),plan.end(),[](const RecordingTake& take){return !take.routed;})) throw std::runtime_error("Native input is not configured");
     for(std::size_t i=0;i<plan.size();++i) {
       // Recording silence from an unopened channel would look like a successful take.
-      if(plan[i].route.missing) throw DeviceError(DeviceErrorCode::ChannelsUnavailable,"The input selected for track "+takes[i].trackId+" is not open on this audio device");
-      takes[i].channels=std::uint16_t(plan[i].route.channels);
+      if(!plan[i].routed && plan[i].route.missing) throw DeviceError(DeviceErrorCode::ChannelsUnavailable,"The input selected for track "+takes[i].trackId+" is not open on this audio device");
+      takes[i].channels=std::uint16_t(plan[i].route.channels);takes[i].routed=plan[i].routed;
     }
     recordingError_=false;
     recording_=std::make_unique<RecordingSession>(*engine_,device.sampleRate,std::move(takes),legacy);
@@ -419,12 +427,20 @@ class Host {
     r.rawStart=s.recordingStartFrame;
     r.compensation=std::uint64_t(device.inputLatencyFrames.value_or(0))+device.outputLatencyFrames.value_or(0)+s.latencyFrames;
     r.compensationKnown=device.inputLatencyFrames.has_value()&&device.outputLatencyFrames.has_value();
+    // An internal route is captured on the callback frames its source renders: no converter latency, and
+    // only the graph's plug-in delay when the tap sits after the inserts (post-FX, post-fader, master).
+    for(std::size_t i=0;i<plan.size();++i) {
+      auto& take=r.mutableTakes()[i];
+      if(take.routed){take.compensation=plan[i].routeDelayed?s.latencyFrames:0;take.compensationKnown=true;}
+      else {take.compensation=r.compensation;take.compensationKnown=r.compensationKnown;}
+    }
     Json list=Json::array();
-    for(const auto& take:r.takes()) list.push_back({{"trackId",take.trackId},{"takeId",take.takeId},{"path",take.path},{"channels",take.channels},{"startFrame",r.rawStart-std::int64_t(r.compensation)},
-      {"rawStartFrame",r.rawStart},{"compensationFrames",r.compensation},{"compensationKnown",r.compensationKnown}});
+    for(const auto& take:r.takes()) list.push_back({{"trackId",take.trackId},{"takeId",take.takeId},{"path",take.path},{"channels",take.channels},{"startFrame",r.rawStart-std::int64_t(take.compensation)},
+      {"rawStartFrame",r.rawStart},{"compensationFrames",take.compensation},{"compensationKnown",take.compensationKnown}});
     Json result={{"takes",list},{"sampleRate",s.sampleRate}};
-    if(legacy) result.update({{"startFrame",r.rawStart-std::int64_t(r.compensation)},{"rawStartFrame",r.rawStart},{"compensationFrames",r.compensation},
-      {"compensationKnown",r.compensationKnown},{"channels",r.takes()[0].channels}});
+    const auto& first=r.takes()[0];
+    if(legacy) result.update({{"startFrame",r.rawStart-std::int64_t(first.compensation)},{"rawStartFrame",r.rawStart},{"compensationFrames",first.compensation},
+      {"compensationKnown",first.compensationKnown},{"channels",first.channels}});
     return result;
   }
   Json measureLatency(const Json& a) {
@@ -564,7 +580,7 @@ class Host {
     if(!state.sampleRate || !state.bufferFrames) { device_.close(); throw std::runtime_error("Audio driver did not report a usable configuration"); }
     // The previous engine and its workers are destroyed here, after the device closed.
     engine_.reset(); engine_=std::make_unique<RenderEngine>(state.sampleRate,scratchFrames); plugins_.clear();
-    engine_->setProcessing(processingOptions(true));
+    engine_->setProcessing(processingOptions(true)); applyMetronome();
     project_.lowLatencyMonitoring=config.lowLatencyMonitoring;
     if(project_.projectId.empty()) { project_.projectId="empty"; project_.sampleRate=state.sampleRate; project_.lengthFrames=state.sampleRate; }
     if(project_.sampleRate!=state.sampleRate) { project_={}; project_.projectId="empty"; project_.sampleRate=state.sampleRate; project_.lengthFrames=state.sampleRate; }
@@ -704,6 +720,10 @@ class Host {
         {"recording",s.recording},{"recordingStartFrame",s.recordingStartFrame},{"recordedFrames",s.recordedFrames},{"recordingDroppedFrames",s.recordingDroppedFrames},{"latencyFrames",s.latencyFrames},{"commandOverflows",s.commandOverflows},{"voiceOverflows",s.voiceOverflows},{"invalidSamples",s.invalidSamples},
         {"workerThreads",s.workerThreads},{"renderAheadTracks",s.renderAheadTracks},{"renderAheadResyncs",s.renderAheadResyncs}});
       for(std::size_t i=0;i<std::min(project_.tracks.size(),std::size_t(s.trackCount));++i) result["levels"][project_.tracks[i].id]=s.trackPeaks[i];
+      // Per-insert dynamics meters for the compressor/limiter/gate views, keyed by device id.
+      result["dynamics"]=Json::object();
+      for(std::uint32_t i=0;i<s.dynamicsCount;++i){const auto&d=s.dynamics[i];
+        if(d.track<project_.tracks.size()&&d.insert<project_.tracks[d.track].inserts.size()) result["dynamics"][project_.tracks[d.track].inserts[d.insert].id]={{"input",d.input},{"gain",d.gain}};}
       result["tracksMissingInput"]=tracksMissingInput(device);
       if(recordingError_) result["error"]="녹음 데이터가 손실되었습니다. 녹음을 중지하고 복구 파일을 확인해주세요.";
     }
@@ -733,6 +753,32 @@ class Host {
   std::vector<std::pair<std::uint64_t,std::unique_ptr<RenderEngine>>> retiredPreview_;
   std::atomic<LatencyProbe*> probe_{nullptr}; std::vector<std::pair<std::uint64_t,std::unique_ptr<LatencyProbe>>> retiredProbes_;
   LoadMeter load_; std::atomic<std::uint32_t> callbackRate_{0};
+  // Metronome settings outlive engine re-creation (device configure); see applyMetronome.
+  std::shared_ptr<const MetronomeClicks> metronomeClicks_; bool metronomeOn_=false; float metronomeVolume_=0;
+  void applyMetronome() {
+    if(!engine_) return;
+    const bool usable=metronomeClicks_ && metronomeClicks_->sampleRate==engine_->snapshot().sampleRate;
+    (void)engine_->setMetronome(usable?metronomeClicks_:nullptr,metronomeOn_,metronomeVolume_);
+  }
+  Json setMetronome(const Json& a) {
+    // Validate everything before changing state: a rejected request keeps the previous metronome.
+    const bool enabled=a.value("enabled",false); const auto volume=static_cast<float>(number(a,"volume",0,1,.7));
+    if(a.contains("strokes")) {
+      const auto& strokes=a.at("strokes");
+      if(!strokes.is_array() || strokes.size()!=3) throw std::runtime_error("Metronome needs three strokes");
+      auto clicks=std::make_shared<MetronomeClicks>(); clicks->sampleRate=static_cast<std::uint32_t>(integer(a,"sampleRate",8000,192000,48000));
+      for(std::size_t level=0;level<3;++level) {
+        const auto& pcm=strokes[level];
+        if(!pcm.is_array() || pcm.size()>std::size_t(clicks->sampleRate)*2) throw std::runtime_error("Invalid metronome stroke");
+        clicks->levels[level].reserve(pcm.size());
+        for(const auto& v:pcm) { if(!v.is_number()) throw std::runtime_error("Invalid metronome sample"); const auto x=v.get<double>(); if(!std::isfinite(x)||std::abs(x)>4) throw std::runtime_error("Invalid metronome sample"); clicks->levels[level].push_back(static_cast<float>(x)); }
+      }
+      metronomeClicks_=std::move(clicks);
+    }
+    metronomeOn_=enabled; metronomeVolume_=volume;
+    applyMetronome();
+    return Json::object();
+  }
 };
 
 struct InputQueue { std::mutex mutex; std::condition_variable changed; std::deque<std::string> lines; bool done=false; std::string error; };

@@ -1,10 +1,17 @@
-Salamander Grand Piano V3
-by Alexander Holm
-Source: https://archive.org/details/SalamanderGrandPianoV3
+Accurate-Salamander Grand Piano V6.2e (remaster of Salamander Grand Piano V3)
+by Alexander Holm (Salamander Grand Piano V3); remaster by Chisato Yamauchi, Accurate-Salamander Project
+Source: https://www.ir.isas.jaxa.jp/~cyamauch/AccurateSalamander/
 
 Licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
 
-Changes made for this project: 30 notes × 3 velocity layers and 88 key-release samples selected, trimmed, normalized, encoded to Opus/AAC (via MP3 encodings from https://github.com/tambien/Piano)
+Changes made for this project: 30 notes × 4 of 16 velocity layers (v3, v7, v11, v15) and 88 key-release samples selected from the 48 kHz/24-bit FLAC bank; trimmed with per-register length caps and fade-outs, one common gain for the whole set, encoded to Opus 96 kbps (webm) and AAC 128 kbps (m4a)
 
-Original samples: Alexander Holm, Salamander Grand Piano V3 (https://archive.org/details/SalamanderGrandPianoV3), CC BY 3.0.
-MP3 intermediates: https://github.com/tambien/Piano (same license).
+Original soundbank: Salamander Grand Piano V3 by Alexander Holm
+(https://archive.org/details/SalamanderGrandPianoV3), CC BY 3.0.
+Remaster: Accurate-Salamander Grand Piano V6.2e, Accurate-Salamander Project, Chisato Yamauchi
+(https://www.ir.isas.jaxa.jp/~cyamauch/AccurateSalamander/), "CC-by (same licence as the original
+version)" — CC BY 3.0. Downloaded from
+https://archive.org/details/httpswww.ir.isas.jaxa.jpcyamauchaccuratesalamander
+(AccurateSalamanderGrandPianoV6.2e_48khz24bit_flac.zip, MD5 c2803eaa235a28af5c11e4a504ad337e).
+The archive.org item page shows CC BY 4.0; we follow the project page (CC BY 3.0, same as the original).
+Neither the original author nor the Accurate-Salamander Project endorses this project.

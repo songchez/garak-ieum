@@ -37,11 +37,11 @@ function validateEdits(segments: readonly PitchNote[], shifts: Readonly<Record<s
 
 const ownShift = (shifts: Readonly<Record<string, number>>, id: string): number => Object.hasOwn(shifts, id) ? shifts[id] : 0
 
-const RESAMPLE_HALF_TAPS = 32
-const RESAMPLE_PHASES = 1024
+export const RESAMPLE_HALF_TAPS = 32
+export const RESAMPLE_PHASES = 1024
 
 /** Blackman-windowed sinc; cutoff removes frequencies that would alias upward. */
-function resamplingKernel(ratio: number): Float32Array {
+export function resamplingKernel(ratio: number): Float32Array {
   const taps = RESAMPLE_HALF_TAPS * 2
   const cutoff = Math.min(1, 1 / ratio)
   const table = new Float32Array((RESAMPLE_PHASES + 1) * taps)

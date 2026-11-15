@@ -189,3 +189,4 @@
 .mixer .cstrip{min-height:0;overflow:hidden}
 .mixer .cstrip.compact .cstrip-fader{flex:1 1 var(--fader-h,110px);min-height:28px}
 .mixer .cstrip .cstrip-name{flex-shrink:0}
+.insp-note{flex:1;min-width:0;font-size:10px;line-height:1.35;color:var(--text-warning,#d9a03f)}

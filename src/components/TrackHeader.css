@@ -138,3 +138,5 @@
 :root[data-theme-mode="light"] .pan-cap{fill:var(--surface-raised);stroke:var(--control-border)}
 :root[data-theme-mode="light"] .pan-track{stroke:var(--control-border);stroke-width:6}
 :root[data-theme-mode="light"] .pan-value{stroke:var(--accent)}
+.track-header[data-track-id] .track-route-label{display:block;max-width:220px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:9.5px;line-height:1.3;color:var(--text-secondary)}
+.track-header[data-track-id] .track-route-label.missing{color:var(--text-warning,#d9a03f)}

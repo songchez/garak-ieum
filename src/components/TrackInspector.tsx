@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import type { InputChoice, InstrumentId, Track, TrackInput, TrackMonitorMode } from '../core/types'
+import type { InputChoice, InstrumentId, Track, TrackInput, TrackInputRoute, TrackMonitorMode } from '../core/types'
 import { instrumentDef } from '../core/instruments'
 import { monitorModeOf, monitorModePatch } from '../core/trackActions'
-import { InputSelect } from './InputSelect'
+import { InputSelect, TapSelect } from './InputSelect'
 import { parsePitchName, pitchName } from '../core/pitch'
 import { Icon } from './Icon'
 import { InstrumentOptions } from './InstrumentOptions'
@@ -27,6 +27,9 @@ interface Props {
   /** Mono/stereo inputs of the current device; empty = unknown (only the default input). */
   inputChoices?: readonly InputChoice[]
   onInputChange?: (trackId: string, input: TrackInput | null) => void
+  /** Project tracks, for the internal (track/master) inputs. */
+  tracks?: readonly Track[]
+  onRouteChange?: (trackId: string, route: TrackInputRoute | null, input?: TrackInput | null) => void
 }
 
 const MONITOR_MODES: { mode: TrackMonitorMode; label: string; help: string }[] = [
@@ -35,7 +38,7 @@ const MONITOR_MODES: { mode: TrackMonitorMode; label: string; help: string }[] =
   { mode: 'off', label: '끔', help: '입력을 듣지 않습니다(녹음은 됩니다)' },
 ]
 
-export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, onOpenColorPalette, onIconMenu, inputChoices = [], onInputChange }: Props) {
+export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, onOpenColorPalette, onIconMenu, inputChoices = [], onInputChange, tracks, onRouteChange }: Props) {
   const id = track.id
   const patch = (p: Partial<Track>, key: string) => onTrackChange(id, p, `${id}:${key}`)
   /** Two-field range: the edited bound pushes the other one along (Logic). */
@@ -55,7 +58,10 @@ export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, 
       <button type="button" className="insp-swatch" onClick={e => onOpenColorPalette(id, e)} aria-haspopup="dialog" title="트랙 색상 변경" aria-label="트랙 색상 변경" style={{ background: track.color }} />
     </span></div>
     {track.kind === 'audio' && <>
-      <div className="insp-row"><span className="insp-label">입력</span><InputSelect input={track.input} choices={inputChoices} ariaLabel="트랙 입력" disabled={!onInputChange} onChange={input => onInputChange?.(id, input)} /></div>
+      <div className="insp-row"><span className="insp-label">입력</span><InputSelect input={track.input} choices={inputChoices} ariaLabel="트랙 입력" disabled={!onInputChange} onChange={input => onInputChange?.(id, input)}
+        routing={tracks && onRouteChange ? { track, tracks, onChange: (route, input) => onRouteChange(id, route, input) } : undefined} /></div>
+      {track.inputRoute?.kind === 'track' && onRouteChange && <div className="insp-row"><span className="insp-label">탭</span><TapSelect value={track.inputRoute.tap} onChange={tap => track.inputRoute?.kind === 'track' && onRouteChange(id, { ...track.inputRoute, tap })} /></div>}
+      {track.inputRoute?.kind === 'none' && <div className="insp-row"><span className="insp-label" /><span className="insp-note" role="note">입력 트랙이 삭제되어 무음이 녹음됩니다. 다른 입력을 골라 주세요.</span></div>}
       <div className="insp-row"><span className="insp-label">모니터</span><span className="insp-pair insp-monitor-modes" role="radiogroup" aria-label="입력 모니터링">
         {MONITOR_MODES.map(({ mode, label, help }) => <button key={mode} type="button" role="radio" aria-checked={monitorModeOf(track) === mode} className={`insp-mode${monitorModeOf(track) === mode ? ' active' : ''}`} title={`${label}: ${help}`}
           onClick={() => onTrackChange(id, monitorModePatch(mode), `${id}:monitorMode`)}>{label}</button>)}

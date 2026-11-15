@@ -128,8 +128,14 @@ export const monitorTargets = (project: Project, recording: boolean, playing: bo
   project.tracks.filter(t => monitorsInput(t, recording, playing)).map(t => t.id)
 
 /** Tracks that record in one pass: every armed audio track (top to bottom, at most `limit`) when the engine
- * can capture several takes at once, otherwise only the record target. */
-export function recordTakeTrackIds(target: RecordTarget, limit: number): string[] {
+ * can capture several takes at once, otherwise only the record target. With a single physical recorder
+ * (a browser), armed tracks whose input is another track or the master (`routed`) are recorded from the
+ * audio graph and do not count against it: all of them record, plus the topmost physical one. */
+export function recordTakeTrackIds(target: RecordTarget, limit: number, routed: (trackId: string) => boolean = () => false): string[] {
   if (!target.trackId) return []
-  return limit > 1 && target.reason === 'armed' ? [target.trackId, ...target.extraArmed].slice(0, Math.floor(limit)) : [target.trackId]
+  if (target.reason !== 'armed') return [target.trackId]
+  const armed = [target.trackId, ...target.extraArmed]
+  if (limit > 1) return armed.slice(0, Math.floor(limit))
+  const physical = armed.find(id => !routed(id))
+  return armed.filter(id => routed(id) || id === physical)
 }

@@ -92,14 +92,16 @@ def peak_db(audio: np.ndarray) -> float:
     return 20 * np.log10(peak) if peak > 0 else float("-inf")
 
 
-def encode(audio: np.ndarray, out_base: Path, *, pitched: bool = False) -> None:
+def encode(audio: np.ndarray, out_base: Path, *, pitched: bool = False, opus_kbps: int | None = None,
+           aac_kbps: int = 128) -> None:
     out_base.parent.mkdir(parents=True, exist_ok=True)
+    opus = f"{opus_kbps}k" if opus_kbps else ("64k" if pitched else "96k")
     ch = audio.shape[1]
     pcm = audio.astype(np.float32).tobytes()
     base = ["ffmpeg", "-v", "error", "-y", "-f", "f32le", "-ar", str(RATE), "-ac", str(ch), "-i", "-"]
-    subprocess.run(base + ["-c:a", "libopus", "-b:a", "64k" if pitched else "96k", "-application", "audio",
+    subprocess.run(base + ["-c:a", "libopus", "-b:a", opus, "-application", "audio",
                            "-frame_duration", "20", str(out_base.with_suffix(".webm"))], input=pcm, check=True)
-    subprocess.run(base + ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+    subprocess.run(base + ["-c:a", "aac", "-b:a", f"{aac_kbps}k", "-movflags", "+faststart",
                            str(out_base.with_suffix(".m4a"))], input=pcm, check=True)
 
 
@@ -162,10 +164,12 @@ def key_ranges(roots: list[int], lo: int = 0, hi: int = 127) -> list[tuple[int, 
     return out
 
 
-def encode_many(clips: dict[str, np.ndarray], out_dir: Path, *, pitched: bool = False, workers: int = 4) -> None:
+def encode_many(clips: dict[str, np.ndarray], out_dir: Path, *, pitched: bool = False, workers: int = 4,
+                **bitrates: int) -> None:
+    """bitrates: optional opus_kbps / aac_kbps forwarded to encode()."""
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        list(ex.map(lambda kv: encode(kv[1], out_dir / kv[0], pitched=pitched), clips.items()))
+        list(ex.map(lambda kv: encode(kv[1], out_dir / kv[0], pitched=pitched, **bitrates), clips.items()))
 
 
 def write_license(set_id: str, attribution: dict, extra: str = "") -> Path:
@@ -193,5 +197,7 @@ def clear_set(set_id: str) -> None:
                 p.unlink()
 
 
-def set_size_mb(set_id: str) -> float:
-    return sum(p.stat().st_size for p in (PUBLIC / set_id).glob("*") if p.is_file()) / 1e6
+def set_size_mb(set_id: str, suffix: str | None = None) -> float:
+    """Total size of a set, or of one format when suffix is given (e.g. ".webm")."""
+    files = (PUBLIC / set_id).glob(f"*{suffix}" if suffix else "*")
+    return sum(p.stat().st_size for p in files if p.is_file()) / 1e6

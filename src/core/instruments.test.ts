@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { INSTRUMENTS, INSTRUMENT_SECTIONS, SAMPLE_SETS, instrumentDef, isInstrumentId, previewPitch } from './instruments'
-import { SAMPLED_KIT_PARAMS, SAMPLED_PARAMS } from './devices'
+import { SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, SAMPLED_PIANO_PARAMS } from './devices'
 import { createEmptyProject, createTrack, defaultInstrumentParams, validateProject } from './project'
 
 describe('instrument registry', () => {
@@ -12,10 +12,10 @@ describe('instrument registry', () => {
       expect(def.color).toMatch(/^#[\da-f]{6}$/i)
       if (def.kind === 'sampled') {
         expect(def.set).toMatch(/^[\w-]+$/)
-        expect(def.params).toBe(def.isKit ? SAMPLED_KIT_PARAMS : SAMPLED_PARAMS)
+        expect(def.params).toBe(def.isKit ? SAMPLED_KIT_PARAMS : def.category === 'piano' ? SAMPLED_PIANO_PARAMS : SAMPLED_PARAMS)
       } else expect(def.set).toBeUndefined()
     }
-    expect(SAMPLE_SETS).toEqual(['salamander', 'wurlitzer', 'kit-acoustic', 'kit-808', 'kit-lofi', 'samul', 'gayageum', 'haegeum', 'daegeum'])
+    expect(SAMPLE_SETS).toEqual(['salamander', 'bitklavier', 'wurlitzer', 'kit-acoustic', 'kit-808', 'kit-lofi', 'samul', 'gayageum', 'haegeum', 'daegeum'])
   })
 
   it('falls back to the keys definition for unknown ids without accepting them', () => {
@@ -40,7 +40,7 @@ describe('sampled instruments in projects', () => {
     const track = createTrack('instrument', 'grand')
     expect(track.name).toBe('Grand Piano')
     expect(track.color).toBe('#d9b45a')
-    expect(track.instrumentParams).toEqual({ tone: 0, attack: 0.001, release: 0.25, level: 1 })
+    expect(track.instrumentParams).toEqual({ tone: 0, attack: 0.001, release: 0.25, releaseNoise: 0.5, level: 1 })
     const kit = createTrack('instrument', 'kit-808')
     expect(kit.instrumentParams).toEqual({ tune: 0, decay: 1, tone: 0, level: 1 })
     const project = { ...createEmptyProject(), tracks: [track, kit] }

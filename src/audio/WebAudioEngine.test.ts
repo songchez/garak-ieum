@@ -194,7 +194,7 @@ describe('selected output device health', () => {
     vi.advanceTimersByTime(40)
     const context = ContextSpy.instances[0]
     const source = context.monitors[0]
-    const gate = context.gains.at(-4)!
+    const gate = context.gains.at(-5)!
     expect(source.connections.size).toBe(1)
     mediaDevices.enumerateDevices.mockResolvedValue(outputDevices('default'))
     mediaDevices.dispatchEvent(new Event('devicechange'))
@@ -207,7 +207,7 @@ describe('selected output device health', () => {
     engine.pause()
     engine.setInputMonitor(stream, ['input'])
     expect(context.createMediaStreamSource).toHaveBeenCalledTimes(1)
-    expect(context.gains.at(-4)!.gain.value).toBe(0)
+    expect(context.gains.at(-5)!.gain.value).toBe(0)
     await expect(engine.play()).rejects.toThrow('출력 장치')
     engine.setProject({ ...project, sampleRate: 96000 })
     expect(engine.getAudioState().status).toBe('error')

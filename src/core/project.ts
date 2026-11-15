@@ -6,9 +6,11 @@ import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
 import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
+import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track, type TrackInput, type TrackMonitorMode } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMonitorMode } from './types'
+import { copyRoute, reconcileTrackRoutes } from './trackRouting'
 
 let fallbackSequence = 0
 
@@ -96,7 +98,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 10,
+    schemaVersion: 12,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -388,6 +390,7 @@ export function duplicateTrack(track: Track): Track {
     id: uid(),
     name: `${track.name} 복사본`.slice(0, 512),
     ...(track.input ? { input: copyTrackInput(track.input) } : {}),
+    ...(track.inputRoute ? { inputRoute: copyRoute(track.inputRoute) } : {}),
     instrumentParams: { ...track.instrumentParams },
     ...(track.instrumentState ? { instrumentState: cloneWavetableState(track.instrumentState) } : {}),
     devices: track.devices.map(device => cloneDevice(device)),
@@ -406,6 +409,7 @@ export function duplicateTrackSettings(track: Track): Track {
     monitor: false,
     ...(track.monitorMode === 'in' ? { monitorMode: 'off' as const } : {}),
     ...(track.input ? { input: copyTrackInput(track.input) } : {}),
+    ...(track.inputRoute ? { inputRoute: copyRoute(track.inputRoute) } : {}),
     keyLimit: [...track.keyLimit],
     velocityLimit: [...track.velocityLimit],
     instrumentParams: { ...track.instrumentParams },
@@ -630,6 +634,17 @@ function parseTrackInput(value: unknown, path: string): TrackInput {
   }
 }
 
+const INPUT_TAPS: readonly TrackInputTap[] = ['preFx', 'postFx', 'postFader']
+
+function parseTrackInputRoute(value: unknown, path: string): TrackInputRoute {
+  const source = object(value, path)
+  if (source.kind === 'master') return { kind: 'master' }
+  if (source.kind === 'none') return { kind: 'none' }
+  if (source.kind !== 'track') throw new Error(`${path} must name a track, the master or none.`)
+  if (!INPUT_TAPS.includes(source.tap as TrackInputTap)) throw new Error(`${path} tap must be preFx, postFx or postFader.`)
+  return { kind: 'track', trackId: text(source.trackId, `${path} track ID`, 200), tap: source.tap as TrackInputTap }
+}
+
 function monitorMode(value: unknown, path: string): TrackMonitorMode {
   if (!MONITOR_MODES.includes(value as TrackMonitorMode)) throw new Error(`${path} must be off, auto or in.`)
   return value as TrackMonitorMode
@@ -684,7 +699,7 @@ function fadeCurves(clip: Record<string, unknown>, path: string, version: number
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10) throw new Error('This project version is not supported. Expected schema version 1 through 10.')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12) throw new Error('This project version is not supported. Expected schema version 1 through 12.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -767,6 +782,9 @@ export function validateProject(input: unknown): Project {
     if (version < 8 && (track.input !== undefined || track.monitorMode !== undefined)) throw new Error('Track inputs and monitor modes require project schema version 8 or later.')
     if (track.kind !== 'audio' && track.input !== undefined) throw new Error(`${path} input requires an audio track.`)
     const input = track.input === undefined ? undefined : parseTrackInput(track.input, `${path} input`)
+    if (version < 11 && track.inputRoute !== undefined) throw new Error('Track input routes require project schema version 11 or later.')
+    if (track.kind !== 'audio' && track.inputRoute !== undefined) throw new Error(`${path} input route requires an audio track.`)
+    const inputRoute = track.inputRoute === undefined ? undefined : parseTrackInputRoute(track.inputRoute, `${path} input route`)
     const mode = track.monitorMode === undefined ? undefined : monitorMode(track.monitorMode, `${path} monitor mode`)
     // Schema ≤7 has only the I flag, and an absent mode keeps deriving from it. A saved mode is authoritative.
     const monitor = mode === undefined ? optional(track.monitor, false, value => flag(value, `${path} monitor`)) : mode === 'in'
@@ -800,7 +818,10 @@ export function validateProject(input: unknown): Project {
         if (clip.warp !== undefined && version < 9) throw new Error('Audio warp requires project schema version 9 or later.')
         const assetId = text(clip.assetId, `${clipPath} audio asset ID`, 200)
         const warp = clip.warp === undefined ? undefined : validateWarp(clip.warp, `${clipPath} warp`)
-        if (warp) checkWarpClip({ assetId, pitch }, warp, clipPath)
+        if (clip.regionPitch !== undefined && version < 12) throw new Error('Region pitch requires project schema version 12 or later.')
+        const regionPitch = clip.regionPitch === undefined ? undefined : validateTranspose(clip.regionPitch, `${clipPath} region pitch`)
+        if (warp) checkWarpClip({ assetId, pitch, regionPitch }, warp, clipPath)
+        checkTransposeClip({ assetId, pitch, warp, regionPitch }, clipPath)
         return {
           ...base,
           kind: 'audio',
@@ -811,6 +832,7 @@ export function validateProject(input: unknown): Project {
           ...fadeCurves(clip, clipPath, version),
           ...(pitch ? { pitch } : {}),
           ...(warp ? { warp } : {}),
+          ...(regionPitch ? { regionPitch } : {}),
         }
       }
       if (clip.kind !== 'midi') throw new Error(`${clipPath} has an invalid clip type.`)
@@ -867,8 +889,11 @@ export function validateProject(input: unknown): Project {
       devices,
       ...(pluginInstrument ? { pluginInstrument } : {}),
       ...(input ? { input } : {}),
+      ...(inputRoute ? { inputRoute } : {}),
     }
   })
+  // Routes to deleted tracks read as 'none'; a saved loop (only possible by hand-editing) is broken the same way.
+  const routedTracks = reconcileTrackRoutes(tracks)
   const markers = sortMarkers(list(source.markers ?? [], 'Markers', 10_000).map((markerInput, markerIndex): Marker => {
     const path = `Marker ${markerIndex + 1}`
     const marker = object(markerInput, path)
@@ -879,7 +904,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 10,
+    schemaVersion: 12,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),
@@ -889,7 +914,7 @@ export function validateProject(input: unknown): Project {
     lengthBeats,
     masterVolume: number(source.masterVolume, 'Master volume', 0, 2),
     loop: { enabled: flag(loop.enabled, 'Loop enabled'), startBeat: loopStart, endBeat: loopEnd },
-    tracks,
+    tracks: routedTracks,
     markers,
   }
 }

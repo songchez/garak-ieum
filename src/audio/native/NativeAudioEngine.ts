@@ -5,6 +5,7 @@ import {
 import { defaultInstrumentParams } from '../../core/project'
 import { validateNativePluginState } from '../../core/nativePlugins'
 import { instrumentDef } from '../../core/instruments'
+import { isRouted } from '../../core/trackRouting'
 import { isPluginDevice, type AudioAsset, type AudioEngine, type InputChoice, type InstrumentId, type Project, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot } from '../../core/types'
 import type { AudioRecordingCallbacks } from '../AudioRecording'
 import { SampleLibrary } from '../samples'
@@ -21,8 +22,11 @@ import { combineWavetablePatch, type WavetablePatch } from '../../devices/waveta
 import { WAVE_SCHEMA_FINGERPRINT } from '../../devices/wavetable-synth/schema.generated'
 import type { NativeEngineCapabilities, NativeProjectApplied } from './contracts'
 import { ownAudioBytes } from '../assetBytes'
+import { dynamicsReadingFrom, type DynamicsReading } from '../../devices/effects/dynamicsMeter'
 import { nativeRequestError, withNativeCode } from './deviceErrors'
 import { inputChoices, namesByIndex, parseDeviceProbe, snapshotInputNames } from './deviceProfile'
+import { countInBeats, DEFAULT_METRONOME_PREFS, type MetronomeEngineState, type PlayOptions } from '../../core/metronome'
+import { metronomeStrokes } from '../metronomeSounds'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
@@ -89,8 +93,12 @@ export class NativeAudioEngine implements AudioEngine {
   private configurationTask: Promise<void> | null = null
   private closingTask: Promise<void> | null = null
   private configured = false
+  private metronomeState: MetronomeEngineState = { enabled: false, sound: DEFAULT_METRONOME_PREFS.sound, volume: DEFAULT_METRONOME_PREFS.volume, accent: true }
+  /** Sound/accent/rate whose strokes the host already holds; strokes are re-sent only when this changes. */
+  private metronomeSentStrokes = ''
   private monitorIds: string[] = []
   private levels = new Map<string, number>()
+  private dynamics = new Map<string, DynamicsReading>()
   private masterLevel = 0
   private snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: DEFAULT_SAMPLE_RATE }
   private audioSnapshot: AudioState
@@ -98,6 +106,8 @@ export class NativeAudioEngine implements AudioEngine {
   private nativeDevice: NativeDeviceState | null = null
   private hostGeneration: number | null = null
   private captureWanted = false
+  /** The pending/active recording includes a physical input (not only track/master routes). */
+  private captureNeedsInput = false
   private monitorRequest = 0
   private configurationEpoch = 0
   private waveCapability: boolean | undefined
@@ -150,6 +160,7 @@ export class NativeAudioEngine implements AudioEngine {
   readonly getInputState = (): InputState => this.inputSnapshot
   readonly getTrackLevel = (trackId: string): number => this.levels.get(trackId) ?? 0
   readonly getMasterLevel = (): number => this.masterLevel
+  readonly getDeviceMeter = (deviceId: string): DynamicsReading | null => this.dynamics.get(deviceId) ?? null
   readonly subscribe = (callback: () => void): (() => void) => { this.listeners.add(callback); return () => { this.listeners.delete(callback) } }
   readonly subscribeAudioState = (callback: () => void): (() => void) => { this.audioListeners.add(callback); return () => { this.audioListeners.delete(callback) } }
   readonly subscribeInputState = (callback: () => void): (() => void) => { this.inputListeners.add(callback); return () => { this.inputListeners.delete(callback) } }
@@ -309,7 +320,7 @@ export class NativeAudioEngine implements AudioEngine {
     const text = message(error)
     this.clearWaveAudition(true)
     this.updateTransport({ playing: false, ready: false })
-    this.levels.clear(); this.masterLevel = 0
+    this.levels.clear(); this.dynamics.clear(); this.masterLevel = 0
     this.updateAudio({ status: 'error', error: text, needsReconfiguration: true })
   }
 
@@ -352,6 +363,7 @@ export class NativeAudioEngine implements AudioEngine {
       try { this.setDevice(event.device) } catch (error) { this.fail(error); return }
     }
     if (event.levels && typeof event.levels === 'object') this.levels = new Map(Object.entries(event.levels).map(([id, value]) => [id, Math.max(0, finite(value))]))
+    this.dynamics = new Map(Object.entries(event.dynamics && typeof event.dynamics === 'object' ? event.dynamics : {}).flatMap(([id, value]) => { const reading = dynamicsReadingFrom(value); return reading ? [[id, reading] as const] : [] }))
     this.masterLevel = Math.max(0, finite(event.masterLevel))
     const rate = finite(event.sampleRate, this.nativeDevice?.sampleRate ?? this.desiredSampleRate)
     const bpm = this.project?.bpm ?? 120
@@ -458,7 +470,7 @@ export class NativeAudioEngine implements AudioEngine {
       const backend = nativeBackendForPlatform(next, this.platform)
       // Inputs open only for an explicit record/monitor action. The list is authoritative for
       // current hosts; count + first channel keep an older host on the same (contiguous) inputs.
-      const inputs = this.captureWanted || (next.softwareMonitoring && this.monitorIds.length) ? nativeInputChannelList(next, backend) : []
+      const inputs = (this.captureWanted && this.captureNeedsInput) || (next.softwareMonitoring && this.hardwareMonitorIds().length) ? nativeInputChannelList(next, backend) : []
       // This is a requested device block ('driver' = the driver's preferred size), independent of the browser renderSizeHint.
       const result = await this.request<NativeDeviceState | { device: NativeDeviceState }>('engine.configure', {
         backend,
@@ -486,7 +498,9 @@ export class NativeAudioEngine implements AudioEngine {
       await this.syncProject()
       if (generation !== this.generation) throw abortError()
       this.updateTransport({ ready: true, sampleRate: rate })
-      if (this.monitorIds.length) await this.request('monitor.set', { trackIds: this.monitorIds, enabled: next.softwareMonitoring })
+      if (this.monitorIds.length) await this.request('monitor.set', this.monitorPayload(next.softwareMonitoring))
+      this.metronomeSentStrokes = ''
+      await this.pushMetronome().catch(() => undefined)
     } catch (error) {
       if (generation === this.generation) { this.configured = false; this.fail(error) }
       throw error
@@ -635,7 +649,22 @@ export class NativeAudioEngine implements AudioEngine {
     else await this.syncProject()
   }
 
-  async play(): Promise<void> {
+  setMetronome(state: MetronomeEngineState): void {
+    this.metronomeState = { ...state }
+    if (this.configured) void this.pushMetronome().catch(() => undefined)
+  }
+
+  /** Clicks are generated in the host's render callback after the master bus; PCM strokes cross once per sound/rate. */
+  private async pushMetronome(): Promise<void> {
+    const state = this.metronomeState, rate = this.desiredSampleRate
+    const key = `${state.sound}:${state.accent}:${rate}`
+    const params: Record<string, unknown> = { enabled: state.enabled, volume: state.volume, sampleRate: rate }
+    if (key !== this.metronomeSentStrokes) params.strokes = metronomeStrokes(state.sound, state.accent, rate).map(stroke => Array.from(stroke))
+    await this.request('metronome.set', params)
+    if (params.strokes) this.metronomeSentStrokes = key
+  }
+
+  async play(options: PlayOptions = {}): Promise<void> {
     const request = ++this.transportRequest, generation = this.generation
     await this.ensureWaveCapability()
     if (generation !== this.generation) throw abortError()
@@ -643,16 +672,18 @@ export class NativeAudioEngine implements AudioEngine {
     assertNativeInstrumentsSupported(this.requireProject(), this.sourceAvailable)
     await this.resume()
     if (generation !== this.generation || this.transportRequest !== request) return
-    await this.startNativePlayback(request, generation, normalizedStart(this.requireProject(), this.snapshot.beat))
+    const project = this.requireProject()
+    const countInFrames = Math.round(countInBeats(project.timeSignature, options.countInBars ?? 0) * 60 / project.bpm * this.desiredSampleRate)
+    await this.startNativePlayback(request, generation, normalizedStart(project, this.snapshot.beat), countInFrames)
   }
 
   /** Shared by Play and playback restoration after opening recording/monitoring input. */
-  private async startNativePlayback(request: number, generation: number, beat: number): Promise<void> {
+  private async startNativePlayback(request: number, generation: number, beat: number, countInFrames = 0): Promise<void> {
     if (generation !== this.generation || request !== this.transportRequest) return
     assertNativeInstrumentsSupported(this.requireProject(), this.sourceAvailable)
     this.pendingPlayRequest = request
     try {
-      await this.request('transport.play', { frame: this.frameForBeat(beat) })
+      await this.request('transport.play', { frame: this.frameForBeat(beat), ...(countInFrames > 0 ? { countInFrames } : {}) })
       if (generation !== this.generation || request !== this.transportRequest) return
       this.updateTransport({ playing: true, ready: true, beat })
     } finally {
@@ -731,13 +762,27 @@ export class NativeAudioEngine implements AudioEngine {
       await this.ensureInput()
       if (request !== this.monitorRequest || generation !== this.generation) return
     }
-    await this.request('monitor.set', { trackIds: this.monitorIds, enabled: this.settings.softwareMonitoring && this.monitorIds.length > 0 })
+    await this.request('monitor.set', this.monitorPayload(this.settings.softwareMonitoring))
   }
+
+  /** Monitored tracks that listen to a physical input; routed tracks (track/master inputs) need no device input. */
+  private hardwareMonitorIds(): string[] {
+    const tracks = this.project?.tracks ?? []
+    return this.monitorIds.filter(id => !tracks.some(track => track.id === id && isRouted(track)))
+  }
+
+  /** Routed tracks are always monitored on request; physical inputs only with software monitoring on. */
+  private monitorPayload(softwareMonitoring: boolean): { trackIds: string[]; enabled: boolean } {
+    const hardware = new Set(this.hardwareMonitorIds())
+    const trackIds = this.monitorIds.filter(id => softwareMonitoring || !hardware.has(id))
+    return { trackIds, enabled: trackIds.length > 0 }
+  }
+
+  private needsDeviceInput(): boolean { return (this.captureWanted && this.captureNeedsInput) || this.hardwareMonitorIds().length > 0 }
 
   /** Called only by a user recording/monitoring action, never by ordinary playback. */
   private async ensureInput(): Promise<void> {
-    if (this.inputOpen()) return
-    if (!this.captureWanted && !this.monitorIds.length) return
+    if (!this.needsDeviceInput() || this.inputOpen()) return
     const playing = this.snapshot.playing, beat = this.snapshot.beat, request = this.transportRequest, generation = this.generation
     await this.beginConfiguration(this.settings, this.desiredSampleRate)
     if (generation !== this.generation) throw abortError()
@@ -745,14 +790,15 @@ export class NativeAudioEngine implements AudioEngine {
       await this.request('transport.seek', { frame: this.frameForBeat(beat) })
       this.updateTransport({ beat })
     }
-    if (playing && request === this.transportRequest && (this.captureWanted || this.monitorIds.length)) {
+    if (playing && request === this.transportRequest && this.needsDeviceInput()) {
       await this.startNativePlayback(request, generation, beat)
     }
     if (!this.nativeDevice?.inputChannels) throw new Error('선택한 장치에 사용할 수 있는 오디오 입력이 없습니다.')
   }
 
-  async prepareRecording(): Promise<void> {
-    this.captureWanted = true
+  /** `needsInput` false: every take records a track or the master (routes), so no device input is opened. */
+  async prepareRecording(needsInput = true): Promise<void> {
+    this.captureWanted = true; this.captureNeedsInput = needsInput
     try { await this.resume(); await this.ensureInput() }
     catch (error) { this.captureWanted = false; throw error }
   }
@@ -976,7 +1022,7 @@ export class NativeAudioEngine implements AudioEngine {
     this.wavePatchRequests.clear(); this.wavePayloads.clear()
     this.project = null; this.assets = new Map(); this.decodeContext = null
     this.uploaded.clear(); this.uploadTasks.clear(); this.registeredSets.clear(); this.sampleTasks.clear(); this.sampleErrors.clear()
-    this.levels.clear(); this.masterLevel = 0
+    this.levels.clear(); this.dynamics.clear(); this.masterLevel = 0
     this.updateTransport({ playing: false, ready: false, beat: 0 })
     this.updateAudio({ status: this.bridge ? 'idle' : 'error', contextState: 'uninitialized', sampleRate: null, nativeDevice: null, error: this.bridge ? null : '네이티브 오디오 연결부가 없습니다.', needsReconfiguration: false })
     this.listeners.clear(); this.audioListeners.clear(); this.inputListeners.clear(); this.sampleListeners.clear(); this.waveListeners.clear()

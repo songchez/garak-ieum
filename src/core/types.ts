@@ -3,6 +3,7 @@ import type { PitchEditDocument } from '../devices/pitch-editor/model'
 import type { WavetableState } from '../devices/wavetable-synth/model'
 import type { WavetableNativeBridge } from '../devices/wavetable-synth/bridge'
 import type { NativePluginInstance } from '../audio/native/contracts'
+import type { MetronomeEngineState, PlayOptions } from './metronome'
 
 /** A key of INSTRUMENTS in core/instruments.ts. Saved files store it as plain text. */
 export type InstrumentId = string
@@ -68,6 +69,29 @@ export interface AudioClip extends ClipBase {
   pitch?: PitchEditDocument
   /** Detected tempo and warp state (schema 9). Never combined with pitch. */
   warp?: AudioWarp
+  /** Region pitch (schema 12; docs/REGION_PITCH.md). Absent = 0 / keep tempo. Never combined with pitch. */
+  regionPitch?: AudioTranspose
+}
+/** 템포 유지 (pitch shift, same length) or 자연스럽게 (varispeed: pitch and speed together). */
+export type TransposeMode = 'keep' | 'varispeed'
+/** What an installed pitch render carries: total cents, mode and formant preservation. */
+export interface AudioTransposeRender { cents: number; mode: TransposeMode; formant: boolean }
+/**
+ * Region transposition. assetId is render(originalAssetId, warp ratio, rendered) once the
+ * renderer installed it; offsetSeconds is in that asset's seconds (like warp).
+ */
+export interface AudioTranspose {
+  /** −24…24 */
+  semitones: number
+  /** −50…50 */
+  cents: number
+  mode: TransposeMode
+  /** Keep-tempo only: preserve formants. Absent = false. */
+  formant?: boolean
+  /** The file renders start from; equals warp.originalAssetId when the clip also has warp. */
+  originalAssetId: string
+  /** The transposition the current assetId carries. Absent = none. */
+  rendered?: AudioTransposeRender
 }
 /**
  * Offline warp: while enabled, assetId is a render of originalAssetId stretched by
@@ -114,6 +138,17 @@ export interface TrackInput {
   /** Channel name when chosen, used to re-find the input on another computer or interface. */
   label?: string
 }
+/** Where a track-input route listens on its source track (Ableton Pre FX / Post FX / Post Mixer). */
+export type TrackInputTap = 'preFx' | 'postFx' | 'postFader'
+/**
+ * Internal recording input (schema 11): another track's signal or the master mix (resampling) instead of a
+ * physical input. `none` is a route whose source track was deleted: it records and monitors silence until
+ * the user picks another input. See docs/TRACK_INPUT_ROUTING.md.
+ */
+export type TrackInputRoute =
+  | { kind: 'track'; trackId: string; tap: TrackInputTap }
+  | { kind: 'master' }
+  | { kind: 'none' }
 /** Ableton-style monitoring: `auto` hears the input while armed unless clips are playing back without recording. */
 export type TrackMonitorMode = 'off' | 'auto' | 'in'
 /** One selectable track input built from the enabled device channels. */
@@ -166,6 +201,9 @@ export interface Track {
   /** Absent: derived from `monitor` (`in` when on, else `auto`). Saved with the project like Ableton's
    * monitor switch, but live like arm/monitor: it never enters undo history (schema 8). */
   monitorMode?: TrackMonitorMode
+  /** Audio tracks only. When present it replaces `input` (which is kept for switching back): the track
+   * records and monitors another track or the master instead of a physical input. Undoable (schema 11). */
+  inputRoute?: TrackInputRoute
 }
 export interface Marker {
   id: string
@@ -178,8 +216,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  /** 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 10
+  /** 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 12
   id: string
   name: string
   bpm: number
@@ -217,7 +255,10 @@ export interface AudioEngine {
   setProject(project: Project): void
   setAssets(assets: Map<string, AudioAsset>): void
   resume(): Promise<void>
-  play(): Promise<void>
+  /** countInBars clicks whole bars first; Web Audio resolves on the downbeat, native once the count-in is queued. */
+  play(options?: PlayOptions): Promise<void>
+  /** Monitor-only click track (never recorded or exported). */
+  setMetronome?(state: MetronomeEngineState): void
   pause(): void
   stop(): void
   seek(beat: number): void
@@ -234,8 +275,12 @@ export interface AudioEngine {
   sampleAttribution(setId: string): SampleAttribution | undefined
   getTrackLevel(trackId: string): number
   getMasterLevel(): number
+  /** Native host only: a compressor/limiter/gate insert's live input peak and lowest gain (linear). */
+  getDeviceMeter?(deviceId: string): { input: number; gain: number } | null
   /** Routes a live input stream into the given audio tracks' chains (input monitoring). null releases it. */
   setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void
+  /** Web Audio: monitor gates of tracks whose input is another track or the master (no stream needed). */
+  setRouteMonitor?(trackIds: readonly string[]): void
   /** Mono/stereo inputs a track can choose, from the enabled device channels (WP3 implements). */
   getInputChoices?(): InputChoice[]
   /** How many tracks can record at once: 1 in a browser, more on the native engine (WP2 implements). */

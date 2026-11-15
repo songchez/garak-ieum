@@ -6,15 +6,18 @@ import { AudioRecording } from './audio/AudioRecording'
 import { quarterNotesPerBeat, setProjectTimeSignature } from './core/meter'
 import { TempoInput } from './components/TempoInput'
 import { TimeSignatureControl } from './components/TimeSignatureControl'
+import { MetronomeControl } from './components/MetronomeControl'
+import { getMetronomePrefs, metronomeEngineState, subscribeMetronomePrefs, updateMetronomePrefs } from './core/metronome'
 import { bindRecordingToTransport, pausePlaybackWithRecording, stopPlaybackWithRecording, togglePlaybackWithRecording } from './audio/recordingTransport'
 import { inputConstraints, loadAudioSettings, normalizeAudioSettings, recordingOffsetMs, saveAudioSettings, type AudioSettings, type SampleRate } from './core/audioSettings'
-import { appendAudioRecordings, createTakeCapture, recordingStartBeat, selectInputChannels, simultaneousTakeLimit, type MultiTakeEngine, type RecordingDraft, type TakeCallbacks, type TakeCapture, type TakeResult } from './core/recording'
+import { appendAudioRecordings, combineTakeCaptures, createTakeCapture, sessionCapture, recordingStartBeat, selectInputChannels, simultaneousTakeLimit, type MultiTakeEngine, type RecordingDraft, type TakeCallbacks, type TakeCapture, type TakeResult } from './core/recording'
 import { applyTrackInputs, planInputRemap } from './core/trackInputs'
+import { applyTrackSource, detachDeletedRoutes, isRouted, remapCopiedRoutes, routeProblem } from './core/trackRouting'
 import { encodePcm16Wav } from './audio/math'
 import { nativeErrorCode, supportedRatesOf } from './audio/native/deviceErrors'
 import { backgroundAction, nearestSampleRate, shouldAlertOverload } from './audio/native/deviceProfile'
 import { importTempoNotice, MEDIA_FILE_ACCEPT, planMediaImport, readMediaFile, type ImportedMedia } from './core/mediaImport'
-import type { AudioAsset, AudioClip, AudioEngine, Clip, EffectType, InputChoice, InstrumentId, MidiClip, Project, Track, TrackInput } from './core/types'
+import type { AudioAsset, AudioClip, AudioEngine, Clip, EffectType, InputChoice, InstrumentId, MidiClip, Project, Track, TrackInput, TrackInputRoute } from './core/types'
 import { crossfadeClips } from './core/clipEnvelope'
 import { addMarker, applyDragMode, createDevice, createEmptyProject, createGuitarTrack, createMarker, createTrack, cycleClipIds, deleteMarker, duplicateClip, duplicateTrack, duplicateTrackSettings, fitProjectLength, insertTracks, joinClips, moveDevice, moveMarker, renameMarker, splitClip, trimClipEnd, trimClipStart, trimClipStarts, uid, visibleTracks, withInstrument, withWavetablePatch, type ClipStartTrim } from './core/project'
 import { sigimsaeVariant } from './core/sigimsaeVariants'
@@ -41,6 +44,7 @@ import type { PitchRenderedEdit } from './devices/pitch-editor/model'
 import { useWarpRenderer } from './devices/audio-warp/useWarpRenderer'
 import { analyzeTempoInWorker } from './devices/audio-warp/client'
 import { adoptClipTempo, attachWarpTempo, inheritWarp, setClipWarp } from './devices/audio-warp/state'
+import { setClipTranspose, transposeSettings, type TransposeSettings } from './devices/region-pitch/state'
 import { Inspector } from './components/Inspector'
 import { Browser, type LibraryTab } from './components/Browser'
 import type { LibraryItem } from './core/libraryDrag'
@@ -88,7 +92,7 @@ type NewTrackOptions={kind?:Track['kind'];sameAsFocused?:boolean;empty?:boolean;
 type CommandContext={trackIds?:string[];clipIds?:string[];scope?:ShortcutScope}
 // The monitor mode is saved with the project (Ableton) but, like the I flag it drives, never enters Undo.
 const LIVE_KEYS=new Set<keyof Track>(['armed','monitor','monitorMode'])
-const TRACK_EDIT_LABELS:Partial<Record<keyof Track,string>>={input:'트랙 입력 변경',volume:'볼륨 조절',pan:'팬 조절',name:'트랙 이름 변경',mute:'트랙 음소거',solo:'트랙 솔로',enabled:'트랙 켬/끔',hidden:'트랙 가리기',color:'트랙 색상 변경',instrument:'악기 변경',icon:'트랙 아이콘 변경'}
+const TRACK_EDIT_LABELS:Partial<Record<keyof Track,string>>={input:'트랙 입력 변경',inputRoute:'트랙 입력 변경',volume:'볼륨 조절',pan:'팬 조절',name:'트랙 이름 변경',mute:'트랙 음소거',solo:'트랙 솔로',enabled:'트랙 켬/끔',hidden:'트랙 가리기',color:'트랙 색상 변경',instrument:'악기 변경',icon:'트랙 아이콘 변경'}
 /** Replaces the listed clips (null removes, an array splits) and keeps untouched tracks' identity. */
 function mapClips(p:Project,ids:ReadonlySet<string>,fn:(clip:Clip,track:Track)=>Clip|Clip[]|null):Project{
   let changed=false
@@ -136,7 +140,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const clipboard=useRef<Clipboard|null>(null)
   const [bottomTab,setBottomTabState]=useState<'editor'|'mixer'|'devices'>('editor')
   const [libraryTab,setLibraryTab]=useState<LibraryTab>('instrument')
-  const warpRenderIds=useMemo(()=>new Set(project.tracks.flatMap(t=>t.clips.flatMap(c=>c.kind==='audio'&&c.warp&&c.assetId!==c.warp.originalAssetId?[c.assetId]:[]))),[project.tracks])
+  const warpRenderIds=useMemo(()=>new Set(project.tracks.flatMap(t=>t.clips.flatMap(c=>c.kind==='audio'&&(c.warp||c.regionPitch)&&c.assetId!==(c.regionPitch?.originalAssetId??c.warp?.originalAssetId)?[c.assetId]:[])).concat([...assets.values()].filter(a=>/ · (워프|조옮김) /.test(a.name)).map(a=>a.id))),[project.tracks,assets])
   const [pitchWindow,setPitchWindow]=useState(false)
   const [editorOpenRequest,setEditorOpenRequest]=useState(0)
   const setBottomTab=useCallback((next:SetStateAction<'editor'|'mixer'|'devices'>)=>{setBottomTabState(next);setEditorOpenRequest(value=>value+1)},[])
@@ -244,8 +248,14 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const selection=[...selectedClipIds].map(id=>clipIndex.get(id)).filter((e):e is ClipEntry=>!!e).sort((a,b)=>a.clip.startBeat-b.clip.startBeat||a.row-b.row)
   const snapStep=resolveSnap(view.snap,ppb,.25,project.beatsPerBar,quarterNotesPerBeat(project.timeSignature))
   const transportPlaying=useSyncExternalStore(subscribeTransport,readPlaying,readPlaying)
+  // Metronome preferences are app-wide; "record only" follows recording and its count-in.
+  const metronomePrefs=useSyncExternalStore(subscribeMetronomePrefs,getMetronomePrefs,getMetronomePrefs)
+  useEffect(()=>{engine.setMetronome?.(metronomeEngineState(metronomePrefs,recording||recordPreparing))},[metronomePrefs,recording,recordPreparing])
   // Preparation counts as recording so Auto tracks do not drop their input while the transport starts.
-  const monitorIds=useMemo(()=>audioSettings.softwareMonitoring?monitorTargets(project,recording||recordPreparing,transportPlaying):[],[project,recording,recordPreparing,transportPlaying,audioSettings.softwareMonitoring])
+  // Internal (track/master) inputs are heard regardless of the software-monitoring switch, which is about converter latency.
+  const monitorIds=useMemo(()=>{const targets=monitorTargets(project,recording||recordPreparing,transportPlaying);return audioSettings.softwareMonitoring?targets:targets.filter(id=>project.tracks.some(t=>t.id===id&&isRouted(t)))},[project,recording,recordPreparing,transportPlaying,audioSettings.softwareMonitoring])
+  const routedMonitorIds=useMemo(()=>monitorIds.filter(id=>project.tracks.some(t=>t.id===id&&isRouted(t))),[monitorIds,project.tracks])
+  const hardwareMonitorIds=useMemo(()=>monitorIds.filter(id=>!routedMonitorIds.includes(id)),[monitorIds,routedMonitorIds])
   const inputChoicesKey=useSyncExternalStore(subscribeAudioState,readInputChoices,readInputChoices)
   const inputChoices=useMemo(()=>JSON.parse(inputChoicesKey) as InputChoice[],[inputChoicesKey])
   const [inputRemap,setInputRemap]=useState<ReturnType<typeof planInputRemap>|null>(null)
@@ -269,6 +279,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     const snapshot=commandSession.getSnapshot(),epoch=projectSession.current
     const current=()=>commandSession.getSnapshot().history.present.tracks.flatMap(t=>t.clips).find(c=>c.id===expectedClip.id)
     if(current()!==expectedClip)throw new Error('리전이 변경되었습니다. 최신 상태에서 다시 적용해 주세요.')
+    if(expectedClip.regionPitch)throw new Error('리전 피치를 조옮김한 리전에는 음표 피치 편집을 적용할 수 없습니다. 리전 피치를 초기화한 뒤 다시 적용해 주세요.')
     if(expectedClip.warp?.enabled)throw new Error('워프한 리전에는 피치 편집을 적용할 수 없습니다. 인스펙터에서 워프를 끈 뒤 다시 적용해 주세요.')
     const document=validatePitchDocument(result.document)
     const source=assetsRef.current.get(document.sourceAssetId)
@@ -314,7 +325,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   async function analyzeClipTempo(clipId:string){
     const entry=clipIndex.get(clipId)
     if(!entry||entry.clip.kind!=='audio'||tempoAnalyzing)return
-    const clip=entry.clip,asset=assetsRef.current.get(clip.warp?.originalAssetId??clip.pitch?.sourceAssetId??clip.assetId)
+    const clip=entry.clip,asset=assetsRef.current.get(clip.regionPitch?.originalAssetId??clip.warp?.originalAssetId??clip.pitch?.sourceAssetId??clip.assetId)
     if(!asset){notify('분석할 원본 음원이 없습니다.');return}
     const epoch=projectSession.current
     setTempoAnalyzing(true)
@@ -328,6 +339,12 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     finally{setTempoAnalyzing(false)}
   }
   /** Region badge, region menu and import toast: warp on (project tempo) / off (original timing). */
+  /** Region pitch badge, menu and popover (docs/REGION_PITCH.md): one undo step per call (key merges a drag). */
+  function transposeClips(clipIds:readonly string[],change:(current:TransposeSettings)=>TransposeSettings,label='리전 피치',key=''){
+    if(!key)breakHistoryMerge()
+    commit(p=>{const next=mapClips(p,new Set(clipIds),c=>c.kind==='audio'&&!c.pitch?setClipTranspose(c,change(transposeSettings(c))):c);return next===p?p:fitProjectLength(next)},key,label)
+    if(!key)breakHistoryMerge()
+  }
   function setClipsWarp(clipIds:readonly string[],enabled:boolean){
     breakHistoryMerge()
     commit(p=>{const next=mapClips(p,new Set(clipIds),c=>c.kind==='audio'?setClipWarp(c,enabled,p.bpm):c);return next===p?p:fitProjectLength(next)},'',enabled?'워프 켜기':'워프 끄기')
@@ -615,7 +632,9 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     window.addEventListener('blur',later);window.addEventListener('focus',now);document.addEventListener('visibilitychange',now)
     return()=>{window.removeEventListener('blur',later);window.removeEventListener('focus',now);document.removeEventListener('visibilitychange',now);clear();if(native.suspended)void native.resumeDevice().catch(()=>undefined)}
   },[audioSettings.releaseInBackground,notify])
-  const monitorKey=monitorIds.join('\n')
+  const monitorKey=`${hardwareMonitorIds.join('\n')}|${routedMonitorIds.join('\n')}`
+  const routedMonitorKey=routedMonitorIds.join('\n')
+  useEffect(()=>{if(engine.kind!=='native')engine.setRouteMonitor?.(routedMonitorIds)},[routedMonitorKey])
   useEffect(()=>{
     if(audioApplying)return
     if(engine.kind==='native'){
@@ -624,11 +643,11 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       return()=>{canceled=true}
     }
     engine.setInputMonitor(null,[])
-    inputCapture.setNeeded('monitor',monitorIds.length>0)
-    if(!monitorIds.length)return
+    inputCapture.setNeeded('monitor',hardwareMonitorIds.length>0)
+    if(!hardwareMonitorIds.length)return
     if(!navigator.mediaDevices?.getUserMedia){inputCapture.setNeeded('monitor',false);notify(desktop?'이 컴퓨터에서는 입력 모니터링을 사용할 수 없습니다.':'이 브라우저에서는 입력 모니터링을 사용할 수 없습니다.');clearMonitorFlags();return}
     let cancelled=false
-    void(async()=>{try{await engine.resume();if(cancelled||audioApplyingRef.current)return;const stream=await inputCapture.acquire();if(cancelled||audioApplyingRef.current)return;engine.setInputMonitor(stream,monitorIds);if(!monitorWarned.current){monitorWarned.current=true;notify('피드백을 막으려면 헤드폰을 사용하세요')}}catch(e){if(cancelled||audioApplyingRef.current)return;inputCapture.setNeeded('monitor',false);notify(`입력 모니터링을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`);clearMonitorFlags()}})()
+    void(async()=>{try{await engine.resume();if(cancelled||audioApplyingRef.current)return;const stream=await inputCapture.acquire();if(cancelled||audioApplyingRef.current)return;engine.setInputMonitor(stream,hardwareMonitorIds);if(!monitorWarned.current){monitorWarned.current=true;notify('피드백을 막으려면 헤드폰을 사용하세요')}}catch(e){if(cancelled||audioApplyingRef.current)return;inputCapture.setNeeded('monitor',false);notify(`입력 모니터링을 시작하지 못했습니다: ${e instanceof Error?e.message:'마이크 접근을 확인해주세요'}`);clearMonitorFlags()}})()
     return()=>{cancelled=true}
   },[monitorKey,inputCapture,inputRevision,audioApplying])
   // A project from other hardware, or a changed device, may name inputs that are not here (Cubase
@@ -849,7 +868,9 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   /** Settings or settings+content copies go right after the last source; record-enable and monitoring move to the new tracks (R-32). */
   function duplicateTracks(ids:string[],mode:'settings'|'content'){
     const sources=project.tracks.filter(t=>ids.includes(t.id));if(!sources.length)return
-    const copies=sources.map(t=>({...(mode==='content'?duplicateTrack(t):duplicateTrackSettings(t)),armed:t.armed,monitor:t.monitor,...(t.monitorMode?{monitorMode:t.monitorMode}:{})}))
+    const made=sources.map(t=>({...(mode==='content'?duplicateTrack(t):duplicateTrackSettings(t)),armed:t.armed,monitor:t.monitor,...(t.monitorMode?{monitorMode:t.monitorMode}:{})}))
+    // A copied destination follows its copied source; other routes keep their source.
+    const copies=remapCopiedRoutes(made,new Map(sources.map((t,i)=>[t.id,made[i].id])))
     const set=new Set(sources.map(t=>t.id)),afterId=sources.at(-1)!.id
     commit(p=>insertTracks({...p,tracks:p.tracks.map(t=>set.has(t.id)&&(t.armed||t.monitor)?{...t,armed:false,...(t.monitor?monitorModePatch('off'):{})}:t)},afterId,copies))
     focusTrack(copies[0].id,copies.map(t=>t.id))
@@ -858,9 +879,11 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     const set=new Set(ids.filter(id=>project.tracks.some(t=>t.id===id)));if(!set.size)return
     const rows=project.tracks.map((t,i)=>set.has(t.id)?i:-1).filter(i=>i>=0),first=rows[0],last=rows.at(-1)!
     const next=project.tracks.slice(last+1).find(t=>!set.has(t.id))??project.tracks.slice(0,first).reverse().find(t=>!set.has(t.id))
-    commit(p=>({...p,tracks:p.tracks.filter(t=>!set.has(t.id))}))
+    // Routes that recorded a deleted track read as '없음' in the same Undo step (docs/TRACK_INPUT_ROUTING.md).
+    const detached=detachDeletedRoutes({...project,tracks:project.tracks.filter(t=>!set.has(t.id))}).detached
+    commit(p=>detachDeletedRoutes({...p,tracks:p.tracks.filter(t=>!set.has(t.id))}).project)
     if(next)focusTrack(next.id);else focusTrack('',[])
-    notify(`트랙 ${set.size}개를 삭제했습니다 · 실행 취소 ${shortcutText('undo')}`)
+    notify(detached.length?`트랙 ${set.size}개를 삭제했습니다. ${detached.map(name=>`‘${name}’`).join(', ')} 트랙은 입력 트랙이 사라져 입력이 ‘없음’이 되었습니다 · 실행 취소 ${shortcutText('undo')}`:`트랙 ${set.size}개를 삭제했습니다 · 실행 취소 ${shortcutText('undo')}`)
   }
   /** Multi-track rename auto-increments like Logic: a trailing number counts up, otherwise "name 1", "name 2"… */
   function renameTracks(ids:string[],name:string|null){
@@ -884,6 +907,12 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   function setTrackInput(trackId:string,input:TrackInput|null){
     if(recordRef.current||recordPreparingRef.current){notify('녹음이 끝난 뒤 입력을 바꿔 주세요.');return}
     breakHistoryMerge();commit(p=>applyTrackInputs(p,[{trackId,input}]),'','트랙 입력 변경');breakHistoryMerge()
+  }
+  /** Track/master input (resampling) or back to a physical input; one Undo step. Loops are refused with the reason. */
+  function setTrackRoute(trackId:string,route:TrackInputRoute|null,input?:TrackInput|null){
+    if(recordRef.current||recordPreparingRef.current){notify('녹음이 끝난 뒤 입력을 바꿔 주세요.');return}
+    const problem=routeProblem(projectRef.current,trackId,route);if(problem){notify(problem);return}
+    breakHistoryMerge();commit(p=>routeProblem(p,trackId,route)?p:applyTrackSource(p,trackId,route,input),'','트랙 입력 변경');breakHistoryMerge()
   }
   /** Missing-input dialog result: label matches plus the user's choices, all in one Undo step. */
   function finishInputRemap(updates:{trackId:string;input:TrackInput|null}[]){
@@ -936,7 +965,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       case 'openSettings':openAudioSettings();break
       case 'cycle':commit(p=>({...p,loop:{...p.loop,enabled:!p.loop.enabled}}));break
       case 'record':void toggleRecord();break
-      case 'metronome':notify('메트로놈은 아직 오디오 엔진에 없습니다. 곧 지원됩니다.');break
+      case 'metronome':{const on=updateMetronomePrefs({enabled:!getMetronomePrefs().enabled}).enabled;notify(on?'메트로놈 켬':'메트로놈 끔');break}
       case 'snapToggle':setView(v=>({...v,snap:{...v.snap,on:!v.snap.on}}));break
       case 'zoomIn':case 'zoomOut':case 'zoomInV':case 'zoomOutV':case 'zoomToFit':zoomArea(command,ctx.scope);break
       case 'setLoopFromSelection':if(requireSelection('반복 구간으로 지정할 클립을 선택해주세요.')){const start=Math.floor(selectionStart()/project.beatsPerBar)*project.beatsPerBar;changeLoop(start,Math.max(start+project.beatsPerBar,Math.ceil(selectionEnd()/project.beatsPerBar)*project.beatsPerBar),true)}break
@@ -1101,6 +1130,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     }catch(e){notify(`프로젝트 내보내기 실패: ${e instanceof Error?e.message:'파일을 저장하지 못했습니다.'}`)}finally{exporting.current=false;setBusy('')}
   }
   async function exportWav(){
+    if(warpRenderer.hasPending()){notify('워프·리전 피치 렌더링이 끝난 뒤 다시 내보내 주세요.');return}
     const snapshot=prepareExport();if(!snapshot)return
     exporting.current=true;setModal(null);setBusy('오디오를 렌더링하는 중…')
     try{
@@ -1112,7 +1142,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   /** Decodes one take; a browser recorded the whole stream, so the track's chosen channel(s) are kept. */
   async function decodeTake(blob:Blob,draft:RecordingDraft):Promise<AudioAsset>{
     const asset=await engine.decodeAsset(blob,draft.name)
-    if(engine.kind==='native')return asset
+    if(engine.kind==='native'||isRouted(draft.track))return asset
     const picked=selectInputChannels(asset.buffer,draft.track.input?.channels)
     return picked?engine.decodeAsset(new Blob([encodePcm16Wav(picked,asset.buffer.sampleRate)],{type:'audio/wav'}),draft.name):asset
   }
@@ -1141,20 +1171,23 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   async function toggleRecord(){
     if(recordRef.current||recordPreparingRef.current){pausePlaybackWithRecording(engine,{cancelPreparation:cancelRecordPreparation,finishRecording});return}
     if(pitchBusyRef.current){notify('피치 분석·렌더가 끝나거나 취소된 뒤 녹음을 시작해 주세요.');return}
-    if(engine.kind!=='native'&&(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined')){notify('이 브라우저에서는 마이크 녹음을 사용할 수 없습니다.');return}
     if(busy||audioApplyingRef.current){notify('파일 처리나 오디오 설정 적용이 끝난 뒤 녹음을 시작해주세요.');return}
     const target=recordTarget(projectRef.current,focusedTrackId)
     if(target.reason==='focusedInstrument'){notify('MIDI 녹음은 아직 지원하지 않습니다');return}
     const limit=simultaneousTakeLimit(engine as MultiTakeEngine)
-    const takeTrackIds=recordTakeTrackIds(target,limit)
+    // Tracks whose input is another track or the master record from the audio graph, not a device input.
+    const routedTrack=(id:string)=>projectRef.current.tracks.some(track=>track.id===id&&isRouted(track))
+    const takeTrackIds=recordTakeTrackIds(target,limit,routedTrack)
     if(target.extraArmed.length&&takeTrackIds.length<=target.extraArmed.length)notify(limit>1?`한 번에 최대 ${limit}개 트랙을 녹음합니다`:'한 번에 한 트랙만 녹음합니다')
+    const needsInput=!takeTrackIds.length||takeTrackIds.some(id=>!routedTrack(id))
+    if(engine.kind!=='native'&&needsInput&&(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined')){notify('이 브라우저에서는 마이크 녹음을 사용할 수 없습니다.');return}
     const reservedTrack=projectRef.current.tracks.find(track=>track.id===target.trackId)??{...createTrack('audio'),name:'Recording'}
     const session=projectSession.current
     const attempt=++recordAttempt.current
     const current=()=>session===projectSession.current&&attempt===recordAttempt.current
     recordPreparingRef.current=true
     setRecordPreparing(true)
-    if(engine.kind!=='native')inputCapture.setNeeded('record',true)
+    if(engine.kind!=='native'&&needsInput)inputCapture.setNeeded('record',true)
     let pendingCapture:TakeCapture|null=null
     let startedPlayback=false
     try{
@@ -1164,15 +1197,17 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
         engine.setProject(projectRef.current)
       }
       await engine.resume();if(!current())return
-      if(engine.kind==='native'){await engine.prepareRecording();if(!current()){engine.cancelRecordingPreparation();return}}
-      const stream=engine.kind==='native'?null:await inputCapture.acquire();if(!current())return
+      if(engine.kind==='native'){await engine.prepareRecording(needsInput);if(!current()){engine.cancelRecordingPreparation();return}}
+      const stream=engine.kind==='native'||!needsInput?null:await inputCapture.acquire();if(!current())return
+      if(engine.kind!=='native'&&takeTrackIds.some(routedTrack)){await engine.prepareRouteRecording();if(!current())return}
       // Permission may have taken time. Read the current tempo and let playback
       // normalize its start before fixing the take's position and starting capture.
       engine.setProject(projectRef.current)
       if(!engine.getSnapshot().playing){
         engine.seek(recordingStartBeat(projectRef.current,engine.getSnapshot().beat))
         startedPlayback=true
-        await engine.play();if(!current())return
+        // A count-in clicks first; capture starts with the transport on the downbeat.
+        await engine.play({countInBars:getMetronomePrefs().countInBars});if(!current())return
       }
       if(!engine.getSnapshot().playing)throw new Error('재생 시작이 취소되었습니다. 다시 녹음해 주세요.')
       const source=projectRef.current
@@ -1180,7 +1215,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       const tracks=(takeTrackIds.length?takeTrackIds:[reservedTrack.id]).flatMap(id=>{const track=source.tracks.find(item=>item.id===id)??(id===reservedTrack.id?reservedTrack:undefined);return track?[track]:[]})
       if(!tracks.length||tracks.some(track=>track.kind!=='audio'))throw new Error('녹음 대상이 오디오 트랙이 아닙니다.')
       const time=new Date().toLocaleTimeString('ko-KR',{hour12:false}),startBeat=engine.getSnapshot().beat,startedAtMs=performance.now()
-      const drafts:RecordingDraft[]=tracks.map(track=>({id:uid(),name:(tracks.length>1?`${track.name} · Recording ${time}`:`Recording ${time}`).slice(0,512),trackId:track.id,track,startBeat,bpm:source.bpm,offsetMs:recordingOffsetMs(audioSettingsRef.current,source.sampleRate),startedAtMs,status:'recording'}))
+      const drafts:RecordingDraft[]=tracks.map(track=>({id:uid(),name:(tracks.length>1?`${track.name} · Recording ${time}`:`Recording ${time}`).slice(0,512),trackId:track.id,track,startBeat,bpm:source.bpm,offsetMs:isRouted(track)?0:recordingOffsetMs(audioSettingsRef.current,source.sampleRate),startedAtMs,status:'recording'}))
       let capture:TakeCapture
       const callbacks:TakeCallbacks={
         onError:error=>{if(current())notify(`녹음 입력 오류: ${error.message}. 수신된 오디오를 확인하고 있습니다.`)},
@@ -1203,11 +1238,18 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
           })()
         },
       }
-      capture=createTakeCapture(engine as MultiTakeEngine,drafts.map(draft=>draft.trackId),callbacks,(trackId,single)=>{
+      const deviceCapture=(trackIds:string[],partCallbacks:TakeCallbacks)=>createTakeCapture(engine as MultiTakeEngine,trackIds,partCallbacks,(trackId,single)=>{
         if(engine.kind==='native')return engine.createRecording(trackId,single)
         const mime=['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus'].find(type=>MediaRecorder.isTypeSupported(type))
         return new AudioRecording(new MediaRecorder(stream!,mime?{mimeType:mime}:undefined),single)
       })
+      const draftIds=drafts.map(draft=>draft.trackId)
+      // The native engine records every take in one session; a browser records routed takes from the graph.
+      const routedIds=engine.kind==='native'?[]:draftIds.filter(routedTrack),deviceIds=draftIds.filter(id=>!routedIds.includes(id))
+      capture=combineTakeCaptures([
+        ...(routedIds.length&&engine.kind!=='native'?[{trackIds:routedIds,create:(partCallbacks:TakeCallbacks)=>sessionCapture(engine.createRouteRecordings(routedIds,partCallbacks))}]:[]),
+        ...(deviceIds.length?[{trackIds:deviceIds,create:(partCallbacks:TakeCallbacks)=>deviceCapture(deviceIds,partCallbacks)}]:[]),
+      ],callbacks)
       pendingCapture=capture
       recordRef.current={capture,stream,drafts}
       await capture.start()
@@ -1380,17 +1422,17 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       {view.browserOpen&&<Browser assets={assets} hiddenAssetIds={warpRenderIds} engine={engine} focusedTrack={focusedTrack} tab={libraryTab} onTabChange={setLibraryTab} onUse={(item,opts)=>applyLibraryItem(item,{newTrack:opts?.newTrack})} onPreview={previewInstrument} onImport={()=>openMediaImport()} onOpenPluginSettings={()=>openAudioSettings('plugins')} pluginsLocked={!!busy||recording||recordPreparing||audioApplying}/>}
 
       <main className="studio-main">
-        <Timeline project={project} assets={assets} engine={engine} recordingDrafts={recordingDrafts} inputChoices={inputChoices} onTrackInput={setTrackInput} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} selectedClipIds={selectedClipIds} anchorClipId={anchorClipId} ui={timelineUi} zoom={zoom.timeline} onUiChange={applyUi} onZoomChange={patch=>patchZoom('timeline',z=>({ppb:patch.ppb===undefined?z.ppb:clampZoom(patch.ppb,ZOOM_LIMITS.timelineX),rowHeight:patch.rowHeight===undefined?z.rowHeight:clampZoom(patch.rowHeight,ZOOM_LIMITS.timelineY)}))} onTrackClick={trackClick} onTrackFocus={trackFocus} onTrackButton={trackButton} onTrackSweep={trackSweep} onTracksChange={changeTracks} onTracksReorder={reorderTracks} onNewTrack={newTrack} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onRenameTracks={renameTracks} onOpenLibrary={openLibrary} onOpenColorPalette={openPalette} onIconMenu={(id,at)=>setIconMenu({id,...at})} onConfigureHeader={at=>setHeaderConfig(at)} onClearRecallSolo={clearRecall} onSeek={beat=>engine.seek(Math.max(0,beat))} onSeekPlay={seekPlay} onLoopChange={loop=>changeLoop(loop.startBeat,loop.endBeat,loop.enabled)} onSelectClips={selectFromMarquee} onClipMove={moveClips} onClipTrimStart={trimStart} onClipLoopToggle={(_trackId,clipId)=>apply(mapClips(project,new Set([clipId]),c=>({...c,loop:!c.loop})))} onClipLoopEnd={(_trackId,clipId,endBeat)=>commit(p=>fitProjectLength(mapClips(p,new Set([clipId]),c=>setClipLoopEnd(c,endBeat))),undefined,'리전 반복 길이')} onAddClip={addMidiClip} onAudioDrop={(files,id,beat)=>void addMediaFiles(files,id,beat)} onLibraryDrop={(item,target)=>applyLibraryItem(item,{trackId:target.trackId??null,beat:target.beat})} onImportFiles={openMediaImport} onCommand={(command,ctx)=>run(command,ctx)} onMenuFocus={()=>{lastShortcutEditor.current='timeline'}} menusDisabled={menusDisabled} viewMenuExtras={viewMenuExtras} onMarker={marker} onClipOpen={(trackId,clipId)=>{selectClips([clipId],clipId,trackId);setBottomTab('editor')}} renamingClipId={renamingClipId} onClipRename={renameClip} onClipWarp={setClipsWarp} onClipsEdit={(ids,fn,label)=>commit(p=>mapClips(p,new Set(ids),c=>fn(c)),`envelope:${label}`,label)} onClipCrossfade={ids=>{const made=crossfadeClips(project,new Set(ids),id=>assets.get(id)?.buffer.duration??Infinity);if(made.count)apply(made.project,'','크로스페이드 만들기');else notify('크로스페이드를 만들 수 없습니다. 같은 트랙에서 서로 붙어 있거나 겹친 오디오 리전을 두 개 이상 선택해 주세요.')}}/>
+        <Timeline project={project} assets={assets} engine={engine} recordingDrafts={recordingDrafts} inputChoices={inputChoices} onTrackInput={setTrackInput} onTrackRoute={setTrackRoute} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} selectedClipIds={selectedClipIds} anchorClipId={anchorClipId} ui={timelineUi} zoom={zoom.timeline} onUiChange={applyUi} onZoomChange={patch=>patchZoom('timeline',z=>({ppb:patch.ppb===undefined?z.ppb:clampZoom(patch.ppb,ZOOM_LIMITS.timelineX),rowHeight:patch.rowHeight===undefined?z.rowHeight:clampZoom(patch.rowHeight,ZOOM_LIMITS.timelineY)}))} onTrackClick={trackClick} onTrackFocus={trackFocus} onTrackButton={trackButton} onTrackSweep={trackSweep} onTracksChange={changeTracks} onTracksReorder={reorderTracks} onNewTrack={newTrack} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onRenameTracks={renameTracks} onOpenLibrary={openLibrary} onOpenColorPalette={openPalette} onIconMenu={(id,at)=>setIconMenu({id,...at})} onConfigureHeader={at=>setHeaderConfig(at)} onClearRecallSolo={clearRecall} onSeek={beat=>engine.seek(Math.max(0,beat))} onSeekPlay={seekPlay} onLoopChange={loop=>changeLoop(loop.startBeat,loop.endBeat,loop.enabled)} onSelectClips={selectFromMarquee} onClipMove={moveClips} onClipTrimStart={trimStart} onClipLoopToggle={(_trackId,clipId)=>apply(mapClips(project,new Set([clipId]),c=>({...c,loop:!c.loop})))} onClipLoopEnd={(_trackId,clipId,endBeat)=>commit(p=>fitProjectLength(mapClips(p,new Set([clipId]),c=>setClipLoopEnd(c,endBeat))),undefined,'리전 반복 길이')} onAddClip={addMidiClip} onAudioDrop={(files,id,beat)=>void addMediaFiles(files,id,beat)} onLibraryDrop={(item,target)=>applyLibraryItem(item,{trackId:target.trackId??null,beat:target.beat})} onImportFiles={openMediaImport} onCommand={(command,ctx)=>run(command,ctx)} onMenuFocus={()=>{lastShortcutEditor.current='timeline'}} menusDisabled={menusDisabled} viewMenuExtras={viewMenuExtras} onMarker={marker} onClipOpen={(trackId,clipId)=>{selectClips([clipId],clipId,trackId);setBottomTab('editor')}} renamingClipId={renamingClipId} onClipRename={renameClip} onClipWarp={setClipsWarp} onClipTranspose={transposeClips} onClipsEdit={(ids,fn,label)=>commit(p=>mapClips(p,new Set(ids),c=>fn(c)),`envelope:${label}`,label)} onClipCrossfade={ids=>{const made=crossfadeClips(project,new Set(ids),id=>assets.get(id)?.buffer.duration??Infinity);if(made.count)apply(made.project,'','크로스페이드 만들기');else notify('크로스페이드를 만들 수 없습니다. 같은 트랙에서 서로 붙어 있거나 겹친 오디오 리전을 두 개 이상 선택해 주세요.')}}/>
         <EditorPanel kind={bottomTab==='editor'?(selectedClip?.kind==='audio'?'audio':'piano'):bottomTab} openRequest={editorOpenRequest}><div className="editor-toolbar"><div className="editor-tabs"><button className={bottomTab==='editor'?'active':''} onClick={()=>setBottomTab('editor')}><Icon name={selectedClip?.kind==='audio'?'wave':'keys'} size={15}/>{selectedClip?.kind==='audio'?'오디오 편집':'피아노롤'}</button><button className={bottomTab==='mixer'?'active':''} onClick={()=>setBottomTab('mixer')} title={`믹서 · ${shortcutText('toggleMixer')}`}><Icon name="mixer" size={15}/>믹서</button><button className={bottomTab==='devices'?'active':''} onClick={()=>setBottomTab('devices')}><Icon name="plug" size={15}/>시김새 체인</button>{selectedClip?.kind==='audio'&&<button className={pitchWindow?'active':''} aria-pressed={pitchWindow} onClick={()=>setPitchWindow(true)} title="피치 편집 창 열기"><Icon name="wave" size={15}/>피치 편집{pitchDirty?' •':''}<Icon name="external" size={11}/></button>}</div><div className="editor-selection">{selectedClip&&<><span className="color-dot" style={{background:focusedTrack?.color}}/><span>{selectedClip.name}</span><small>{+(selectedClip.lengthBeats/project.beatsPerBar).toFixed(2)} bars{selection.length>1?` · 클립 ${selection.length}개 선택`:''}</small></>}</div><div className="editor-actions">{bottomTab==='mixer'?<ZoomControls area="믹서" onZoom={command=>zoomArea(command,'mixer')} focusTarget={()=>document.querySelector<HTMLElement>('[data-keyboard-scope="mixer"]')}/>:bottomTab==='devices'&&focusedTrack?<ZoomControls area="시김새 체인" axes="one" labels={{zoomOut:'축소',zoomIn:'확대',zoomToFit:'기본 크기'}} onZoom={command=>zoomArea(command,'devices')} focusTarget={()=>document.querySelector<HTMLElement>('[data-keyboard-scope="devices"]')}/>:null}<button className="icon-button small" onClick={splitSelection} disabled={!selection.length&&!focusedTrack?.clips.length} title={`재생 커서에서 클립 분할 · ${shortcutText('split')}`} aria-label="클립 분할"><Icon name="scissors" size={15}/></button><button className="icon-button small" onClick={duplicateSelection} disabled={!selection.length} title={`선택 클립 복제 · ${shortcutText('repeat')}`} aria-label="클립 복제"><Icon name="copy" size={15}/></button><button className="icon-button small" onClick={()=>{if(selection.length)deleteClips();else deleteTracks([...selectedTrackIds])}} disabled={!focusedTrack&&!selection.length} title={selection.length?`선택 클립 ${selection.length}개 삭제`:`선택 트랙 삭제 · ${shortcutText('deleteTrack')}`} aria-label={selection.length?'클립 삭제':'트랙 삭제'}><Icon name="trash" size={15}/></button><EditorPanelActions/></div></div>
-          <EditorPanelBody>{bottomTab==='mixer'?<Mixer {...trackProps} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} onTrackClick={trackClick} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onColorPalette={openPalette} zoom={zoom.mixer} onZoomChange={mixer=>setZoom(z=>({...z,mixer:{channelWidth:clampZoom(mixer.channelWidth,ZOOM_LIMITS.mixerWidth),faderHeight:clampZoom(mixer.faderHeight,ZOOM_LIMITS.mixerFader)}}))} zoomRef={mixerZoom}/>:bottomTab==='devices'?focusedTrack?<div className="device-workspace"><DeviceChain track={focusedTrack} engine={engine} bpm={project.bpm} onSave={()=>void saveBundle()} pitchAvailable={selectedClip?.kind==='audio'} onOpenPitch={()=>setPitchWindow(true)} scale={zoom.devices.scale} onScaleChange={scale=>patchZoom('devices',()=>({scale:clampZoom(scale,ZOOM_LIMITS.deviceScale)}))} zoomRef={deviceZoom} onInstrumentChange={instrument=>changeInstrument(focusedTrack.id,instrument)} onInstrumentParam={(key,value)=>editTrack(focusedTrack.id,t=>({...t,instrumentParams:{...t.instrumentParams,[key]:value}}),`${focusedTrack.id}:inst:${key}`)} onWavetablePatch={(patch,label,mergeKey)=>editTrack(focusedTrack.id,t=>withWavetablePatch(t,patch),mergeKey?`${focusedTrack.id}:wave:${mergeKey}`:undefined,label)} onDeviceParam={(deviceId,key,value)=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.map(d=>d.id===deviceId&&d.type!=='vst3'?{...d,params:{...d.params,[key]:value}}:d)}),`${focusedTrack.id}:dev:${deviceId}:${key}`)} onDeviceParams={(deviceId,params)=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.map(d=>d.id===deviceId&&d.type!=='vst3'?{...d,params:{...d.params,...params}}:d)}),'','기타 앰프 프리셋 변경')} onOpenAudioSettings={openAudioSettings} onAddDevice={(type,variantId)=>addDevice(focusedTrack.id,type,variantId)} onRenameDevice={(deviceId,name)=>renameDevice(focusedTrack.id,deviceId,name)} onRemoveDevice={deviceId=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)}))} onMoveDevice={(deviceId,offset)=>editTrack(focusedTrack.id,t=>moveDevice(t,deviceId,offset))} onToggleDevice={deviceId=>toggleDevice(focusedTrack.id,deviceId)} onTrackChange={patch=>changeTrack(focusedTrack.id,patch)} onPreview={()=>previewTrack(focusedTrack)} onAddPlugin={plugin=>addPlugin(focusedTrack.id,plugin)} onPluginChange={(instanceId,update,label)=>changePlugin(focusedTrack.id,instanceId,update,label)} onOpenPluginSettings={()=>openAudioSettings('plugins')} onOpenLibrary={()=>{patchView({browserOpen:true});setLibraryTab('effect')}} pluginsLocked={!!busy||recording||recordPreparing||audioApplying}/></div>:<div className="editor-empty"><Icon name="plug" size={32}/><strong>소리의 흐름을 한눈에</strong><p>트랙 헤더를 클릭하면 악기와 연결된 시김새가 여기에 열립니다.</p></div>:selectedClip?.kind==='midi'&&focusedTrack?<PianoRollBridge beatsPerBar={project.beatsPerBar} beatUnit={quarterNotesPerBeat(project.timeSignature)} clip={selectedClip} color={focusedTrack.color} instrument={focusedTrack.instrument} zoom={zoom.piano} onZoomChange={piano=>setZoom(z=>({...z,piano}))} zoomRef={pianoZoom} commandRef={pianoCommand} onChange={clip=>changeClip(clip)} onPreview={pitch=>void engine.previewNote(focusedTrack.instrument,pitch,undefined,focusedTrack.id).catch(e=>notify(String(e)))}/>:selectedClip?.kind==='audio'?<div className="audio-editor"><div className="audio-wave-large">{assets.get(selectedClip.assetId)&&<Waveform peaks={assets.get(selectedClip.assetId)!.peaks} buffer={assets.get(selectedClip.assetId)!.buffer} offsetSeconds={selectedClip.offsetSeconds} durationSeconds={selectedClip.lengthBeats*60/project.bpm} gain={selectedClip.gain} fades={{fadeIn:selectedClip.fadeIn,fadeOut:selectedClip.fadeOut,inCurve:selectedClip.fadeInCurve,outCurve:selectedClip.fadeOutCurve}} color={focusedTrack?.color}/>}</div><div className="audio-editor-settings"><label>클립 게인<input type="range" min="0" max="2" step=".01" value={selectedClip.gain} onChange={e=>changeClip({...selectedClip,gain:+e.target.value},`${selectedClip.id}:gain`)}/><span>{db(selectedClip.gain)} dB</span></label><label>페이드 인<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeIn} onChange={e=>changeClip({...selectedClip,fadeIn:+e.target.value},`${selectedClip.id}:fadeIn`)}/><span>{selectedClip.fadeIn.toFixed(2)} s</span></label><label>페이드 아웃<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeOut} onChange={e=>changeClip({...selectedClip,fadeOut:+e.target.value},`${selectedClip.id}:fadeOut`)}/><span>{selectedClip.fadeOut.toFixed(2)} s</span></label></div></div>:<div className="editor-empty"><Icon name="keys" size={32}/><strong>아이디어를 음표로</strong><p>클립을 선택하거나 타임라인을 더블 클릭해 패턴을 만드세요.</p>{focusedTrack?.kind==='instrument'&&<button onClick={()=>addMidiClip(focusedTrack.id,0)}><Icon name="plus" size={14}/> MIDI 클립 만들기</button>}</div>}
+          <EditorPanelBody>{bottomTab==='mixer'?<Mixer {...trackProps} focusedTrackId={focusedTrackId} selectedTrackIds={selectedTrackIds} onTrackClick={trackClick} onDuplicateTracks={duplicateTracks} onDeleteTracks={deleteTracks} onColorPalette={openPalette} zoom={zoom.mixer} onZoomChange={mixer=>setZoom(z=>({...z,mixer:{channelWidth:clampZoom(mixer.channelWidth,ZOOM_LIMITS.mixerWidth),faderHeight:clampZoom(mixer.faderHeight,ZOOM_LIMITS.mixerFader)}}))} zoomRef={mixerZoom}/>:bottomTab==='devices'?focusedTrack?<div className="device-workspace"><DeviceChain track={focusedTrack} engine={engine} bpm={project.bpm} onSave={()=>void saveBundle()} pitchAvailable={selectedClip?.kind==='audio'} onOpenPitch={()=>setPitchWindow(true)} scale={zoom.devices.scale} onScaleChange={scale=>patchZoom('devices',()=>({scale:clampZoom(scale,ZOOM_LIMITS.deviceScale)}))} zoomRef={deviceZoom} onInstrumentChange={instrument=>changeInstrument(focusedTrack.id,instrument)} onInstrumentParam={(key,value)=>editTrack(focusedTrack.id,t=>({...t,instrumentParams:{...t.instrumentParams,[key]:value}}),`${focusedTrack.id}:inst:${key}`)} onWavetablePatch={(patch,label,mergeKey)=>editTrack(focusedTrack.id,t=>withWavetablePatch(t,patch),mergeKey?`${focusedTrack.id}:wave:${mergeKey}`:undefined,label)} onDeviceParam={(deviceId,key,value)=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.map(d=>d.id===deviceId&&d.type!=='vst3'?{...d,params:{...d.params,[key]:value}}:d)}),`${focusedTrack.id}:dev:${deviceId}:${key}`)} onDeviceParams={(deviceId,params,options)=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.map(d=>d.id===deviceId&&d.type!=='vst3'?{...d,params:{...d.params,...params}}:d)}),options?.mergeKey?`${focusedTrack.id}:dev:${deviceId}:${options.mergeKey}`:'',options?.label??'시김새 편집')} onOpenAudioSettings={openAudioSettings} onAddDevice={(type,variantId)=>addDevice(focusedTrack.id,type,variantId)} onRenameDevice={(deviceId,name)=>renameDevice(focusedTrack.id,deviceId,name)} onRemoveDevice={deviceId=>editTrack(focusedTrack.id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)}))} onMoveDevice={(deviceId,offset)=>editTrack(focusedTrack.id,t=>moveDevice(t,deviceId,offset))} onToggleDevice={deviceId=>toggleDevice(focusedTrack.id,deviceId)} onTrackChange={patch=>changeTrack(focusedTrack.id,patch)} onPreview={()=>previewTrack(focusedTrack)} onAddPlugin={plugin=>addPlugin(focusedTrack.id,plugin)} onPluginChange={(instanceId,update,label)=>changePlugin(focusedTrack.id,instanceId,update,label)} onOpenPluginSettings={()=>openAudioSettings('plugins')} onOpenLibrary={()=>{patchView({browserOpen:true});setLibraryTab('effect')}} pluginsLocked={!!busy||recording||recordPreparing||audioApplying}/></div>:<div className="editor-empty"><Icon name="plug" size={32}/><strong>소리의 흐름을 한눈에</strong><p>트랙 헤더를 클릭하면 악기와 연결된 시김새가 여기에 열립니다.</p></div>:selectedClip?.kind==='midi'&&focusedTrack?<PianoRollBridge beatsPerBar={project.beatsPerBar} beatUnit={quarterNotesPerBeat(project.timeSignature)} clip={selectedClip} color={focusedTrack.color} instrument={focusedTrack.instrument} zoom={zoom.piano} onZoomChange={piano=>setZoom(z=>({...z,piano}))} zoomRef={pianoZoom} commandRef={pianoCommand} onChange={clip=>changeClip(clip)} onPreview={pitch=>void engine.previewNote(focusedTrack.instrument,pitch,undefined,focusedTrack.id).catch(e=>notify(String(e)))}/>:selectedClip?.kind==='audio'?<div className="audio-editor"><div className="audio-wave-large">{assets.get(selectedClip.assetId)&&<Waveform peaks={assets.get(selectedClip.assetId)!.peaks} buffer={assets.get(selectedClip.assetId)!.buffer} offsetSeconds={selectedClip.offsetSeconds} durationSeconds={selectedClip.lengthBeats*60/project.bpm} gain={selectedClip.gain} fades={{fadeIn:selectedClip.fadeIn,fadeOut:selectedClip.fadeOut,inCurve:selectedClip.fadeInCurve,outCurve:selectedClip.fadeOutCurve}} color={focusedTrack?.color}/>}</div><div className="audio-editor-settings"><label>클립 게인<input type="range" min="0" max="2" step=".01" value={selectedClip.gain} onChange={e=>changeClip({...selectedClip,gain:+e.target.value},`${selectedClip.id}:gain`)}/><span>{db(selectedClip.gain)} dB</span></label><label>페이드 인<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeIn} onChange={e=>changeClip({...selectedClip,fadeIn:+e.target.value},`${selectedClip.id}:fadeIn`)}/><span>{selectedClip.fadeIn.toFixed(2)} s</span></label><label>페이드 아웃<input type="range" min="0" max="2" step=".01" value={selectedClip.fadeOut} onChange={e=>changeClip({...selectedClip,fadeOut:+e.target.value},`${selectedClip.id}:fadeOut`)}/><span>{selectedClip.fadeOut.toFixed(2)} s</span></label></div></div>:<div className="editor-empty"><Icon name="keys" size={32}/><strong>아이디어를 음표로</strong><p>클립을 선택하거나 타임라인을 더블 클릭해 패턴을 만드세요.</p>{focusedTrack?.kind==='instrument'&&<button onClick={()=>addMidiClip(focusedTrack.id,0)}><Icon name="plus" size={14}/> MIDI 클립 만들기</button>}</div>}
           </EditorPanelBody>
         </EditorPanel>
       </main>
 
-      {view.inspectorOpen&&<Inspector {...trackProps} inputChoices={inputChoices} onTrackInput={setTrackInput} focusedTrack={focusedTrack} selection={selection.map(e=>({trackId:e.track.id,clip:e.clip}))} arm={focusedTrack?effectiveArm(focusedTrack,focusedTrackId,project.tracks):'off'} implicitMute={!!focusedTrack&&implicitlyMuted(focusedTrack,project)} sections={view.inspectorSections} onSectionsChange={inspectorSections=>patchView({inspectorSections})} onClipsEdit={(fn,key)=>{if(selection.length)apply(mapClips(project,idsOf(selection),fn),key)}} warp={{analyzing:tempoAnalyzing,rendering:warpRenderer.rendering,onAnalyze:clipId=>void analyzeClipTempo(clipId),onAdoptTempo:adoptTempo}}/>}
+      {view.inspectorOpen&&<Inspector {...trackProps} inputChoices={inputChoices} onTrackInput={setTrackInput} onTrackRoute={setTrackRoute} focusedTrack={focusedTrack} selection={selection.map(e=>({trackId:e.track.id,clip:e.clip}))} arm={focusedTrack?effectiveArm(focusedTrack,focusedTrackId,project.tracks):'off'} implicitMute={!!focusedTrack&&implicitlyMuted(focusedTrack,project)} sections={view.inspectorSections} onSectionsChange={inspectorSections=>patchView({inspectorSections})} onClipsEdit={(fn,key)=>{if(selection.length)apply(mapClips(project,idsOf(selection),fn),key)}} warp={{analyzing:tempoAnalyzing,rendering:warpRenderer.rendering,onAnalyze:clipId=>void analyzeClipTempo(clipId),onAdoptTempo:adoptTempo}}/>}
     </div>
 
-    {pitchWindow&&<PitchEditorWindow title={selectedClip?.kind==='audio'?selectedClip.name:'오디오 리전을 선택하세요'} busy={pitchBusy} dirty={pitchDirty} onClose={()=>setPitchWindow(false)}>{selectedClip?.kind==='audio'?<Suspense fallback={<div className="editor-empty">피치 편집기를 여는 중…</div>}><PitchEditor key={`${project.id}:${selectedClip.id}`} clip={selectedClip} sourceAsset={assets.get(selectedClip.pitch?.sourceAssetId??selectedClip.assetId)} projectId={project.id} bpm={project.bpm} projectClipIds={projectClipIds} disabled={!!busy||recording||recordPreparing||audioApplying} onApply={applyPitchEdit} onReset={resetPitchEdit} onBusyChange={pitchBusyChange} onDirtyChange={pitchDirtyChange}/></Suspense>:<div className="editor-empty"><Icon name="wave" size={32}/><strong>음표 단위 피치 편집</strong><p>오디오 리전을 선택해 단선율 음원을 분석하세요.</p></div>}</PitchEditorWindow>}
+    {pitchWindow&&<PitchEditorWindow title={selectedClip?.kind==='audio'?selectedClip.name:'오디오 리전을 선택하세요'} busy={pitchBusy} dirty={pitchDirty} onClose={()=>setPitchWindow(false)}>{selectedClip?.kind==='audio'&&selectedClip.regionPitch?<div className="editor-empty"><Icon name="wave" size={32}/><strong>리전 피치가 적용된 리전</strong><p>음표 단위 피치 편집과 리전 피치(조옮김)는 함께 쓸 수 없습니다. 리전의 피치 배지나 인스펙터에서 피치를 초기화한 뒤 다시 열어 주세요.</p></div>:selectedClip?.kind==='audio'?<Suspense fallback={<div className="editor-empty">피치 편집기를 여는 중…</div>}><PitchEditor key={`${project.id}:${selectedClip.id}`} clip={selectedClip} sourceAsset={assets.get(selectedClip.pitch?.sourceAssetId??selectedClip.assetId)} projectId={project.id} bpm={project.bpm} projectClipIds={projectClipIds} disabled={!!busy||recording||recordPreparing||audioApplying} onApply={applyPitchEdit} onReset={resetPitchEdit} onBusyChange={pitchBusyChange} onDirtyChange={pitchDirtyChange}/></Suspense>:<div className="editor-empty"><Icon name="wave" size={32}/><strong>음표 단위 피치 편집</strong><p>오디오 리전을 선택해 단선율 음원을 분석하세요.</p></div>}</PitchEditorWindow>}
     <footer className="status-bar"><div><span className={`status-dot ${saveStatus==='error'?'error':''}`}/><span>{saveStatus==='error'?'저장 공간을 확인해주세요':'로컬 작업 공간'}</span><span className="status-divider"/><span className="footer-caption">소리는 여기에서 시작됩니다.</span></div><div><AudioStatus onOpen={openAudioSettings}/><span className="status-divider"/><button onClick={()=>setModal('help')} title="단축키" aria-label="단축키 도움말"><Icon name="keyboard" size={15}/></button><span className="version-tag">{BRAND.version} DEV</span></div></footer>
 
     <input ref={mediaInput} type="file" accept={MEDIA_FILE_ACCEPT} aria-label="오디오·MIDI 파일" multiple hidden onChange={e=>{if(e.target.files?.length)void addMediaFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0)}}/>
@@ -1465,6 +1507,7 @@ function Transport({project,onChange,onPlay,onStop,onRecord,recording,recordPrep
       <TempoInput key={project.id} value={project.bpm} disabled={timingDisabled} onCommit={bpm=>onChange(p=>({...p,bpm}),'tempo','템포 조절')}/>
       <span>BPM</span>
     </div>
+    <MetronomeControl timeSignature={project.timeSignature} shortcut={shortcutText('metronome')}/>
     <TimeSignatureControl value={project.timeSignature} disabled={timingDisabled} onChange={(numerator,denominator)=>onChange(p=>setProjectTimeSignature(p,numerator,denominator),undefined,'박자표 변경')}/>
     <div className="loop-length"><label>LOOP<select aria-label="루프 길이" value={project.loop.endBeat-project.loop.startBeat} onChange={e=>{const n=+e.target.value;onChange(p=>({...p,lengthBeats:Math.max(p.lengthBeats,p.loop.startBeat+n),loop:{...p.loop,endBeat:p.loop.startBeat+n}}));e.currentTarget.blur()}}>
       {loopLengths.map(n=><option key={n} value={n}>{+(n/project.beatsPerBar).toFixed(2)} bars</option>)}

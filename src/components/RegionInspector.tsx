@@ -4,6 +4,8 @@ import { QUANTIZE_VALUES, type FadeCurve } from '../core/types'
 import { AUDIO_CLIP_GAIN_MAX_DB, FADE_CURVES, FADE_CURVE_LABELS, MIDI_CLIP_GAIN_MAX, clipGainMax, fadeCurveOf, withFadeCurve, type FadeEdge } from '../core/clipEnvelope'
 import { formatFadeSeconds } from './ClipEnvelope'
 import { attachWarpTempo, disableWarp, enableWarp, setWarpSourceBpm, WARP_BPM, warpRatioSupported } from '../devices/audio-warp/state'
+import { setClipTranspose, transposeSettings } from '../devices/region-pitch/state'
+import { RegionPitchControls, regionPitchPending } from './RegionPitchBadge'
 
 export interface ClipEntry { trackId: string; clip: Clip }
 
@@ -222,6 +224,13 @@ export function RegionInspector({ selection, bpm, beatsPerBar = 4, onClipsEdit, 
       {num('fadeOut', '페이드 아웃', { step: .001, pxPerStep: 1, format: formatFadeSeconds, parse: parseSeconds })}
       {curve('out', '아웃 곡선')}
     </>}
+    {allAudio && <div className="insp-region-pitch" role="group" aria-label="리전 피치"><span className="insp-label">피치</span>
+      {clips.some(c => (c as AudioClip).pitch)
+        ? <small className="insp-warp-status">음표 피치 편집을 한 리전에는 리전 피치를 쓸 수 없습니다. 피치 편집을 초기화해 주세요.</small>
+        : <RegionPitchControls clip={anchor as AudioClip} idPrefix={anchor.id} pending={clips.some(c => regionPitchPending(c as AudioClip, bpm))}
+          mixed={mixedOf(c => JSON.stringify(transposeSettings(c as AudioClip)))}
+          onChange={(change, _label, key) => onClipsEdit(c => c.kind === 'audio' && !c.pitch ? setClipTranspose(c, change(transposeSettings(c))) : c, key ? `inspector:${key}` : undefined)} />}
+    </div>}
     {allAudio && warp && clips.length === 1 && <WarpSection clip={anchor as AudioClip} bpm={bpm} controls={warp} onClipsEdit={onClipsEdit} />}
     <button type="button" className={`insp-more ${more ? 'open' : ''}`} onClick={() => setMore(m => !m)} aria-expanded={more}>{more ? '▾' : '▸'} 더 보기</button>
     {more && <>

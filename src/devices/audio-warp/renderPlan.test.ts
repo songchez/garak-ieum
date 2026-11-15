@@ -26,7 +26,7 @@ function render(session: ProjectSession, available: Map<string, AudioAsset>) {
 describe('warp render plan', () => {
   it('groups clips that share one original and tempo into a single render', () => {
     const value = project(120, enableWarp(loop('a'), 120), enableWarp(loop('b', 100, 16), 120), loop('c', 90, 32))
-    expect(pendingGroups(value, assets('orig'))).toEqual([{ key: 'orig|100|120', originalAssetId: 'orig', sourceBpm: 100, bpm: 120 }])
+    expect(pendingGroups(value, assets('orig'))).toEqual([{ key: 'orig|100|120|0', originalAssetId: 'orig', sourceBpm: 100, bpm: 120, tempoDependent: true, warpRatio: 100 / 120, cents: 0, mode: 'keep', formant: false }])
     const next = applyWarpRender(value, pendingGroups(value, assets('orig'))[0], 'r120', assets('orig', 'r120'))
     expect(clipsOf(next).map(clip => clip.assetId)).toEqual(['r120', 'r120', 'orig'])
     expect(pendingGroups(next, assets('orig', 'r120'))).toEqual([])

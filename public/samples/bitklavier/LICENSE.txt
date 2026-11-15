@@ -1,0 +1,16 @@
+The bitKlavier Grand (Stage Lid ORTF mic image)
+by Dan Trueman (producer); recorded by Andrés Villalta; played by Matt Wang; edited and denoised by Jeff Gordon, Katie Chou, Christien Ayers, Matt Wang, Dan Trueman; Princeton University Department of Music
+Source: https://bitklavier.com/the-bitklavier-grand/
+
+Licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+
+Changes made for this project: Stage Lid ORTF 44.1 kHz/16-bit package; 30 notes × 4 of 16 velocity layers (v3, v7, v11, v15) and 88 key-release samples selected, resampled to 48 kHz, trimmed with per-register length caps and fade-outs, one common gain for the whole set, encoded to Opus 96 kbps (webm) and AAC 128 kbps (m4a)
+
+Original work: "The bitKlavier Grand" sample library, Stage Lid ORTF mic image.
+Producer: Dan Trueman. Recorded by: Andrés Villalta. Piano played by: Matt Wang.
+Edited and denoised by: Jeff Gordon, Katie Chou, Christien Ayers, Matt Wang, Dan Trueman.
+With support from Princeton University's Department of Music and Council for the Humanities.
+"The bitKlavier Grand sample library is covered by the CC BY 4.0 license" — https://bitklavier.com/the-bitklavier-grand/
+Downloaded from https://archive.org/details/bitKlavierGrand_StageLidORTF_44k16b
+(bitKlavierGrand_StageLidORTF_44k16b.zip, MD5 cecc6ffb04d8a965d5183b63a7ab5a12).
+The creators do not endorse this project. No warranties are given.

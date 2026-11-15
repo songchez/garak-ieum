@@ -10,6 +10,8 @@ import { contrastTextColor } from '../core/colors'
 import { Icon } from './Icon'
 import { Waveform } from './Waveform'
 import { ClipEnvelope, type EnvelopeActions } from './ClipEnvelope'
+import { RegionPitchBadge } from './RegionPitchBadge'
+import type { TransposeSettings } from '../devices/region-pitch/state'
 import './TimelineClip.css'
 
 export type GestureMode = 'move'|'trimStart'|'trimEnd'
@@ -23,6 +25,8 @@ export type ClipActions = {
   loopHandle:(e:React.PointerEvent<HTMLElement>,track:Track,clip:Clip)=>void
   /** Region badge: warp on (fit the project tempo) / off (original timing). */
   warp:(trackId:string,clipId:string,enabled:boolean)=>void
+  /** Region pitch badge/popover; applies to the selection when the region belongs to it. Absent hides the badge. */
+  transpose?:(trackId:string,clipId:string,change:(current:TransposeSettings)=>TransposeSettings,label?:string,key?:string)=>void
   /** On-region gain line and fade handles; absent = drawn read-only. */
   envelope?:EnvelopeActions
 }
@@ -80,7 +84,7 @@ export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,bpm,p
   // Ancestor state changes also invalidate the canvas, whose color follows the same CSS as MIDI previews.
   const waveformAppearance=`${selected}:${!!clip.mute}:${silent}:${isTrackEnabled(track)}:${track.color}`
   const contents=(repeat=false)=><>
-    <div className="clip-title"><Icon name={clip.kind==='audio'?'wave':'note'} size={11}/>{clip.mute&&<i className="clip-mute-dot" aria-hidden="true"/>}{!repeat&&clip.kind==='audio'&&clip.warp&&!clip.pitch&&<WarpBadge on={clip.warp.enabled} sourceBpm={clip.warp.sourceBpm} bpm={bpm} onToggle={()=>actions.current.warp(track.id,clip.id,!clip.warp!.enabled)}/>}{!repeat&&renaming?<InlineName value={clip.name} label="클립 이름" onDone={name=>actions.current.renameDone(clip.id,name)}/>:<span>{label}</span>}</div>
+    <div className="clip-title"><Icon name={clip.kind==='audio'?'wave':'note'} size={11}/>{clip.mute&&<i className="clip-mute-dot" aria-hidden="true"/>}{!repeat&&clip.kind==='audio'&&clip.warp&&!clip.pitch&&<WarpBadge on={clip.warp.enabled} sourceBpm={clip.warp.sourceBpm} bpm={bpm} onToggle={()=>actions.current.warp(track.id,clip.id,!clip.warp!.enabled)}/>}{!repeat&&clip.kind==='audio'&&!clip.pitch&&actions.current.transpose&&<RegionPitchBadge clip={clip} bpm={bpm} selected={selected} onChange={(change,label,key)=>actions.current.transpose?.(track.id,clip.id,change,label,key)}/>}{!repeat&&renaming?<InlineName value={clip.name} label="클립 이름" onDone={name=>actions.current.renameDone(clip.id,name)}/>:<span>{label}</span>}</div>
     <div className="clip-preview">{displayClip.kind==='audio'&&asset?<Waveform peaks={asset.peaks} buffer={asset.buffer} gain={displayClip.gain} fades={{fadeIn:displayClip.fadeIn,fadeOut:displayClip.fadeOut,inCurve:displayClip.fadeInCurve,outCurve:displayClip.fadeOutCurve}} color={repeat?'var(--loop-preview)':'var(--clip-preview-color)'} appearanceKey={waveformAppearance} sourceDuration={asset.buffer.duration} offsetSeconds={displayClip.offsetSeconds} durationSeconds={length*60/bpm}/>:<svg width="100%" height="100%" preserveAspectRatio="none" viewBox={`0 0 ${Math.max(.01,length)*20} 32`} aria-hidden="true">{repeat?<use href={`#${notePreviewId}`}/>:<g id={notePreviewId}>{notes.filter(n=>n.start<length).map(n=><rect key={n.id} x={n.start*20} y={3+(1-(n.pitch-min)/Math.max(12,max-min))*23} width={Math.max(.1,Math.min(n.duration,length-n.start)*20)} height={instrumentDef(track.instrument).isKit?4:2.5} rx=".5" fill="currentColor" opacity={.45+n.velocity*.5}/>)}</g>}</svg>}</div>
     {displayClip.kind==='audio'&&<ClipEnvelope clip={displayClip} widthPx={widthPx} ppb={ppb} bpm={bpm} asset={asset} showFades={ppb>=FADE_MIN_PPB} readOnly={repeat||!!preview} actions={envelopeActions}/>}
   </>

@@ -1,6 +1,11 @@
 import type { DeviceGraph, RealtimeEffectModule } from '../contracts.js'
 import { kernelTailSeconds } from './kernels.js'
 import { KERNEL_DEFS, type KernelType } from './sigimsaeDefs.js'
+import type { DynamicsMeterSource, DynamicsReading } from './dynamicsMeter.js'
+import { createStereoScopeTap, unbindDeviceAnalysis } from './analysis.js'
+
+/** Kernels that report input level and gain reduction to the device views. */
+const METERED: ReadonlySet<KernelType> = new Set<KernelType>(['limiter', 'gate'])
 
 const prepared = new WeakMap<BaseAudioContext, Promise<void>>()
 const ready = new WeakSet<BaseAudioContext>()
@@ -35,8 +40,25 @@ function kernelEffect(type: KernelType): RealtimeEffectModule {
       const input = remember(context.createGain())
       const output = remember(context.createGain())
       let node: AudioWorkletNode | null = null
+      // Utility feeds its stereo image view (goniometer / correlation) from the real output.
+      const analysisTap = type === 'utility' ? createStereoScopeTap(context, output, remember) : undefined
+      // Metering starts on the first read (a view is open) and arrives ~30 times a second.
+      let reading: DynamicsReading | null = null, metering = false
+      const dynamicsMeter: DynamicsMeterSource | undefined = METERED.has(type) ? {
+        read() {
+          if (!metering && node) {
+            metering = true
+            node.port.onmessage = event => {
+              const data = event.data as { type?: string; input?: number; gain?: number } | undefined
+              if (data?.type === 'meter' && typeof data.input === 'number' && typeof data.gain === 'number') reading = { input: data.input, gain: data.gain }
+            }
+            node.port.postMessage({ type: 'meter', on: true })
+          }
+          return reading
+        },
+      } : undefined
       return {
-        input, output,
+        input, output, dynamicsMeter, ...(analysisTap ? { analysisTap } : {}),
         update(params, bpm) {
           if (!node) {
             node = remember(new AudioWorkletNode(context, 'garak-sigimsae-v1', {
@@ -50,8 +72,11 @@ function kernelEffect(type: KernelType): RealtimeEffectModule {
           node.port.postMessage({ type: 'params', params: { ...params }, bpm })
         },
         dispose() {
+          if (dynamicsMeter) dynamicsMeter.disposed = true
+          if (analysisTap) unbindDeviceAnalysis(analysisTap)
           if (!node) return
           node.onprocessorerror = null
+          node.port.onmessage = null
           try { node.port.postMessage({ type: 'dispose' }) } catch { /* Context may have closed. */ }
           node.port.close()
         },

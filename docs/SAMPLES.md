@@ -9,14 +9,15 @@ public/samples/
   <set-id>/
     manifest.json
     LICENSE.txt          # 원 저작물 라이선스 전문 또는 링크와 출처
-    *.webm               # Opus 96 kbps (one-shot) / 64 kbps (pitched), 48 kHz
+    *.webm               # Opus 96 kbps (one-shot, 피아노) / 64 kbps (그 밖의 pitched), 48 kHz
     *.m4a                # 같은 내용의 AAC 128 kbps (Safari 17 이하 대비)
 scripts/samples/
   <set-id>.py            # 원본 다운로드 → 트리밍 → 인코딩 재현 스크립트
   common.py              # 공통 인코딩 함수
+  piano.py               # 어쿠스틱 피아노 세트(salamander, bitklavier) 공통 빌드
 ```
 
-원본 WAV/FLAC은 저장소에 넣지 않습니다. 처리된 webm/m4a만 커밋합니다. 세트 하나당 20 MB를 넘지 않도록 합니다.
+원본 WAV/FLAC은 저장소에 넣지 않습니다. 처리된 webm/m4a만 커밋합니다. 세트 하나의 **형식별** 크기(webm 합계, m4a 합계 각각)가 20 MB를 넘지 않도록 합니다. 앱은 실행 환경에 맞는 형식 하나만 내려받으므로, 사용자가 받는 크기 기준입니다(2026-11-15 변경, 이전에는 두 형식 합계 20 MB).
 
 ## manifest.json
 
@@ -79,11 +80,44 @@ scripts/samples/
 ## 인코딩 규칙
 
 - 시작 무음 제거: `-40 dBFS` 기준으로 첫 신호 직전 2 ms까지 자름. 드럼은 어택이 밀리지 않도록 반드시 자름.
-- 끝: one-shot은 `-60 dBFS` 아래로 떨어진 뒤 50 ms에서 자르고 20 ms 페이드 아웃. pitched는 길이 상한 8 s(피아노 12 s), 마지막 300 ms 페이드 아웃.
+- 끝: one-shot은 `-60 dBFS` 아래로 떨어진 뒤 50 ms에서 자르고 20 ms 페이드 아웃. pitched는 길이 상한 8 s, 마지막 300 ms 페이드 아웃. 피아노는 아래 [피아노 세트](#피아노-세트)의 음역별 상한을 씁니다.
 - 정규화: 세트 안에서 상대 음량을 유지. 세트 전체의 최대 피크를 `-1 dBFS`로 맞추는 한 번의 공통 게인만 적용. 레이어 간 음량 차이는 보존.
 - 리샘플: 48 kHz. 스테레오 원본은 스테레오 유지, 모노는 모노 유지.
-- Opus: `ffmpeg -c:a libopus -b:a 96k -application audio -frame_duration 20` (pitched는 64k). 컨테이너 webm.
+- Opus: `ffmpeg -c:a libopus -b:a 96k -application audio -frame_duration 20` (피아노가 아닌 pitched는 64k). 컨테이너 webm.
 - AAC: `ffmpeg -c:a aac -b:a 128k` 컨테이너 m4a. AAC 인코더 지연(약 2112 샘플)을 매니페스트가 아닌 로더에서 보정할 수 없으므로, 인코딩 전에 트리밍을 끝내고 `-movflags +faststart`를 씁니다. 앱은 m4a를 쓸 때 첫 44 ms를 건너뜁니다.
+
+## 피아노 세트
+
+| 세트 | 악기 이름 | 원본 | 라이선스 |
+|---|---|---|---|
+| `salamander` | Grand Piano · 그랜드 피아노 | Accurate-Salamander Grand Piano V6.2e(Salamander Grand Piano V3 리마스터, Yamaha C5) 48 kHz/24-bit FLAC | CC BY 3.0 |
+| `bitklavier` | Concert Grand · 콘서트 그랜드 | The bitKlavier Grand(Steinway D), Stage Lid ORTF 마이크 44.1 kHz/16-bit WAV | CC BY 4.0 |
+
+두 세트는 `scripts/samples/piano.py` 한 파이프라인으로 만듭니다. `salamander` ID는 기존 프로젝트 호환을 위해 그대로 두고 음원만 바꿨습니다(0.1.6까지는 @tonejs/piano의 MP3를 다시 인코딩한 30음 × 3레이어, 9초 고정, Opus 64k).
+
+- 원본: archive.org의 공식 아카이브를 받아 공개된 MD5로 확인한 뒤, 압축을 풀지 않고 필요한 파일만 읽어 ffmpeg로 디코딩합니다. `python -I scripts/samples/salamander.py --archive <zip>`처럼 직접 받은 파일을 넘기거나, 생략하면 `.samples-cache/`에 받습니다.
+- 구성: 단3도 간격 30음(A0–C8) × 16레이어 중 v3·v7·v11·v15의 4개. 0–1 벨로시티를 4등분합니다. 키 릴리즈 노이즈 88개(`rel1`–`rel88`).
+- 길이: 음마다 실제 감쇠가 `-66 dBFS` 아래로 떨어지는 곳과 음역별 상한 중 짧은 쪽에서 자릅니다. 상한은 A0 14 s → A2 11 s → C4 7.5 s → C5 5 s → C6 3.5 s → C7 2.6 s → C8 2 s를 직선 보간한 값에 세트별 배율을 곱합니다. 배율은 세트 전체의 디코딩 크기(float32 스테레오 48 kHz)가 275 MiB를 넘지 않도록 정합니다(0.1.6 세트 약 270 MiB와 같은 수준). 상한에서 자른 음은 상한의 35 %(0.5–3 s)에 걸친 코사인 페이드로 끝나 자연스럽게 사라집니다.
+- 음량: 피치 샘플 전체의 최대 피크를 `-1 dBFS`로 맞추는 공통 게인 하나만 적용해 레이어 사이의 실제 세기 차이를 보존합니다. 키 릴리즈 노이즈는 같은 게인에 세트별 감쇠(`release_gain_db`)를 더해, 중간 세기 음보다 충분히 작게 저장합니다.
+- 인코딩: Opus 96 kbps, AAC 128 kbps. 형식별 20 MB 이하를 빌드에서 확인합니다.
+
+| 세트 | 배율 | 피치 샘플 평균/최대 길이 | webm | m4a | 디코딩 크기 |
+|---|---|---|---|---|---|
+| `salamander` | 0.804 | 5.8 s / 11.3 s | 10.3 MB | 11.8 MB | 270 MiB |
+| `bitklavier` | 0.777 | 5.6 s / 10.9 s | 10.6 MB | 12.1 MB | 274 MiB |
+
+세트별 보정:
+
+- `salamander`: Accurate-Salamander는 16레이어의 음량을 모두 같게 맞추고 세기 표현을 SFZ의 `amp_veltrack=98.5`에 맡깁니다. 우리 샘플러는 `0.25 + 0.75 × 벨로시티`만 곱하므로, 각 레이어 벨로시티 구간의 가운데에서 SFZ 곡선(`1 − 0.985 + 0.985 × v²`)과 같아지도록 레이어 게인을 굽습니다(v3 −19.7 dB, v7 −9.4 dB, v11 −3.7 dB, v15 0 dB). 키 릴리즈는 −25 dB.
+- `bitklavier`: 녹음된 레이어 세기 차이(C4 기준 v3→v15 약 21 dB)를 그대로 씁니다. 키 릴리즈 녹음이 큰 음보다 13–18 dB밖에 작지 않아 −12 dB 낮춥니다.
+
+### 키 릴리즈 소리
+
+`releaseZones`가 있는 세트는 노트 오프 때 키 릴리즈(댐퍼) 소리를 섞습니다. 웹(`src/audio/samples.ts` `releaseNoiseGain`)과 네이티브(`native/include/garak/dsp.hpp` `dsp::releaseNoiseGain`)가 같은 규칙을 씁니다.
+
+- 크기 = `릴리즈 소리`(피아노 악기 조절기 `releaseNoise`, 0–1, 기본 0.5, 0이면 끔) × 노트 온 벨로시티 × `exp(-누른 시간 / 2 s)`.
+- 건너뜀: 음이 이미 다 울려 사라진 뒤(누른 시간 ≥ 샘플 길이), 벨로시티 0.02 이하, 리전 끝·루프 경계·프로젝트 끝에서 잘린 노트(노트 끝이 해당 구간 끝과 같음).
+- 트랜스포트 정지, 탐색, 보이스 스틸링은 보이스를 바로 끊으므로 릴리즈 소리를 내지 않습니다. 실시간 MIDI 입력의 노트 오프는 항상 실제 키 떼기로 봅니다.
 
 ## 출처 표기
 

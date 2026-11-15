@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SampleLibrary, chooseFormat, parseManifest, pickZone, type SampleSet, type SampleZone } from './samples'
+import { SampleLibrary, chooseFormat, parseManifest, pickZone, releaseNoiseGain, type SampleSet, type SampleZone } from './samples'
 
 const zone = (file: string, root: number, lo: number, hi: number, vlo = 0, vhi = 1, extra: Partial<SampleZone> = {}): SampleZone =>
   ({ file, root, lo, hi, vlo, vhi, ...extra })
@@ -147,5 +147,25 @@ describe('SampleLibrary', () => {
     const library = new SampleLibrary('/')
     await expect(library.load('../x', context)).rejects.toThrow(/Invalid/)
     expect(requests).toEqual([])
+  })
+})
+
+describe('releaseNoiseGain', () => {
+  it('follows velocity and the amount, and fades with hold time', () => {
+    expect(releaseNoiseGain(1, 0, 5, 1, false)).toBeCloseTo(1)
+    expect(releaseNoiseGain(0.5, 0, 5, 1, false)).toBeCloseTo(0.5)
+    expect(releaseNoiseGain(1, 0, 5, 0.5, false)).toBeCloseTo(0.5)
+    expect(releaseNoiseGain(1, 2, 5, 1, false)).toBeCloseTo(Math.exp(-1))
+    expect(releaseNoiseGain(1, 4, 5, 1, false)).toBeLessThan(releaseNoiseGain(1, 1, 5, 1, false))
+  })
+
+  it('is silent when turned off, cut off, very soft, or after the note rang out', () => {
+    expect(releaseNoiseGain(1, 0.5, 5, 0, false)).toBe(0)
+    expect(releaseNoiseGain(1, 0.5, 5, 1, true)).toBe(0)
+    expect(releaseNoiseGain(0.01, 0.5, 5, 1, false)).toBe(0)
+    expect(releaseNoiseGain(1, 5, 5, 1, false)).toBe(0)
+    expect(releaseNoiseGain(1, 6, 5, 1, false)).toBe(0)
+    expect(releaseNoiseGain(0.05, 14, 15, 1, false)).toBe(0)
+    expect(releaseNoiseGain(Number.NaN, 0.5, 5, 1, false)).toBe(0)
   })
 })

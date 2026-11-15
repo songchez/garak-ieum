@@ -2,14 +2,25 @@ import { useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import type { AudioAsset, Project } from '../../core/types'
 import type { ProjectSessionSnapshot, SessionAction } from '../../core/ProjectSession'
-import { warpRatio, warpRatioSupported } from './state'
-import { applyWarpRender, pendingGroups, referencedAssets, type RenderGroup } from './renderPlan'
+import { warpRatioSupported } from './state'
+import { applyWarpRender, isIdentityGroup, pendingGroups, referencedAssets, renderJob, type RenderGroup } from './renderPlan'
 import { encodeFloatWav } from './wav'
-import { stretchInWorker } from './client'
+import { renderInWorker } from './client'
+import { formatTranspose, TRANSPOSE_MODE_LABELS } from '../region-pitch/state'
 
 /** Debounce so typing or dragging the tempo renders once. */
 export const WARP_RENDER_DELAY_MS = 450
 const RENDER_NAME = ' · 워프 '
+const PITCH_RENDER_NAME = ' · 조옮김 '
+const isRenderName = (name: string) => name.includes(RENDER_NAME) || name.includes(PITCH_RENDER_NAME)
+/** Original name without any earlier render suffix. */
+const baseName = (name: string) => name.replace(/ · (워프|조옮김) .*$/, '')
+function renderName(source: string, group: RenderGroup): string {
+  const parts = [baseName(source)]
+  if (group.tempoDependent) parts.push(`워프 ${group.bpm} BPM`)
+  if (group.cents) parts.push(`조옮김 ${formatTranspose({ semitones: Math.trunc(group.cents / 100), cents: group.cents % 100 })} (${TRANSPOSE_MODE_LABELS[group.mode]})`)
+  return parts.join(' · ')
+}
 
 export interface WarpRendererOptions {
   project: Project
@@ -30,7 +41,7 @@ export interface WarpRendererOptions {
  * derived data: they are installed with a "live" session change, so they never add an
  * undo step, and every undo/redo state stays self-consistent (asset + renderBpm).
  */
-export function useWarpRenderer(options: WarpRendererOptions): { rendering: boolean } {
+export function useWarpRenderer(options: WarpRendererOptions): { rendering: boolean; hasPending: () => boolean } {
   const latest = useRef(options)
   latest.current = options
   const [rendering, setRendering] = useState(false)
@@ -53,7 +64,7 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
       const used = referencedAssets(session.getSnapshot())
       let next: Map<string, AudioAsset> | null = null
       for (const [id, asset] of assetsRef.current) {
-        if (used.has(id) || !(created.current.has(id) || asset.name.includes(RENDER_NAME))) continue
+        if (used.has(id) || !(created.current.has(id) || isRenderName(asset.name))) continue
         next ??= new Map(assetsRef.current)
         next.delete(id); created.current.delete(id)
       }
@@ -66,7 +77,7 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
       const rest: RenderGroup[] = []
       for (const group of groups) {
         const cached = cache.current.get(group.key)
-        if (Math.abs(group.bpm - group.sourceBpm) < 1e-6) install(group, group.originalAssetId)
+        if (isIdentityGroup(group)) install(group, group.originalAssetId)
         else if (cached && latest.current.assetsRef.current.has(cached)) install(group, cached)
         else rest.push(group)
       }
@@ -74,8 +85,8 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
     }
     const groups = applyImmediate(pendingGroups(project, latest.current.assetsRef.current)).filter(group => !failed.current.has(group.key))
     if (timer.current) { clearTimeout(timer.current); timer.current = null }
-    // A tempo change makes an in-flight render for the previous tempo useless.
-    if (running.current && runningBpm.current !== project.bpm) { running.current.abort(); running.current = null }
+    // A tempo change makes an in-flight tempo-dependent render useless.
+    if (running.current && runningBpm.current && runningBpm.current !== project.bpm) { running.current.abort(); running.current = null }
     if (!groups.length || running.current) return
     const start = async () => {
       timer.current = null
@@ -90,14 +101,14 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
           const current = latest.current.session.getSnapshot().history.present
           const group = applyImmediate(pendingGroups(current, latest.current.assetsRef.current)).find(item => !failed.current.has(item.key))
           if (!group || controller.signal.aborted) break
-          runningBpm.current = group.bpm
+          runningBpm.current = group.tempoDependent ? group.bpm : 0
           const { assetsRef, decodeAsset } = latest.current
           const source = assetsRef.current.get(group.originalAssetId)
           try {
-            if (!source) throw new Error('워프 원본 음원이 없습니다.')
-            if (!warpRatioSupported(group.sourceBpm, group.bpm)) throw new Error('원본과 프로젝트의 템포 차이가 너무 큽니다. 워프는 원래 길이의 1/4~4배까지 지원합니다.')
-            const channels = await stretchInWorker(source.buffer, warpRatio(group.sourceBpm, group.bpm), { signal: controller.signal })
-            const asset = await decodeAsset(encodeFloatWav(channels, source.buffer.sampleRate), `${source.name.replace(/ · 워프 .*$/, '')}${RENDER_NAME}${group.bpm} BPM`)
+            if (!source) throw new Error('원본 음원이 없습니다.')
+            if (group.tempoDependent && !warpRatioSupported(group.sourceBpm, group.bpm)) throw new Error('원본과 프로젝트의 템포 차이가 너무 큽니다. 워프는 원래 길이의 1/4~4배까지 지원합니다.')
+            const channels = await renderInWorker(source.buffer, renderJob(group), { signal: controller.signal })
+            const asset = await decodeAsset(encodeFloatWav(channels, source.buffer.sampleRate), renderName(source.name, group))
             if (controller.signal.aborted || latest.current.epoch() !== epoch) break
             const next = new Map(latest.current.assetsRef.current)
             next.set(asset.id, asset)
@@ -108,7 +119,7 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
           } catch (error) {
             if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) break
             failed.current.add(group.key)
-            latest.current.notify(`워프 렌더에 실패했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`)
+            latest.current.notify(`${group.cents ? '리전 피치' : '워프'} 렌더에 실패했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`)
           }
         }
       } finally {
@@ -124,5 +135,6 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
   }, [project])
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); running.current?.abort() }, [])
-  return { rendering }
+  const hasPending = () => pendingGroups(latest.current.session.getSnapshot().history.present, latest.current.assetsRef.current).some(group => !failed.current.has(group.key))
+  return { rendering, hasPending }
 }

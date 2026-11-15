@@ -28,7 +28,7 @@ const v = (id: string, effectType: EffectType, name: string, label: string, cate
 
 export const SIGIMSAE_VARIANTS: readonly SigimsaeVariant[] = [
   // EQ·필터
-  v('eq', 'eq', 'Curve 3', '3밴드 EQ', 'EQ·필터', {}, 'eq equalizer tone'),
+  v('eq', 'eq', 'Curve 8', '파라메트릭 EQ · 그래프로 조절', 'EQ·필터', {}, 'eq equalizer tone parametric curve'),
   v('eq-vocal-presence', 'eq', '보컬 존재감', '보컬 EQ · 2~3 kHz 앞으로', 'EQ·필터', { low: -2, mid: 3.5, midFreq: 2800, high: 2 }, 'vocal presence eq'),
   v('eq-low-weight', 'eq', '무게감', '저역 보강 EQ', 'EQ·필터', { low: 5, mid: -2, midFreq: 450 }, 'bass weight warm eq'),
   v('eq-air', 'eq', '하늘 Air', '고역 공기감 EQ', 'EQ·필터', { high: 4.5, mid: -1, midFreq: 600 }, 'air bright sparkle eq'),

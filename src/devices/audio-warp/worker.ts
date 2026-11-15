@@ -1,9 +1,10 @@
 import { analyzeTempoSignal } from './tempo'
-import { stretchPcm } from './stretch'
+import { renderPcm, stretchPcm, type PcmRenderJob } from './stretch'
 
 type Request =
   | { kind: 'analyze'; signal: Float32Array; sampleRate: number }
   | { kind: 'stretch'; channels: Float32Array[]; sampleRate: number; ratio: number }
+  | { kind: 'render'; channels: Float32Array[]; sampleRate: number; job: PcmRenderJob }
 
 // A small structural scope type avoids adding DOM WebWorker declarations to the app.
 const scope = globalThis as unknown as {
@@ -21,6 +22,9 @@ scope.onmessage = async ({ data }) => {
       scope.postMessage({ kind: 'result', result: analyzeTempoSignal({ signal: data.signal, sampleRate: data.sampleRate }, progress) })
     } else if (data.kind === 'stretch') {
       const result = await stretchPcm(data.channels, data.sampleRate, data.ratio, progress)
+      scope.postMessage({ kind: 'result', result }, result.map(channel => channel.buffer))
+    } else if (data.kind === 'render') {
+      const result = await renderPcm(data.channels, data.sampleRate, data.job, progress)
       scope.postMessage({ kind: 'result', result }, result.map(channel => channel.buffer))
     } else throw new Error('알 수 없는 워프 작업입니다.')
   } catch (error) {

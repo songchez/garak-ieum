@@ -5,7 +5,7 @@ import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, Sampl
 import { numberedInputChoices } from '../core/trackInputs'
 import {
   connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
-  trackLayoutKey, updateGraph,
+  setRouteMonitoring, trackLayoutKey, updateGraph,
 } from './graph'
 import type { EngineGraph } from './graph'
 import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter, secondsPerBeat } from './math'
@@ -15,6 +15,10 @@ import { playOutputTest } from './OutputTest'
 import { assertWebAudioProjectSupported, unsupportedWebAudioInstruments, WAVETABLE_HOST_REQUIRED } from './instrumentSupport'
 import { prepareEffects } from './effectPreparation'
 import { assertGuitarRigHealthy } from '../devices/guitar-rig'
+import { prepareRouteRecorder, RouteRecordings, type RouteRecordingHost } from './RouteRecording'
+import type { TakeCallbacks } from '../core/recording'
+import { WebMetronome } from './webMetronome'
+import type { MetronomeEngineState, PlayOptions } from '../core/metronome'
 
 const SCHEDULER_INTERVAL_MS = 25
 const LOOKAHEAD_SECONDS = 0.12
@@ -72,6 +76,10 @@ export class WebAudioEngine implements AudioEngine {
   private monitorTrackIds: string[] = []
   /** Channel routes last wired for monitoring; a track input change rewires without a new stream. */
   private monitorRoutes = ''
+  /** Routed tracks whose internal input is heard (docs/TRACK_INPUT_ROUTING.md); independent of any mic stream. */
+  private routeMonitorIds: string[] = []
+  /** Route recorders and the track input each listens to; rewired to every replacement graph. */
+  private routeRecorders = new Map<AudioNode, string>()
   /** Channels of the last live input stream; null until a stream has been seen. */
   private inputChannelCount: number | null = null
   private snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: 0 }
@@ -86,6 +94,8 @@ export class WebAudioEngine implements AudioEngine {
   private preparingContexts = new Set<AudioContext>()
   private outputFault: string | null = null
   private removeOutputListeners: (() => void) | null = null
+  /** Monitor-only clicks on the audio clock; never part of the graph, recordings or export. */
+  private readonly metronome = new WebMetronome()
 
   constructor(project?: Project, settings: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     this.settings = normalizeAudioSettings(settings)
@@ -164,6 +174,7 @@ export class WebAudioEngine implements AudioEngine {
         if (this.project) {
           candidateGraph = createGraph(candidate, this.project)
           candidateGraph.gate.gain.value = 0
+          this.wireRoutes(candidateGraph)
           if (next.softwareMonitoring && this.monitorStream?.active && this.monitorTrackIds.length) {
             candidateMonitor = candidate.createMediaStreamSource(this.monitorStream)
             connectMonitor(candidateGraph, candidateMonitor, this.monitorTrackIds, this.monitorInputs())
@@ -375,7 +386,7 @@ export class WebAudioEngine implements AudioEngine {
     }
     // Clip playback fields (loop, delay, quantize, swing, transpose, velocity) travel inside track.clips.
     const nextKey = JSON.stringify([
-      project.bpm, project.lengthBeats, project.loop,
+      project.bpm, project.lengthBeats, project.loop, project.timeSignature,
       project.tracks.map(track => [
         track.id, track.kind, track.instrument, track.enabled, track.transpose, track.velocityOffset,
         track.keyLimit, track.velocityLimit, track.delayTicks, track.clips,
@@ -436,7 +447,11 @@ export class WebAudioEngine implements AudioEngine {
     else await this.play()
   }
 
-  async play(): Promise<void> {
+  setMetronome(state: MetronomeEngineState): void {
+    this.metronome.setState(state, this.context?.currentTime ?? 0)
+  }
+
+  async play(options: PlayOptions = {}): Promise<void> {
     if (!this.project) throw new Error('재생할 프로젝트가 없습니다.')
     assertWebAudioProjectSupported(this.project)
     const request = ++this.transportRequest
@@ -451,9 +466,14 @@ export class WebAudioEngine implements AudioEngine {
       let beat = normalizedStart(this.project, this.position)
       if (!loopRange(this.project) && beat >= this.project.lengthBeats) beat = 0
       this.playing = true
-      this.restartAt(beat)
+      // A count-in delays the transport anchor; its clicks share the same audio clock.
+      const countIn = this.metronome.countInSeconds(this.project, options.countInBars ?? 0)
+      this.restartAt(beat, countIn)
+      if (countIn > 0 && this.context && !this.outputFault) this.metronome.scheduleCountIn(this.context, this.project, options.countInBars ?? 0, this.anchorTime - countIn)
       if (this.outputFault) throw new Error(this.audioError ?? this.outputFault)
       this.publishSnapshot()
+      // Resolve on the downbeat, so a recording starts its capture with the music.
+      if (countIn > 0) await this.waitForAnchor(request)
     } finally {
       // A cancelled play may settle after a newer play has already taken ownership.
       if (this.pendingPlayRequest === request) this.pendingPlayRequest = null
@@ -464,6 +484,7 @@ export class WebAudioEngine implements AudioEngine {
     this.transportRequest += 1
     this.position = this.currentBeat()
     this.playing = false
+    this.metronome.cancel(this.context?.currentTime ?? 0)
     this.replaceGraph()
     this.publishSnapshot()
   }
@@ -471,6 +492,7 @@ export class WebAudioEngine implements AudioEngine {
   stop(): void {
     this.transportRequest += 1
     this.playing = false
+    this.metronome.cancel(this.context?.currentTime ?? 0)
     this.position = 0
     this.cursorBeat = 0
     this.replaceGraph()
@@ -536,6 +558,51 @@ export class WebAudioEngine implements AudioEngine {
   private monitorInputs(): Map<string, readonly number[]> {
     const ids = new Set(this.monitorTrackIds)
     return new Map((this.project?.tracks ?? []).flatMap(track => ids.has(track.id) && track.kind === 'audio' && track.input ? [[track.id, track.input.channels] as const] : []))
+  }
+
+  /** Monitor gates of routed tracks (track/master inputs); these need no microphone stream. */
+  setRouteMonitor(trackIds: readonly string[]): void {
+    this.routeMonitorIds = [...trackIds]
+    if (this.graph) setRouteMonitoring(this.graph, this.routeMonitorIds)
+  }
+
+  private wireRoutes(graph: EngineGraph): void {
+    setRouteMonitoring(graph, this.routeMonitorIds)
+    for (const [node, trackId] of this.routeRecorders) graph.routes.get(trackId)?.input.connect(node)
+  }
+
+  /** Loads the route recorder processor ahead of the take, so capture starts with the transport. */
+  async prepareRouteRecording(): Promise<void> {
+    await this.resume()
+    if (this.context) await prepareRouteRecorder(this.context)
+  }
+
+  /**
+   * Records routed tracks straight from the graph (no MediaRecorder, any number of tracks). Must be
+   * created while the transport plays; the take positions come from the audio clock.
+   */
+  createRouteRecordings(trackIds: readonly string[], callbacks: TakeCallbacks): RouteRecordings {
+    const context = this.context
+    if (!context || context.state === 'closed') throw new Error('오디오 장치를 먼저 시작해 주세요.')
+    const host: RouteRecordingHost = {
+      context,
+      attach: (trackId, node) => {
+        this.routeRecorders.set(node, trackId)
+        this.graph?.routes.get(trackId)?.input.connect(node)
+        return () => {
+          this.routeRecorders.delete(node)
+          try { node.disconnect() } catch { /* Already detached. */ }
+          for (const graph of [this.graph, ...this.retiredGraphs.keys()]) try { graph?.routes.get(trackId)?.input.disconnect(node) } catch { /* Not connected. */ }
+        }
+      },
+      projectFrameAt: time => {
+        const project = this.project
+        if (!project) return 0
+        const beatSeconds = secondsPerBeat(project.bpm)
+        return (this.anchorBeat * beatSeconds + time - this.anchorTime) * projectSampleRate(project.sampleRate)
+      },
+    }
+    return new RouteRecordings(host, trackIds, callbacks)
   }
 
   /** Browsers do not name input channels; choices are numbered from the stream (or the requested count). */
@@ -622,6 +689,7 @@ export class WebAudioEngine implements AudioEngine {
     this.position = 0
     if (this.scheduler !== null) clearInterval(this.scheduler)
     this.scheduler = null
+    this.metronome.dispose()
     if (this.graph) disposeGraph(this.graph)
     this.graph = null
     this.monitorSource?.disconnect()
@@ -694,6 +762,7 @@ export class WebAudioEngine implements AudioEngine {
       }
       this.graph = replacement
       if (this.outputFault) this.graph.gate.gain.value = 0
+      this.wireRoutes(replacement)
       this.wireMonitor()
       this.levels.clear()
       this.masterLevel = 0
@@ -705,11 +774,12 @@ export class WebAudioEngine implements AudioEngine {
     }
   }
 
-  private restartAt(beat: number): void {
+  private restartAt(beat: number, preRollSeconds = 0): void {
     if (!this.context || !this.project) return
     this.position = normalizedStart(this.project, beat)
     this.anchorBeat = this.position
-    this.anchorTime = this.context.currentTime + START_LEAD_SECONDS
+    this.anchorTime = this.context.currentTime + START_LEAD_SECONDS + preRollSeconds
+    this.metronome.cancel(this.context.currentTime)
     this.cursorBeat = this.position
     this.cursorTime = this.anchorTime
     this.chaseCursor = true
@@ -749,9 +819,19 @@ export class WebAudioEngine implements AudioEngine {
       if (segmentSeconds <= 0.00000001) break
       const endBeat = this.cursorBeat + segmentSeconds / beatSeconds
       scheduleRange(this.graph, project, this.assets, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true, this.samples)
+      if (!this.outputFault) this.metronome.scheduleSegment(this.context, project, this.cursorBeat, endBeat, this.cursorTime)
       this.cursorTime += segmentSeconds
       this.cursorBeat = endBeat
       this.chaseCursor = false
+    }
+  }
+
+  /** Waits on the audio clock for a count-in to reach the transport anchor (or for the play to be cancelled). */
+  private async waitForAnchor(request: number): Promise<void> {
+    while (this.context && this.playing && request === this.transportRequest) {
+      const remaining = this.anchorTime - this.context.currentTime
+      if (remaining <= 0.002) return
+      await new Promise(resolve => setTimeout(resolve, Math.min(50, Math.max(1, (remaining - 0.001) * 1000))))
     }
   }
 

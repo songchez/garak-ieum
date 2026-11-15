@@ -88,12 +88,21 @@ SOFTWARE.
 - 변경 사항: 음 단위 분할, 트리밍, 페이드, 음량 정규화, Opus/AAC 변환, 일부 음정 보정
 - 곡을 공개하거나 판매할 때는 '국립국악원 국악기 디지털 음원(공공누리 제1유형)' 출처 표기를 권장합니다.
 
-### Salamander Grand Piano V3 — `salamander`
+### Accurate-Salamander Grand Piano V6.2e (Salamander Grand Piano V3 리마스터) — `salamander`
 
-- 저작자: Alexander Holm (Yamaha C5, 48 kHz/24-bit 녹음)
-- 출처: <https://archive.org/details/SalamanderGrandPianoV3>
-- 라이선스: CC BY 3.0 <https://creativecommons.org/licenses/by/3.0/>
-- 변경 사항: 30음 × 3 벨로시티 레이어와 88개 키 릴리즈 샘플을 골라 9초로 자르고 정규화한 뒤 Opus/AAC로 변환. 인코딩 원본은 @tonejs/piano(<https://github.com/tambien/Piano>, © Yotam Mann)의 MP3입니다.
+- 원 저작물: Salamander Grand Piano V3 — Alexander Holm (Yamaha C5, 48 kHz/24-bit 녹음) <https://archive.org/details/SalamanderGrandPianoV3>, CC BY 3.0
+- 리마스터: Accurate-Salamander Grand Piano V6.2e — Accurate-Salamander Project, Chisato Yamauchi (재조율 Hiroharu Narikawa) <https://www.ir.isas.jaxa.jp/~cyamauch/AccurateSalamander/>
+- 원본 파일: <https://archive.org/details/httpswww.ir.isas.jaxa.jpcyamauchaccuratesalamander>의 `AccurateSalamanderGrandPianoV6.2e_48khz24bit_flac.zip` (MD5 `c2803eaa235a28af5c11e4a504ad337e`)
+- 라이선스: CC BY 3.0 <https://creativecommons.org/licenses/by/3.0/>. 프로젝트 페이지 원문은 "CC-by (same licence as the original version)"입니다. archive.org 항목 페이지에는 CC BY 4.0으로 표시되어 있으나, 저작자 페이지와 원 저작물의 조건(CC BY 3.0)을 따릅니다.
+- 변경 사항: 48 kHz/24-bit FLAC 뱅크에서 30음 × 16 벨로시티 레이어 중 4개(v3·v7·v11·v15)와 88개 키 릴리즈 샘플을 골라, 음역별 길이 상한과 페이드 아웃으로 자르고, 세트 전체에 하나의 공통 게인을 적용한 뒤 Opus 96 kbps(webm)·AAC 128 kbps(m4a)로 변환. 키 릴리즈 샘플은 음량을 낮춰 저장. 0.1.7 이전 판은 @tonejs/piano(<https://github.com/tambien/Piano>)의 MP3를 원본으로 썼습니다.
+
+### The bitKlavier Grand (Stage Lid ORTF) — `bitklavier`
+
+- 저작자: Dan Trueman (producer), Andrés Villalta (recording), Matt Wang (piano), Jeff Gordon · Katie Chou · Christien Ayers · Matt Wang · Dan Trueman (editing and denoising). Princeton University Department of Music, Council for the Humanities 지원. Steinway D, Taplin Auditorium(2021년 1월) 녹음
+- 출처: <https://bitklavier.com/the-bitklavier-grand/>
+- 원본 파일: <https://archive.org/details/bitKlavierGrand_StageLidORTF_44k16b>의 `bitKlavierGrand_StageLidORTF_44k16b.zip` (MD5 `cecc6ffb04d8a965d5183b63a7ab5a12`)
+- 라이선스: CC BY 4.0 <https://creativecommons.org/licenses/by/4.0/> — "The bitKlavier Grand sample library is covered by the CC BY 4.0 license"
+- 변경 사항: Stage Lid ORTF 마이크 44.1 kHz/16-bit 패키지에서 30음 × 16 벨로시티 레이어 중 4개(v3·v7·v11·v15)와 88개 키 릴리즈 샘플을 골라 48 kHz로 리샘플(soxr), 음역별 길이 상한과 페이드 아웃으로 자르고, 세트 전체에 하나의 공통 게인을 적용한 뒤 Opus 96 kbps(webm)·AAC 128 kbps(m4a)로 변환. 키 릴리즈 샘플은 음량을 낮춰 저장. 앱의 악기 이름은 "Concert Grand(콘서트 그랜드)"입니다.
 
 ### Wurlitzer EP200 (E-Pianos) — `wurlitzer`
 

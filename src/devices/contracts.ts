@@ -1,4 +1,5 @@
 import type { EffectType } from '../core/types.js'
+import type { DynamicsMeterSource } from './effects/dynamicsMeter.js'
 
 export type ParamUnit = 'hz' | 'db' | 's' | 'ms' | 'pct' | 'signed' | 'ct' | 'st' | 'x' | 'q' | 'ratio' | 'gain' | 'pan' | 'bits'
 
@@ -32,6 +33,8 @@ export interface DeviceGraph {
   /** Release worklet ports and internal sources before the host disconnects nodes. */
   dispose?(): void
   update(params: Record<string, number>, bpm: number, now: number, smooth: boolean): void
+  /** Compressor/limiter/gate: live input level and gain reduction for the device view (realtime only). */
+  dynamicsMeter?: DynamicsMeterSource
 }
 
 /** Built-in numeric state remains compatible with existing Device.params files. */

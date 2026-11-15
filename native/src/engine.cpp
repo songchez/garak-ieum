@@ -1,6 +1,7 @@
 #include "garak/engine.hpp"
 #include "garak/dsp.hpp"
 #include "wavetable.hpp"
+#include "metronome.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -178,7 +179,7 @@ constexpr std::size_t aheadMemoryBudget=64u*1024u*1024u;
 struct Synth {
   enum class Kind { Keys, Bass, Pad, Pluck, Rhodes, Drums, Sampled } kind = Kind::Keys;
   double level = 1, tone = 0, attack = .004, decay = .22, sustain = .2, release = .3;
-  double sub = .65, bell = .2, detune = 7, sweep = .25, bark = .5, tune = 0, punch = 1;
+  double sub = .65, bell = .2, detune = 7, sweep = .25, bark = .5, tune = 0, punch = 1, releaseNoise = .5;
 };
 Synth compileSynth(const TrackSource& source) {
   Synth result;
@@ -190,7 +191,8 @@ Synth compileSynth(const TrackSource& source) {
       permitted.insert({"tune", "decay"});
       result.tune=parameter(p,"tune",0,-12,12); result.decay=parameter(p,"decay",1,.1,1);
     } else {
-      permitted.insert({"attack","release"}); result.attack=parameter(p,"attack",.001,.001,2); result.release=parameter(p,"release",.25,.02,5);
+      permitted.insert({"attack","release","releaseNoise"}); result.attack=parameter(p,"attack",.001,.001,2); result.release=parameter(p,"release",.25,.02,5);
+      result.releaseNoise=parameter(p,"releaseNoise",.5,0,1);
     }
   } else if (source.instrumentId == "drums") {
     result.kind=Synth::Kind::Drums; permitted.insert({"tune","decay","punch"});
@@ -265,7 +267,7 @@ double oscillator(double& phase,double frequency,double sr,int waveform=0) noexc
 
 struct Voice {
   Synth synth;
-  bool active=false,sampled=false,releaseSample=false,releaseSpawned=false,live=false,forcedRelease=false;
+  bool active=false,sampled=false,releaseSample=false,releaseSpawned=false,live=false,forcedRelease=false,cut=false;
   std::int32_t id=0;int pitch=60,choke=-1;
   std::int64_t age=0,noteFrames=0,endFrames=0;
   float velocity=1;double samplePosition=0,sampleStep=1,peak=1,naturalFrames=0,releaseGain=0;
@@ -288,6 +290,7 @@ struct InsertRuntime {
 
   std::unique_ptr<dsp::StereoProcessor> builtin;
   std::shared_ptr<PluginProcessor> plugin;
+  std::uint16_t source=0; // Index in TrackTimeline::inserts (disabled inserts are skipped here).
 };
 class CompensationDelay {
  public:
@@ -354,6 +357,15 @@ struct TrackRuntime {
   std::uint64_t taskOverflows=0,taskInvalid=0,taskResyncs=0;
   // Continuous frame until which live input/notes keep this track in the callback.
   std::int64_t liveUntil=std::numeric_limits<std::int64_t>::min();
+  // Track-input routing (docs/TRACK_INPUT_ROUTING.md), resolved in prepare(). Tap buffers exist only on
+  // tracks another track listens to; `routeInput` only on routed tracks. All sized maxBlock*2 up front.
+  TrackRoute::Kind routeKind=TrackRoute::Kind::None;
+  TrackRoute::Tap routeTap=TrackRoute::Tap::PostFx;
+  std::int32_t routeSource=-1;   // Graph index of the source track (Kind::Track).
+  bool routed=false;             // Has an internal input (any kind, including None = silence).
+  bool inMasterFeed=true;        // Heard by master-resampling tracks (false for them and downstream).
+  std::uint32_t routeLevel=0;    // Processing level: sources render in an earlier level.
+  std::vector<float> preTap,postTap,routeInput;
 
   void takeStateFrom(TrackRuntime& previous)noexcept {
     meter=previous.meter;liveUntil=previous.liveUntil;
@@ -419,7 +431,9 @@ struct TrackRuntime {
       } else {
         voice.endFrames=voice.noteFrames+static_cast<std::int64_t>((synth.release*1.5+.02)*sampleRate);
         if(!zone->zone.loop)voice.endFrames=std::min(voice.endFrames,static_cast<std::int64_t>(voice.naturalFrames+.01*sampleRate));
-        if(live||voice.noteFrames<voice.naturalFrames)voice.releaseZone=pickZone(samples.releases,false,pitch,std::clamp(velocity,0.f,1.f));
+        // A timeline note that reaches its clip end, the loop boundary or the project end is cut off, not released.
+        voice.cut=!live&&duration>=available;
+        if(!samples.releases.empty()&&synth.releaseNoise>0&&!voice.cut)voice.releaseZone=pickZone(samples.releases,false,pitch,std::clamp(velocity,0.f,1.f));
       }
       return;
     }
@@ -447,11 +461,13 @@ struct TrackRuntime {
   void spawnRelease(Voice& source,std::uint64_t& overflows)noexcept {
     if(!source.releaseZone||source.releaseSpawned)return;
     source.releaseSpawned=true;
-    auto* zone=source.releaseZone;const int pitch=source.pitch;const float velocity=source.velocity;const auto voiceSynth=source.synth;
+    const double noise=dsp::releaseNoiseGain(source.velocity,static_cast<double>(source.noteFrames)/sampleRate,source.naturalFrames/sampleRate,source.synth.releaseNoise,source.cut);
+    if(noise<=0)return;
+    auto* zone=source.releaseZone;const int pitch=source.pitch;const auto voiceSynth=source.synth;
     auto& v=availableVoice(overflows);v=Voice{};v.synth=voiceSynth;v.active=true;v.sampled=true;v.releaseSample=true;v.zone=zone;v.pitch=pitch;
     v.samplePosition=samples.startOffset*zone->asset->sampleRate;
     v.sampleStep=std::pow(2,(pitch-zone->zone.root)/12.0+zone->zone.tune/1200)*zone->asset->sampleRate/sampleRate;
-    v.peak=dsp::dbToGain(samples.gainDb+zone->zone.gainDb-6)*.35*std::min(1.f,velocity)*voiceSynth.level;
+    v.peak=dsp::dbToGain(samples.gainDb+zone->zone.gainDb-6)*noise*voiceSynth.level;
     v.endFrames=static_cast<std::int64_t>(std::max(0.0,(zone->asset->frames()-v.samplePosition)/v.sampleStep));
   }
   void noteOff(int pitch,std::int32_t id,std::uint64_t& overflows)noexcept {
@@ -597,7 +613,7 @@ struct TrackRuntime {
   void render(std::int64_t frame,std::uint32_t frames,bool playing,const float* input,bool monitor,bool stereoInput,
               const ProcessContext& context,std::uint64_t& overflows,std::uint64_t& invalid)noexcept {
     std::fill_n(buffer.data(),static_cast<std::size_t>(frames)*2,0.f);
-    if(!timeline.enabled){peak=0;return;}
+    if(!timeline.enabled){peak=0;if(!preTap.empty())std::fill_n(preTap.data(),static_cast<std::size_t>(frames)*2,0.f);if(!postTap.empty())std::fill_n(postTap.data(),static_cast<std::size_t>(frames)*2,0.f);return;}
     if(playing)for(const auto& resolved:windows) {
       const auto&w=resolved.window;
       if(w.startFrame>=frame+frames)break;
@@ -641,9 +657,11 @@ struct TrackRuntime {
       voicesInto(buffer.data()+cursor*2,frames-cursor,overflows);
     }
     if(monitor&&input)for(std::size_t i=0;i<static_cast<std::size_t>(frames)*2;++i)buffer[i]+=input[i];
+    if(!preTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,preTap.data());
     for(auto& effect:inserts){if(effect.builtin)effect.builtin->process(buffer.data(),frames);else effect.plugin->process(buffer.data(),frames,{},context);}
     // A reduced-latency monitor deliberately avoids waiting for unrelated tracks.
     if(!(monitor&&context.playing&&!context.offline&&contextLowLatency))compensation.process(buffer.data(),frames);
+    if(!postTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,postTap.data());
     const double targetPan=timeline.pan,targetGain=timeline.audible?timeline.gain:0;
     const double smoothing=1-std::exp(-1/(sampleRate*.012));
     peak=0;
@@ -819,6 +837,10 @@ struct PreparedProject::Impl {
   std::shared_ptr<const ControlRecipe> recipe;
   std::uint64_t serial=0,preserveFrom=0;
   std::size_t wavetableMemory=0,wavetableTableMemory=0;
+  // Track-input routing: track indices grouped by processing level (sources first). One level = no
+  // routes, the original single fork. `masterLevel` is the first level holding a master-resampling track.
+  std::vector<std::uint32_t> levelOrder,levelStart;
+  std::uint32_t masterLevel=std::numeric_limits<std::uint32_t>::max();
   explicit Impl(const ProjectTimeline& p):timeline(p),master(p.sampleRate){}
   void reset(std::int64_t frame,bool chase,bool effects,std::uint64_t& overflows)noexcept {
     for(auto&track:tracks) track.reset(frame,chase,effects,overflows);
@@ -842,8 +864,8 @@ double PreparedProject::tailSeconds()const noexcept{return impl_->tail;}
 std::uint32_t PreparedProject::latencyFrames()const noexcept{return impl_->latency;}
 
 struct RenderEngine::Impl {
-  enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Monitor,RecordStart,RecordStop,Master,Input,Layout };
-  struct Command {Kind kind=Kind::Stop;std::uint64_t ticket=0;PreparedProject*graph=nullptr;Capture*capture=nullptr;std::uint32_t track=0;std::int64_t frame=0;int pitch=60;std::int32_t noteId=-1;float value=1;std::array<std::uint64_t,4>mask{};std::array<std::uint8_t,maxInputLayout>layout{};};
+  enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Monitor,RecordStart,RecordStop,Master,Input,Layout,Metronome };
+  struct Command {Kind kind=Kind::Stop;std::uint64_t ticket=0;PreparedProject*graph=nullptr;Capture*capture=nullptr;std::uint32_t track=0;std::int64_t frame=0;int pitch=60;std::int32_t noteId=-1;float value=1;std::array<std::uint64_t,4>mask{};std::array<std::uint8_t,maxInputLayout>layout{};const MetronomeClicks*clicks=nullptr;};
   std::uint32_t rate,maxBlock;
   PreparedProject*active=nullptr;
   SpscQueue<Command,1024> commands;
@@ -861,11 +883,21 @@ struct RenderEngine::Impl {
   bool playing=false,offline=false,recording=false;
   float masterGain=1;
   float targetMasterGain=1;
+  // Metronome (callback-owned view; see metronome.hpp). During a count-in the
+  // transport holds `position` and is not `playing`; a capture started meanwhile
+  // waits (recording=false) and begins on the frame the transport starts.
+  const MetronomeClicks*clicks=nullptr;bool metronomeOn=false;float metronomeGain=0;
+  metronome::Player clickPlayer;
+  std::int64_t countInRemaining=0,countInElapsed=0,countInLength=0;
+  // Control thread: click sets in submission order, freed once a newer one is applied.
+  std::vector<std::pair<std::uint64_t,std::shared_ptr<const MetronomeClicks>>>ownedClicks;
   std::array<std::uint64_t,4>monitor{};
   int inputLeft=0,inputRight=1;
   // Callback copy of the device's physical channel order. Identity until set.
   std::array<std::uint8_t,maxInputLayout>layout{};std::uint32_t layoutCount=maxInputLayout;
   std::vector<float>inputScratch;
+  std::vector<float>resampleScratch; // Master feed of the current block for resampling tracks.
+  const std::uint32_t*levelTracks=nullptr; // Track indices of the level a fork renders.
   Capture*capture=nullptr; // Callback-owned view of ownedCapture while recording.
   std::uint32_t recordingCapacity;
   // Control-thread state: the capture it owns, the stop that releases it, and
@@ -882,7 +914,14 @@ struct RenderEngine::Impl {
     std::atomic<std::uint32_t>trackCount{0},latency{0},aheadTracks{0};
     std::atomic<bool>ready{false},playing{false},recording{false};
     std::atomic<float>masterPeak{0};std::array<std::atomic<float>,256>trackPeaks{};
+    std::atomic<std::uint32_t>dynamicsCount{0};
+    std::array<std::atomic<std::uint32_t>,EngineSnapshot::maxDynamicsReadings>dynamicsIds{};
+    std::array<std::atomic<float>,EngineSnapshot::maxDynamicsReadings>dynamicsInput{},dynamicsGain{};
   }published;
+  // Callback-owned meter window for `published.dynamics*`: slot id, current and previous bucket.
+  std::array<std::uint32_t,EngineSnapshot::maxDynamicsReadings>heldIds{};
+  std::array<float,EngineSnapshot::maxDynamicsReadings>heldInput{},heldGain{},lastInput{},lastGain{};
+  std::uint32_t meterFrames=0;
 
   // Multi-core processing. Configured on the control thread before the device
   // starts (setProcessing); the pool's workers live as long as this engine.
@@ -904,7 +943,7 @@ struct RenderEngine::Impl {
     std::int64_t position=0;std::uint32_t count=0,cursor=0,channels=0;bool playing=false;
   } block;
 
-  Impl(std::uint32_t r,std::uint32_t b,std::uint32_t capacity):rate(r),maxBlock(b),inputScratch(static_cast<std::size_t>(b)*2),recordingCapacity(capacity){
+  Impl(std::uint32_t r,std::uint32_t b,std::uint32_t capacity):rate(r),maxBlock(b),inputScratch(static_cast<std::size_t>(b)*2),resampleScratch(static_cast<std::size_t>(b)*2),recordingCapacity(capacity){
     for(std::size_t i=0;i<maxInputLayout;++i){layout[i]=static_cast<std::uint8_t>(i);controlLayout[i]=layout[i];}
   }
   ~Impl(){pool.reset();Command c;while(commands.pop(c))if(c.kind==Kind::Graph)delete c.graph;if(deferred&&deferred->kind==Kind::Graph)delete deferred->graph;PreparedProject*p=nullptr;while(retired.pop(p))delete p;delete active;}
@@ -1098,6 +1137,27 @@ struct RenderEngine::Impl {
     return true;
   }
   static void trackTask(void*self,std::uint32_t index,std::uint32_t slot)noexcept{static_cast<Impl*>(self)->renderTrack(index,slot);}
+  static void levelTask(void*self,std::uint32_t index,std::uint32_t slot)noexcept{auto*e=static_cast<Impl*>(self);e->renderTrack(e->levelTracks[index],slot);}
+  // The routed track's input for this block, from its source's tap (rendered in an earlier level) or the
+  // master feed. Same block frames as the source: an internal route adds no latency of its own.
+  void fillRouteInput(PreparedProject::Impl&g,TrackRuntime&t)noexcept {
+    const auto samples=static_cast<std::size_t>(block.count)*2;
+    const float*source=nullptr;
+    if(t.routeKind==TrackRoute::Kind::Track&&t.routeSource>=0) {
+      const auto&s=g.tracks[static_cast<std::size_t>(t.routeSource)];
+      source=t.routeTap==TrackRoute::Tap::PreFx?s.preTap.data():t.routeTap==TrackRoute::Tap::PostFx?s.postTap.data():s.mix;
+    } else if(t.routeKind==TrackRoute::Kind::Master)source=resampleScratch.data();
+    if(source)std::copy_n(source,samples,t.routeInput.data());else std::fill_n(t.routeInput.data(),samples,0.f);
+  }
+  // Callback, before the master-resampling level: master gain over the tracks in the master feed (before
+  // the master processor), computed with the same smoothing the output mix applies to this block.
+  void fillMasterFeed(PreparedProject::Impl&g)noexcept {
+    const auto samples=static_cast<std::size_t>(block.count)*2;float*feed=resampleScratch.data();
+    std::fill_n(feed,samples,0.f);
+    for(const auto&t:g.tracks)if(t.inMasterFeed&&t.mix)for(std::size_t i=0;i<samples;++i)feed[i]+=t.mix[i];
+    const float smoothing=static_cast<float>(1-std::exp(-1/(rate*.012)));float gain=masterGain;
+    for(std::uint32_t i=0;i<block.count;++i){gain+=(targetMasterGain-gain)*smoothing;feed[2*i]*=gain;feed[2*i+1]*=gain;}
+  }
   void renderTrack(std::uint32_t index,std::uint32_t slot)noexcept {
     auto&g=*block.graph;auto&t=g.tracks[index];
     t.taskOverflows=0;t.taskInvalid=0;
@@ -1110,7 +1170,11 @@ struct RenderEngine::Impl {
     const bool monitored=(monitor[index/64]&(std::uint64_t{1}<<(index%64)))!=0;
     // Each monitored track hears its own input; an unopened one hears silence.
     const float*trackInput=nullptr;bool stereoInput=false;
-    if(monitored) {
+    if(t.routed) {
+      // Filled even when not monitored: a recording of this track reads it after the block.
+      fillRouteInput(g,t);
+      if(monitored){trackInput=t.routeInput.data();stereoInput=true;}
+    } else if(monitored) {
       const auto route=routeInput(t.timeline.input,std::span(layout.data(),layoutCount),block.channels,inputLeft,inputRight);
       if(!route.missing) {
         float*scratch=inputScratch.data()+static_cast<std::size_t>(slot)*maxBlock*2;
@@ -1175,14 +1239,20 @@ struct RenderEngine::Impl {
           active=c.graph;targetMasterGain=active->impl_->timeline.masterGain;
           if(preserve)active->impl_->takeStateFrom(*previous->impl_);
           else {masterGain=targetMasterGain;aheadTracks=0;}
-          if(projectChanged){position=0;playing=false;monitor={};}
+          if(projectChanged){position=0;playing=false;monitor={};countInRemaining=0;}
           normalize();if(!preserve)reset(playing,true);
           if(previous){const bool accepted=retired.push(previous);(void)accepted;}
           break;
         }
-        case Kind::Play:if(!playing){normalize(true);playing=active!=nullptr;reset(playing,false);}break;
-        case Kind::Pause:reclaimAll(false);playing=false;reset(false,false);break;
-        case Kind::Stop:reclaimAll(true);playing=false;position=0;reset(false,true);break;
+        case Kind::Play:
+          if(!playing&&!countInRemaining){
+            normalize(true);
+            if(c.frame>0&&active&&!offline){countInRemaining=countInLength=c.frame;countInElapsed=0;}
+            else {playing=active!=nullptr;reset(playing,false);}
+          }
+          break;
+        case Kind::Pause:countInRemaining=0;reclaimAll(false);playing=false;reset(false,false);break;
+        case Kind::Stop:countInRemaining=0;reclaimAll(true);playing=false;position=0;reset(false,true);break;
         case Kind::Seek:reclaimAll(true);position=c.frame;normalize();reset(playing,true);break;
         case Kind::Preview:case Kind::NoteOn:case Kind::NoteOff:case Kind::AllNotesOff: {
           if(!active||c.track>=active->impl_->tracks.size())break;
@@ -1206,18 +1276,57 @@ struct RenderEngine::Impl {
           bool wait=false;
           if(active&&c.capture)for(const auto&take:c.capture->takes)if(take.track<active->impl_->tracks.size()&&!own(active->impl_->tracks[take.track]))wait=true;
           if(wait){deferred=c;return;}
-          capture=c.capture;recording=capture!=nullptr;recordingStart=position;recordedFrames=0;droppedFrames=0;break;
+          capture=c.capture;recording=capture!=nullptr&&!countInRemaining;recordingStart=position;recordedFrames=0;droppedFrames=0;break;
         }
         case Kind::RecordStop:recording=false;capture=nullptr;break;
         case Kind::Master:targetMasterGain=c.value;break;
         case Kind::Input:inputLeft=c.pitch;inputRight=static_cast<int>(c.frame);break;
         case Kind::Layout:layout=c.layout;layoutCount=c.track;break;
+        case Kind::Metronome:
+          // Voices may still read the previous set, which the control thread frees once this is acknowledged.
+          if(c.clicks!=clicks)clickPlayer.clear();
+          clicks=c.clicks;metronomeOn=c.pitch!=0;metronomeGain=c.value;break;
       }
       lastTicket=c.ticket;
     }
   }
+  // Dynamics inserts: a two-bucket window (each ~25 ms) keeps the loudest input and
+  // the lowest gain of the last 25-50 ms, so a 25 Hz snapshot poll never misses a
+  // transient, and input/gain come from the same window (the live dot sits on the curve).
+  void publishDynamics(std::uint32_t frames)noexcept {
+    std::uint32_t slot=0;
+    meterFrames+=frames;const bool rotate=meterFrames>=rate/40;if(rotate)meterFrames=0;
+    if(active)for(std::size_t t=0;t<active->impl_->tracks.size()&&t<65535;++t)for(auto&insert:active->impl_->tracks[t].inserts) {
+      auto*tap=insert.builtin?insert.builtin->dynamics():nullptr;
+      if(!tap||slot>=EngineSnapshot::maxDynamicsReadings)continue;
+      float peak=0,gain=1;tap->take(peak,gain);
+      const std::uint32_t id=static_cast<std::uint32_t>(t)<<16|insert.source;
+      if(heldIds[slot]!=id){heldIds[slot]=id;heldInput[slot]=lastInput[slot]=0;heldGain[slot]=lastGain[slot]=1;}
+      heldInput[slot]=std::max(heldInput[slot],peak);heldGain[slot]=std::min(heldGain[slot],gain);
+      published.dynamicsIds[slot].store(id,std::memory_order_relaxed);
+      published.dynamicsInput[slot].store(std::max(heldInput[slot],lastInput[slot]),std::memory_order_relaxed);
+      published.dynamicsGain[slot].store(std::min(heldGain[slot],lastGain[slot]),std::memory_order_relaxed);
+      if(rotate){lastInput[slot]=heldInput[slot];lastGain[slot]=heldGain[slot];heldInput[slot]=0;heldGain[slot]=1;}
+      ++slot;
+    }
+    published.dynamicsCount.store(slot,std::memory_order_relaxed);
+  }
+  // Clicks after the master bus and meters: monitor only (offline engines never click).
+  void renderClicks(float* out,std::uint32_t count,bool countingIn)noexcept {
+    if(offline)return;
+    const float gain=clicks&&clicks->sampleRate==rate?metronomeGain:0.f;
+    if(gain<=0){if(countingIn)countInElapsed+=count;return;}
+    clickPlayer.mix(out,count,gain);
+    if(active) {
+      const auto&t=active->impl_->timeline;
+      const auto grid=metronome::grid(rate,t.bpm,t.timeSigNumerator,t.timeSigDenominator);
+      if(countingIn)metronome::clicks(grid,*clicks,clickPlayer,out,countInElapsed,count,gain,countInLength);
+      else if(metronomeOn&&playing&&position<t.lengthFrames)metronome::clicks(grid,*clicks,clickPlayer,out,position,count,gain);
+    }
+    if(countingIn)countInElapsed+=count;
+  }
   void publish(float masterPeak)noexcept {
-    published.frame.store(position,std::memory_order_relaxed);published.playing.store(playing,std::memory_order_relaxed);published.ready.store(active!=nullptr,std::memory_order_relaxed);
+    published.frame.store(position,std::memory_order_relaxed);published.playing.store(playing||countInRemaining>0,std::memory_order_relaxed);published.ready.store(active!=nullptr,std::memory_order_relaxed);
     const auto count=active?active->impl_->tracks.size():0;
     published.trackCount.store(static_cast<std::uint32_t>(count),std::memory_order_relaxed);
     published.revision.store(active?active->impl_->timeline.revision:0,std::memory_order_relaxed);
@@ -1238,6 +1347,69 @@ RenderEngine::RenderEngine(std::uint32_t sr,std::uint32_t maxBlock,std::uint32_t
   impl_=std::make_unique<Impl>(sr,maxBlock,recordCapacity);
 }
 RenderEngine::~RenderEngine()=default;
+
+namespace {
+// Control thread (prepare): resolves each route to a graph index, turns loops and missing sources into
+// silence (Kind::None), marks the master feed, allocates tap/route buffers and orders tracks by level so
+// every source renders before the tracks that take it. Mirrors src/core/trackRouting.ts.
+void prepareRoutes(std::vector<TrackRuntime>& tracks,std::vector<std::uint32_t>& levelOrder,std::vector<std::uint32_t>& levelStart,std::uint32_t& masterLevel,std::uint32_t maxBlock) {
+  const auto count=tracks.size();
+  std::vector<std::int32_t> source(count,-1);
+  for(std::size_t i=0;i<count;++i) {
+    auto&t=tracks[i];const auto&route=t.timeline.route;
+    if(!route||t.timeline.source.kind!=TrackSource::Kind::Audio)continue;
+    t.routed=true;t.routeKind=route->kind;t.routeTap=route->tap;
+    if(route->kind==TrackRoute::Kind::Track) {
+      for(std::size_t j=0;j<count;++j)if(j!=i&&tracks[j].timeline.id==route->trackId){source[i]=static_cast<std::int32_t>(j);break;}
+      if(source[i]<0)t.routeKind=TrackRoute::Kind::None;
+    }
+  }
+  // Each track has one input: a loop is a chain that returns to its start. Break it at that track.
+  for(std::size_t i=0;i<count;++i) {
+    std::size_t steps=0;
+    for(auto at=source[i];at>=0&&steps<=count;at=source[static_cast<std::size_t>(at)],++steps)
+      if(static_cast<std::size_t>(at)==i){source[i]=-1;tracks[i].routeKind=TrackRoute::Kind::None;break;}
+  }
+  for(std::size_t i=0;i<count;++i){if(tracks[i].routeKind!=TrackRoute::Kind::Track)source[i]=-1;tracks[i].routeSource=source[i];}
+  // Master-resampling tracks and everything downstream of them stay out of the master feed.
+  for(std::size_t i=0;i<count;++i) {
+    std::size_t steps=0;bool excluded=tracks[i].routeKind==TrackRoute::Kind::Master;
+    for(auto at=source[i];!excluded&&at>=0&&steps<=count;at=source[static_cast<std::size_t>(at)],++steps)excluded=tracks[static_cast<std::size_t>(at)].routeKind==TrackRoute::Kind::Master;
+    tracks[i].inMasterFeed=!excluded;
+  }
+  // Levels: feed tracks by their chain depth, master resamplers above every feed track, then theirs.
+  std::vector<std::int32_t> level(count,-1);
+  const std::function<std::int32_t(std::size_t,std::size_t)> depth=[&](std::size_t i,std::size_t guard)->std::int32_t {
+    if(level[i]>=0)return level[i];
+    if(guard>count)return 0;
+    std::int32_t value=0;
+    if(source[i]>=0)value=depth(static_cast<std::size_t>(source[i]),guard+1)+1;
+    else if(tracks[i].routeKind==TrackRoute::Kind::Master){value=0;for(std::size_t j=0;j<count;++j)if(tracks[j].inMasterFeed)value=std::max(value,depth(j,guard+1)+1);}
+    return level[i]=value;
+  };
+  std::int32_t top=0;
+  for(std::size_t i=0;i<count;++i)top=std::max(top,depth(i,0));
+  levelOrder.clear();levelStart.clear();masterLevel=std::numeric_limits<std::uint32_t>::max();
+  for(std::int32_t l=0;l<=top;++l) {
+    levelStart.push_back(static_cast<std::uint32_t>(levelOrder.size()));
+    for(std::size_t i=0;i<count;++i)if(level[i]==l) {
+      levelOrder.push_back(static_cast<std::uint32_t>(i));tracks[i].routeLevel=static_cast<std::uint32_t>(l);
+      if(tracks[i].routeKind==TrackRoute::Kind::Master)masterLevel=std::min(masterLevel,static_cast<std::uint32_t>(l));
+    }
+  }
+  levelStart.push_back(static_cast<std::uint32_t>(levelOrder.size()));
+  const auto samples=static_cast<std::size_t>(maxBlock)*2;
+  for(std::size_t i=0;i<count;++i) {
+    auto&t=tracks[i];
+    if(t.routed)t.routeInput.assign(samples,0.f);
+    if(source[i]>=0) {
+      auto&s=tracks[static_cast<std::size_t>(source[i])];
+      if(t.routeTap==TrackRoute::Tap::PreFx&&s.preTap.empty())s.preTap.assign(samples,0.f);
+      if(t.routeTap==TrackRoute::Tap::PostFx&&s.postTap.empty())s.postTap.assign(samples,0.f);
+    }
+  }
+}
+} // namespace
 
 std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,const AssetStore& assets,const SampleSetStore& sets,const PluginResolver& resolvePlugin)const {
   require(p.version==1&&p.sampleRate==impl_->rate,"Native project/device sample rates must agree");
@@ -1314,7 +1486,7 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
     std::stable_sort(track.windows.begin(),track.windows.end(),[](const ResolvedWindow&a,const ResolvedWindow&b){return a.window.startFrame<b.window.startFrame;});
     std::set<std::string>insertIds;
     for(const auto&e:t.inserts){require(!e.id.empty()&&insertIds.insert(e.id).second,"Duplicate native insert ID");if(!e.enabled)continue;
-      InsertRuntime effect;
+      InsertRuntime effect;effect.source=static_cast<std::uint16_t>(&e-t.inserts.data());
       if(e.type=="vst3"){require(static_cast<bool>(resolvePlugin),"No native VST3 host is available");effect.plugin=resolvePlugin(e.plugin,p.sampleRate,impl_->maxBlock);require(static_cast<bool>(effect.plugin),"VST3 effect could not be prepared");const auto latency=effect.plugin->latencyFrames();require(latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.latency+=latency;trackTail+=checked(effect.plugin->tailSeconds(),0,3600,"Invalid plugin tail time");track.stereoEffects=true;}
       else {effect.builtin=dsp::makeEffect(e.type,e.params,p.sampleRate,p.bpm);track.latency+=effect.builtin->latencyFrames();trackTail+=effect.builtin->tailSeconds();track.stereoEffects|=e.type=="reverb"||e.type=="guitar-rig"||(e.type=="delay"&&e.params.count("mode")&&e.params.at("mode")>=.5)||e.type=="chorus"||e.type=="phaser"||e.type=="flanger"||e.type=="tremolo"||e.type=="utility";}
       require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.inserts.push_back(std::move(effect));
@@ -1325,6 +1497,7 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
   estimated+=static_cast<std::size_t>(result->latency)*p.tracks.size()*16;
   require(estimated<=memoryLimit,"Plugin compensation exceeds native memory budget");
   for(auto&t:result->tracks)t.compensation=CompensationDelay(result->latency-t.latency);
+  prepareRoutes(result->tracks,result->levelOrder,result->levelStart,result->masterLevel,impl_->maxBlock);
   if(impl_->aheadBlocks&&!impl_->offline) {
     // Rings hold the current device buffer plus the ahead window. VST3 tracks
     // stay in the callback: their editors feed parameters that must be heard now.
@@ -1333,7 +1506,9 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
     std::size_t budget=aheadMemoryBudget;
     for(auto&t:result->tracks) {
       const bool vst3=(t.instrument&&!t.wavetable)||std::any_of(t.inserts.begin(),t.inserts.end(),[](const InsertRuntime&i){return i.plugin!=nullptr;});
-      if(!t.timeline.enabled||vst3)continue;
+      // Routed tracks read a source tap in the same block, and pre/post-FX taps are not in the ring.
+      const bool routing=t.routed||!t.preTap.empty()||!t.postTap.empty();
+      if(!t.timeline.enabled||vst3||routing)continue;
       if(bytes>budget)break;
       budget-=bytes;t.ahead=std::make_unique<AheadState>(capacity,impl_->maxBlock);
     }
@@ -1362,8 +1537,17 @@ std::uint64_t RenderEngine::submit(std::unique_ptr<PreparedProject> project) {
   (void)project.release();
   return serial;
 }
-void RenderEngine::collectRetired(){PreparedProject*p=nullptr;while(impl_->retired.pop(p)){impl_->retainedWavetableMemory-=p->impl_->wavetableMemory;delete p;}}
-std::uint64_t RenderEngine::play(){Impl::Command c;c.kind=Impl::Kind::Play;return impl_->enqueue(c);}
+void RenderEngine::collectRetired(){PreparedProject*p=nullptr;while(impl_->retired.pop(p)){impl_->retainedWavetableMemory-=p->impl_->wavetableMemory;delete p;}
+  // Keep the newest applied click set (the callback's) and any still queued.
+  auto&owned=impl_->ownedClicks;const auto applied=impl_->published.ticket.load(std::memory_order_acquire);std::size_t keep=0;
+  for(std::size_t i=0;i<owned.size();++i)if(owned[i].first<=applied)keep=i;
+  if(keep)owned.erase(owned.begin(),owned.begin()+static_cast<std::ptrdiff_t>(keep));}
+std::uint64_t RenderEngine::play(std::int64_t countIn){require(countIn>=0&&countIn<=std::int64_t(impl_->rate)*120,"Invalid count-in length");Impl::Command c;c.kind=Impl::Kind::Play;c.frame=countIn;return impl_->enqueue(c);}
+std::uint64_t RenderEngine::setMetronome(std::shared_ptr<const MetronomeClicks> clicks,bool enabled,float volume){
+  checked(volume,0,2,"Invalid metronome volume");
+  if(clicks)for(const auto&level:clicks->levels){require(level.size()<=std::size_t(impl_->rate)*4,"Metronome stroke is too long");for(const auto v:level)require(std::isfinite(v)&&std::abs(v)<=4,"Invalid metronome stroke sample");}
+  Impl::Command c;c.kind=Impl::Kind::Metronome;c.clicks=clicks.get();c.pitch=enabled?1:0;c.value=volume;
+  const auto ticket=impl_->enqueue(c);if(ticket)impl_->ownedClicks.emplace_back(ticket,std::move(clicks));return ticket;}
 std::uint64_t RenderEngine::pause(){Impl::Command c;c.kind=Impl::Kind::Pause;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::stop(){Impl::Command c;c.kind=Impl::Kind::Stop;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::seek(std::int64_t frame){Impl::Command c;c.kind=Impl::Kind::Seek;c.frame=frame;return impl_->enqueue(c);}
@@ -1378,6 +1562,13 @@ std::vector<RecordingTake> RenderEngine::planRecording(std::span<const std::uint
   const auto&timeline=e.lastSubmittedRecipe->timeline;std::set<std::uint32_t>seen;std::vector<RecordingTake>takes;
   for(const auto track:tracks) {
     require(track<timeline.tracks.size()&&seen.insert(track).second,"Invalid or duplicate recording track");
+    const auto&route=timeline.tracks[track].route;
+    if(route&&timeline.tracks[track].source.kind==TrackSource::Kind::Audio) {
+      // An internal route: stereo, never a missing device channel.
+      RecordingTake take;take.track=track;take.route.channels=2;take.routed=true;
+      take.routeDelayed=route->kind==TrackRoute::Kind::Master||(route->kind==TrackRoute::Kind::Track&&route->tap!=TrackRoute::Tap::PreFx);
+      takes.push_back(take);continue;
+    }
     takes.push_back({track,routeInput(timeline.tracks[track].input,std::span(e.controlLayout.data(),e.controlLayoutCount),e.controlLayoutCount,e.controlLeft,e.controlRight)});
   }
   return takes;
@@ -1450,6 +1641,8 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
   std::uint32_t cursor=0;float masterPeak=0;
   while(cursor<frames) {
     auto count=std::min(e.maxBlock,frames-cursor);
+    const bool countingIn=e.countInRemaining>0;
+    if(countingIn)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,e.countInRemaining));
     if(e.active&&e.playing) {
       const auto&p=e.active->impl_->timeline;
       const auto boundary=!e.offline&&p.cycle?p.cycle->at(1):p.lengthFrames;
@@ -1458,22 +1651,6 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
         else if(!e.offline){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
       }
       if(e.playing&&e.position<boundary)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,boundary-e.position));
-    }
-    if(e.recording&&e.capture) {
-      // Every take shares one frame clock: the same callback frames, written together.
-      auto&cap=*e.capture;
-      const auto write=cap.write.load(std::memory_order_relaxed),read=cap.read.load(std::memory_order_acquire);
-      const auto available=cap.capacity-(write-read),take=std::min<std::uint64_t>(available,count);
-      for(std::uint64_t i=0;i<take;++i) {
-        float*frame=cap.ring.data()+static_cast<std::size_t>((write+i)%cap.capacity)*cap.channels;
-        const auto at=cursor+static_cast<std::uint32_t>(i);
-        for(const auto&t:cap.takes) {
-          const float left=inputSample(input,channels,at,t.route.left,e.invalidSamples);*frame++=left;
-          if(t.route.channels==2)*frame++=t.route.right>=0?inputSample(input,channels,at,t.route.right,e.invalidSamples):left;
-        }
-      }
-      cap.write.store(write+take,std::memory_order_release);e.recordedFrames+=count;e.droppedFrames+=count-take;
-      if(take<count)e.recording=false;
     }
     auto*out=output+static_cast<std::size_t>(cursor)*2;std::fill_n(out,static_cast<std::size_t>(count)*2,0.f);
     if(e.active) {
@@ -1488,8 +1665,17 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       std::uint32_t callbackTracks=0;
       if(e.forkEnabled)for(const auto&t:p.tracks)if(t.timeline.enabled&&(!t.ahead||t.ahead->mode.load(std::memory_order_relaxed)==AheadState::Off))++callbackTracks;
       const auto trackCount=static_cast<std::uint32_t>(p.tracks.size());
-      if(e.pool&&e.forkEnabled&&callbackTracks>=2)e.pool->run(trackCount,&Impl::trackTask,&e);
-      else for(std::uint32_t index=0;index<trackCount;++index)e.renderTrack(index,0);
+      const auto levels=p.levelStart.empty()?0u:static_cast<std::uint32_t>(p.levelStart.size()-1);
+      if(levels<=1) {
+        if(e.pool&&e.forkEnabled&&callbackTracks>=2)e.pool->run(trackCount,&Impl::trackTask,&e);
+        else for(std::uint32_t index=0;index<trackCount;++index)e.renderTrack(index,0);
+      } else for(std::uint32_t level=0;level<levels;++level) {
+        // Track-input routes: each level forks after the sources it reads have rendered.
+        if(level==p.masterLevel)e.fillMasterFeed(p);
+        const auto begin=p.levelStart[level],size=p.levelStart[level+1]-begin;
+        if(e.pool&&e.forkEnabled&&callbackTracks>=2&&size>=2){e.levelTracks=p.levelOrder.data()+begin;e.pool->run(size,&Impl::levelTask,&e);}
+        else for(std::uint32_t k=0;k<size;++k)e.renderTrack(p.levelOrder[begin+k],0);
+      }
       for(auto&t:p.tracks) {
         for(std::size_t sample=0;sample<static_cast<std::size_t>(count)*2;++sample)out[sample]+=t.mix[sample];
         e.voiceOverflows+=t.taskOverflows;e.invalidSamples+=t.taskInvalid;e.aheadResyncs+=t.taskResyncs;t.taskResyncs=0;
@@ -1498,8 +1684,38 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       for(std::uint32_t i=0;i<count;++i){e.masterGain+=(e.targetMasterGain-e.masterGain)*smoothing;out[2*i]*=e.masterGain;out[2*i+1]*=e.masterGain;}
       p.master.process(out,count);
     }
+    if(e.recording&&e.capture) {
+      // Every take shares one frame clock: the same callback frames, written together. Written after the
+      // tracks so a routed take reads its track's route input for exactly these frames.
+      auto&cap=*e.capture;
+      const auto write=cap.write.load(std::memory_order_relaxed),read=cap.read.load(std::memory_order_acquire);
+      const auto available=cap.capacity-(write-read),take=std::min<std::uint64_t>(available,count);
+      auto*graph=e.active?e.active->impl_.get():nullptr;
+      for(std::uint64_t i=0;i<take;++i) {
+        float*frame=cap.ring.data()+static_cast<std::size_t>((write+i)%cap.capacity)*cap.channels;
+        const auto at=cursor+static_cast<std::uint32_t>(i);
+        for(const auto&t:cap.takes) {
+          if(t.routed) {
+            const TrackRuntime*track=graph&&t.track<graph->tracks.size()?&graph->tracks[t.track]:nullptr;
+            const bool live=track&&track->routed&&!track->routeInput.empty();
+            *frame++=live?track->routeInput[2*i]:0.f;*frame++=live?track->routeInput[2*i+1]:0.f;
+            continue;
+          }
+          const float left=inputSample(input,channels,at,t.route.left,e.invalidSamples);*frame++=left;
+          if(t.route.channels==2)*frame++=t.route.right>=0?inputSample(input,channels,at,t.route.right,e.invalidSamples):left;
+        }
+      }
+      cap.write.store(write+take,std::memory_order_release);e.recordedFrames+=count;e.droppedFrames+=count-take;
+      if(take<count)e.recording=false;
+    }
     for(std::size_t i=0;i<static_cast<std::size_t>(count)*2;++i){if(!std::isfinite(out[i])){out[i]=0;++e.invalidSamples;}masterPeak=std::max(masterPeak,std::abs(out[i]));}
+    e.renderClicks(out,count,countingIn);
     if(e.playing) e.position+=count;
+    if(countingIn&&(e.countInRemaining-=count)<=0) {
+      // The transport starts on the frame right after the count-in; a waiting capture with it.
+      e.countInRemaining=0;e.playing=e.active!=nullptr;e.reset(e.playing,false);
+      if(e.capture){e.recording=true;e.recordingStart=e.position;}
+    }
     e.continuousFrame+=count;
     cursor+=count;
   }
@@ -1509,6 +1725,7 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
     else if(!p.cycle&&e.position>=p.lengthFrames){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
   }
   e.promote();
+  e.publishDynamics(frames);
   e.publish(masterPeak);
 }
 
@@ -1519,7 +1736,11 @@ EngineSnapshot RenderEngine::snapshot()const noexcept {
   s.masterPeak=p.masterPeak.load(std::memory_order_relaxed);for(std::uint32_t i=0;i<std::min(256u,s.trackCount);++i)s.trackPeaks[i]=p.trackPeaks[i].load(std::memory_order_relaxed);
   s.commandOverflows=e.commandOverflows.load(std::memory_order_relaxed);s.voiceOverflows=p.voiceOverflows.load(std::memory_order_relaxed);s.invalidSamples=p.invalidSamples.load(std::memory_order_relaxed);
   s.recording=p.recording.load(std::memory_order_relaxed);s.recordingStartFrame=p.recordingStart.load(std::memory_order_relaxed);s.recordedFrames=p.recorded.load(std::memory_order_relaxed);s.recordingDroppedFrames=p.dropped.load(std::memory_order_relaxed);
-  s.workerThreads=e.workerCount;s.renderAheadTracks=p.aheadTracks.load(std::memory_order_relaxed);s.renderAheadResyncs=p.aheadResyncs.load(std::memory_order_relaxed);return s;
+  s.workerThreads=e.workerCount;s.renderAheadTracks=p.aheadTracks.load(std::memory_order_relaxed);s.renderAheadResyncs=p.aheadResyncs.load(std::memory_order_relaxed);
+  s.dynamicsCount=std::min<std::uint32_t>(p.dynamicsCount.load(std::memory_order_relaxed),EngineSnapshot::maxDynamicsReadings);
+  for(std::uint32_t i=0;i<s.dynamicsCount;++i){const auto id=p.dynamicsIds[i].load(std::memory_order_relaxed);
+    s.dynamics[i]={static_cast<std::uint16_t>(id>>16),static_cast<std::uint16_t>(id&0xffff),p.dynamicsInput[i].load(std::memory_order_relaxed),p.dynamicsGain[i].load(std::memory_order_relaxed)};}
+  return s;
 }
 std::uint32_t RenderEngine::drainRecording(float* destination,std::uint32_t capacity)noexcept {
   if(!destination||!capacity||!impl_->ownedCapture)return 0;

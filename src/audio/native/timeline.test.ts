@@ -31,6 +31,16 @@ describe('native timeline preparation', () => {
     }
   })
 
+  it('carries track-input routes with loops and deleted sources already resolved to none', () => {
+    const tracks = [
+      track('piano'), track('rec', { kind: 'audio', inputRoute: { kind: 'track', trackId: 'piano', tap: 'preFx' } }),
+      track('resample', { kind: 'audio', inputRoute: { kind: 'master' } }), track('orphan', { kind: 'audio', inputRoute: { kind: 'track', trackId: 'gone', tap: 'postFx' } }),
+      track('loopA', { kind: 'audio', inputRoute: { kind: 'track', trackId: 'loopB', tap: 'postFader' } }), track('loopB', { kind: 'audio', inputRoute: { kind: 'track', trackId: 'loopA', tap: 'postFader' } }),
+    ]
+    const compiled = compileNativeTimeline(project(tracks)).tracks
+    expect(compiled.map(item => item.route)).toEqual([undefined, { kind: 'track', trackId: 'piano', tap: 'preFx' }, { kind: 'master' }, { kind: 'none' }, { kind: 'none' }, { kind: 'track', trackId: 'loopA', tap: 'postFader' }])
+  })
+
   it('carries a validated independent wavetable patch instead of classifying it as a browser synth', () => {
     const owner = track('wave', { instrument: 'wavetable', clips: [midi('wave-phrase', { notes: [note(0)] })] })
     owner.instrumentState!.customBanks = [{ slot: 4, name: 'User', frames: [Array(2048).fill(0)] }]

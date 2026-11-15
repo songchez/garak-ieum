@@ -36,7 +36,7 @@ const units = {
   volume: 'track volume is linear gain 0..2; volumeDb uses 20*log10(gain), null means silence',
   pan: '-1=left, 0=center, 1=right',
   delayTicks: '960 ticks per quarter note; notes themselves are stored in beats',
-  trackInput: 'input.channels are zero-based physical device channels (one = mono, two = stereo); label is the channel name used to re-find it on other hardware; null = engine default input. monitorMode in/auto/off is read-only here (live state set by the user).',
+  trackInput: 'input.channels are zero-based physical device channels (one = mono, two = stereo); label is the channel name used to re-find it on other hardware; null = engine default input. monitorMode in/auto/off is read-only here (live state set by the user). inputRoute (read-only) replaces input when set: { kind: track, trackId, tap: preFx|postFx|postFader } records another track, { kind: master } resamples the master mix, { kind: none } is a deleted source.',
 }
 const unsupported = [
   'audio capture and device changes', 'transport control', 'audio asset transfer',
@@ -68,6 +68,7 @@ function trackSummary(track: Track) {
     mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, enabled: track.enabled,
     armed: track.armed, monitor: track.monitor, monitorMode: monitorModeOf(track), hidden: track.hidden, color: track.color,
     input: track.input ? { channels: [...track.input.channels], ...(track.input.label === undefined ? {} : { label: track.input.label }) } : null,
+    inputRoute: track.kind === 'audio' && track.inputRoute ? { ...track.inputRoute } : null,
     clipCount: track.clips.length, effectCount: track.devices.length,
   }
 }

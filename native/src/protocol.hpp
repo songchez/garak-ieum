@@ -142,6 +142,20 @@ inline ProjectTimeline timeline(const Json& value) {
       if (input.channels[1] == input.channels[0]) throw std::runtime_error("A stereo track input needs two different channels");
       t.input = input;
     }
+    // Internal input (docs/TRACK_INPUT_ROUTING.md): { kind: track, trackId, tap } | { kind: master } | { kind: none }.
+    if (item.contains("route") && !item.at("route").is_null()) {
+      const auto& value = item.at("route");
+      TrackRoute route; const auto kind = string(value, "kind", 16);
+      if (kind == "track") {
+        route.kind = TrackRoute::Kind::Track; route.trackId = string(value, "trackId");
+        const auto tap = string(value, "tap", 16);
+        if (tap == "preFx") route.tap = TrackRoute::Tap::PreFx; else if (tap == "postFx") route.tap = TrackRoute::Tap::PostFx;
+        else if (tap == "postFader") route.tap = TrackRoute::Tap::PostFader; else throw std::runtime_error("Invalid track route tap");
+      } else if (kind == "master") route.kind = TrackRoute::Kind::Master;
+      else if (kind == "none") route.kind = TrackRoute::Kind::None;
+      else throw std::runtime_error("Invalid track route");
+      t.route = std::move(route);
+    }
     if (!item.at("inserts").is_array() || item.at("inserts").size() > 64) throw std::runtime_error("Too many inserts");
     for (const auto& insert : item.at("inserts")) {
       BuiltinInsert b; b.id = string(insert, "id"); b.type = string(insert, "type"); b.enabled = insert.value("enabled", true);

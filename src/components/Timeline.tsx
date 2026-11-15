@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { AudioAsset, AudioClip, AudioEngine, Clip, InputChoice, Marker, Project, Track, TrackInput } from '../core/types'
+import type { AudioAsset, AudioClip, AudioEngine, Clip, InputChoice, Marker, Project, Track, TrackInput, TrackInputRoute } from '../core/types'
 import { MIN_CLIP_BEATS, setClipLoopEnd, trimClipEnd, trimClipStart, visibleTracks, type ClipStartTrim } from '../core/project'
 import { audibleTracks, effectiveArm, type TrackButtonKind } from '../core/trackActions'
 import { isTrackEnabled, loopEnd } from '../core/playback'
@@ -22,6 +22,7 @@ import { RecordingRegion, formatRecordingElapsed } from './RecordingRegion'
 import { InlineName, TimelineClip, pointerFocus, type ClipActions, type GestureMode, type Preview } from './TimelineClip'
 import { envelopeMenuItems, type ClipsEdit, type EnvelopeActions } from './ClipEnvelope'
 import { draggedLibraryRole, readLibraryDrag, type LibraryItem } from '../core/libraryDrag'
+import { formatTranspose, isDefaultTranspose, shiftTranspose, transposeSettings, type TransposeSettings } from '../devices/region-pitch/state'
 import './Timeline.css'
 
 /** Default header column width; the live value is `ui.headerWidth`. */
@@ -52,6 +53,7 @@ export interface TimelineProps {
   recordingDrafts?:readonly RecordingDraft[]
   inputChoices?:readonly InputChoice[]
   onTrackInput?(trackId:string,input:TrackInput|null):void
+  onTrackRoute?(trackId:string,route:TrackInputRoute|null,input?:TrackInput|null):void
   focusedTrackId:string; selectedTrackIds:ReadonlySet<string>; selectedClipIds:ReadonlySet<string>; anchorClipId:string|null
   ui:TimelineUi
   zoom:{ppb:number;rowHeight:number}
@@ -96,6 +98,8 @@ export interface TimelineProps {
   onClipRename?(clipId:string,name:string|null):void
   /** Warp on/off for audio regions that know their tempo (region badge, context menu). */
   onClipWarp?(clipIds:string[],enabled:boolean):void
+  /** Region pitch (badge popover, region menu); key merges a drag into one undo step. */
+  onClipTranspose?(clipIds:string[],change:(current:TransposeSettings)=>TransposeSettings,label?:string,key?:string):void
   /** Region gain/fade edits from the on-region handles and region menu (one history step per gesture). */
   onClipsEdit?:ClipsEdit
   /** "크로스페이드 만들기" for the given audio regions. */
@@ -313,6 +317,18 @@ export function Timeline(props:TimelineProps){
     const label=clip.warp?`워프 (원본 ${+clip.warp.sourceBpm.toFixed(2)} BPM → 프로젝트 템포)`:'워프 (인스펙터에서 템포 분석 필요)'
     return[{label,checked:on,disabled:!targets.length,onSelect:()=>props.onClipWarp?.(targets,!on)}]
   }
+  /** Region pitch submenu (docs/REGION_PITCH.md); applies to every selected audio region. */
+  function pitchItems(clip:Clip,ids:string[]):ContextMenuItem[]{
+    if(clip.kind!=='audio'||!props.onClipTranspose)return[]
+    const chosen=new Set(ids),targets=project.tracks.flatMap(t=>t.clips).filter(c=>chosen.has(c.id)&&c.kind==='audio'&&!c.pitch).map(c=>c.id)
+    const on=(change:(t:TransposeSettings)=>TransposeSettings,label:string)=>()=>props.onClipTranspose?.(targets,change,label)
+    const current=transposeSettings(clip),disabled=!targets.length
+    const shift=(n:number):ContextMenuItem=>({label:`${n>0?'+':'−'}${Math.abs(n)} 반음`,disabled,onSelect:on(t=>shiftTranspose(t,n),`피치 ${n>0?'+':'−'}${Math.abs(n)}`)})
+    return[{label:`피치 (${formatTranspose(current)})`,disabled,items:[shift(1),shift(-1),shift(12),shift(-12),SEP,
+      {label:'템포 유지',checked:current.mode==='keep',disabled,onSelect:on(t=>({...t,mode:'keep'}),'피치 모드: 템포 유지')},
+      {label:'자연스럽게 (속도 함께)',checked:current.mode==='varispeed',disabled,onSelect:on(t=>({...t,mode:'varispeed'}),'피치 모드: 자연스럽게')},
+      SEP,{label:'피치 초기화',disabled:disabled||isDefaultTranspose(current),onSelect:on(t=>({...t,semitones:0,cents:0}),'피치 초기화')}]}]
+  }
   /** Region gain/fade/crossfade entries (docs/REGION_GAIN_FADES.md). */
   function envelopeItems(clip:Clip,ids:string[]):ContextMenuItem[]{
     if(clip.kind!=='audio'||!props.onClipsEdit)return[]
@@ -323,7 +339,7 @@ export function Timeline(props:TimelineProps){
     const selected=selectedClipIds.has(clip.id)
     if(!selected)props.onSelectClips([clip.id],clip.id,track.id)
     const ids=selected?[...selectedClipIds]:[clip.id],count=ids.length,ctx={clipIds:ids,trackIds:[track.id]}
-    openMenu(e,[cmd('잘라내기','cut',{},ctx),cmd('복사','copy',{},ctx),cmd('붙여넣기','paste',{},ctx),SEP,cmd('반복','repeat',{},ctx),cmd('재생 위치에서 분할','split',{},ctx),cmd('합치기','join',{disabled:count<2},ctx),SEP,cmd('루프','loopClip',{checked:!!clip.loop},ctx),cmd('뮤트','muteClip',{checked:!!clip.mute},ctx),cmd('이름 바꾸기','renameClip',{},ctx),...warpItems(clip,ids),...envelopeItems(clip,ids),SEP,cmd(count>1?`클립 ${count}개 삭제`:'삭제','deleteClip',{danger:true},ctx)],'클립 메뉴')
+    openMenu(e,[cmd('잘라내기','cut',{},ctx),cmd('복사','copy',{},ctx),cmd('붙여넣기','paste',{},ctx),SEP,cmd('반복','repeat',{},ctx),cmd('재생 위치에서 분할','split',{},ctx),cmd('합치기','join',{disabled:count<2},ctx),SEP,cmd('루프','loopClip',{checked:!!clip.loop},ctx),cmd('뮤트','muteClip',{checked:!!clip.mute},ctx),cmd('이름 바꾸기','renameClip',{},ctx),...warpItems(clip,ids),...pitchItems(clip,ids),...envelopeItems(clip,ids),SEP,cmd(count>1?`클립 ${count}개 삭제`:'삭제','deleteClip',{danger:true},ctx)],'클립 메뉴')
   }
   function trackMenu(e:React.MouseEvent,track:Track){
     if(!selectedTrackIds.has(track.id))props.onTrackClick(track.id,plainMods)
@@ -662,7 +678,7 @@ export function Timeline(props:TimelineProps){
     edit:(ids,fn,label)=>latest.current.onClipsEdit?.(ids,fn,label),
     touch:clip=>{if(latest.current.selectedClipIds.has(clip.id))return;const track=latest.current.project.tracks.find(t=>t.clips.some(c=>c.id===clip.id));if(track)props.onSelectClips([clip.id],clip.id,track.id)},
   }
-  const clipActions:ClipActions={beginClipGesture,clipMenu,loopHandle,select:(trackId,clipId)=>props.onSelectClips([clipId],clipId,trackId),open:(trackId,clipId)=>{if(!selectedClipIds.has(clipId))props.onSelectClips([clipId],clipId,trackId);props.onClipOpen?.(trackId,clipId)},renameDone:(clipId,name)=>props.onClipRename?.(clipId,name),warp:(trackId,clipId,enabled)=>{if(!selectedClipIds.has(clipId))props.onSelectClips([clipId],clipId,trackId);props.onClipWarp?.([clipId],enabled)},envelope:props.onClipsEdit?envelopeActions:undefined}
+  const clipActions:ClipActions={beginClipGesture,clipMenu,loopHandle,select:(trackId,clipId)=>props.onSelectClips([clipId],clipId,trackId),open:(trackId,clipId)=>{if(!selectedClipIds.has(clipId))props.onSelectClips([clipId],clipId,trackId);props.onClipOpen?.(trackId,clipId)},renameDone:(clipId,name)=>props.onClipRename?.(clipId,name),warp:(trackId,clipId,enabled)=>{if(!selectedClipIds.has(clipId))props.onSelectClips([clipId],clipId,trackId);props.onClipWarp?.([clipId],enabled)},transpose:props.onClipTranspose?(trackId,clipId,change,label,key)=>{const sel=latest.current.selectedClipIds;if(!sel.has(clipId))props.onSelectClips([clipId],clipId,trackId);const ids=sel.has(clipId)?latest.current.project.tracks.flatMap(t=>t.clips).filter(c=>sel.has(c.id)&&c.kind==='audio'&&!c.pitch).map(c=>c.id):[clipId];latest.current.onClipTranspose?.(ids,change,label,key)}:undefined,envelope:props.onClipsEdit?envelopeActions:undefined}
   const actions=useRef(clipActions);actions.current=clipActions
   const loopView=loopDraft?{startBeat:loopDraft.start,endBeat:loopDraft.end}:project.loop
   const grid=musicalGrid(ppb,{snap:snapBeats,beatsPerBar,beatUnit})
@@ -739,7 +755,7 @@ export function Timeline(props:TimelineProps){
             {ui.headerConfig.trackNumber&&<span className="track-number">{project.tracks.length+1}</span>}
             {ui.headerConfig.icon&&<span className="track-icon"><Icon name="wave" size={16}/></span>}
             <div className="track-main"><span className="track-name">{track.name}</span><span className="recording-track-caption">{recordingDraft?.status==='processing'?'녹음 처리 중':'새 트랙에 녹음 중'}</span></div>
-          </div>:<TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine} inputChoices={props.inputChoices} onInputChange={props.onTrackInput&&(input=>props.onTrackInput!(track.id,input))}
+          </div>:<TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine} inputChoices={props.inputChoices} onInputChange={props.onTrackInput&&(input=>props.onTrackInput!(track.id,input))} routeTracks={project.tracks} onRouteChange={props.onTrackRoute&&((route,input)=>props.onTrackRoute!(track.id,route,input))}
             onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}/>}
           <div className={`track-lane ${ui.gridLines?'':'no-grid'}`} style={{width,...laneGrid}}
             onPointerDown={e=>{if(!recordingTarget&&!temporary)beginMarquee(e,track)}}

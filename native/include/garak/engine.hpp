@@ -147,10 +147,24 @@ struct TrackInput {
   [[nodiscard]] std::uint32_t count() const noexcept { return channels[1] >= 0 ? 2u : 1u; }
   bool operator==(const TrackInput&) const = default;
 };
+// Internal recording input (docs/TRACK_INPUT_ROUTING.md): another track's signal at a tap, or the
+// master feed (resampling), instead of a physical input. None records and monitors silence (a deleted
+// source). prepare() resolves ids, breaks loops (to None) and orders sources before destinations.
+struct TrackRoute {
+  enum class Kind : std::uint8_t { None, Track, Master };
+  // PreFx: source/instrument output before inserts. PostFx: after inserts and plug-in delay compensation,
+  // before pan/fader. PostFader: the track's output (pan, fader, mute/solo applied).
+  enum class Tap : std::uint8_t { PreFx, PostFx, PostFader };
+  Kind kind = Kind::None;
+  std::string trackId;
+  Tap tap = Tap::PostFx;
+  bool operator==(const TrackRoute&) const = default;
+};
 struct TrackTimeline {
   std::string id;
   TrackSource source;
   std::optional<TrackInput> input;
+  std::optional<TrackRoute> route; // When set, replaces `input` for monitoring and recording.
   float gain = 1, pan = 0;
   bool enabled = true, mute = false, solo = false, soloSafe = false, audible = true;
   std::vector<BuiltinInsert> inserts;
@@ -171,6 +185,13 @@ struct ProjectTimeline {
   std::vector<TrackTimeline> tracks;
 };
 
+// Metronome strokes (mono PCM at the engine rate) for levels 0 (bar downbeat),
+// 1 (compound group start) and 2 (other pulses). Immutable once handed over.
+struct MetronomeClicks {
+  std::uint32_t sampleRate = 0;
+  std::array<std::vector<float>, 3> levels;
+};
+
 struct EngineSnapshot {
   std::uint64_t revision = 0, lastAppliedCommand = 0;
   std::int64_t frame = 0;
@@ -178,6 +199,13 @@ struct EngineSnapshot {
   bool ready = false, playing = false;
   float masterPeak = 0;
   std::array<float, 256> trackPeaks{};
+  // Built-in compressor/limiter/gate inserts: detector peak (linear) and lowest
+  // applied gain (linear, 1 = no reduction), held with meter ballistics between
+  // snapshots. `track`/`insert` index ProjectTimeline::tracks and its inserts.
+  struct DynamicsReading { std::uint16_t track = 0, insert = 0; float input = 0, gain = 1; };
+  static constexpr std::size_t maxDynamicsReadings = 64;
+  std::array<DynamicsReading, maxDynamicsReadings> dynamics{};
+  std::uint32_t dynamicsCount = 0;
   std::uint64_t commandOverflows = 0, voiceOverflows = 0, invalidSamples = 0;
   bool recording = false;
   std::int64_t recordingStartFrame = 0;
@@ -233,6 +261,11 @@ constexpr std::size_t maxInputLayout = 32;
 struct RecordingTake {
   std::uint32_t track = 0; // Graph track index; informational for the legacy whole-device take.
   InputRoute route;
+  // Records the track's internal route (stereo) instead of `route`. Samples are captured on the same
+  // callback frames as physical takes; a PostFx/PostFader/Master route carries the graph's plug-in
+  // delay (latencyFrames), a PreFx route none: the host subtracts that, never converter latency.
+  bool routed = false;
+  bool routeDelayed = false;
 };
 constexpr std::size_t maxRecordingTakes = 64;
 
@@ -297,7 +330,13 @@ class RenderEngine {
   // consumed on either outcome. Retired destruction happens in collectRetired.
   std::uint64_t submit(std::unique_ptr<PreparedProject> project);
   void collectRetired();
-  [[nodiscard]] std::uint64_t play();
+  // countInFrames > 0 clicks a count-in first (monitor only) while the
+  // transport holds its position; it then starts on the exact following frame.
+  // A recording started during the count-in begins capturing on that frame.
+  [[nodiscard]] std::uint64_t play(std::int64_t countInFrames = 0);
+  // Monitor-only clicks after the master bus; never in offline instances. The
+  // control thread keeps `clicks` alive until a later set is acknowledged.
+  [[nodiscard]] std::uint64_t setMetronome(std::shared_ptr<const MetronomeClicks> clicks, bool enabled, float volume);
   [[nodiscard]] std::uint64_t pause();
   [[nodiscard]] std::uint64_t stop();
   [[nodiscard]] std::uint64_t seek(std::int64_t frame);

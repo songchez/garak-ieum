@@ -1,0 +1,130 @@
+/* 시김새 다이내믹 (compressor · limiter · gate): rack card follows the app theme; the large editor is dark like the guitar rig. */
+.dyn-card{
+  --dyn-accent:var(--dyn-track,var(--accent));
+  --dyn-gr-color:#e5604f;
+  --dyn-plot:var(--surface-canvas);
+  --dyn-grid-line:var(--ink-16,#ffffff14);
+  --dyn-text:var(--text-muted);
+  display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 9px 7px;width:170px
+}
+.dyn-card-top{display:flex;align-items:stretch;gap:6px}
+.dyn-card-graph{position:relative;line-height:0}
+.dyn-expand{position:absolute;top:3px;left:3px;width:18px;height:18px;display:grid;place-items:center;padding:0;border:1px solid var(--border-subtle);border-radius:4px;background:color-mix(in srgb,var(--surface-panel) 82%,transparent);color:var(--text-muted);opacity:.75;cursor:pointer}
+.dyn-expand:hover,.dyn-expand:focus-visible{opacity:1;color:var(--text-primary);border-color:var(--accent-border)}
+.dyn-expand:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
+.dyn-chips{display:flex;gap:4px;margin:0;justify-content:center;flex-wrap:wrap}
+.dyn-chips span{display:inline-flex;align-items:baseline;gap:3px;padding:1px 5px;border:1px solid var(--border-subtle);border-radius:3px;background:var(--surface-canvas);font:8.5px Consolas,"SFMono-Regular",monospace;color:var(--text-secondary);white-space:nowrap}
+.dyn-chips small{font:7.5px ui-sans-serif,system-ui,sans-serif;color:var(--text-muted)}
+.dyn-knobs{display:grid;grid-template-columns:repeat(var(--cols,3),50px);justify-content:center;gap:2px}
+.dyn-knobs .knob{width:50px}
+.dc-effect.bypassed .dyn-card{opacity:.5}
+
+/* Transfer curve (shared by card and editor). */
+.dyn-transfer{display:block;touch-action:none;user-select:none;cursor:crosshair;border-radius:6px;overflow:visible}
+.dyn-transfer.is-compact{border-radius:4px}
+.dyn-plot-bg{fill:var(--dyn-plot)}
+.dyn-grid line{stroke:var(--dyn-grid-line);stroke-width:1;shape-rendering:crispEdges}
+.dyn-grid text,.dyn-axis-label{fill:var(--dyn-text);font:8.5px ui-monospace,Consolas,monospace;pointer-events:none}
+.dyn-unity{stroke:var(--dyn-text);stroke-opacity:.35;stroke-dasharray:3 3;stroke-width:1}
+.dyn-threshold{stroke:var(--dyn-accent);stroke-opacity:.5;stroke-dasharray:2 3;stroke-width:1}
+.dyn-ceiling{stroke:#d9a441;stroke-width:1.2;stroke-dasharray:4 3}
+.dyn-comp-zone{fill:var(--dyn-accent);fill-opacity:.05}
+.dyn-gate-closed{fill:#000;fill-opacity:.16}
+.dyn-gate-band{fill:var(--dyn-accent);fill-opacity:.08}
+.dyn-curve{fill:none;stroke:var(--dyn-accent);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.dyn-curve-alt{stroke-width:1.2;stroke-dasharray:3 3;stroke-opacity:.55}
+.dyn-curve-fill{fill:var(--dyn-accent);fill-opacity:.1}
+.dyn-live-guide{fill:none;stroke:var(--text-primary);stroke-opacity:.28;stroke-width:1;stroke-dasharray:2 2;transition:opacity .2s}
+.dyn-live-dot{fill:var(--text-primary);stroke:var(--dyn-plot);stroke-width:1.5;transition:opacity .2s}
+.dyn-handle{fill:var(--surface-panel);stroke:var(--dyn-accent);stroke-width:2;cursor:grab;outline:none;transition:r .12s}
+.dyn-handle:hover{fill:var(--dyn-accent)}
+.dyn-handle:focus-visible{stroke:var(--text-primary);stroke-width:2.5;fill:var(--dyn-accent)}
+.dyn-transfer[data-daw-gesture] .dyn-handle,.dyn-transfer:active .dyn-handle{cursor:grabbing}
+.dyn-handle-ratio{stroke-dasharray:2 1.5;cursor:ns-resize}
+
+/* Gain-reduction meter. */
+.dyn-gr{display:flex;flex-direction:column;align-items:center;gap:3px;width:14px}
+.dyn-gr-track{position:relative;flex:1;width:7px;border-radius:2px;background:var(--surface-canvas);border:1px solid var(--border-subtle);overflow:hidden}
+.dyn-gr-bar{position:absolute;left:0;right:0;top:0;height:0;background:linear-gradient(var(--dyn-gr-color),color-mix(in srgb,var(--dyn-gr-color) 70%,#ffcc66))}
+.dyn-gr-peak{position:absolute;left:0;right:0;top:0;height:1.5px;background:var(--dyn-gr-color);transform:translateY(-1px)}
+.dyn-gr-track i{position:absolute;left:0;width:3px;height:1px;background:var(--dyn-text);opacity:.5}
+.dyn-gr-text{font:7.5px Consolas,"SFMono-Regular",monospace;color:var(--dyn-gr-color);min-height:9px;white-space:nowrap}
+
+/* VU needle ("76"). */
+.dyn-vu{display:block}
+.dyn-vu-face{fill:#efe4c4;stroke:#7b6c48;stroke-width:1}
+.dyn-vu-arc{fill:none;stroke:#3b3322;stroke-width:1}
+.dyn-vu-tick{stroke:#3b3322;stroke-width:1}
+.dyn-vu-num{fill:#3b3322;font:7px ui-monospace,Consolas,monospace}
+.dyn-vu-title{fill:#5d5137;font:600 6.5px ui-sans-serif,system-ui,sans-serif;letter-spacing:.12em}
+.dyn-vu-needle{stroke:#b3261e;stroke-width:1.3;stroke-linecap:round}
+.dyn-vu-pivot{fill:#2e281c}
+
+/* Scrolling history. */
+.dyn-history{position:relative;flex:1;min-width:0;border-radius:6px;overflow:hidden;cursor:ns-resize;touch-action:none;outline:none}
+.dyn-history:focus-visible{box-shadow:0 0 0 2px var(--dyn-accent)}
+.dyn-history canvas{display:block}
+.dyn-history-legend{position:absolute;left:34px;top:6px;display:flex;gap:10px;margin:0;padding:0;list-style:none;font:9px ui-sans-serif,system-ui,sans-serif;color:var(--dyn-text);pointer-events:none}
+.dyn-history-legend li::before{content:'';display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.dyn-history-legend [data-k=input]::before{background:var(--dyn-hist-input)}
+.dyn-history-legend [data-k=output]::before{background:var(--dyn-hist-output)}
+.dyn-history-legend [data-k=gr]::before{background:var(--dyn-hist-gr)}
+.dyn-history-legend [data-k=closed]::before{background:var(--dyn-hist-closed);border:1px solid #ffffff33}
+
+/* Gate envelope sketch. */
+.dyn-envelope{display:block;touch-action:none;user-select:none}
+.dyn-env-fill{fill:var(--dyn-accent);fill-opacity:.12}
+.dyn-env-mark{stroke:var(--dyn-text);stroke-opacity:.35;stroke-dasharray:2 3}
+.dyn-env-label,.dyn-env-caption{fill:var(--dyn-text);font:9px ui-sans-serif,system-ui,sans-serif;pointer-events:none}
+.dyn-env-signal{fill:var(--dyn-text);fill-opacity:.45}
+.dyn-envelope .dyn-handle{cursor:ew-resize}
+
+/* Large editor. */
+.dyn-backdrop{position:fixed;inset:0;z-index:700;display:flex;align-items:center;justify-content:center;padding:16px;background:#101713bb;backdrop-filter:blur(5px)}
+.dyn-editor{
+  --dyn-accent:#9bc8b5;--dyn-plot:#18201b;--dyn-grid-line:#ffffff12;--dyn-text:#a9b8a6;--dyn-gr-color:#ff6b5b;
+  --dyn-hist-bg:#141a16;--dyn-hist-grid:#ffffff10;--dyn-hist-text:#ffffff55;--dyn-hist-input:#71847a66;--dyn-hist-output:#cfe7d3;--dyn-hist-gr:#ff6b5b;--dyn-hist-line:#e8c77a;--dyn-hist-closed:#00000070;
+  --text-primary:#eee9dc;--surface-panel:#252d27;--surface-canvas:#18201b;--border-subtle:#63705b61;
+  width:min(1100px,100%);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;border:1px solid #73846a88;border-radius:15px;background:#252d27;color:#eee9dc;box-shadow:0 30px 120px #0009;overflow:hidden;outline:none;font-size:12px;text-align:left
+}
+.dyn-editor *{box-sizing:border-box}
+.dyn-editor h2,.dyn-editor p,.dyn-editor figure{margin:0}
+.dyn-editor-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px;background:linear-gradient(115deg,#374237,#28322b);border-bottom:1px solid #63705b61}
+.dyn-eyebrow{font-size:8px;letter-spacing:.19em;color:#bac9b0}
+.dyn-editor-head h2{font-size:22px;font-weight:600;letter-spacing:-.5px;line-height:1.4}
+.dyn-sub{font-size:10px;color:#b9c6b2}
+.dyn-close{width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:6px;background:#101b1722;color:#c7cebc;cursor:pointer}
+.dyn-close:hover{background:#ffffff12}
+.dyn-editor button:focus-visible,.dyn-editor input:focus-visible,.dyn-editor .knob:focus-visible{outline:2px solid #b8d6b4;outline-offset:2px}
+.dyn-editor-body{overflow:auto;padding:16px 22px;display:flex;flex-direction:column;gap:14px;scrollbar-width:thin}
+.dyn-editor-graphs{display:flex;gap:12px;align-items:stretch;min-width:0}
+.dyn-panel{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid #63705b61;border-radius:10px;background:#1d241f}
+.dyn-panel figcaption{font-size:9px;letter-spacing:.08em;color:#a9b8a6}
+.dyn-panel figcaption small{margin-left:6px;color:#7f8f7d;letter-spacing:0}
+.dyn-panel-history{flex:1;min-width:0}
+.dyn-panel-meter{align-items:center}
+.dyn-panel-meter .dyn-gr{width:22px}.dyn-panel-meter .dyn-gr-track{width:12px}.dyn-panel-meter .dyn-gr-text{font-size:10px}
+.dyn-editor .dyn-handle{fill:#252d27}
+.dyn-editor .dyn-live-dot{fill:#fff6dc}
+.dyn-editor .dyn-grid text,.dyn-editor .dyn-axis-label{font-size:9.5px}
+.dyn-editor-controls{display:flex;flex-wrap:wrap;gap:12px;align-items:stretch}
+.dyn-panel-vu{justify-content:center}
+.dyn-fields{flex:1;display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-start;padding:10px 12px;border:1px solid #63705b61;border-radius:10px;background:#1d241f}
+.dyn-field{display:flex;flex-direction:column;align-items:center;gap:4px;width:84px}
+.dyn-field .knob{width:76px}
+.dyn-editor .knob-readout,.dyn-editor .knob-label{color:#cdd6c6}
+.dyn-editor .knob-cap{fill:#2d362f;stroke:#4b5a4e}
+.dyn-editor .knob-track{stroke:#3a463d}
+.dyn-editor .knob-pointer{stroke:#eee9dc}
+.dyn-field-input{display:flex;align-items:center;gap:2px;width:100%;padding:0 6px;height:24px;border:1px solid #63705b80;border-radius:5px;background:#141a16;color:#a9b8a6;font:10px ui-monospace,Consolas,monospace}
+.dyn-field-input input{flex:1;min-width:0;width:100%;border:0;background:transparent;color:#eee9dc;font:inherit;text-align:right;outline:none}
+.dyn-field-input:focus-within{border-color:#b8d6b4}
+.dyn-editor-foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:10px 22px;border-top:1px solid #63705b61;background:#202b23}
+.dyn-editor-foot p{font-size:9.5px;line-height:1.7;color:#a3b19a;max-width:620px}
+.dyn-editor-foot kbd{font:8.5px ui-monospace,monospace;border:1px solid #71815d66;border-radius:3px;padding:1px 3px;background:#16231966}
+@media(max-width:720px){.dyn-editor-graphs{flex-wrap:wrap}.dyn-panel-history{flex-basis:100%;order:3}.dyn-editor-body{padding:12px}.dyn-editor-head{padding:12px 14px}}
+@media(prefers-reduced-motion:reduce){.dyn-backdrop{backdrop-filter:none}.dyn-live-dot,.dyn-live-guide,.dyn-handle{transition:none}}
+
+/* Light theme: the card plot gets paper tones and darker ink. */
+:root[data-theme-mode="light"] .dyn-card{--dyn-plot:color-mix(in srgb,var(--surface-canvas) 70%,#fff);--dyn-grid-line:#00000012;--dyn-gr-color:#c8412f}
+:root[data-theme-mode="light"] .dyn-card .dyn-gate-closed{fill-opacity:.07}

@@ -80,8 +80,8 @@ AltGraph 검사는 운영체제별로 다르게 합니다. 일부 macOS 브라�
 | transport.beginning | 프로젝트 처음으로 | Return | Return; Home 보조키 | 입력 필드에서는 실행하지 않음 |
 | transport.record | 녹음 | R | R | 녹음 대기 트랙·권한·입력 확인 후 |
 | transport.cycle | 사이클 켜기·끄기 | C | C | 최초 1회; 범위가 없으면 §13.3의 기본 범위 생성 |
-| transport.metronome | 메트로놈 | K | K | 메트로놈 구현 후 활성화 |
-| transport.countIn | 카운트인 | Shift+K | Shift+K | 카운트인 구현 후 활성화 |
+| transport.metronome | 메트로놈 | K | K | 구현됨 ([METRONOME.md](METRONOME.md)) |
+| transport.countIn | 카운트인 | Shift+K | Shift+K | 메트로놈 설정에서 선택 (단축키는 아직 미할당) |
 | transport.rewind | 뒤로 이동 | , | , | 초기 이동 단위 1마디; 반복 허용 |
 | transport.forward | 앞으로 이동 | . | . | 초기 이동 단위 1마디; 반복 허용 |
 | transport.fastRewind | 빠르게 뒤로 이동 | Shift+, | Shift+, | 초기 이동 단위 4마디; 반복 허용 |

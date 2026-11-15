@@ -12,6 +12,11 @@ export interface SigimsaeKernel {
   /** Stereo in place. */
   process(left: Float32Array, right: Float32Array, frames: number): void
   reset(): void
+  /**
+   * Dynamics kernels (limiter, gate): writes [loudest detector input, lowest applied gain] (both
+   * linear) since the previous call into `out`, then restarts the window. No allocation.
+   */
+  meter?(out: Float32Array): void
 }
 
 const TAU = 2 * Math.PI
@@ -215,6 +220,7 @@ export class LimiterKernel extends Kernel {
   }
   process(l: Float32Array, r: Float32Array, frames: number): void {
     const c = this.ceiling
+    let loudest = this.loudest, lowest = this.lowest
     for (let i = 0; i < frames; i += 1) {
       const pre = this.pre.next(this.k)
       const xl = l[i] * pre, xr = r[i] * pre
@@ -223,8 +229,13 @@ export class LimiterKernel extends Kernel {
       if (target < this.gain) this.gain = target
       else this.gain += (target - this.gain) * this.release
       l[i] = clamp(xl * this.gain, -c, c); r[i] = clamp(xr * this.gain, -c, c)
+      if (peak / pre > loudest) loudest = peak / pre
+      if (this.gain < lowest) lowest = this.gain
     }
+    this.loudest = loudest; this.lowest = lowest
   }
+  private loudest = 0; private lowest = 1
+  meter(out: Float32Array): void { out[0] = this.loudest; out[1] = this.lowest; this.loudest = 0; this.lowest = 1 }
   reset(): void { this.gain = 1 }
 }
 
@@ -243,16 +254,22 @@ export class GateKernel extends Kernel {
     this.holdFrames = Math.round(p('hold') * 0.001 * sr)
   }
   process(l: Float32Array, r: Float32Array, frames: number): void {
+    let loudest = this.loudest, lowest = this.lowest
     for (let i = 0; i < frames; i += 1) {
       const peak = Math.max(Math.abs(l[i]), Math.abs(r[i]))
+      if (peak > loudest) loudest = peak
       this.envelope = peak > this.envelope ? peak : this.envelope * this.detector
       if (this.envelope >= this.open) { this.isOpen = true; this.held = this.holdFrames }
       else if (this.envelope < this.close) { if (this.held > 0) this.held -= 1; else this.isOpen = false }
       if (this.isOpen) this.gain += (1 - this.gain) * this.attack
       else { this.gain -= this.gain * this.release; if (this.gain < 1e-4) this.gain = 0 }
       l[i] *= this.gain; r[i] *= this.gain
+      if (this.gain < lowest) lowest = this.gain
     }
+    this.loudest = loudest; this.lowest = lowest
   }
+  private loudest = 0; private lowest = 1
+  meter(out: Float32Array): void { out[0] = this.loudest; out[1] = this.lowest; this.loudest = 0; this.lowest = 1 }
   reset(): void { this.envelope = 0; this.gain = 0; this.held = 0; this.isOpen = false }
 }
 

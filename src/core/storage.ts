@@ -125,6 +125,9 @@ function validateAssets(project: Project, inputs: unknown[]): StoredAudioAsset[]
       if (clip.kind === 'audio' && clip.warp && !seen.has(clip.warp.originalAssetId)) {
         throw new Error(`The original audio file for warped “${clip.name}” is missing. The project was not saved.`)
       }
+      if (clip.kind === 'audio' && clip.regionPitch && !seen.has(clip.regionPitch.originalAssetId)) {
+        throw new Error(`The original audio file for transposed “${clip.name}” is missing. The project was not saved.`)
+      }
     }
   }
   return assets

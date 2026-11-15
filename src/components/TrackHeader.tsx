@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { AudioEngine, InputChoice, SampleStatus, Track, TrackInput } from '../core/types'
+import type { AudioEngine, InputChoice, SampleStatus, Track, TrackInput, TrackInputRoute } from '../core/types'
 import type { ArmState } from '../core/trackActions'
 import type { TrackHeaderConfig } from '../core/trackUi'
 import { instrumentDef } from '../core/instruments'
@@ -9,6 +9,7 @@ import { TrackButtons, type TrackButtonKind, type TrackButtonMods } from './Trac
 import { VolumeSlider } from './VolumeSlider'
 import { PanKnob } from './PanKnob'
 import { InputSelect } from './InputSelect'
+import { routeText } from '../core/trackRouting'
 import './TrackHeader.css'
 
 const MAC = shortcutPlatform() === 'mac'
@@ -26,6 +27,9 @@ export interface TrackHeaderProps {
   /** Shown as a compact input chooser on audio tracks tall enough for a third row. */
   inputChoices?: readonly InputChoice[]
   onInputChange?(input: TrackInput | null): void
+  /** Project tracks and the route callback: lists other tracks / the master as inputs (resampling). */
+  routeTracks?: readonly Track[]
+  onRouteChange?(route: TrackInputRoute | null, input?: TrackInput | null): void
   onClick(mods: { range: boolean; toggle: boolean; trackOnly: boolean }): void
   onFocus(): void
   onDoubleClickBackground?(): void
@@ -62,6 +66,7 @@ export function TrackHeader(props: TrackHeaderProps) {
   const showVolume = tier >= 2 && config.volume, showPan = tier >= 2 && config.pan
   const showInput = tier >= 3 && track.kind === 'audio' && !!props.onInputChange
   const hiddenNow = track.hidden && ui.hideView
+  const routeLabel = track.kind === 'audio' && track.inputRoute ? routeText(props.routeTracks ?? [track], track) : null
 
   function pointerDown(e: React.PointerEvent<HTMLDivElement>) {
     if (e.button !== 0 || !(e.target instanceof Element) || e.target.closest(CONTROL)) return
@@ -104,7 +109,9 @@ export function TrackHeader(props: TrackHeaderProps) {
         {kinds.length > 0 && <TrackButtons track={track} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}
         {showPan && <PanKnob value={track.pan} size={tier >= 3 ? 24 : 20} ariaLabel={`${track.name} 팬`} onChange={v => props.onChange({ pan: v }, `${track.id}:pan`)}/>}
       </div>}
-      {showInput && <InputSelect className="track-input-select" input={track.input} choices={props.inputChoices ?? []} ariaLabel={`${track.name} 입력`} onChange={input => props.onInputChange?.(input)}/>}
+      {showInput && <InputSelect className="track-input-select" input={track.input} choices={props.inputChoices ?? []} ariaLabel={`${track.name} 입력`} onChange={input => props.onInputChange?.(input)}
+        routing={props.routeTracks && props.onRouteChange ? { track, tracks: props.routeTracks, onChange: props.onRouteChange } : undefined}/>}
+      {!showInput && tier >= 1 && routeLabel && <span className={`track-route-label${track.inputRoute?.kind === 'none' ? ' missing' : ''}`} title={`입력: ${routeLabel}`}>{routeLabel}</span>}
       {showVolume && <div className="track-volume">
         <VolumeSlider value={track.volume} orientation="horizontal" meter={{ engine, trackId: track.id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={v => props.onChange({ volume: v }, `${track.id}:volume`)}/>
       </div>}

@@ -823,3 +823,28 @@ describe('native device settings client', () => {
     expect(h.engine.getAudioState().status).toBe('error')
   })
 })
+
+describe('native metronome control', () => {
+  it('sends strokes once per sound and rate, then only settings; count-in travels with play', async () => {
+    const h = managed()
+    h.engine.setMetronome({ enabled: true, sound: 'janggu', volume: .5, accent: true })
+    expect(h.calls('metronome.set')).toHaveLength(0)
+    await h.engine.play({ countInBars: 2 })
+    // 2 bars of 4/4 at 120 BPM and 48 kHz.
+    expect(h.calls('transport.play')).toEqual([{ frame: 0, countInFrames: 192000 }])
+    await vi.waitFor(() => expect(h.calls('metronome.set')).toHaveLength(1))
+    const first = h.calls('metronome.set')[0] as { enabled: boolean; volume: number; sampleRate: number; strokes: number[][] }
+    expect(first).toMatchObject({ enabled: true, volume: .5, sampleRate: 48000 })
+    expect(first.strokes).toHaveLength(3)
+    expect(first.strokes.every(stroke => Array.isArray(stroke) && stroke.length > 100)).toBe(true)
+    h.engine.setMetronome({ enabled: false, sound: 'janggu', volume: .3, accent: true })
+    await vi.waitFor(() => expect(h.calls('metronome.set')).toHaveLength(2))
+    expect(h.calls('metronome.set')[1]).toEqual({ enabled: false, volume: .3, sampleRate: 48000 })
+    h.engine.setMetronome({ enabled: false, sound: 'buk', volume: .3, accent: true })
+    await vi.waitFor(() => expect(h.calls('metronome.set')).toHaveLength(3))
+    expect(h.calls('metronome.set')[2]).toHaveProperty('strokes')
+    h.engine.pause()
+    await h.engine.play()
+    expect(h.calls('transport.play')[1]).toEqual({ frame: 0 })
+  })
+})

@@ -187,14 +187,23 @@ export class NativeRecordings extends NativeCapture {
     const takes = Array.isArray(answer?.takes) ? answer.takes as Partial<NativeRecordingTake>[] : []
     if (takes.length !== this.trackIds.length || !this.trackIds.every(id => takes.some(take => take?.trackId === id))) throw new Error('네이티브 엔진이 요청한 트랙의 녹음을 모두 시작하지 않았습니다.')
     const starts = takes.map(take => parseStart(take, answer?.sampleRate, this.sampleRate))
-    // One transport start for every take: a different frame would misalign the recorded tracks.
-    if (starts.some(start => start.startFrame !== starts[0].startFrame)) throw new Error('녹음 테이크의 시작 위치가 서로 다릅니다.')
+    // One transport start for every take: a different raw frame would misalign the recorded tracks. The
+    // compensation may differ per take: a physical input subtracts converter latency, an internal track
+    // or master route only the graph's plug-in latency (docs/TRACK_INPUT_ROUTING.md).
+    const raw = (start: StartResult) => start.rawStartFrame ?? start.startFrame
+    if (starts.some(start => raw(start) !== raw(starts[0]))) throw new Error('녹음 테이크의 시작 위치가 서로 다릅니다.')
     this.takes = this.trackIds.map(id => {
       const take = takes.find(item => item.trackId === id)!
+      const start = starts[takes.indexOf(take)]
       return { trackId: id, takeId: typeof take.takeId === 'string' ? take.takeId : '', channels: typeof take.channels === 'number' ? take.channels : 0,
-        startFrame: starts[0].startFrame, rawStartFrame: starts[0].rawStartFrame ?? starts[0].startFrame, compensationFrames: starts[0].compensationFrames ?? 0, compensationKnown: starts[0].compensationKnown ?? false }
+        startFrame: start.startFrame, rawStartFrame: raw(start), compensationFrames: start.compensationFrames ?? 0, compensationKnown: start.compensationKnown ?? false }
     })
     return starts[0]
+  }
+
+  /** Where this track's take starts on the project timeline (its own compensation applied). */
+  startFrameOf(trackId: string): number | null {
+    return this.takes.find(take => take.trackId === trackId)?.startFrame ?? this.startFrame
   }
   protected complete(value: unknown): void {
     const files = Array.isArray((value as { takes?: unknown } | undefined)?.takes) ? (value as { takes: (Partial<NativeAudioFile> & { trackId?: unknown })[] }).takes : []

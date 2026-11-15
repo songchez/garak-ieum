@@ -179,3 +179,49 @@ export function selectInputChannels(buffer: Pick<AudioBuffer, 'numberOfChannels'
   if (channels.length === buffer.numberOfChannels && channels.every((channel, index) => channel === index)) return null
   return channels.map(channel => buffer.getChannelData(channel).slice())
 }
+
+/** One part of a combined pass: the tracks it records and how to create it with its own callbacks. */
+export interface TakeCapturePart { trackIds: readonly string[]; create(callbacks: TakeCallbacks): TakeCapture }
+
+/**
+ * Several recorders as one pass (a browser records routed tracks from the graph and one physical input
+ * with MediaRecorder): they start and stop together and complete once, with every take's result.
+ */
+export function combineTakeCaptures(parts: readonly TakeCapturePart[], callbacks: TakeCallbacks): TakeCapture {
+  if (!parts.length) throw new Error('녹음할 트랙이 없습니다.')
+  if (parts.length === 1) return parts[0].create(callbacks)
+  const results: (TakeResult[] | null)[] = parts.map(() => null)
+  let reported = false
+  const captures = parts.map((part, index) => part.create({
+    onError: error => { if (!reported) { reported = true; callbacks.onError?.(error) } },
+    onComplete: partResults => {
+      results[index] = partResults
+      if (results.every(item => item !== null)) callbacks.onComplete(results.flatMap(item => item!))
+    },
+  }))
+  return {
+    start: async () => { await Promise.all(captures.map(capture => capture.start())) },
+    stop: () => { for (const capture of captures) capture.stop() },
+    dispose: () => { for (const capture of captures) capture.dispose() },
+    get startedAtMs() { return Math.min(...captures.map(capture => capture.startedAtMs)) },
+    get elapsedSeconds() { return Math.max(...captures.map(capture => capture.elapsedSeconds)) },
+    get compensationKnown() { return captures.some(capture => capture.compensationKnown === false) ? false : captures.every(capture => capture.compensationKnown === true) ? true : null },
+    startFrameOf: trackId => {
+      const index = parts.findIndex(part => part.trackIds.includes(trackId))
+      return index < 0 ? null : captures[index].startFrameOf(trackId)
+    },
+  }
+}
+
+/** Wraps a RecordingSession (several takes, one lifetime) as a TakeCapture. */
+export function sessionCapture(session: RecordingSession): TakeCapture {
+  return {
+    start: async () => { await session.start() },
+    stop: () => session.stop(),
+    dispose: () => session.dispose(),
+    get startedAtMs() { return session.startedAtMs },
+    get elapsedSeconds() { return session.elapsedSeconds },
+    get compensationKnown() { return session.compensationKnown ?? null },
+    startFrameOf: trackId => session.startFrameOf?.(trackId) ?? session.startFrame ?? null,
+  }
+}

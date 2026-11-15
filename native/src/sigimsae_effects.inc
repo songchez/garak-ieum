@@ -148,18 +148,22 @@ class LimiterFx final : public KernelBase {
       release_(1 - std::exp(-1 / (p("release") * .001 * sr))), tail_(p("release") * .007) { pre_.set(dbToGain(p("gain"))); }
   void process(float* s, std::uint32_t frames) noexcept override {
     const double c = ceiling_;
+    double loudest = 0, lowest = 1;
     for (std::uint32_t i = 0; i < frames; ++i) {
       const double pre = pre_.next(k_), xl = s[2 * i] * pre, xr = s[2 * i + 1] * pre;
       const double peak = std::max(std::abs(xl), std::abs(xr)), target = peak > c ? c / peak : 1;
       if (target < gain_) gain_ = target; else gain_ += (target - gain_) * release_;
       s[2 * i] = static_cast<float>(bounded(xl * gain_, -c, c)); s[2 * i + 1] = static_cast<float>(bounded(xr * gain_, -c, c));
+      loudest = std::max(loudest, peak / pre); lowest = std::min(lowest, gain_);
     }
+    tap_.add(static_cast<float>(loudest), static_cast<float>(lowest));
   }
+  DynamicsTap* dynamics() noexcept override { return &tap_; }
   void reset() noexcept override { gain_ = 1; }
   void takeStateFrom(StereoProcessor& previous) noexcept override { if (auto* p = dynamic_cast<LimiterFx*>(&previous)) { gain_ = p->gain_; pre_.follow(p->pre_); } }
   double tailSeconds() const noexcept override { return tail_; }
  private:
-  double ceiling_, release_, tail_, gain_ = 1; Smooth pre_;
+  double ceiling_, release_, tail_, gain_ = 1; Smooth pre_; DynamicsTap tap_;
 };
 
 // Noise gate: peak detector, 4 dB hysteresis, hold, then attack/release ramps of the gain.
@@ -170,16 +174,21 @@ class GateFx final : public KernelBase {
       detector_(std::exp(-1 / (.01 * sr))), holdFrames_(static_cast<long>(std::floor(p("hold") * .001 * sr + .5))),
       tail_((p("hold") + p("release") * 1.5) * .001) {}
   void process(float* s, std::uint32_t frames) noexcept override {
+    double loudest = 0, lowest = 1;
     for (std::uint32_t i = 0; i < frames; ++i) {
       const double peak = std::max(std::abs(s[2 * i]), std::abs(s[2 * i + 1]));
+      loudest = std::max(loudest, peak);
       envelope_ = peak > envelope_ ? peak : envelope_ * detector_;
       if (envelope_ >= open_) { open = true; held_ = holdFrames_; }
       else if (envelope_ < close_) { if (held_ > 0) --held_; else open = false; }
       if (open) gain_ += (1 - gain_) * attack_;
       else { gain_ -= gain_ * release_; if (gain_ < 1e-4) gain_ = 0; }
       s[2 * i] = static_cast<float>(s[2 * i] * gain_); s[2 * i + 1] = static_cast<float>(s[2 * i + 1] * gain_);
+      lowest = std::min(lowest, gain_);
     }
+    tap_.add(static_cast<float>(loudest), static_cast<float>(lowest));
   }
+  DynamicsTap* dynamics() noexcept override { return &tap_; }
   void reset() noexcept override { envelope_ = gain_ = 0; held_ = 0; open = false; }
   void takeStateFrom(StereoProcessor& previous) noexcept override {
     if (auto* p = dynamic_cast<GateFx*>(&previous)) { envelope_ = p->envelope_; gain_ = p->gain_; held_ = p->held_; open = p->open; }
@@ -187,7 +196,7 @@ class GateFx final : public KernelBase {
   double tailSeconds() const noexcept override { return tail_; }
  private:
   double open_, close_, attack_, release_, detector_; long holdFrames_; double tail_;
-  double envelope_ = 0, gain_ = 0; long held_ = 0; bool open = false;
+  double envelope_ = 0, gain_ = 0; long held_ = 0; bool open = false; DynamicsTap tap_;
 };
 
 // Asymmetric tanh saturation, head bump and a warmth-controlled high roll-off.

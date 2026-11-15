@@ -1,15 +1,18 @@
-import { SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, paramValue } from '../core/devices'
+import { SAMPLED_KIT_PARAMS, SAMPLED_PIANO_PARAMS, paramValue } from '../core/devices'
 import { instrumentDef } from '../core/instruments'
 import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../core/playback'
 import type { AudioWindow, PlaybackNote } from '../core/playback'
-import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track } from '../core/types'
+import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
+import { masterFeedExcluded, reconcileTrackRoutes, routeOf } from '../core/trackRouting'
 import { clamp, secondsPerBeat } from './math'
 import { AUDIO_CLIP_GAIN_MAX, envelopeAt, envelopeBreakpoints, fadeLengths } from '../core/clipEnvelope.js'
-import { pickZone, type LoadedSet, type SampleLibrary } from './samples'
+import { pickZone, releaseNoiseGain, type LoadedSet, type SampleLibrary } from './samples'
 import type { DeviceGraph } from '../devices/contracts'
 export type { DeviceGraph } from '../devices/contracts'
 import { EFFECT_MODULES } from '../devices/effects/registry'
 import { bindGuitarRigDevice, createGuitarRigMaster } from '../devices/guitar-rig'
+import { bindDeviceAnalysis } from '../devices/effects/analysis'
+import { bindDynamicsMeter } from '../devices/effects/dynamicsMeter'
 import { dbToGain, randomGenerator, setParameter } from '../devices/effects/shared'
 
 type SourceNode = AudioBufferSourceNode | OscillatorNode
@@ -24,6 +27,8 @@ export type ChokeMap = Map<number, { voice: Voice; when: number }>
 
 export interface TrackGraph {
   input: GainNode
+  /** Unity node after the device chain, before pan/fader: the "시김새 후" route tap. */
+  postFx: GainNode
   devices: Map<string, DeviceGraph>
   panner: StereoPannerNode
   fader: GainNode
@@ -43,8 +48,18 @@ export interface EngineGraph {
   meterData: Float32Array<ArrayBuffer>
   nodes: AudioNode[]
   resources: DeviceGraph[]
+  /** Internal inputs of routed audio tracks (docs/TRACK_INPUT_ROUTING.md); see connectRoutes. */
+  routes: Map<string, RouteGraph>
+  /** Master feed for resampling tracks: master volume over the tracks not excluded from it. */
+  resampleVolume?: GainNode
   /** Live input currently wired into track inputs; see connectMonitor. */
   monitor?: { source: MediaStreamAudioSourceNode; trackIds: string[]; splitter?: ChannelSplitterNode; nodes: AudioNode[] }
+}
+
+/** A routed track's input: `input` carries the source signal (recorders tap it); `monitor` (0/1) feeds the track. */
+export interface RouteGraph {
+  input: GainNode
+  monitor: GainNode
 }
 
 const disposedGraphs = new WeakSet<EngineGraph>()
@@ -80,6 +95,7 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true)
   const now = graph.context.currentTime
   const audible = audibleTrackIds(project.tracks)
   setParameter(graph.masterVolume.gain, clamp(project.masterVolume, 0, 2), now, smooth)
+  if (graph.resampleVolume) setParameter(graph.resampleVolume.gain, clamp(project.masterVolume, 0, 2), now, smooth)
   for (const track of project.tracks) {
     const channel = graph.tracks.get(track.id)
     if (!channel) continue
@@ -160,20 +176,24 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
         const node = effect.create(context, remember)
         resources.push(node)
         if (device.type === 'guitar-rig') bindGuitarRigDevice(node, device.id, context)
+        bindDeviceAnalysis(node, device.id, context)
+        bindDynamicsMeter(node, device.id, context)
         tail.connect(node.input)
         tail = node.output
         devices.set(device.id, node)
       }
-      tail.connect(panner)
+      const postFx = remember(context.createGain())
+      tail.connect(postFx).connect(panner)
       panner.connect(fader).connect(trackMeter).connect(sum)
 
       tracks.set(track.id, {
-        input, devices, panner, fader, meter: trackMeter,
+        input, postFx, devices, panner, fader, meter: trackMeter,
         meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(),
       })
     }
+    const { routes, resampleVolume } = connectRoutes(context, project, tracks, remember)
     const graph: EngineGraph = {
-      context, tracks, voices: new Set(), previewInput, masterVolume, gate, meter,
+      context, tracks, routes, ...(resampleVolume ? { resampleVolume } : {}), voices: new Set(), previewInput, masterVolume, gate, meter,
       meterData: new Float32Array(meter.fftSize), nodes, resources,
     }
     updateGraph(graph, project, false)
@@ -182,6 +202,60 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     // A partially constructed effect must not leave a connected/dry path behind.
     releaseResources(resources, nodes)
     throw error
+  }
+}
+
+/** The node a route listens on: before the chain, after it, or after pan and fader (mute/solo included). */
+export function routeTapNode(channel: TrackGraph, tap: TrackInputTap): AudioNode {
+  return tap === 'preFx' ? channel.input : tap === 'postFx' ? channel.postFx : channel.fader
+}
+
+/**
+ * Wires every routed audio track's internal input. Sources are connected in the same render quantum, so a
+ * recorder on `RouteGraph.input` sees the source's samples at the same context frames the source plays
+ * them (no added latency). Routes are reconciled first, so the connections form no cycle; the master feed
+ * leaves out resampling tracks and everything downstream of them (masterFeedExcluded).
+ */
+export function connectRoutes(context: BaseAudioContext, project: Project, tracks: ReadonlyMap<string, TrackGraph>, remember: <T extends AudioNode>(node: T) => T): { routes: Map<string, RouteGraph>; resampleVolume?: GainNode } {
+  const routes = new Map<string, RouteGraph>()
+  const reconciled = reconcileTrackRoutes(project.tracks)
+  let resampleVolume: GainNode | undefined
+  for (const track of reconciled) {
+    const route = routeOf(track)
+    const channel = tracks.get(track.id)
+    if (!route || !channel) continue
+    const input = remember(context.createGain())
+    const monitor = remember(context.createGain())
+    monitor.gain.value = 0
+    input.connect(monitor).connect(channel.input)
+    routes.set(track.id, { input, monitor })
+    if (route.kind === 'track') {
+      const source = tracks.get(route.trackId)
+      if (source) routeTapNode(source, route.tap).connect(input)
+    } else if (route.kind === 'master') {
+      if (!resampleVolume) {
+        const excluded = masterFeedExcluded(reconciled)
+        const feed = remember(context.createGain())
+        resampleVolume = remember(context.createGain())
+        resampleVolume.gain.value = clamp(project.masterVolume, 0, 2)
+        feed.connect(resampleVolume)
+        for (const item of reconciled) if (!excluded.has(item.id)) tracks.get(item.id)?.fader.connect(feed)
+      }
+      resampleVolume.connect(input)
+    }
+  }
+  return { routes, resampleVolume }
+}
+
+/** Opens the monitor gate of the routed tracks in `trackIds` and closes the others. */
+export function setRouteMonitoring(graph: EngineGraph, trackIds: readonly string[]): void {
+  const on = new Set(trackIds)
+  const now = graph.context.currentTime
+  for (const [id, route] of graph.routes) {
+    const value = on.has(id) ? 1 : 0
+    if (route.monitor.gain.value === value) continue
+    route.monitor.gain.cancelScheduledValues(now)
+    route.monitor.gain.setTargetAtTime(value, now, 0.003)
   }
 }
 
@@ -495,7 +569,8 @@ export function scheduleSampled(
   const buffer = zone && loaded.buffers.get(zone.file)
   if (!zone || !buffer) return
   const context = graph.context
-  const p = (id: string): number => paramValue(isKit ? SAMPLED_KIT_PARAMS : SAMPLED_PARAMS, params, id)
+  // SAMPLED_PIANO_PARAMS is a superset of SAMPLED_PARAMS; releaseNoise only matters for sets with releaseZones.
+  const p = (id: string): number => paramValue(isKit ? SAMPLED_KIT_PARAMS : SAMPLED_PIANO_PARAMS, params, id)
   const strength = clamp(velocity, 0, 2)
   const level = clamp(p('level'), 0, 2)
   const gain = dbToGain(set.gainDb + (zone.gainDb ?? 0) + SAMPLE_TRIM_DB) * (0.25 + 0.75 * strength) * level
@@ -543,14 +618,17 @@ export function scheduleSampled(
       source.loopStart = zone.loop[0] + startOffset
       source.loopEnd = zone.loop[1] + startOffset
     } else end = Math.min(end, when + natural + 0.01)
-    const releaseZone = set.releaseZones.length && noteDuration < natural ? pickZone(set, pitch, clamp(velocity, 0, 1), set.releaseZones) : undefined
+    // A note that runs into its clip end, the loop boundary or the project end is cut off, not released.
+    const cut = duration >= availableSeconds - 1e-6
+    const noiseLevel = set.releaseZones.length ? releaseNoiseGain(velocity, noteDuration, natural, p('releaseNoise'), cut) : 0
+    const releaseZone = noiseLevel > 0 ? pickZone(set, pitch, clamp(velocity, 0, 1), set.releaseZones) : undefined
     const releaseBuffer = releaseZone && loaded.buffers.get(releaseZone.file)
     if (releaseZone && releaseBuffer) {
       const noise = context.createBufferSource()
       noise.buffer = releaseBuffer
       noise.playbackRate.value = 2 ** ((clamp(pitch, 0, 127) - releaseZone.root) / 12 + (releaseZone.tune ?? 0) / 1200)
       const noiseGain = context.createGain()
-      noiseGain.gain.value = dbToGain(set.gainDb + (releaseZone.gainDb ?? 0) + SAMPLE_TRIM_DB) * 0.35 * Math.min(1, strength) * level
+      noiseGain.gain.value = dbToGain(set.gainDb + (releaseZone.gainDb ?? 0) + SAMPLE_TRIM_DB) * noiseLevel * level
       noise.connect(noiseGain).connect(destination)
       registerVoice(graph, [noise], [noise, noiseGain], noiseGain)
       noise.start(when + noteDuration, startOffset)
@@ -691,7 +769,10 @@ export function trackLayoutKey(tracks: readonly Track[]): string {
   // Track enable changes may switch the master even while transport is stopped.
   // Mute, solo and solo-safe remain fader changes and do not alter master voicing.
   const master = usesGuitarRigMaster(tracks) ? 'guitar-rig' : 'legacy'
-  return master + ':' + tracks.map(track =>
-    track.id + '[' + track.devices.filter(device => device.enabled).map(device => device.type + ':' + device.id).join(',') + ']',
-  ).join('|')
+  return master + ':' + tracks.map(track => {
+    const route = routeOf(track)
+    // Internal inputs are graph connections: a route or tap change rebuilds the graph.
+    const routed = route ? '<' + (route.kind === 'track' ? `${route.trackId}@${route.tap}` : route.kind) : ''
+    return track.id + routed + '[' + track.devices.filter(device => device.enabled).map(device => device.type + ':' + device.id).join(',') + ']'
+  }).join('|')
 }

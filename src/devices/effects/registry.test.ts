@@ -72,8 +72,9 @@ describe('built-in effect modules share one catalog', () => {
   it('retains saved IDs, ordering, and original numeric defaults in UI and MCP', () => {
     expect(EFFECT_TYPES).toEqual(['eq', 'filter', 'compressor', 'drive', 'delay', 'reverb', 'guitar-rig', 'chorus', 'phaser', 'flanger', 'tremolo', 'limiter', 'gate', 'tape', 'bitcrusher', 'utility'])
     expect(Object.fromEntries(EFFECT_TYPES.filter(type => type !== 'guitar-rig').map(type => [type, defaultParams(EFFECT_DEFS[type].params)]))).toEqual({
-      eq: { low: 0, mid: 0, midFreq: 1000, high: 0 },
-      filter: { cutoff: 1200, resonance: 0.7, mode: 0 },
+      // The original 3-band ids stay first and keep their defaults; bands 4–8 start off.
+      eq: expect.objectContaining({ low: 0, mid: 0, midFreq: 1000, high: 0, b1On: 1, b1Type: 1, b1Freq: 220, b2Q: 0.9, b3Freq: 4500, b4On: 0, output: 0 }),
+      filter: { cutoff: 1200, resonance: 0.7, mode: 0, slope: 0 },
       compressor: { threshold: -18, ratio: 4, attack: 10, release: 150, makeup: 0 },
       drive: { drive: 9, tone: 9000, mix: 1, output: 0 },
       delay: { amount: 0.3, time: 0.75, feedback: 0.32, tone: 3800, lowcut: 20, age: 0, sync: 1, ms: 375, mode: 0 },
@@ -119,13 +120,18 @@ describe('independent effect processing contracts', () => {
   it('EQ retains its serial shelf/peak/shelf voicing and immediate initialization', () => {
     const { nodes, effect } = create('eq')
     effect.update({ low: -3, mid: 4, midFreq: 1500, high: 2 }, 120, 6, false)
-    expect(nodes.map(node => node.type)).toEqual(['lowshelf', 'peaking', 'highshelf'])
-    expect(nodes.map(node => node.frequency.value)).toEqual([220, 1500, 4500])
-    expect(nodes[1].Q.value).toBe(0.9)
-    expect(nodes[0].connections).toEqual(new Set([nodes[1]]))
-    expect(nodes[1].connections).toEqual(new Set([nodes[2]]))
-    expect(nodes[0].gain.setValueAtTime).toHaveBeenCalledWith(-3, 6)
-    expect(nodes[0].gain.setTargetAtTime).not.toHaveBeenCalled()
+    // Eight bands × four stages in series; the legacy params drive the first stage of bands 1–3.
+    const stages = nodes.filter(node => node.kind === 'filter')
+    expect(stages).toHaveLength(32)
+    expect([0, 4, 8].map(i => stages[i].type)).toEqual(['lowshelf', 'peaking', 'highshelf'])
+    expect([0, 4, 8].map(i => stages[i].frequency.value)).toEqual([220, 1500, 4500])
+    expect([0, 4, 8].map(i => stages[i].gain.value)).toEqual([-3, 4, 2])
+    expect(stages[4].Q.value).toBe(0.9)
+    // Every other stage is an exact identity (peaking at 0 dB).
+    expect(stages.filter((_, i) => i % 4 !== 0 || i >= 12).every(node => node.type === 'peaking' && node.gain.value === 0)).toBe(true)
+    for (let i = 1; i < stages.length; i += 1) expect(stages[i - 1].connections).toEqual(new Set([stages[i]]))
+    expect(stages[0].gain.setValueAtTime).toHaveBeenCalledWith(-3, 6)
+    expect(stages[0].gain.setTargetAtTime).not.toHaveBeenCalled()
   })
 
   it('filter keeps mode selection and sample-rate cutoff protection', () => {
@@ -229,8 +235,10 @@ describe('host integration of effect modules', () => {
     const track = graph.tracks.get('audio')!
     expect([...track.devices.keys()]).toEqual([eq.id, drive.id])
     expect((track.input as unknown as NodeSpy).connections).toEqual(new Set([track.devices.get(eq.id)!.input]))
-    expect((track.devices.get(eq.id)!.output as unknown as NodeSpy).connections).toEqual(new Set([track.devices.get(drive.id)!.input]))
-    expect((track.devices.get(drive.id)!.output as unknown as NodeSpy).connections).toEqual(new Set([track.panner]))
+    // The EQ also feeds its (UI-only) spectrum analyser tap.
+    expect(new Set([...(track.devices.get(eq.id)!.output as unknown as NodeSpy).connections].filter(node => node.kind !== 'analyser'))).toEqual(new Set([track.devices.get(drive.id)!.input]))
+    expect((track.devices.get(drive.id)!.output as unknown as NodeSpy).connections).toEqual(new Set([track.postFx]))
+    expect((track.postFx as unknown as NodeSpy).connections).toEqual(new Set([track.panner]))
     expect(graph.nodes).toEqual(nodes)
     disposeGraph(graph)
     for (const node of nodes) expect(node.disconnect).toHaveBeenCalledExactlyOnceWith()

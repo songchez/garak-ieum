@@ -3,7 +3,8 @@ import { EFFECT_DEFS, type ParamDef } from '../../core/devices'
 import { instrumentDef, isInstrumentId } from '../../core/instruments'
 import { quarterNotesPerBar, validateTimeSignature } from '../../core/meter'
 import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd, playbackNotes, type Occurrence } from '../../core/playback'
-import type { EffectType, MidiClip, Project, TimeSignature, Track } from '../../core/types'
+import type { EffectType, MidiClip, Project, TimeSignature, Track, TrackInputRoute, TrackInputTap } from '../../core/types'
+import { reconcileTrackRoutes, routeOf } from '../../core/trackRouting'
 import { loopRange } from '../math'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVE_CODES, fadeCurveOf, fadeLengths } from '../../core/clipEnvelope.js'
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
@@ -105,6 +106,11 @@ export interface NativeTrackInput {
   readonly channels: readonly [number] | readonly [number, number]
 }
 
+export type NativeTrackRoute =
+  | { readonly kind: 'track'; readonly trackId: string; readonly tap: TrackInputTap }
+  | { readonly kind: 'master' }
+  | { readonly kind: 'none' }
+
 export interface NativeTrackTimeline {
   readonly id: string
   readonly source: NativeTrackSource
@@ -118,6 +124,10 @@ export interface NativeTrackTimeline {
   readonly audible: boolean
   /** Physical device input channels this track records and monitors; null is the device's first channel or pair. */
   readonly input: NativeTrackInput | null
+  /** Internal input (docs/TRACK_INPUT_ROUTING.md): another track at a tap, the master feed, or silence.
+   * When present the track records/monitors it instead of `input`. Loops and missing sources are already
+   * resolved to `none` here; the host re-checks. */
+  readonly route?: NativeTrackRoute
   readonly inserts: readonly (NativeBuiltinInsert | NativePluginInsert)[]
   /** Sorted by onset, then off frame and ID. Notes are cropped to the project, not the audition cycle. */
   readonly notes: readonly NativeNotePair[]
@@ -225,6 +235,11 @@ function prepareOccurrences(project: Project): Map<MidiClip, readonly Occurrence
   return prepared
 }
 
+function nativeRoute(route: TrackInputRoute | undefined): { route?: NativeTrackRoute } {
+  if (!route) return {}
+  return { route: route.kind === 'track' ? { kind: 'track', trackId: route.trackId, tap: route.tap } : { kind: route.kind } }
+}
+
 /** The host maps these physical channels to whatever the open device delivers; the label stays in the project. */
 function trackInput(track: Track): NativeTrackInput | null {
   if (!track.input) return null
@@ -276,6 +291,7 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
     return copy
   }
   let nextId = 0
+  const routed = new Map(reconcileTrackRoutes(project.tracks).map(track => [track.id, routeOf(track)]))
   const tracks = project.tracks.map((track): NativeTrackTimeline => {
     const notes: NativeNotePair[] = []
     const audio: NativeAudioWindow[] = []
@@ -317,6 +333,7 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
     return { id: track.id, source: source(track), gain: number(track.volume, 0, 2, 'track gain'), pan: number(track.pan, -1, 1, 'track pan'),
       enabled: isTrackEnabled(track) && track.pluginInstrument?.enabled !== false, mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, audible: audible.has(track.id) && track.pluginInstrument?.enabled !== false,
       input: trackInput(track),
+      ...nativeRoute(routed.get(track.id)),
       // One ordered chain: builtin and VST3 inserts interleave exactly as the project lists them.
       inserts: track.devices.map((device): NativeBuiltinInsert | NativePluginInsert => {
         if (device.type === 'vst3') {

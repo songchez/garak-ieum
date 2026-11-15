@@ -17,6 +17,7 @@ import { combineWavetablePatch, type WavetablePatch } from '../devices/wavetable
 import { WAVETABLE_HOST_REQUIRED } from '../audio/instrumentSupport'
 import { useInstrumentAvailability } from './useInstrumentAvailability'
 import { GuitarRigEditor, GuitarRigSummary } from './GuitarRig'
+import { deviceView } from './sigimsae/views'
 import { PluginControls, type PluginEngine } from './PluginControls'
 import { pluginKey, usePluginCatalog } from './usePluginCatalog'
 import { draggedLibraryRole, readLibraryDrag } from '../core/libraryDrag'
@@ -41,7 +42,7 @@ interface Props {
   onSave?:()=>void
   bpm?:number
   onDeviceParam:(deviceId:string,key:string,value:number)=>void
-  onDeviceParams:(deviceId:string,params:Record<string,number>)=>void
+  onDeviceParams:(deviceId:string,params:Record<string,number>,options?:{label?:string;mergeKey?:string})=>void
   onOpenAudioSettings?:()=>void
   onAddDevice:(type:EffectType,variantId?:string)=>void
   /** Rename a builtin effect; an empty name restores the module name. */
@@ -146,7 +147,7 @@ export function DeviceChain({track,engine,scale=1,onScaleChange,zoomRef,...on}:P
     {track.devices.map((device,index)=>{const plugin=device.type==='vst3'?device:null,d=plugin?null:EFFECT_DEFS[device.type as EffectType],name=plugin?plugin.name:effectDeviceName(device as EffectDevice);return <Fragment key={device.id}><Wire/>
       <section className={`dc-card dc-effect${plugin?' dc-plugin':''} ${device.enabled?'':'bypassed'}`} role="listitem" aria-label={`${index+1}번 ${name}${plugin?' (VST3)':''}${device.enabled?'':' (바이패스)'}`}>
         <header className="dc-head"><button className={`dc-power ${device.enabled?'on':''}`} aria-pressed={device.enabled} aria-label={`${name} 켜기/끄기`} title="켜기/끄기 (바이패스)" onClick={()=>on.onToggleDevice(device.id)}><Icon name="power" size={11}/></button><span className="dc-icon"><Icon name={plugin?'plug':device.type} size={14}/></span>{plugin?<strong title={name}>{name}</strong>:<DeviceName name={name} label={effectLabel(device.type as EffectType)} onRename={on.onRenameDevice&&(next=>on.onRenameDevice!(device.id,next))}/>}{plugin&&<span className="dc-format">VST3</span>}<span className="dc-tools"><button onClick={()=>on.onMoveDevice(device.id,-1)} disabled={index===0} title="왼쪽으로 이동" aria-label={`${name} 왼쪽으로 이동`}><Icon name="left" size={11}/></button><button onClick={()=>on.onMoveDevice(device.id,1)} disabled={index===track.devices.length-1} title="오른쪽으로 이동" aria-label={`${name} 오른쪽으로 이동`}><Icon name="right" size={11}/></button><button onClick={()=>{if(plugin)void pluginEngine?.pluginEditor(plugin.id,false).catch(()=>undefined);on.onRemoveDevice(device.id)}} title="시김새 삭제" aria-label={`${name} 삭제`}><Icon name="close" size={11}/></button></span></header>
-        {plugin?pluginBody(plugin as PluginDevice):device.type==='guitar-rig'?<GuitarRigSummary device={device} onOpen={()=>setRigEditor({trackId:track.id,deviceId:device.id})}/>:<div className="dc-knobs" style={{'--cols':Math.ceil(d!.params.length/2)} as React.CSSProperties}>{d!.params.map(p=><Knob key={p.id} def={p} value={paramValue(d!.params,(device as EffectDevice).params,p.id)} onChange={v=>on.onDeviceParam(device.id,p.id,v)}/>)}</div>}
+        {plugin?pluginBody(plugin as PluginDevice):device.type==='guitar-rig'?<GuitarRigSummary device={device} onOpen={()=>setRigEditor({trackId:track.id,deviceId:device.id})}/>:(()=>{const View=deviceView(device.type);const fx=device as EffectDevice;return View?<View device={fx} defs={d!.params} value={id=>paramValue(d!.params,fx.params,id)} onParam={(id,v)=>on.onDeviceParam(device.id,id,v)} onParams={(params,options)=>on.onDeviceParams(device.id,params,options)} engine={engine} trackId={track.id} color={track.color} bpm={on.bpm}/>:<div className="dc-knobs" style={{'--cols':Math.ceil(d!.params.length/2)} as React.CSSProperties}>{d!.params.map(p=><Knob key={p.id} def={p} value={paramValue(d!.params,fx.params,p.id)} onChange={v=>on.onDeviceParam(device.id,p.id,v)}/>)}</div>})()}
       </section></Fragment>})}
     <Wire/>
     <section className={`dc-card dc-add${libraryOver?' over':''}`} role="listitem" aria-label="시김새 추가: 왼쪽 라이브러리에서 끌어다 놓기">
@@ -159,5 +160,5 @@ export function DeviceChain({track,engine,scale=1,onScaleChange,zoomRef,...on}:P
       <div className="dc-output-body"><div className="dc-output-knobs"><Knob def={VOLUME} value={track.volume} color={track.color} onChange={volume=>on.onTrackChange({volume})}/><Knob def={PAN} value={track.pan} color={track.color} onChange={pan=>on.onTrackChange({pan})}/></div><MiniMeter engine={engine} trackId={track.id} vertical color={track.color}/></div>
     </section>
   </div>{waveEditorTrackId===track.id&&wavePatch&&<Suspense fallback={<div className="dc-wave-loading" role="status">IEUM WAVE를 여는 중…</div>}><WavetableSynth key={track.id} trackId={track.id} trackName={track.name} patch={wavePatch} onPatchChange={on.onWavetablePatch} onClose={()=>setWaveEditorTrackId(null)} nativeBridge={engine.kind==='native'?engine.wavetable:undefined} onSave={on.onSave} bpm={on.bpm}/></Suspense>}
-  {rig&&<GuitarRigEditor key={rig.id} device={rig} track={track} audioState={audioState} onParam={(key,value)=>on.onDeviceParam(rig.id,key,value)} onParams={params=>on.onDeviceParams(rig.id,params)} onToggle={()=>on.onToggleDevice(rig.id)} onTrackChange={on.onTrackChange} onOpenAudioSettings={on.onOpenAudioSettings} onClose={()=>setRigEditor(null)}/>}</div>
+  {rig&&<GuitarRigEditor key={rig.id} device={rig} track={track} audioState={audioState} onParam={(key,value)=>on.onDeviceParam(rig.id,key,value)} onParams={params=>on.onDeviceParams(rig.id,params,{label:'기타 앰프 프리셋 변경'})} onToggle={()=>on.onToggleDevice(rig.id)} onTrackChange={on.onTrackChange} onOpenAudioSettings={on.onOpenAudioSettings} onClose={()=>setRigEditor(null)}/>}</div>
 }

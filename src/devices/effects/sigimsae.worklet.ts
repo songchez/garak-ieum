@@ -18,6 +18,10 @@ class SigimsaeProcessor extends AudioWorkletProcessor {
   private left2 = this.left
   private right2 = this.right
   private disposed = false
+  /** Dynamics metering for the device views: off until the main thread asks (~30 Hz posts). */
+  private metering = false
+  private meterFrames = 0
+  private readonly meterValues = new Float32Array(2)
 
   constructor(options?: unknown) {
     super(options)
@@ -27,6 +31,7 @@ class SigimsaeProcessor extends AudioWorkletProcessor {
     this.port.onmessage = event => {
       const data = event.data as { type?: string; params?: Record<string, number>; bpm?: number } | undefined
       if (data?.type === 'dispose') this.disposed = true
+      else if (data?.type === 'meter') this.metering = (data as { on?: boolean }).on === true && typeof this.kernel.meter === 'function'
       else if (data?.type === 'params') this.kernel.configure(data.params, data.bpm ?? 120)
     }
   }
@@ -48,6 +53,11 @@ class SigimsaeProcessor extends AudioWorkletProcessor {
       r[i] = Number.isFinite(y) ? Math.max(-32, Math.min(32, y)) : 0
     }
     this.kernel.process(l, r, frames)
+    if (this.metering && (this.meterFrames += frames) >= sampleRate / 30) {
+      this.meterFrames = 0
+      this.kernel.meter!(this.meterValues)
+      this.port.postMessage({ type: 'meter', input: this.meterValues[0], gain: this.meterValues[1] })
+    }
     output[0]?.set(l.subarray(0, frames))
     if (output[1]) output[1].set(r.subarray(0, frames))
     return true
