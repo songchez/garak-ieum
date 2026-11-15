@@ -82,12 +82,12 @@ describe('sustain pedal model (CC64)', () => {
   it('validates schema 13 data and keeps older projects valid without a pedal', () => {
     const p = project([keys([clip({ notes: [note(0, 1)], sustain: pedal([0, 127], [1, 0]) })])])
     const roundTrip = validateProject(JSON.parse(JSON.stringify(p)))
-    expect(roundTrip.schemaVersion).toBe(13)
+    expect(roundTrip.schemaVersion).toBe(15)
     expect((roundTrip.tracks[0].clips[0] as MidiClip).sustain).toEqual(pedal([0, 127], [1, 0]))
     const old = JSON.parse(JSON.stringify(project([keys([clip({ notes: [note(0, 1)] })])])))
     old.schemaVersion = 12
     const migrated = validateProject(old)
-    expect(migrated.schemaVersion).toBe(13)
+    expect(migrated.schemaVersion).toBe(15)
     expect((migrated.tracks[0].clips[0] as MidiClip).sustain).toBeUndefined()
     expect(() => validateProject({ ...JSON.parse(JSON.stringify(p)), schemaVersion: 12 })).toThrow(/schema version 13/)
     const unsorted = JSON.parse(JSON.stringify(p)); unsorted.tracks[0].clips[0].sustain = pedal([1, 0], [0, 127])

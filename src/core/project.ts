@@ -10,13 +10,15 @@ import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
+// sends.ts imports this module too: only use its exports inside functions (no top-level reads).
+import { SEND_LEVEL_MAX, copySend, reconcileSends } from './sends'
 
 let fallbackSequence = 0
 
-/** Logic defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%). */
-export const DEFAULT_TRACK_COLORS: Readonly<Record<Track['kind'], string>> = { audio: '#669ed6', instrument: '#66d666' }
+/** Logic defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%); returns at 270°. */
+export const DEFAULT_TRACK_COLORS: Readonly<Record<Track['kind'], string>> = { audio: '#669ed6', instrument: '#66d666', return: '#9e66d6' }
 
 /** IDs describe editing objects; they are not security tokens. */
 export function uid(): string {
@@ -72,10 +74,10 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
   const def = instrumentDef(instrument)
   return {
     id: uid(),
-    name: kind === 'audio' ? 'Audio track' : def.name,
+    name: kind === 'audio' ? 'Audio track' : kind === 'return' ? '리턴' : def.name,
     kind,
     instrument,
-    color: kind === 'audio' ? DEFAULT_TRACK_COLORS.audio : instrumentDef(instrument).color,
+    color: kind === 'instrument' ? instrumentDef(instrument).color : DEFAULT_TRACK_COLORS[kind],
     volume: 0.7,
     pan: 0,
     mute: false,
@@ -99,7 +101,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 13,
+    schemaVersion: 15,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -394,6 +396,7 @@ export function duplicateTrack(track: Track): Track {
     name: `${track.name} 복사본`.slice(0, 512),
     ...(track.input ? { input: copyTrackInput(track.input) } : {}),
     ...(track.inputRoute ? { inputRoute: copyRoute(track.inputRoute) } : {}),
+    ...(track.sends ? { sends: track.sends.map(copySend) } : {}),
     instrumentParams: { ...track.instrumentParams },
     ...(track.instrumentState ? { instrumentState: cloneWavetableState(track.instrumentState) } : {}),
     devices: track.devices.map(device => cloneDevice(device)),
@@ -413,6 +416,7 @@ export function duplicateTrackSettings(track: Track): Track {
     ...(track.monitorMode === 'in' ? { monitorMode: 'off' as const } : {}),
     ...(track.input ? { input: copyTrackInput(track.input) } : {}),
     ...(track.inputRoute ? { inputRoute: copyRoute(track.inputRoute) } : {}),
+    ...(track.sends ? { sends: track.sends.map(copySend) } : {}),
     keyLimit: [...track.keyLimit],
     velocityLimit: [...track.velocityLimit],
     instrumentParams: { ...track.instrumentParams },
@@ -661,6 +665,20 @@ function parseTrackMidiInput(value: unknown, path: string): TrackMidiInput {
   }
 }
 
+/** Schema 15 sends: one per return, level 0…2. Return IDs are checked after every track is read. */
+function parseSends(value: unknown, path: string): TrackSend[] {
+  const seen = new Set<string>()
+  return list(value, `${path} sends`, 256).map((input, index): TrackSend => {
+    const sendPath = `${path}, send ${index + 1}`
+    const send = object(input, sendPath)
+    const returnId = text(send.returnId, `${sendPath} return ID`, 200)
+    if (seen.has(returnId)) throw new Error(`${sendPath} repeats a return track.`)
+    seen.add(returnId)
+    const pre = send.pre === undefined ? false : flag(send.pre, `${sendPath} pre-fader`)
+    return { returnId, level: number(send.level, `${sendPath} level`, 0, SEND_LEVEL_MAX), ...(pre ? { pre: true } : {}) }
+  })
+}
+
 function monitorMode(value: unknown, path: string): TrackMonitorMode {
   if (!MONITOR_MODES.includes(value as TrackMonitorMode)) throw new Error(`${path} must be off, auto or in.`)
   return value as TrackMonitorMode
@@ -729,7 +747,7 @@ function fadeCurves(clip: Record<string, unknown>, path: string, version: number
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13) throw new Error('This project version is not supported. Expected schema version 1 through 13.')
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 15) throw new Error('This project version is not supported. Expected schema version 1 through 15.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -751,7 +769,8 @@ export function validateProject(input: unknown): Project {
   const tracks = list(source.tracks, 'Tracks', 10_000).map((trackInput, trackIndex): Track => {
     const path = `Track ${trackIndex + 1}`
     const track = object(trackInput, path)
-    if (track.kind !== 'audio' && track.kind !== 'instrument') throw new Error(`${path} has an invalid track type.`)
+    if (track.kind !== 'audio' && track.kind !== 'instrument' && track.kind !== 'return') throw new Error(`${path} has an invalid track type.`)
+    if (track.kind === 'return' && version < 15) throw new Error('Return tracks require project schema version 15 or later.')
     if (!isInstrumentId(track.instrument)) throw new Error(`${path} has an unknown instrument.`)
     const color = text(track.color, `${path} color`, 9)
     if (!/^#[\da-f]{6}$/i.test(color)) throw new Error(`${path} color must be a six-digit hex color.`)
@@ -818,6 +837,10 @@ export function validateProject(input: unknown): Project {
     const mode = track.monitorMode === undefined ? undefined : monitorMode(track.monitorMode, `${path} monitor mode`)
     if (track.kind !== 'instrument' && track.midiInput !== undefined) throw new Error(`${path} MIDI input requires an instrument track.`)
     const midiInput = track.midiInput === undefined ? undefined : parseTrackMidiInput(track.midiInput, `${path} MIDI input`)
+    if (version < 15 && track.sends !== undefined) throw new Error('Track sends require project schema version 15 or later.')
+    if (track.kind === 'return' && track.sends !== undefined) throw new Error(`${path} is a return track; return tracks cannot have sends.`)
+    const sends = track.sends === undefined ? undefined : parseSends(track.sends, path)
+    if (track.kind === 'return' && Array.isArray(track.clips) && track.clips.length) throw new Error(`${path} is a return track and cannot contain regions.`)
     // Schema ≤7 has only the I flag, and an absent mode keeps deriving from it. A saved mode is authoritative.
     const monitor = mode === undefined ? optional(track.monitor, false, value => flag(value, `${path} monitor`)) : mode === 'in'
     const clips = list(track.clips, `${path} clips`, 100_000).map((clipInput, clipIndex): Clip => {
@@ -925,10 +948,12 @@ export function validateProject(input: unknown): Project {
       ...(input ? { input } : {}),
       ...(inputRoute ? { inputRoute } : {}),
       ...(midiInput ? { midiInput } : {}),
+      ...(sends?.length ? { sends } : {}),
     }
   })
   // Routes to deleted tracks read as 'none'; a saved loop (only possible by hand-editing) is broken the same way.
-  const routedTracks = reconcileTrackRoutes(tracks)
+  // Sends to a missing track (or one that is not a return) are dropped like deleted returns.
+  const routedTracks = reconcileSends(reconcileTrackRoutes(tracks))
   const markers = sortMarkers(list(source.markers ?? [], 'Markers', 10_000).map((markerInput, markerIndex): Marker => {
     const path = `Marker ${markerIndex + 1}`
     const marker = object(markerInput, path)
@@ -939,7 +964,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 13,
+    schemaVersion: 15,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

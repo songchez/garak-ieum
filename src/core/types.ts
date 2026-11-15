@@ -179,10 +179,25 @@ export interface TrackMidiInput {
   channel?: number
 }
 
+/**
+ * One aux send (schema 15; docs/SENDS_RETURNS.md): this track's signal into a return track at `level`
+ * (linear gain like Track.volume, 0 = off, 1 = 0 dB, max 2 = +6 dB). Post-fader by default (after pan, fader,
+ * mute and solo); `pre` taps after the 시김새 chain, before pan and fader (still silenced by mute/solo).
+ */
+export interface TrackSend {
+  returnId: string
+  level: number
+  /** Absent = post-fader. */
+  pre?: boolean
+}
+
+/** `return` (리턴/aux, schema 15): no regions or inputs; fed by other tracks' sends, own 시김새 chain, out to the master. */
+export type TrackKind = 'instrument' | 'audio' | 'return'
+
 export interface Track {
   id: string
   name: string
-  kind: 'instrument' | 'audio'
+  kind: TrackKind
   instrument: InstrumentId
   color: string
   volume: number
@@ -228,6 +243,8 @@ export interface Track {
   inputRoute?: TrackInputRoute
   /** Instrument tracks only. Absent = every MIDI input, every channel. Undoable. */
   midiInput?: TrackMidiInput
+  /** Audio and instrument tracks only: at most one send per return track (schema 15). Absent = none. */
+  sends?: TrackSend[]
 }
 export interface Marker {
   id: string
@@ -240,8 +257,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  /** 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 13
+  /** 15: send/return tracks (Track.kind 'return', Track.sends). 14: reserved for the tempo map. 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 15
   id: string
   name: string
   bpm: number

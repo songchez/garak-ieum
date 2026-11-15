@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDevice, createEmptyProject, createTrack } from '../core/project'
 import type { MidiClip, Project } from '../core/types'
-import { connectMonitor, createGraph, disconnectMonitor, disposeGraph, scheduleRange, setRouteMonitoring, trackLayoutKey, updateGraph } from './graph'
+import { connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, scheduleRange, setRouteMonitoring, trackLayoutKey, updateGraph } from './graph'
 import type { LoadedSet, SampleLibrary } from './samples'
 import { EFFECT_MODULES } from '../devices/effects/registry'
 import * as guitarRig from '../devices/guitar-rig'
@@ -370,5 +370,58 @@ describe('track-input routes (docs/TRACK_INPUT_ROUTING.md)', () => {
     expect(into('a')).toBe(false)
     expect((graph.tracks.get('a')!.postFx as unknown as AudioNodeSpy).connections.has(graph.routes.get('b')!.input)).toBe(true)
     expect(into('orphan')).toBe(false)
+  })
+})
+
+describe('send/return buses (docs/SENDS_RETURNS.md)', () => {
+  const sendProject = (devices = [createDevice('eq')]): Project => {
+    const ret = { ...createTrack('return'), id: 'ret', soloSafe: true, devices }
+    const keys = { ...createTrack('instrument'), id: 'keys', sends: [{ returnId: 'ret', level: 0.5 }] }
+    const vox = { ...createTrack('audio'), id: 'vox', volume: 0.3, sends: [{ returnId: 'ret', level: 0.25, pre: true }] }
+    return { ...createEmptyProject(), tracks: [ret, keys, vox] }
+  }
+  const spy = (node: unknown) => node as AudioNodeSpy
+
+  it('taps post-fader sends from the fader and pre-fader sends from postFx into the return input', () => {
+    const { context } = contextSpy()
+    const graph = createGraph(context, sendProject())
+    const ret = graph.tracks.get('ret')!, keys = graph.tracks.get('keys')!, vox = graph.tracks.get('vox')!
+    const post = keys.sends.get('ret')!, pre = vox.sends.get('ret')!
+    expect(post.pre).toBe(false)
+    expect(spy(keys.fader).connections.has(post.gain)).toBe(true)
+    expect(spy(keys.postFx).connections.has(post.gain)).toBe(false)
+    expect(spy(vox.postFx).connections.has(pre.gain)).toBe(true)
+    expect(spy(post.gain).connections).toEqual(new Set([ret.input]))
+    expect(spy(pre.gain).connections).toEqual(new Set([ret.input]))
+    expect(post.gain.gain.value).toBe(0.5)
+    expect(pre.gain.gain.value).toBe(0.25)
+    // The return itself is an ordinary channel into the master and has no sends.
+    expect(ret.sends.size).toBe(0)
+  })
+
+  it('updates levels as parameters, silences pre-fader sends of unsoloed tracks, and keeps returns audible on solo', () => {
+    const { context } = contextSpy()
+    const project = sendProject()
+    const graph = createGraph(context, project)
+    const soloKeys = { ...project, tracks: project.tracks.map(track => track.id === 'keys' ? { ...track, solo: true, sends: [{ returnId: 'ret', level: 1 }] } : track) }
+    expect(trackLayoutKey(soloKeys.tracks)).toBe(trackLayoutKey(project.tracks))
+    updateGraph(graph, soloKeys, false)
+    expect(graph.tracks.get('keys')!.sends.get('ret')!.gain.gain.value).toBe(1)
+    expect(graph.tracks.get('vox')!.sends.get('ret')!.gain.gain.value).toBe(0)
+    expect(graph.tracks.get('vox')!.fader.gain.value).toBe(0)
+    expect(graph.tracks.get('ret')!.fader.gain.value).toBe(0.7)
+    const flipped = { ...project, tracks: project.tracks.map(track => track.id === 'keys' ? { ...track, sends: [{ returnId: 'ret', level: 0.5, pre: true }] } : track) }
+    expect(trackLayoutKey(flipped.tracks)).not.toBe(trackLayoutKey(project.tracks))
+  })
+
+  it('wires nothing for sends to missing returns and includes return tails after their senders', () => {
+    const { context } = contextSpy()
+    const lonely = { ...createTrack('audio'), id: 'lonely', sends: [{ returnId: 'gone', level: 1 }] }
+    const graph = createGraph(context, { ...createEmptyProject(), tracks: [lonely] })
+    expect(graph.tracks.get('lonely')!.sends.size).toBe(0)
+    const project = sendProject([createDevice('reverb', { amount: 1, dry: 0 })])
+    const reverbTail = EFFECT_MODULES.reverb.tailSeconds({ amount: 1, dry: 0, size: 0.35, tone: 9000, type: 0, predelay: 0, lowcut: 20 }, 120)
+    // keys (release 0.3 s + 0.2) feeds the return, so the reverb rings on after the keys' own release.
+    expect(renderTailSeconds(project)).toBeCloseTo(reverbTail + 0.5, 6)
   })
 })

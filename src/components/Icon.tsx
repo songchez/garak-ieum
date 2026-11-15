@@ -9,7 +9,7 @@ import {
   Save, Scissors, Search, Settings, Sparkles, SkipBack, SlidersHorizontal, SlidersVertical,
   Snowflake, Square, SquareDashed, SquareDashedMousePointer, TextCursorInput, Trash,
   Undo2, Upload, Volume2, VolumeX, WavesHorizontal, WavesVertical, Wind, X, Zap, History,
-  Waves, Orbit, Tornado, AudioWaveform, ArrowUpToLine, DoorClosed, CassetteTape, Binary, UnfoldHorizontal,
+  Waves, Orbit, Tornado, AudioWaveform, ArrowUpToLine, DoorClosed, CassetteTape, Binary, UnfoldHorizontal, CornerDownLeft,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -37,7 +37,7 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   eq: SlidersVertical, filter: Funnel, compressor: Minimize2,
   drive: Flame, delay: Repeat2, reverb: WavesHorizontal, 'guitar-rig': Guitar,
   chorus: Waves, phaser: Orbit, flanger: Tornado, tremolo: AudioWaveform, limiter: ArrowUpToLine, gate: DoorClosed,
-  tape: CassetteTape, bitcrusher: Binary, utility: UnfoldHorizontal,
+  tape: CassetteTape, bitcrusher: Binary, utility: UnfoldHorizontal, return: CornerDownLeft,
 }
 
 export function Icon({ name, size = 18, className = '', style }: { name: string; size?: number; className?: string; style?: CSSProperties }) {

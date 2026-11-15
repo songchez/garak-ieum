@@ -13,6 +13,7 @@ import { inputConstraints, loadAudioSettings, normalizeAudioSettings, recordingO
 import { appendAudioRecordings, combineTakeCaptures, createTakeCapture, sessionCapture, recordingStartBeat, selectInputChannels, simultaneousTakeLimit, type MultiTakeEngine, type RecordingDraft, type TakeCallbacks, type TakeCapture, type TakeResult } from './core/recording'
 import { applyTrackInputs, planInputRemap } from './core/trackInputs'
 import { applyTrackSource, detachDeletedRoutes, isRouted, remapCopiedRoutes, routeProblem } from './core/trackRouting'
+import { applySend, createEffectReturns, createReturnTrack, detachDeletedSends, nextReturnName, remapCopiedSends, type SendPatch } from './core/sends'
 import { encodePcm16Wav } from './audio/math'
 import { nativeErrorCode, supportedRatesOf } from './audio/native/deviceErrors'
 import { backgroundAction, nearestSampleRate, shouldAlertOverload } from './audio/native/deviceProfile'
@@ -92,7 +93,7 @@ type NoticeAction={label:string;run:()=>void}
 type Clipboard={items:{clip:Clip;row:number;kind:Track['kind']}[];base:number;topRow:number}
 type TrackMods={range:boolean;toggle:boolean;trackOnly:boolean}
 type ClipMove={trackId:string;clipId:string;start:number;length?:number;toTrackId?:string}
-type NewTrackOptions={kind?:Track['kind'];sameAsFocused?:boolean;empty?:boolean;dialog?:boolean;afterId?:string|null}
+type NewTrackOptions={kind?:Track['kind'];sameAsFocused?:boolean;empty?:boolean;dialog?:boolean;afterId?:string|null;effectReturns?:boolean}
 type CommandContext={trackIds?:string[];clipIds?:string[];scope?:ShortcutScope}
 // The monitor mode is saved with the project (Ableton) but, like the I flag it drives, never enters Undo.
 const LIVE_KEYS=new Set<keyof Track>(['armed','monitor','monitorMode'])
@@ -757,6 +758,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   function seekPlay(beat:number){if(recordPreparingRef.current||recordRef.current)return;engine.seek(Math.max(0,beat));if(!engine.getSnapshot().playing)void playTransport('start')}
   function addMidiClip(trackId:string,beat:number){
     const track=project.tracks.find(t=>t.id===trackId);if(!track)return
+    if(track.kind==='return')return
     if(track.kind==='audio'){openMediaImport(trackId,beat);return}
     const clip:MidiClip={kind:'midi',id:uid(),name:'새 패턴',startBeat:Math.max(0,beat),lengthBeats:project.beatsPerBar*2,gain:1,notes:[]}
     commit(p=>fitProjectLength({...p,tracks:p.tracks.map(t=>t.id===trackId?{...t,clips:[...t.clips,clip]}:t)}));selectClips([clip.id],clip.id,trackId);setBottomTab('editor')
@@ -859,7 +861,13 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   // Track operations
   function newTrack(opts:NewTrackOptions={}){
     if(opts.dialog){setModal('newTracks');return}
-    const kind=opts.kind??(opts.sameAsFocused&&focusedTrack?focusedTrack.kind:'instrument')
+    if(opts.kind==='return'){
+      // 리턴 트랙 추가 / 리버브 리턴 추가 (대청 Hall + 메아리 Echo, 100% wet): docs/SENDS_RETURNS.md.
+      const made=opts.effectReturns?createEffectReturns(project.tracks):[createReturnTrack(nextReturnName(project.tracks))]
+      const after=opts.afterId===undefined?focusedTrackId||null:opts.afterId
+      commit(p=>insertTracks(p,after,made),undefined,opts.effectReturns?'리버브 리턴 추가':'리턴 트랙 추가');focusTrack(made[0].id,made.map(t=>t.id));return
+    }
+    const kind=opts.kind??(opts.sameAsFocused&&focusedTrack?focusedTrack.kind==='return'?'audio':focusedTrack.kind:'instrument')
     const instrument=opts.sameAsFocused&&focusedTrack?.kind==='instrument'?focusedTrack.instrument:'keys'
     const track=createTrack(kind,instrument);if(opts.empty)track.devices=[]
     const after=opts.afterId===undefined?focusedTrackId||null:opts.afterId
@@ -876,10 +884,16 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     const sources=project.tracks.filter(t=>ids.includes(t.id));if(!sources.length)return
     const made=sources.map(t=>({...(mode==='content'?duplicateTrack(t):duplicateTrackSettings(t)),armed:t.armed,monitor:t.monitor,...(t.monitorMode?{monitorMode:t.monitorMode}:{})}))
     // A copied destination follows its copied source; other routes keep their source.
-    const copies=remapCopiedRoutes(made,new Map(sources.map((t,i)=>[t.id,made[i].id])))
+    const idMap=new Map(sources.map((t,i)=>[t.id,made[i].id]))
+    // Sends follow a return copied in the same operation, like routes (docs/SENDS_RETURNS.md).
+    const copies=remapCopiedSends(remapCopiedRoutes(made,idMap),idMap)
     const set=new Set(sources.map(t=>t.id)),afterId=sources.at(-1)!.id
     commit(p=>insertTracks({...p,tracks:p.tracks.map(t=>set.has(t.id)&&(t.armed||t.monitor)?{...t,armed:false,...(t.monitor?monitorModePatch('off'):{})}:t)},afterId,copies))
     focusTrack(copies[0].id,copies.map(t=>t.id))
+  }
+  /** One aux send edit; a drag merges into one undo step through its key. */
+  function changeSend(trackId:string,returnId:string,patch:SendPatch,key?:string){
+    try{commit(p=>applySend(p,trackId,returnId,patch),key,patch.pre===undefined?'센드 조절':'센드 프리/포스트 전환')}catch(error){notify(error instanceof Error?error.message:String(error))}
   }
   function deleteTracks(ids:string[]){
     const set=new Set(ids.filter(id=>project.tracks.some(t=>t.id===id)));if(!set.size)return
@@ -887,7 +901,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     const next=project.tracks.slice(last+1).find(t=>!set.has(t.id))??project.tracks.slice(0,first).reverse().find(t=>!set.has(t.id))
     // Routes that recorded a deleted track read as '없음' in the same Undo step (docs/TRACK_INPUT_ROUTING.md).
     const detached=detachDeletedRoutes({...project,tracks:project.tracks.filter(t=>!set.has(t.id))}).detached
-    commit(p=>detachDeletedRoutes({...p,tracks:p.tracks.filter(t=>!set.has(t.id))}).project)
+    // Sends that fed a deleted return disappear in the same step.
+    commit(p=>detachDeletedSends(detachDeletedRoutes({...p,tracks:p.tracks.filter(t=>!set.has(t.id))}).project))
     if(next)focusTrack(next.id);else focusTrack('',[])
     notify(detached.length?`트랙 ${set.size}개를 삭제했습니다. ${detached.map(name=>`‘${name}’`).join(', ')} 트랙은 입력 트랙이 사라져 입력이 ‘없음’이 되었습니다 · 실행 취소 ${shortcutText('undo')}`:`트랙 ${set.size}개를 삭제했습니다 · 실행 취소 ${shortcutText('undo')}`)
   }
@@ -1406,7 +1421,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   }:undefined
   const timelineUi:TimelineUi={headerWidth:trackHeader.headerWidth,headerConfig:trackHeader.headerConfig,hideView,recording:recording||midi.recording,catch:view.catch,scrollInPlay:view.scrollInPlay,snap:view.snap,dragMode:view.dragMode,globalTracks:view.globalTracks,gridLines:view.gridLines,trackZoom,zoomFocused:view.zoomFocused,soloRecall,renamingTrackId}
   const iconTrack=iconMenu?project.tracks.find(t=>t.id===iconMenu.id):undefined
-  const trackProps={project,engine,recording,onTrackChange:changeTrack,onTrackButton:trackButton,onTrackSweep:trackSweep,onInstrumentChange:changeInstrument,onAddDevice:addDevice,onToggleDevice:toggleDevice,onMoveDevice:(id:string,deviceId:string,offset:number)=>editTrack(id,t=>moveDevice(t,deviceId,offset)),onRemoveDevice:(id:string,deviceId:string)=>editTrack(id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)})),onOpenDevices:openDevices,onMasterChange:(value:number)=>commit(p=>p.masterVolume===value?p:{...p,masterVolume:value},'master-volume','마스터 볼륨 조절'),onOpenColorPalette:paletteFor,onIconMenu:(id:string,e:React.MouseEvent)=>setIconMenu({id,...anchorAt(e.currentTarget)})}
+  const trackProps={project,engine,recording,onTrackChange:changeTrack,onTrackButton:trackButton,onTrackSweep:trackSweep,onInstrumentChange:changeInstrument,onAddDevice:addDevice,onToggleDevice:toggleDevice,onMoveDevice:(id:string,deviceId:string,offset:number)=>editTrack(id,t=>moveDevice(t,deviceId,offset)),onRemoveDevice:(id:string,deviceId:string)=>editTrack(id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)})),onOpenDevices:openDevices,onMasterChange:(value:number)=>commit(p=>p.masterVolume===value?p:{...p,masterVolume:value},'master-volume','마스터 볼륨 조절'),onOpenColorPalette:paletteFor,onIconMenu:(id:string,e:React.MouseEvent)=>setIconMenu({id,...anchorAt(e.currentTarget)}),onSendChange:changeSend}
   return <HistoryGestureContext.Provider value={commandSession}><div className="studio-app">
     <header className="app-header">
       <div className="header-start">

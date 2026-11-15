@@ -21,9 +21,13 @@ export const sameRoute = (a: TrackInputRoute | undefined, b: TrackInputRoute | u
   a === b || (!!a && !!b && a.kind === b.kind && (a.kind !== 'track' || (b.kind === 'track' && a.trackId === b.trackId && a.tap === b.tap)))
 export const copyRoute = (route: TrackInputRoute): TrackInputRoute => route.kind === 'track' ? { kind: 'track', trackId: route.trackId, tap: route.tap } : { kind: route.kind }
 
-/** dst → src for every track route whose source exists (the graph's dependency edges). */
+/** Return IDs a track feeds through sends (docs/SENDS_RETURNS.md); returns themselves never send. */
+const sendTargets = (track: Track): readonly string[] => track.kind === 'return' ? [] : (track.sends ?? []).map(send => send.returnId)
+
+/** dst → src for every track route whose source exists (the graph's dependency edges). Return tracks are
+ * never route sources (they cannot be recorded in v1), so routes and sends cannot form a loop together. */
 export function trackRouteSources(tracks: readonly Track[]): Map<string, string> {
-  const ids = new Set(tracks.map(track => track.id))
+  const ids = new Set(tracks.filter(track => track.kind !== 'return').map(track => track.id))
   const edges = new Map<string, string>()
   for (const track of tracks) {
     const route = routeOf(track)
@@ -59,13 +63,15 @@ export function masterFeedExcluded(tracks: readonly Track[], edges = trackRouteS
       seen.add(id)
     }
   }
+  // A return fed by an excluded track carries the resampled signal too.
+  for (const track of tracks) if (excluded.has(track.id)) for (const id of sendTargets(track)) excluded.add(id)
   return excluded
 }
 
 /**
  * Processing level per track: sources render before the tracks that take them. Level 0 tracks have no
- * internal input; a track route is one level above its source; a master-resampling track is one level
- * above every track in the master feed. The native engine computes the same order in prepare().
+ * internal input; a track route is one level above its source; a return is one level above its senders;
+ * a master-resampling track is one level above every track in the master feed. The native engine computes the same order in prepare().
  * Assumes reconciled routes (no loops); a loop member would simply stay at level 0.
  */
 export function routeLevels(tracks: readonly Track[]): Map<string, number> {
@@ -84,6 +90,9 @@ export function routeLevels(tracks: readonly Track[]): Map<string, number> {
       if (source) value = level(source, stack) + 1
     } else if (route?.kind === 'master') {
       value = 1 + Math.max(-1, ...tracks.filter(item => !excluded.has(item.id)).map(item => level(item, stack)))
+    } else if (track.kind === 'return') {
+      // Returns render after every track that sends to them.
+      value = 1 + Math.max(-1, ...tracks.filter(item => sendTargets(item).includes(track.id)).map(item => level(item, stack)))
     }
     stack.delete(track.id)
     levels.set(track.id, value)
@@ -103,13 +112,14 @@ export function routeProblem(project: { readonly tracks: readonly Track[] }, tra
   if (route.trackId === trackId) return '트랙은 자기 자신의 출력을 입력으로 쓸 수 없습니다.'
   const source = project.tracks.find(item => item.id === route.trackId)
   if (!source) return '입력으로 고른 트랙을 찾을 수 없습니다.'
+  if (source.kind === 'return') return '리턴 트랙은 다른 트랙의 입력으로 쓸 수 없습니다.'
   if (takesFrom(project.tracks, route.trackId, trackId)) return `‘${source.name}’ 트랙이 이미 이 트랙의 신호를 받고 있어 되먹임(피드백) 루프가 생기므로 고를 수 없습니다.`
   return null
 }
 
 /** Removes references to missing tracks and breaks loops (both read as 'none'); unchanged arrays are kept. */
 export function reconcileTrackRoutes(tracks: Track[]): Track[] {
-  const ids = new Set(tracks.map(track => track.id))
+  const ids = new Set(tracks.filter(track => track.kind !== 'return').map(track => track.id))
   let changed = false
   let next = tracks.map(track => {
     const route = routeOf(track)
@@ -176,7 +186,7 @@ export function routeText(tracks: readonly Track[], track: Track): string | null
 export interface RouteChoice { trackId: string; name: string; kind: Track['kind']; problem: string | null }
 /** Every other track as a possible input of `trackId`, with the reason it would loop when it would. */
 export function routeChoices(project: { readonly tracks: readonly Track[] }, trackId: string): RouteChoice[] {
-  return project.tracks.filter(track => track.id !== trackId).map(track => ({
+  return project.tracks.filter(track => track.id !== trackId && track.kind !== 'return').map(track => ({
     trackId: track.id, name: track.name, kind: track.kind,
     problem: routeProblem(project, trackId, { kind: 'track', trackId: track.id, tap: DEFAULT_TAP }),
   }))

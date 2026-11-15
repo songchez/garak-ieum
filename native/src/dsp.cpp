@@ -340,7 +340,7 @@ constexpr std::array<ReverbSpace, 4> kReverbSpaces{{{1.7, 9183, 4.2, 61427}, {.3
 
 class Reverb final : public StereoProcessor {
  public:
-  Reverb(double sr, const Reader& p) : wet_(p("amount") * .5), predelay_(static_cast<std::size_t>(sr * .25) + 4),
+  Reverb(double sr, const Reader& p) : wet_(p("amount") * .5), dry_(p("dry")), predelay_(static_cast<std::size_t>(sr * .25) + 4),
       delayFrames_(p("predelay") * .001 * sr), lowcut_(p("lowcut") > 20.5) {
     const int space = std::clamp(static_cast<int>(std::lround(p("type"))), 0, 3);
     const auto& spec = kReverbSpaces[static_cast<std::size_t>(space)];
@@ -361,7 +361,8 @@ class Reverb final : public StereoProcessor {
       for (unsigned c = 0; c < 2; ++c) {
         float wet = tone_.sample(channels_[c]->sample(in[c]), c);
         if (lowcut_) wet = highpass_.sample(wet, c);
-        s[2 * i + c] += static_cast<float>(wet_ * wet);
+        // dry_ = 1 must stay bit-identical to the former `s += wet` (float sum of the two terms).
+        s[2 * i + c] = static_cast<float>(dry_ * s[2 * i + c]) + static_cast<float>(wet_ * wet);
       }
     }
   }
@@ -374,7 +375,7 @@ class Reverb final : public StereoProcessor {
   }
   double tailSeconds() const noexcept override { return wet_ > 0 ? tail_ : 0; }
  private:
-  std::array<std::unique_ptr<Convolver>, 2> channels_; Biquad tone_, highpass_; double wet_, tail_ = 0;
+  std::array<std::unique_ptr<Convolver>, 2> channels_; Biquad tone_, highpass_; double wet_, dry_, tail_ = 0;
   DelayLine predelay_; double delayFrames_; bool lowcut_;
 };
 
@@ -866,7 +867,7 @@ std::unique_ptr<StereoProcessor> makeEffect(std::string_view type,const Paramete
     Reader p(params,{{"drive",9,0,36},{"tone",9000,500,20000},{"mix",1,0,1},{"output",0,-24,6}});return std::make_unique<Drive>(sr,p);
   }
   if (type=="reverb") {
-    Reader p(params,{{"amount",.3,0,1},{"size",.35,0,1},{"tone",9000,1000,20000},{"type",0,0,3},{"predelay",0,0,250},{"lowcut",20,20,1000}});return std::make_unique<Reverb>(sr,p);
+    Reader p(params,{{"amount",.3,0,1},{"size",.35,0,1},{"tone",9000,1000,20000},{"type",0,0,3},{"predelay",0,0,250},{"lowcut",20,20,1000},{"dry",1,0,1}});return std::make_unique<Reverb>(sr,p);
   }
   if (auto effect=makeSigimsae(type,params,sr,bpm)) return effect;
   if (type=="guitar-rig") {

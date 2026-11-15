@@ -384,6 +384,19 @@ struct TrackRuntime {
   bool inMasterFeed=true;        // Heard by master-resampling tracks (false for them and downstream).
   std::uint32_t routeLevel=0;    // Processing level: sources render in an earlier level.
   std::vector<float> preTap,postTap,routeInput;
+  // Send/return (docs/SENDS_RETURNS.md), resolved in prepare(). Non-return tracks delay their output by the
+  // largest fed return's plug-in latency (`outputDelay`) after every tap, so sends reach the returns at the
+  // sender alignment and the returns' outputs line up with the dry tracks at the master. `faderTap` holds
+  // the post-fader signal before that delay (post-fader sends, post-fader routes while the delay is used).
+  bool isReturn=false;
+  std::uint32_t outputDelayFrames=0;
+  CompensationDelay outputDelay;
+  std::vector<float> faderTap;
+  // Returns only: one entry per send that feeds this return, with its own gain smoothing (owned by the
+  // return's task, so returns of one level render in parallel without sharing state).
+  struct Feed { std::int32_t sender=-1; bool pre=false; float target=0; double gain=0; };
+  std::vector<Feed> feeds;
+  std::vector<float> returnInput;
 
   void takeStateFrom(TrackRuntime& previous)noexcept {
     meter=previous.meter;liveUntil=previous.liveUntil;
@@ -402,6 +415,8 @@ struct TrackRuntime {
     }
     compensation.takeStateFrom(previous.compensation);peak=previous.peak;
     fader=previous.fader;panValue=previous.panValue;
+    outputDelay.takeStateFrom(previous.outputDelay);
+    for(auto&f:feeds)for(const auto&o:previous.feeds)if(o.sender==f.sender&&o.pre==f.pre){f.gain=o.gain;break;}
   }
 
   Voice& availableVoice(std::uint64_t& overflows)noexcept {
@@ -682,7 +697,7 @@ struct TrackRuntime {
   void render(std::int64_t frame,std::uint32_t frames,bool playing,const float* input,bool monitor,bool stereoInput,
               const ProcessContext& context,std::uint64_t& overflows,std::uint64_t& invalid)noexcept {
     std::fill_n(buffer.data(),static_cast<std::size_t>(frames)*2,0.f);
-    if(!timeline.enabled){peak=0;if(!preTap.empty())std::fill_n(preTap.data(),static_cast<std::size_t>(frames)*2,0.f);if(!postTap.empty())std::fill_n(postTap.data(),static_cast<std::size_t>(frames)*2,0.f);return;}
+    if(!timeline.enabled){peak=0;if(!preTap.empty())std::fill_n(preTap.data(),static_cast<std::size_t>(frames)*2,0.f);if(!postTap.empty())std::fill_n(postTap.data(),static_cast<std::size_t>(frames)*2,0.f);if(!faderTap.empty())std::fill_n(faderTap.data(),static_cast<std::size_t>(frames)*2,0.f);return;}
     if(playing)for(const auto& resolved:windows) {
       const auto&w=resolved.window;
       if(w.startFrame>=frame+frames)break;
@@ -727,8 +742,10 @@ struct TrackRuntime {
     if(monitor&&input)for(std::size_t i=0;i<static_cast<std::size_t>(frames)*2;++i)buffer[i]+=input[i];
     if(!preTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,preTap.data());
     for(auto& effect:inserts){if(effect.builtin)effect.builtin->process(buffer.data(),frames);else effect.plugin->process(buffer.data(),frames,{},context);}
-    // A reduced-latency monitor deliberately avoids waiting for unrelated tracks.
-    if(!(monitor&&context.playing&&!context.offline&&contextLowLatency))compensation.process(buffer.data(),frames);
+    // A reduced-latency monitor deliberately avoids waiting for unrelated tracks. A return's `monitor` is its
+    // send input, never a live input: it always stays compensated.
+    const bool lowLatencyMonitor=monitor&&!isReturn&&context.playing&&!context.offline&&contextLowLatency;
+    if(!lowLatencyMonitor)compensation.process(buffer.data(),frames);
     if(!postTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,postTap.data());
     const double targetPan=timeline.pan,targetGain=timeline.audible?timeline.gain:0;
     const double smoothing=1-std::exp(-1/(sampleRate*.012));
@@ -747,6 +764,8 @@ struct TrackRuntime {
       buffer[2*i]=static_cast<float>(std::clamp(l,-32.0,32.0));buffer[2*i+1]=static_cast<float>(std::clamp(r,-32.0,32.0));
       peak=std::max(peak,static_cast<float>(std::max(std::abs(l),std::abs(r))));
     }
+    if(!faderTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,faderTap.data());
+    if(!lowLatencyMonitor)outputDelay.process(buffer.data(),frames);
   }
   bool contextLowLatency=true;
 };
@@ -786,7 +805,7 @@ bool sameStructure(const ControlRecipe& a,const ControlRecipe& b) {
     const auto&tx=x.tracks[i];const auto&ty=y.tracks[i];
     const auto samePlugin=[](const PluginSpec&a,const PluginSpec&b){return a.instanceId==b.instanceId&&a.path==b.path&&a.classId==b.classId&&a.state==b.state&&a.controllerState==b.controllerState&&a.isInstrument==b.isInstrument;};
     const auto&sx=tx.source;const auto&sy=ty.source;
-    if(tx.id!=ty.id||sx.kind!=sy.kind||sx.instrumentId!=sy.instrumentId||sx.sampleSetId!=sy.sampleSetId||sx.isKit!=sy.isKit||!samePlugin(sx.plugin,sy.plugin)||tx.enabled!=ty.enabled||tx.notes!=ty.notes||tx.audio!=ty.audio||tx.inserts.size()!=ty.inserts.size())return false;
+    if(tx.id!=ty.id||tx.isReturn!=ty.isReturn||sx.kind!=sy.kind||sx.instrumentId!=sy.instrumentId||sx.sampleSetId!=sy.sampleSetId||sx.isKit!=sy.isKit||!samePlugin(sx.plugin,sy.plugin)||tx.enabled!=ty.enabled||tx.notes!=ty.notes||tx.audio!=ty.audio||tx.inserts.size()!=ty.inserts.size())return false;
     for(std::size_t j=0;j<tx.inserts.size();++j){const auto&ex=tx.inserts[j];const auto&ey=ty.inserts[j];
       if(ex.id!=ey.id||ex.type!=ey.type||ex.enabled!=ey.enabled||(ex.type=="vst3"&&!samePlugin(ex.plugin,ey.plugin)))return false;
     }
@@ -900,7 +919,7 @@ struct PreparedProject::Impl {
   ProjectTimeline timeline;
   std::vector<TrackRuntime> tracks;
   dsp::Master master;
-  std::uint32_t latency=0;
+  std::uint32_t latency=0,senderLatency=0;
   double tail=.85;
   std::shared_ptr<const ControlRecipe> recipe;
   std::uint64_t serial=0,preserveFrom=0;
@@ -930,6 +949,7 @@ PreparedProject& PreparedProject::operator=(PreparedProject&&)noexcept=default;
 std::size_t PreparedProject::trackCount()const noexcept{return impl_->tracks.size();}
 double PreparedProject::tailSeconds()const noexcept{return impl_->tail;}
 std::uint32_t PreparedProject::latencyFrames()const noexcept{return impl_->latency;}
+std::uint32_t PreparedProject::senderLatencyFrames()const noexcept{return impl_->senderLatency;}
 
 struct RenderEngine::Impl {
   enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Control,Monitor,RecordStart,RecordStop,Master,Input,Layout,Metronome };
@@ -979,7 +999,7 @@ struct RenderEngine::Impl {
   struct AtomicSnapshot {
     std::atomic<std::uint64_t>revision{0},ticket{0},voiceOverflows{0},invalidSamples{0},recorded{0},dropped{0},aheadResyncs{0};
     std::atomic<std::int64_t>frame{0},recordingStart{0};
-    std::atomic<std::uint32_t>trackCount{0},latency{0},aheadTracks{0};
+    std::atomic<std::uint32_t>trackCount{0},latency{0},senderLatency{0},aheadTracks{0};
     std::atomic<bool>ready{false},playing{false},recording{false};
     std::atomic<float>masterPeak{0};std::array<std::atomic<float>,256>trackPeaks{};
     std::atomic<std::uint32_t>dynamicsCount{0};
@@ -1241,7 +1261,7 @@ struct RenderEngine::Impl {
     const float*source=nullptr;
     if(t.routeKind==TrackRoute::Kind::Track&&t.routeSource>=0) {
       const auto&s=g.tracks[static_cast<std::size_t>(t.routeSource)];
-      source=t.routeTap==TrackRoute::Tap::PreFx?s.preTap.data():t.routeTap==TrackRoute::Tap::PostFx?s.postTap.data():s.mix;
+      source=t.routeTap==TrackRoute::Tap::PreFx?s.preTap.data():t.routeTap==TrackRoute::Tap::PostFx?s.postTap.data():s.faderTap.empty()?s.mix:s.faderTap.data();
     } else if(t.routeKind==TrackRoute::Kind::Master)source=resampleScratch.data();
     if(source)std::copy_n(source,samples,t.routeInput.data());else std::fill_n(t.routeInput.data(),samples,0.f);
   }
@@ -1254,9 +1274,29 @@ struct RenderEngine::Impl {
     const float smoothing=static_cast<float>(1-std::exp(-1/(rate*.012)));float gain=masterGain;
     for(std::uint32_t i=0;i<block.count;++i){gain+=(targetMasterGain-gain)*smoothing;feed[2*i]*=gain;feed[2*i+1]*=gain;}
   }
+  // A return's input for this block: every feeding send's tap (its sender rendered in an earlier level) times
+  // the send gain, smoothed like the fader. Same block frames as the senders: a send adds no latency.
+  void fillReturnInput(PreparedProject::Impl&g,TrackRuntime&t)noexcept {
+    const auto count=block.count;float*in=t.returnInput.data();
+    std::fill_n(in,static_cast<std::size_t>(count)*2,0.f);
+    const double smoothing=1-std::exp(-1/(rate*.012));
+    for(auto&f:t.feeds) {
+      const auto&s=g.tracks[static_cast<std::size_t>(f.sender)];
+      const float*tap=f.pre?s.postTap.data():s.faderTap.data();
+      const double target=f.pre&&!s.timeline.audible?0.0:static_cast<double>(f.target);
+      if(!tap)continue;
+      for(std::uint32_t i=0;i<count;++i){f.gain+=(target-f.gain)*smoothing;const auto g2=static_cast<float>(f.gain);in[2*i]+=tap[2*i]*g2;in[2*i+1]+=tap[2*i+1]*g2;}
+    }
+  }
   void renderTrack(std::uint32_t index,std::uint32_t slot)noexcept {
     auto&g=*block.graph;auto&t=g.tracks[index];
     t.taskOverflows=0;t.taskInvalid=0;
+    if(t.isReturn) {
+      fillReturnInput(g,t);
+      t.render(block.position,block.count,block.playing,t.returnInput.data(),true,true,*block.context,t.taskOverflows,t.taskInvalid);
+      t.meter=t.peak;t.mix=t.buffer.data();
+      return;
+    }
     if(t.ahead&&t.ahead->mode.load(std::memory_order_acquire)!=AheadState::Off) {
       if(consumeAhead(g,t))return;
       // Lost sync (never expected): the documented per-track reset.
@@ -1428,6 +1468,7 @@ struct RenderEngine::Impl {
     published.trackCount.store(static_cast<std::uint32_t>(count),std::memory_order_relaxed);
     published.revision.store(active?active->impl_->timeline.revision:0,std::memory_order_relaxed);
     published.latency.store(active?active->impl_->latency:0,std::memory_order_relaxed);
+    published.senderLatency.store(active?active->impl_->senderLatency:0,std::memory_order_relaxed);
     for(std::size_t i=0;i<count;++i)published.trackPeaks[i].store(active->impl_->tracks[i].meter,std::memory_order_relaxed);
     published.aheadTracks.store(aheadTracks,std::memory_order_relaxed);published.aheadResyncs.store(aheadResyncs,std::memory_order_relaxed);
     published.masterPeak.store(masterPeak,std::memory_order_relaxed);published.voiceOverflows.store(voiceOverflows,std::memory_order_relaxed);published.invalidSamples.store(invalidSamples,std::memory_order_relaxed);
@@ -1454,12 +1495,22 @@ void prepareRoutes(std::vector<TrackRuntime>& tracks,std::vector<std::uint32_t>&
   std::vector<std::int32_t> source(count,-1);
   for(std::size_t i=0;i<count;++i) {
     auto&t=tracks[i];const auto&route=t.timeline.route;
-    if(!route||t.timeline.source.kind!=TrackSource::Kind::Audio)continue;
+    if(!route||t.timeline.source.kind!=TrackSource::Kind::Audio||t.isReturn)continue;
     t.routed=true;t.routeKind=route->kind;t.routeTap=route->tap;
     if(route->kind==TrackRoute::Kind::Track) {
-      for(std::size_t j=0;j<count;++j)if(j!=i&&tracks[j].timeline.id==route->trackId){source[i]=static_cast<std::int32_t>(j);break;}
+      // Return tracks are never route sources (docs/SENDS_RETURNS.md): a route naming one records silence.
+      for(std::size_t j=0;j<count;++j)if(j!=i&&!tracks[j].isReturn&&tracks[j].timeline.id==route->trackId){source[i]=static_cast<std::int32_t>(j);break;}
       if(source[i]<0)t.routeKind=TrackRoute::Kind::None;
     }
+  }
+  // Sends: each feeds an existing return (never itself; returns never send). One feed per send.
+  for(std::size_t i=0;i<count;++i) {
+    if(tracks[i].isReturn)continue;
+    for(const auto&send:tracks[i].timeline.sends)
+      for(std::size_t r=0;r<count;++r)if(r!=i&&tracks[r].isReturn&&tracks[r].timeline.id==send.returnId) {
+        tracks[r].feeds.push_back({static_cast<std::int32_t>(i),send.pre,send.gain,tracks[i].timeline.audible||!send.pre?static_cast<double>(send.gain):0.0});
+        break;
+      }
   }
   // Each track has one input: a loop is a chain that returns to its start. Break it at that track.
   for(std::size_t i=0;i<count;++i) {
@@ -1474,6 +1525,8 @@ void prepareRoutes(std::vector<TrackRuntime>& tracks,std::vector<std::uint32_t>&
     for(auto at=source[i];!excluded&&at>=0&&steps<=count;at=source[static_cast<std::size_t>(at)],++steps)excluded=tracks[static_cast<std::size_t>(at)].routeKind==TrackRoute::Kind::Master;
     tracks[i].inMasterFeed=!excluded;
   }
+  // A return fed by a track outside the master feed carries the resampled signal too.
+  for(auto&t:tracks)if(t.isReturn)for(const auto&f:t.feeds)if(!tracks[static_cast<std::size_t>(f.sender)].inMasterFeed){t.inMasterFeed=false;break;}
   // Levels: feed tracks by their chain depth, master resamplers above every feed track, then theirs.
   std::vector<std::int32_t> level(count,-1);
   const std::function<std::int32_t(std::size_t,std::size_t)> depth=[&](std::size_t i,std::size_t guard)->std::int32_t {
@@ -1482,6 +1535,7 @@ void prepareRoutes(std::vector<TrackRuntime>& tracks,std::vector<std::uint32_t>&
     std::int32_t value=0;
     if(source[i]>=0)value=depth(static_cast<std::size_t>(source[i]),guard+1)+1;
     else if(tracks[i].routeKind==TrackRoute::Kind::Master){value=0;for(std::size_t j=0;j<count;++j)if(tracks[j].inMasterFeed)value=std::max(value,depth(j,guard+1)+1);}
+    else if(tracks[i].isReturn){value=0;for(const auto&f:tracks[i].feeds)value=std::max(value,depth(static_cast<std::size_t>(f.sender),guard+1)+1);}
     return level[i]=value;
   };
   std::int32_t top=0;
@@ -1503,6 +1557,16 @@ void prepareRoutes(std::vector<TrackRuntime>& tracks,std::vector<std::uint32_t>&
       auto&s=tracks[static_cast<std::size_t>(source[i])];
       if(t.routeTap==TrackRoute::Tap::PreFx&&s.preTap.empty())s.preTap.assign(samples,0.f);
       if(t.routeTap==TrackRoute::Tap::PostFx&&s.postTap.empty())s.postTap.assign(samples,0.f);
+      // The post-fader tap is the output before the return-latency delay (equal to it when there is none).
+      if(t.routeTap==TrackRoute::Tap::PostFader&&s.outputDelayFrames&&s.faderTap.empty())s.faderTap.assign(samples,0.f);
+    }
+    if(t.isReturn) {
+      t.returnInput.assign(samples,0.f);
+      for(const auto&f:t.feeds) {
+        auto&s=tracks[static_cast<std::size_t>(f.sender)];
+        if(f.pre&&s.postTap.empty())s.postTap.assign(samples,0.f);
+        if(!f.pre&&s.faderTap.empty())s.faderTap.assign(samples,0.f);
+      }
     }
   }
 }
@@ -1527,9 +1591,13 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
   }
   require(noteCount<=100000&&windowCount<=8192&&estimated<=memoryLimit,"Native project exceeds bounded memory/event limits");
   auto result=std::make_unique<PreparedProject::Impl>(p);result->tracks.reserve(p.tracks.size());
+  std::vector<double> tails;tails.reserve(p.tracks.size());
   auto recipe=std::make_shared<ControlRecipe>();recipe->timeline=p;
   for(const auto&t:p.tracks) {
-    TrackRuntime track;track.timeline=t;track.sampleRate=p.sampleRate;track.projectLength=p.lengthFrames;track.contextLowLatency=p.lowLatencyMonitoring;
+    TrackRuntime track;track.timeline=t;track.isReturn=t.isReturn;track.sampleRate=p.sampleRate;track.projectLength=p.lengthFrames;track.contextLowLatency=p.lowLatencyMonitoring;
+    require(!t.isReturn||(t.source.kind==TrackSource::Kind::Audio&&t.notes.empty()&&t.audio.empty()&&t.sends.empty()),"Return tracks are audio buses without events or sends");
+    require(t.sends.size()<=256,"Native track exceeds send limit");
+    for(const auto&send:t.sends)checked(send.gain,0,4,"Invalid native send gain");
     track.fader=t.audible?t.gain:0;track.panValue=t.pan;
     checked(t.gain,0,2,"Invalid native track gain");checked(t.pan,-1,1,"Invalid native pan");
     track.buffer.resize(static_cast<std::size_t>(impl_->maxBlock)*2);
@@ -1538,7 +1606,7 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
     if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)track.synth=compileSynth(t.source);
     // An explicitly disabled source is retained in the immutable recipe but
     // needs neither its sample library nor a loadable third-party plug-in.
-    if(!t.enabled){result->tracks.push_back(std::move(track));continue;}
+    if(!t.enabled){result->tracks.push_back(std::move(track));tails.push_back(0);continue;}
     double trackTail=0;
     if(t.source.kind==TrackSource::Kind::NativeWavetable) {
       require(p.sampleRate>=22050,"IEUM WAVE requires a sample rate of 22050..192000 Hz");
@@ -1593,12 +1661,34 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
       else {effect.builtin=dsp::makeEffect(e.type,e.params,p.sampleRate,p.bpm);track.latency+=effect.builtin->latencyFrames();trackTail+=effect.builtin->tailSeconds();track.stereoEffects|=e.type=="reverb"||e.type=="guitar-rig"||(e.type=="delay"&&e.params.count("mode")&&e.params.at("mode")>=.5)||e.type=="chorus"||e.type=="phaser"||e.type=="flanger"||e.type=="tremolo"||e.type=="utility";}
       require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.inserts.push_back(std::move(effect));
     }
-    result->tail=std::max(result->tail,trackTail+.15);
-    result->latency=std::max(result->latency,track.latency);result->tracks.push_back(std::move(track));
+    result->tail=std::max(result->tail,trackTail+.15);tails.push_back(trackTail);
+    result->tracks.push_back(std::move(track));
+  }
+  // Send/return plug-in delay compensation (docs/SENDS_RETURNS.md). Senders align to the largest non-return
+  // latency S (as before); a fed return R adds its own chain latency after that, so every return is padded
+  // to the largest fed return latency L and every non-return track's output waits L after its taps. The
+  // master then hears dry and return paths aligned at S + L; with no latent return this is the former PDC.
+  std::set<std::string> fed;
+  for(const auto&t:p.tracks)if(!t.isReturn)for(const auto&send:t.sends)fed.insert(send.returnId);
+  std::uint32_t senderLatency=0,returnLatency=0;
+  for(const auto&t:result->tracks) {
+    if(!t.isReturn)senderLatency=std::max(senderLatency,t.latency);
+    else if(fed.contains(t.timeline.id))returnLatency=std::max(returnLatency,t.latency);
+  }
+  result->senderLatency=senderLatency;result->latency=senderLatency+returnLatency;
+  // A return's tail continues from its senders' tails.
+  for(std::size_t r=0;r<result->tracks.size();++r) {
+    if(!result->tracks[r].isReturn||!result->tracks[r].timeline.enabled)continue;
+    double senders=0;
+    for(std::size_t i=0;i<p.tracks.size();++i)if(!p.tracks[i].isReturn)for(const auto&send:p.tracks[i].sends)if(send.returnId==p.tracks[r].id)senders=std::max(senders,tails[i]);
+    result->tail=std::max(result->tail,tails[r]+senders+.15);
   }
   estimated+=static_cast<std::size_t>(result->latency)*p.tracks.size()*16;
   require(estimated<=memoryLimit,"Plugin compensation exceeds native memory budget");
-  for(auto&t:result->tracks)t.compensation=CompensationDelay(result->latency-t.latency);
+  for(auto&t:result->tracks) {
+    if(t.isReturn)t.compensation=CompensationDelay(t.latency<returnLatency?returnLatency-t.latency:0);
+    else {t.compensation=CompensationDelay(senderLatency-t.latency);t.outputDelayFrames=returnLatency;t.outputDelay=CompensationDelay(returnLatency);}
+  }
   prepareRoutes(result->tracks,result->levelOrder,result->levelStart,result->masterLevel,impl_->maxBlock);
   if(impl_->aheadBlocks&&!impl_->offline) {
     // Rings hold the current device buffer plus the ahead window. VST3 tracks
@@ -1609,7 +1699,8 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
     for(auto&t:result->tracks) {
       const bool vst3=(t.instrument&&!t.wavetable)||std::any_of(t.inserts.begin(),t.inserts.end(),[](const InsertRuntime&i){return i.plugin!=nullptr;});
       // Routed tracks read a source tap in the same block, and pre/post-FX taps are not in the ring.
-      const bool routing=t.routed||!t.preTap.empty()||!t.postTap.empty();
+      // Sends and returns likewise read a tap in the same block.
+      const bool routing=t.routed||!t.preTap.empty()||!t.postTap.empty()||!t.faderTap.empty()||t.isReturn;
       if(!t.timeline.enabled||vst3||routing)continue;
       if(bytes>budget)break;
       budget-=bytes;t.ahead=std::make_unique<AheadState>(capacity,impl_->maxBlock);
@@ -1670,6 +1761,7 @@ std::vector<RecordingTake> RenderEngine::planRecording(std::span<const std::uint
       // An internal route: stereo, never a missing device channel.
       RecordingTake take;take.track=track;take.route.channels=2;take.routed=true;
       take.routeDelayed=route->kind==TrackRoute::Kind::Master||(route->kind==TrackRoute::Kind::Track&&route->tap!=TrackRoute::Tap::PreFx);
+      take.routeMasterFeed=route->kind==TrackRoute::Kind::Master;
       takes.push_back(take);continue;
     }
     takes.push_back({track,routeInput(timeline.tracks[track].input,std::span(e.controlLayout.data(),e.controlLayoutCount),e.controlLayoutCount,e.controlLeft,e.controlRight)});
@@ -1854,7 +1946,7 @@ std::int64_t RenderEngine::renderedTransportFrame(std::uint32_t offset)const noe
 EngineSnapshot RenderEngine::snapshot()const noexcept {
   const auto&e=*impl_;const auto&p=e.published;EngineSnapshot s;
   s.lastAppliedCommand=p.ticket.load(std::memory_order_acquire);s.revision=p.revision.load(std::memory_order_relaxed);s.frame=p.frame.load(std::memory_order_relaxed);s.sampleRate=e.rate;
-  s.trackCount=p.trackCount.load(std::memory_order_relaxed);s.latencyFrames=p.latency.load(std::memory_order_relaxed);s.ready=p.ready.load(std::memory_order_relaxed);s.playing=p.playing.load(std::memory_order_relaxed);
+  s.trackCount=p.trackCount.load(std::memory_order_relaxed);s.latencyFrames=p.latency.load(std::memory_order_relaxed);s.senderLatencyFrames=p.senderLatency.load(std::memory_order_relaxed);s.ready=p.ready.load(std::memory_order_relaxed);s.playing=p.playing.load(std::memory_order_relaxed);
   s.masterPeak=p.masterPeak.load(std::memory_order_relaxed);for(std::uint32_t i=0;i<std::min(256u,s.trackCount);++i)s.trackPeaks[i]=p.trackPeaks[i].load(std::memory_order_relaxed);
   s.commandOverflows=e.commandOverflows.load(std::memory_order_relaxed);s.voiceOverflows=p.voiceOverflows.load(std::memory_order_relaxed);s.invalidSamples=p.invalidSamples.load(std::memory_order_relaxed);
   s.recording=p.recording.load(std::memory_order_relaxed);s.recordingStartFrame=p.recordingStart.load(std::memory_order_relaxed);s.recordedFrames=p.recorded.load(std::memory_order_relaxed);s.recordingDroppedFrames=p.dropped.load(std::memory_order_relaxed);
