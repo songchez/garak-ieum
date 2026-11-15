@@ -591,6 +591,30 @@ export function disposeGraph(graph: EngineGraph): void {
   releaseResources(graph.resources, graph.nodes)
 }
 
+/** Scheduled voices per track (onset time, audio region or not), so an edit can replace one track's voices. */
+interface OwnedVoice { onset: number; audio: boolean }
+const trackVoices = new WeakMap<EngineGraph, Map<string, Map<Voice, OwnedVoice>>>()
+/** Set by scheduleRange around each onset; registerVoice files the new voice under it. */
+let voiceOwner: { trackId: string; onset: number; audio: boolean } | null = null
+
+/**
+ * Stops the voices scheduled for one track: every voice when `all`; otherwise audio regions (they are chased again
+ * from their correct offset) and notes whose onset is at or after `from` (not heard yet). Sounding notes ring out.
+ */
+export function stopTrackVoices(graph: EngineGraph, trackId: string, from: number, all: boolean): number {
+  const owned = trackVoices.get(graph)?.get(trackId)
+  if (!owned) return 0
+  const now = graph.context.currentTime
+  let stopped = 0
+  for (const [voice, info] of [...owned]) {
+    if (!all && !info.audio && info.onset < from) continue
+    try { voice.stop(now) } catch { /* Already silent. */ }
+    owned.delete(voice)
+    stopped += 1
+  }
+  return stopped
+}
+
 function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNode[], envelope: GainNode, pitchBus?: AudioNode): Voice {
   let disconnected = false
   // Pitch bend and vibrato reach every source of a pitched voice through its detune (cents).
@@ -628,7 +652,16 @@ function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNo
       if (pitchBus) for (const source of sources) { try { pitchBus.disconnect(source.detune) } catch { /* Not connected. */ } }
       for (const source of sources) source.onended = null
       graph.voices.delete(voice)
+      if (owner) trackVoices.get(graph)?.get(owner.trackId)?.delete(voice)
     },
+  }
+  const owner = voiceOwner
+  if (owner) {
+    let byTrack = trackVoices.get(graph)
+    if (!byTrack) trackVoices.set(graph, byTrack = new Map())
+    let owned = byTrack.get(owner.trackId)
+    if (!owned) byTrack.set(owner.trackId, owned = new Map())
+    owned.set(voice, { onset: owner.onset, audio: owner.audio })
   }
   for (const source of sources) {
     source.onended = () => {
@@ -971,6 +1004,16 @@ export function scheduleRange(
   chase: boolean,
   realtime: boolean,
   library?: SampleLibrary,
+  /** Only these tracks (an edit while playing); the value says whether sustained notes are chased as well. */
+  only?: ReadonlyMap<string, boolean>,
+): void {
+  try { scheduleTracks(graph, project, assets, startBeat, endBeat, startTime, boundary, chase, realtime, library, only) }
+  finally { voiceOwner = null }
+}
+
+function scheduleTracks(
+  graph: EngineGraph, project: Project, assets: Map<string, AudioAsset>, startBeat: number, endBeat: number, startTime: number,
+  boundary: number, chase: boolean, realtime: boolean, library: SampleLibrary | undefined, only: ReadonlyMap<string, boolean> | undefined,
 ): void {
   // Every beat→time conversion goes through the tempo map (docs/TEMPO_MAP.md).
   const tempo = tempoMapOf(project)
@@ -988,6 +1031,8 @@ export function scheduleRange(
   }
   const startsInRange = (beat: number): boolean => beat >= startBeat - epsilon && beat < endBeat - epsilon
   for (const track of project.tracks) {
+    if (only && !only.has(track.id)) continue
+    const chaseNotes = chase && (!only || only.get(track.id) === true)
     const channel = graph.tracks.get(track.id)
     if (!channel || !isTrackEnabled(track)) continue
     const def = instrumentDef(track.instrument)
@@ -1011,6 +1056,7 @@ export function scheduleRange(
       if (beat >= windowEnd) continue
       // Audio plays at 1×: its source position is the real time since the occurrence started.
       const origin = window.start - window.sourceOffsetBeats
+      voiceOwner = { trackId: track.id, onset: time, audio: true }
       scheduleAudioClip(graph, channel.input, window.clip, asset, seconds(origin, beat), time, seconds(beat, windowEnd), seconds(origin, origin + window.clip.lengthBeats))
     }
     const controls = channel.controls
@@ -1027,12 +1073,13 @@ export function scheduleRange(
     for (const note of events.notes) {
       const noteEnd = Math.min(note.end, boundary, project.lengthBeats)
       if (noteEnd <= startBeat || note.start >= endBeat) continue
-      if (!startsInRange(note.start) && !(chase && !def.isKit && note.start < startBeat && noteEnd > startBeat)) continue
+      if (!startsInRange(note.start) && !(chaseNotes && !def.isKit && note.start < startBeat && noteEnd > startBeat)) continue
       const [beat, time] = adjustStart(Math.max(note.start, startBeat))
       if (beat >= noteEnd) continue
       const available = seconds(beat, Math.min(note.limit, boundary, project.lengthBeats))
       // Instrument parameter automation is read at each note onset, as the native engine does.
       const params = track.automation ? trackAt(track, beat).instrumentParams : track.instrumentParams
+      voiceOwner = { trackId: track.id, onset: time, audio: false }
       if (loaded) {
         scheduleSampled(graph, voiceInput, loaded, def.isKit, note.pitch, time, seconds(beat, noteEnd), note.velocity, available, params, channel.chokes, pitchBus)
       } else {
