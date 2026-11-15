@@ -50,7 +50,8 @@ impl Smooth {
 
     #[inline(always)]
     pub fn next(&mut self, k: f64) -> f64 {
-        self.value += (self.target - self.value) * k;
+        // C++ `value += (target - value) * k` (fused on Apple arm64, see math::mul_add).
+        self.value = math::mul_add(self.target - self.value, k, self.value);
         self.value
     }
 }

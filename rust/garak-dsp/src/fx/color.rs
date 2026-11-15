@@ -91,9 +91,9 @@ impl Kernel for Tape {
         let mut io = [l, r];
         for (c, s) in io.iter_mut().enumerate() {
             let x = f64::from(*s);
-            let shaped = ((math::tanh(x * pre + TAPE_BIAS) - self.origin) * post) as f32;
+            let shaped = ((math::tanh(math::mul_add(x, pre, TAPE_BIAS)) - self.origin) * post) as f32;
             let y = f64::from(self.dc.sample(self.bump.sample(self.lowpass.sample(shaped, c), c), c));
-            *s = ((x * (1.0 - mix) + y * mix) * out) as f32;
+            *s = (math::mul_add(x, 1.0 - mix, y * mix) * out) as f32;
         }
         (io[0], io[1])
     }
@@ -209,7 +209,10 @@ impl SettledFrame for Bitcrusher {
         }
         self.countdown -= 1.0;
         let (ql, qr) = (self.q_l, self.q_r);
-        ((f64::from(l) * (1.0 - mix) + ql * mix) as f32, (f64::from(r) * (1.0 - mix) + qr * mix) as f32)
+        (
+            math::mul_add(f64::from(l), 1.0 - mix, ql * mix) as f32,
+            math::mul_add(f64::from(r), 1.0 - mix, qr * mix) as f32,
+        )
     }
 }
 

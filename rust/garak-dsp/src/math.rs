@@ -74,3 +74,20 @@ mod imp {
 }
 
 pub use imp::{ceil, cos, cosf, exp, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
+
+/// `a * b + c` the way the native C++ build evaluates that expression. AppleClang contracts it into
+/// one fused multiply-add by default (`-ffp-contract=on`), so on Apple arm64 this is `fmadd`
+/// (one rounding, and a shorter loop-carried chain in the glides); MSVC and GCC on x86-64 do not
+/// contract, and neither does wasm32, so everywhere else it is the plain two-rounding expression.
+/// Used where the C++ source has exactly this shape (e.g. `value += (target - value) * k`).
+#[inline(always)]
+pub fn mul_add(a: f64, b: f64, c: f64) -> f64 {
+    #[cfg(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple"))]
+    {
+        libm::fma(a, b, c)
+    }
+    #[cfg(not(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple")))]
+    {
+        a * b + c
+    }
+}

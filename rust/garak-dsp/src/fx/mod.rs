@@ -77,6 +77,8 @@ pub trait Kernel {
 pub(crate) trait SettledFrame {
     fn settled(&self) -> bool;
     fn frame_if<const SETTLED: bool>(&mut self, l: f32, r: f32) -> (f32, f32);
+    /// After each block's loop (block-level bookkeeping the settled loop deferred).
+    fn end_block<const SETTLED: bool>(&mut self) {}
 }
 
 #[inline(never)]
@@ -84,6 +86,7 @@ fn settled_interleaved<K: SettledFrame, const SETTLED: bool>(k: &mut K, s: &mut 
     for [l, r] in s.as_chunks_mut::<2>().0 {
         (*l, *r) = k.frame_if::<SETTLED>(*l, *r);
     }
+    k.end_block::<SETTLED>();
 }
 
 #[inline(never)]
@@ -91,6 +94,7 @@ fn settled_planar<K: SettledFrame, const SETTLED: bool>(k: &mut K, left: &mut [f
     for (l, r) in left.iter_mut().zip(right.iter_mut()) {
         (*l, *r) = k.frame_if::<SETTLED>(*l, *r);
     }
+    k.end_block::<SETTLED>();
 }
 
 /// `Kernel::process_interleaved` for a [`SettledFrame`] kernel.

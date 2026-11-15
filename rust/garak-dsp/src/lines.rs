@@ -1,7 +1,7 @@
 //! Delay lines over caller-provided storage (no allocation): `Ring` (sigimsae_effects.inc `Ring`,
 //! kernels.ts `Ring`) and `DelayLine` (dsp.cpp `DelayLine`, stereo with O(1) reset).
 
-use crate::std_clamp;
+use crate::{math, std_clamp};
 
 /// Hands out consecutive regions of one caller-provided `f32` buffer. Running out is recorded
 /// (`ok() == false`) instead of panicking; constructors then return `None`.
@@ -95,7 +95,7 @@ impl<'a> Ring<'a> {
         let b = if a == 0 { size - 1 } else { a - 1 };
         let av = self.data.get(a).copied().unwrap_or(0.0);
         let bv = self.data.get(b).copied().unwrap_or(0.0);
-        (f64::from(av) + fraction * f64::from(bv - av)) as f32
+        math::mul_add(fraction, f64::from(bv - av), f64::from(av)) as f32
     }
 
     pub fn reset(&mut self) {

@@ -144,6 +144,10 @@ pub struct Limiter {
     gain: f64,
     pre: Smooth,
     meter: Meter,
+    /// Settled blocks: the loudest `peak` of the block, divided by the constant `pre` once at the
+    /// end. Division by a positive constant is monotonic under rounding, so max(peak) / pre equals
+    /// the per-frame max(peak / pre) the C++ meter takes.
+    block_peak: f64,
 }
 
 impl Limiter {
@@ -159,6 +163,7 @@ impl Limiter {
             gain: 1.0,
             pre,
             meter: Meter::default(),
+            block_peak: 0.0,
         }
     }
 
@@ -218,10 +223,22 @@ impl SettledFrame for Limiter {
         if target < self.gain {
             self.gain = target;
         } else {
-            self.gain += (target - self.gain) * self.release;
+            self.gain = math::mul_add(target - self.gain, self.release, self.gain);
         }
-        self.meter.add(peak / pre, self.gain);
+        if SETTLED {
+            self.block_peak = std_max(self.block_peak, peak);
+            self.meter.lowest = std_min(self.meter.lowest, self.gain);
+        } else {
+            self.meter.add(peak / pre, self.gain);
+        }
         (std_clamp(xl * self.gain, -c, c) as f32, std_clamp(xr * self.gain, -c, c) as f32)
+    }
+
+    fn end_block<const SETTLED: bool>(&mut self) {
+        if SETTLED {
+            self.meter.loudest = std_max(self.meter.loudest, self.block_peak / self.pre.value);
+            self.block_peak = 0.0;
+        }
     }
 }
 

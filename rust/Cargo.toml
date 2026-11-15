@@ -12,8 +12,9 @@ publish = false
 [workspace.dependencies]
 garak-dsp = { path = "garak-dsp" }
 # Pure-Rust libm for wasm32 (no C library there). Native garak-ffi uses the platform libm instead
-# (garak-dsp feature `platform-math`, src/math.rs).
-libm = { version = "0.2", default-features = false }
+# (garak-dsp feature `platform-math`, src/math.rs). `arch`: exact hardware ops (sqrt, fma) where
+# libm has them; on Apple arm64 `fma` is the fmadd that mirrors AppleClang's FP contraction.
+libm = { version = "0.2", default-features = false, features = ["arch"] }
 
 # Real-time rules (docs/RUST.md). Each crate opts in with `[lints] workspace = true`.
 [workspace.lints.rust]

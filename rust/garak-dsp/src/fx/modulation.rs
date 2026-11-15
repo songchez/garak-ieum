@@ -119,8 +119,8 @@ impl SettledFrame for Chorus<'_> {
         let wl = f64::from(self.l.read((0.014 + modulation) * self.sample_rate));
         let wr = f64::from(self.r.read((0.017 - modulation) * self.sample_rate));
         let out = (
-            (f64::from(xl) * (1.0 - mix) + wl * mix) as f32,
-            (f64::from(xr) * (1.0 - mix) + wr * mix) as f32,
+            math::mul_add(f64::from(xl), 1.0 - mix, wl * mix) as f32,
+            math::mul_add(f64::from(xr), 1.0 - mix, wr * mix) as f32,
         );
         advance(&mut self.phase, self.step);
         out
@@ -233,16 +233,20 @@ impl SettledFrame for Flanger<'_> {
         let feedback = self.feedback.next_if::<SETTLED>(self.k);
         let mix = self.mix.next_if::<SETTLED>(self.k);
         let sr = self.sample_rate;
-        let yl = f64::from(self.l.read((0.0003 + depth * (0.5 + 0.5 * math::sin(self.phase)) * 0.006) * sr));
-        let yr = f64::from(
-            self.r.read((0.0003 + depth * (0.5 + 0.5 * math::sin(self.phase + PI / 2.0)) * 0.006) * sr),
+        // C++ `.0003 + depth * (.5 + .5 * sin) * .006` (contracted on Apple arm64; .5 * sin is exact).
+        let yl = f64::from(
+            self.l.read(math::mul_add(depth * (0.5 + 0.5 * math::sin(self.phase)), 0.006, 0.0003) * sr),
         );
-        self.l.push((f64::from(xl) + feedback * yl) as f32);
-        self.r.push((f64::from(xr) + feedback * yr) as f32);
+        let yr =
+            f64::from(self.r.read(
+                math::mul_add(depth * (0.5 + 0.5 * math::sin(self.phase + PI / 2.0)), 0.006, 0.0003) * sr,
+            ));
+        self.l.push(math::mul_add(feedback, yl, f64::from(xl)) as f32);
+        self.r.push(math::mul_add(feedback, yr, f64::from(xr)) as f32);
         let wet = 0.5 * mix * (1.0 - 0.5 * feedback);
         let out = (
-            (f64::from(xl) * (1.0 - 0.5 * mix) + wet * yl) as f32,
-            (f64::from(xr) * (1.0 - 0.5 * mix) + wet * yr) as f32,
+            math::mul_add(f64::from(xl), 1.0 - 0.5 * mix, wet * yl) as f32,
+            math::mul_add(f64::from(xr), 1.0 - 0.5 * mix, wet * yr) as f32,
         );
         advance(&mut self.phase, self.step);
         out
