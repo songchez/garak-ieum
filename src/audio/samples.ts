@@ -140,6 +140,7 @@ export class SampleLibrary {
   private ready = new Map<string, LoadedSet>()
   private statuses = new Map<string, SampleStatus>()
   private errors = new Map<string, string>()
+  private released = new Map<string, SampleSet>()
   private listeners = new Set<Listener>()
   readonly baseUrl: string
 
@@ -148,6 +149,21 @@ export class SampleLibrary {
   }
 
   get(setId: string): LoadedSet | undefined { return this.ready.get(setId) }
+  /** The manifest of a loaded or released set (attribution, zones) without its audio. */
+  manifest(setId: string): SampleSet | undefined { return this.ready.get(setId)?.set ?? this.released.get(setId) }
+
+  /**
+   * Drops the decoded buffers of a ready set once another owner holds the PCM (the desktop audio host). The status
+   * returns to idle, so a later `load` decodes it again; the manifest stays readable through `manifest`.
+   */
+  release(setId: string): void {
+    const loaded = this.ready.get(setId)
+    if (!loaded) return
+    this.released.set(setId, loaded.set)
+    this.ready.delete(setId)
+    this.loads.delete(setId)
+    this.setStatus(setId, 'idle')
+  }
   status(setId: string): SampleStatus { return this.statuses.get(setId) ?? 'idle' }
   error(setId: string): string | undefined { return this.errors.get(setId) }
 

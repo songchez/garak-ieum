@@ -111,3 +111,6 @@
 .dc-add-drop button:hover{border-color:var(--accent-border);color:var(--accent-hover)}
 .dc-add.over{border-color:var(--accent-border);background:var(--ink-16)}
 .dc-add.over .dc-add-drop{color:var(--accent-hover)}
+
+/* Placeholder while a lazily loaded effect or guitar-rig editor chunk arrives. */
+.dc-view-loading { min-height: 96px; }

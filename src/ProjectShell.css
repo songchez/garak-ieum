@@ -11,3 +11,5 @@
 .project-save-failed-actions button{height:32px;padding:0 12px;border:1px solid var(--border-default);border-radius:6px;background:var(--surface-raised);color:var(--text-primary);font-size:12px}
 .project-save-failed-actions .primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .project-save-failed-actions .danger{color:var(--danger)}
+
+.project-shell-loading { display: grid; place-items: center; height: 100%; color: var(--text-muted, inherit); font-size: 13px; }

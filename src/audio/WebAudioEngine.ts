@@ -5,8 +5,9 @@ import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, Sampl
 import { numberedInputChoices } from '../core/trackInputs'
 import {
   applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
-  setRouteMonitoring, trackLayoutKey, updateEffectTempo, updateGraph,
+  setRouteMonitoring, stopTrackVoices, trackLayoutKey, updateEffectTempo, updateGraph,
 } from './graph'
+import { diffArrangement, type TrackChange } from './arrangementDiff'
 import { hasActiveAutomation } from '../core/automation'
 import type { EngineGraph } from './graph'
 import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter } from './math'
@@ -75,7 +76,6 @@ export class WebAudioEngine implements AudioEngine {
   private lifecycle = 0
   private transportRequest = 0
   private pendingPlayRequest: number | null = null
-  private musicalKey = ''
   private monitorStream: MediaStream | null = null
   private monitorSource: MediaStreamAudioSourceNode | null = null
   private monitorTrackIds: string[] = []
@@ -392,27 +392,23 @@ export class WebAudioEngine implements AudioEngine {
       this.audioStatus = this.outputFault ? 'error' : this.context ? 'ready' : 'idle'
       this.audioError = this.outputFault
     }
-    // Clip playback fields (loop, delay, quantize, swing, transpose, velocity) travel inside track.clips.
-    const nextKey = JSON.stringify([
-      project.bpm, project.tempoMap, project.lengthBeats, project.loop, project.timeSignature,
-      project.tracks.map(track => [
-        track.id, track.kind, track.instrument, track.enabled, track.transpose, track.velocityOffset,
-        track.keyLimit, track.velocityLimit, track.delayTicks, track.clips,
-      ]),
-    ])
-    const changedArrangement = nextKey !== this.musicalKey
-    const changedLayout = this.project === null || trackLayoutKey(this.project.tracks) !== trackLayoutKey(project.tracks)
+    // Identity diff over immutable project snapshots (src/audio/arrangementDiff.ts), not a stringify of every clip.
+    const arrangement = diffArrangement(this.project, project)
+    const changedLayout = this.project === null || (this.project.tracks !== project.tracks && trackLayoutKey(this.project.tracks) !== trackLayoutKey(project.tracks))
     this.project = project
-    this.musicalKey = nextKey
     this.position = clamp(beat, 0, project.lengthBeats)
     this.preloadProjectSamples(project)
     if (this.context) {
       try {
-        if (this.playing && (changedArrangement || changedLayout)) this.restartAt(this.position)
+        if (this.playing && (arrangement.global || changedLayout)) this.restartAt(this.position)
         else if (!this.graph || changedLayout || changedRate) this.replaceGraph()
-        // A mixer edit (fader, send level, effect knob) keeps synced effects — returns' delays included — on the
-        // tempo at the playhead, not the project's beat-0 tempo (docs/TEMPO_MAP.md); automated targets keep their lanes.
-        else this.applyStatic(project)
+        else {
+          // A mixer edit (fader, send level, effect knob) keeps synced effects — returns' delays included — on the
+          // tempo at the playhead, not the project's beat-0 tempo (docs/TEMPO_MAP.md); automated targets keep their lanes.
+          this.applyStatic(project)
+          // A region/note edit while playing replaces only the edited tracks' upcoming voices; the rest keep sounding.
+          if (this.playing && arrangement.tracks.size) this.rescheduleTracks(arrangement.tracks)
+        }
       } catch (error) {
         this.blockEffectGraph(this.context, error)
       }
@@ -856,6 +852,47 @@ export class WebAudioEngine implements AudioEngine {
     this.chaseCursor = true
     if (!this.replaceGraph()) return
     this.schedule()
+  }
+
+  /** Tracks rescheduled by the last live edit (tests and profiling). */
+  lastReschedule: { tracks: string[]; stopped: number } | null = null
+
+  /**
+   * Replaces the already scheduled look-ahead of the edited tracks only. Notes that have not sounded yet are stopped and
+   * the window from now to the scheduler cursor is scheduled again from the edited project; untouched tracks, the
+   * graph, effect tails and the transport anchor stay as they are (no restart). `hard` changes also cut sounding notes
+   * and chase sustained ones, like a seek does for that track alone.
+   */
+  private rescheduleTracks(changes: ReadonlyMap<string, TrackChange>): void {
+    if (!this.playing || !this.context || !this.project || !this.graph) return
+    const graph = this.graph, project = this.project
+    const from = Math.max(this.context.currentTime + 0.003, this.anchorTime)
+    let stopped = 0
+    for (const [trackId, change] of changes) stopped += stopTrackVoices(graph, trackId, from, change === 'hard')
+    this.lastReschedule = { tracks: [...changes.keys()], stopped }
+    if (this.cursorTime <= from) return
+    const only = new Map([...changes].map(([trackId, change]) => [trackId, change === 'hard']))
+    const loop = loopRange(project)
+    const tempo = tempoMapOf(project)
+    const boundary = loop?.end ?? project.lengthBeats
+    let beat = positionAfter(project, this.anchorBeat, from - this.anchorTime)
+    let time = from
+    let chase = true
+    for (let iterations = 0; time < this.cursorTime - 0.000001 && iterations < 128; iterations++) {
+      if (beat >= boundary - 0.0000001) {
+        if (!loop) break
+        beat = loop.start
+        chase = true
+      }
+      const remainingSeconds = tempo.secondsBetween(beat, boundary)
+      const segmentSeconds = Math.min(this.cursorTime - time, remainingSeconds)
+      if (segmentSeconds <= 0.00000001) break
+      const endBeat = segmentSeconds >= remainingSeconds ? boundary : Math.min(boundary, tempo.beatAfter(beat, segmentSeconds))
+      scheduleRange(graph, project, this.assets, beat, endBeat, time, boundary, chase, true, this.samples, only)
+      time += segmentSeconds
+      beat = endBeat
+      chase = false
+    }
   }
 
   private schedule(): void {

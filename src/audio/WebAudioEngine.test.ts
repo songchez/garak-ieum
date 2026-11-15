@@ -854,3 +854,30 @@ describe('browser track inputs', () => {
     engine.dispose()
   })
 })
+
+describe('arrangement edits while playing', () => {
+  it('reschedules only the edited track without rebuilding the graph; tempo edits still restart', async () => {
+    const region = (id: string) => ({ id, kind: 'midi' as const, name: id, startBeat: 0, lengthBeats: 4, gain: 1, notes: [] })
+    const a = { ...createTrack('instrument', 'keys'), id: 'a', clips: [region('ra')] }
+    const b = { ...createTrack('instrument', 'keys'), id: 'b', clips: [region('rb')] }
+    const project = { ...createEmptyProject(), tracks: [a, b] }
+    const engine = engineFor(project)
+    await engine.play()
+    const context = ContextSpy.instances[0]
+    const gains = context.gains.length
+    // A region move on track a: no graph replacement (createGraph would add gain nodes), only track a is rescheduled.
+    const moved = { ...project, tracks: [{ ...a, clips: [{ ...a.clips[0], startBeat: 1 }] }, b] }
+    engine.setProject(moved)
+    expect(context.gains).toHaveLength(gains)
+    expect(engine.lastReschedule?.tracks).toEqual(['a'])
+    expect(engine.getSnapshot().playing).toBe(true)
+    // A mixer edit neither restarts nor reschedules.
+    engine.lastReschedule = null
+    engine.setProject({ ...moved, tracks: [{ ...moved.tracks[0], volume: 0.3 }, b] })
+    expect(context.gains).toHaveLength(gains)
+    expect(engine.lastReschedule).toBeNull()
+    // A tempo change moves every onset: the transport restarts on a fresh graph, as before.
+    engine.setProject({ ...moved, bpm: moved.bpm + 10 })
+    expect(context.gains.length).toBeGreaterThan(gains)
+  })
+})

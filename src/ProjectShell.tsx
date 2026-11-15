@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import App, { type SaveFailedChoice } from './App'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { SaveFailedChoice } from './App'
 import { BRAND } from './brand'
 import { ProjectLauncher } from './components/ProjectLauncher'
 import { createLocalProject, importAsNewLocalProject } from './core/projectLibrary'
@@ -8,6 +8,9 @@ import { PROJECT_TEMPLATES } from './core/projectTemplates'
 import { listProjects, type ProjectSummary } from './core/storage'
 import { bindDesktopProjectEvents, chooseProjectFile, type DesktopProjectHandlers } from './platform/desktop'
 import './ProjectShell.css'
+
+// The project editor (and its audio engine) loads when a project opens: the launcher's first paint needs neither.
+const App = lazy(() => import('./App'))
 
 /** Routes identify locally saved projects; creating/importing persists before navigation. */
 export default function ProjectShell() {
@@ -162,10 +165,16 @@ export default function ProjectShell() {
     }
   }, [])
 
+  // Fetch the editor chunk once the launcher is idle, so opening a project rarely waits for it.
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void import('./App').catch(() => undefined) }, 1200)
+    return () => window.clearTimeout(timer)
+  }, [])
+
   return <div className="project-shell">
     <div className="project-shell-content" inert={blocked || undefined}>
-      {route.kind === 'project' ? <App key={route.id} projectId={route.id} navigating={blocked} navigationError={navigationError}
-        onHome={() => go({ kind: 'home' })} onNew={() => create()} onOpenProject={() => void openProjectFile()} registerNavigationGuard={registerNavigationGuard} registerProjectSave={registerProjectSave} onSaveFailed={askSaveFailed}/>
+      {route.kind === 'project' ? <Suspense fallback={<div className="project-shell-loading" role="status">프로젝트를 여는 중…</div>}><App key={route.id} projectId={route.id} navigating={blocked} navigationError={navigationError}
+        onHome={() => go({ kind: 'home' })} onNew={() => create()} onOpenProject={() => void openProjectFile()} registerNavigationGuard={registerNavigationGuard} registerProjectSave={registerProjectSave} onSaveFailed={askSaveFailed}/></Suspense>
         : <ProjectLauncher projects={projects} templates={PROJECT_TEMPLATES} loading={loading} busy={blocked}
           error={navigationError || listError} notice={route.kind === 'not-found' ? '이 주소의 화면을 찾지 못했습니다. 아래에서 프로젝트를 선택해 주세요.' : undefined}
           onOpen={open} onTemplate={create} onNew={() => create()} onImport={() => void openProjectFile()}
