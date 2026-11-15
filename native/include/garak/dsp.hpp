@@ -55,6 +55,10 @@ struct DynamicsTap {
 // Parameter view used to build effects and to automate them (defined in dsp.cpp).
 class Reader;
 
+// Immutable data a processor shares with others built from the same parameters (reverb impulse spectra).
+// The engine counts each key once in its memory budget.
+struct SharedResource { const void* key = nullptr; std::size_t bytes = 0; };
+
 class StereoProcessor {
  public:
   virtual ~StereoProcessor() = default;
@@ -72,6 +76,8 @@ class StereoProcessor {
   // buffers keep their size; new targets glide in like the worklet's configure(). Parameters that need a
   // rebuild (reverb size/type/pre-delay, rig reverb decay) keep their prepared value.
   virtual void automate(const Reader&) noexcept {}
+  // Control thread: shared immutable data this instance references (see SharedResource).
+  virtual void sharedResources(std::vector<SharedResource>&) const {}
 };
 
 // Live parameter control of one makeEffect() processor. Created on the control thread with the insert's
@@ -97,7 +103,17 @@ class EffectControl {
 // values. Initialization/IR FFT generation runs exclusively on the control thread.
 [[nodiscard]] std::unique_ptr<StereoProcessor> makeEffect(std::string_view type,
     const Parameters& params, double sampleRate, double bpm);
+// Per-instance state only; shared impulse responses are reported by StereoProcessor::sharedResources().
 [[nodiscard]] std::size_t estimateEffectMemory(std::string_view type, double sampleRate) noexcept;
+// Index of a parameter in the effect's catalog (the EffectControl index), or -1.
+[[nodiscard]] int effectParameterIndex(std::string_view type, std::string_view id);
+// True when EffectControl::set + apply (automate) fully applies a new value in place. False for values that
+// shape prepared buffers or the processor's structure (reverb size/type/pre-delay, rig rack layout, rig reverb
+// decay/switch, delay ping-pong): those need the insert rebuilt (docs/RENDER_DIFF_PROTOCOL.md).
+[[nodiscard]] bool liveEffectParameter(std::string_view type, std::string_view id);
+// Impulse-response cache counters (tests and diagnostics): kernels built and kernel lookups served from the cache.
+struct ImpulseCacheStats { std::uint64_t builds = 0, hits = 0; };
+[[nodiscard]] ImpulseCacheStats impulseCacheStats();
 
 // Causal, linked-channel compressor/safety ceiling used consistently for playback
 // and offline output. It introduces no lookahead delay.

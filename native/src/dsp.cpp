@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <complex>
 #include <deque>
+#include <map>
+#include <mutex>
+#include <tuple>
 #include <string>
 #include <limits>
 #include <stdexcept>
@@ -203,6 +206,12 @@ class Delay final : public StereoProcessor {
   double frames_, wet_, feedback_, tail_; bool filteredOutput_;
 };
 
+// Same formula and operand order as std::complex<float>::operator* (GCC's inline path and MSVC's _Mul), so
+// results are bit-identical for finite values, without the NaN-recovery call (__mulsc3) GCC emits per product.
+inline std::complex<float> multiply(std::complex<float> a, std::complex<float> b) noexcept {
+  return {a.real() * b.real() - a.imag() * b.imag(), a.real() * b.imag() + a.imag() * b.real()};
+}
+
 class Fft {
  public:
   explicit Fft(std::size_t n) : size_(n), reversed_(n), roots_(n / 2) {
@@ -220,71 +229,100 @@ class Fft {
       const auto half = n / 2, stride = size_ / n;
       for (std::size_t offset = 0; offset < size_; offset += n) for (std::size_t j = 0; j < half; ++j) {
         const auto root = inverse ? std::conj(roots_[j * stride]) : roots_[j * stride];
-        const auto odd = data[offset + j + half] * root, even = data[offset + j];
+        const auto odd = multiply(data[offset + j + half], root), even = data[offset + j];
         data[offset + j] = even + odd; data[offset + j + half] = even - odd;
       }
     }
     if (inverse) for (auto& x : data) x /= static_cast<float>(size_);
   }
+  [[nodiscard]] std::size_t bytes() const noexcept { return reversed_.size() * sizeof(std::size_t) + roots_.size() * sizeof(std::complex<float>); }
  private:
   std::size_t size_; std::vector<std::size_t> reversed_; std::vector<std::complex<float>> roots_;
+};
+
+// The immutable half of one partition group: the FFT tables and every partition's spectrum. Shared by all
+// convolvers with the same impulse response (R1 in docs/RENDER_DIFF_PROTOCOL.md); each instance keeps only
+// its own input history and output ring.
+struct GroupKernel {
+  GroupKernel(std::span<const float> ir, std::size_t base, std::size_t block)
+      : block(block), base(base), count((ir.size() + block - 1) / block), fft(block * 2), kernels(count * block * 2) {
+    for (std::size_t p = 0; p < count; ++p) {
+      auto kernel = std::span(kernels).subspan(p * block * 2, block * 2);
+      for (std::size_t i = 0; i < block && p * block + i < ir.size(); ++i) kernel[i] = ir[p * block + i];
+      fft.run(kernel);
+    }
+  }
+  std::size_t block, base, count; Fft fft;
+  std::vector<std::complex<float>> kernels;
+};
+struct ConvolverKernel {
+  explicit ConvolverKernel(const std::vector<float>& ir) {
+    const auto first = std::min<std::size_t>(64, ir.size());
+    std::copy_n(ir.begin(), first, head.begin());
+    groups.reserve(3);
+    if (ir.size() > 64) groups.emplace_back(std::span(ir).subspan(64, std::min<std::size_t>(448, ir.size() - 64)), 64, 64);
+    if (ir.size() > 512) groups.emplace_back(std::span(ir).subspan(512, std::min<std::size_t>(3584, ir.size() - 512)), 512, 512);
+    if (ir.size() > 4096) groups.emplace_back(std::span(ir).subspan(4096), 4096, 2048);
+  }
+  [[nodiscard]] std::size_t bytes() const noexcept {
+    std::size_t total = sizeof(*this);
+    for (const auto& g : groups) total += g.kernels.size() * sizeof(std::complex<float>) + g.fft.bytes();
+    return total;
+  }
+  std::array<float, 64> head{};
+  std::vector<GroupKernel> groups;
 };
 
 // A partition's first IR frame is >= its block size. Thus its FFT result is
 // available before the earliest affected output frame; no extra reverb latency.
 class ConvolutionGroup {
  public:
-  ConvolutionGroup(std::span<const float> ir, std::size_t base, std::size_t block)
-      : block_(block), base_(base), count_((ir.size() + block - 1) / block), fft_(block * 2),
-        kernels_(count_ * block * 2), history_(kernels_.size()), historyGeneration_(count_),
-        input_(block * 2), sum_(block * 2), output_(base + 3 * block), outputGeneration_(output_.size()) {
-    for (std::size_t p = 0; p < count_; ++p) {
-      auto kernel = std::span(kernels_).subspan(p * block * 2, block * 2);
-      for (std::size_t i = 0; i < block && p * block + i < ir.size(); ++i) kernel[i] = ir[p * block + i];
-      fft_.run(kernel);
-    }
-  }
+  explicit ConvolutionGroup(const GroupKernel& kernel)
+      : kernel_(&kernel), history_(kernel.kernels.size()), historyGeneration_(kernel.count),
+        input_(kernel.block * 2), sum_(kernel.block * 2), output_(kernel.base + 3 * kernel.block), outputGeneration_(output_.size()) {}
   float sample(float input) noexcept {
+    const auto& k = *kernel_; const auto block = k.block, count = k.count;
     const float result = outputGeneration_[outputRead_] == generation_ ? output_[outputRead_] : 0;
     outputGeneration_[outputRead_] = 0;
     input_[inputFill_++] = input;
-    if (inputFill_ == block_) {
-      std::fill(input_.begin() + static_cast<std::ptrdiff_t>(block_), input_.end(), std::complex<float>{});
-      fft_.run(input_);
-      auto destination = std::span(history_).subspan(historyWrite_ * block_ * 2, block_ * 2);
+    if (inputFill_ == block) {
+      std::fill(input_.begin() + static_cast<std::ptrdiff_t>(block), input_.end(), std::complex<float>{});
+      k.fft.run(input_);
+      auto destination = std::span(history_).subspan(historyWrite_ * block * 2, block * 2);
       std::copy(input_.begin(), input_.end(), destination.begin());
       historyGeneration_[historyWrite_] = generation_;
       std::fill(sum_.begin(), sum_.end(), std::complex<float>{});
-      for (std::size_t p = 0; p < count_; ++p) {
-        const auto slot = (historyWrite_ + count_ - p) % count_;
+      for (std::size_t p = 0; p < count; ++p) {
+        const auto slot = (historyWrite_ + count - p) % count;
         if (historyGeneration_[slot] != generation_) continue;
-        const auto* x = history_.data() + slot * block_ * 2;
-        const auto* h = kernels_.data() + p * block_ * 2;
-        for (std::size_t j = 0; j < block_ * 2; ++j) sum_[j] += x[j] * h[j];
+        const auto* x = history_.data() + slot * block * 2;
+        const auto* h = k.kernels.data() + p * block * 2;
+        for (std::size_t j = 0; j < block * 2; ++j) sum_[j] += multiply(x[j], h[j]);
       }
-      fft_.run(sum_, true);
-      const auto start = (outputRead_ + 1 + base_ - block_) % output_.size();
-      for (std::size_t j = 0; j < block_ * 2; ++j) {
+      k.fft.run(sum_, true);
+      const auto start = (outputRead_ + 1 + k.base - block) % output_.size();
+      for (std::size_t j = 0; j < block * 2; ++j) {
         const auto slot = (start + j) % output_.size();
         if (outputGeneration_[slot] != generation_) { output_[slot] = 0; outputGeneration_[slot] = generation_; }
         output_[slot] += sum_[j].real();
       }
-      historyWrite_ = (historyWrite_ + 1) % count_; inputFill_ = 0;
+      historyWrite_ = (historyWrite_ + 1) % count; inputFill_ = 0;
     }
     outputRead_ = (outputRead_ + 1) % output_.size();
     return result;
   }
   void reset() noexcept { ++generation_; if (!generation_) ++generation_; inputFill_ = historyWrite_ = outputRead_ = 0; }
   void takeStateFrom(ConvolutionGroup& previous) noexcept {
-    if (block_ != previous.block_ || base_ != previous.base_ || count_ != previous.count_) return;
+    const auto& a = *kernel_; const auto& b = *previous.kernel_;
+    if (a.block != b.block || a.base != b.base || a.count != b.count) return;
     history_.swap(previous.history_); historyGeneration_.swap(previous.historyGeneration_);
     input_.swap(previous.input_); output_.swap(previous.output_); outputGeneration_.swap(previous.outputGeneration_);
     std::swap(inputFill_, previous.inputFill_); std::swap(historyWrite_, previous.historyWrite_);
     std::swap(outputRead_, previous.outputRead_); std::swap(generation_, previous.generation_);
   }
  private:
-  std::size_t block_, base_, count_; Fft fft_;
-  std::vector<std::complex<float>> kernels_, history_;
+  const GroupKernel* kernel_;
+  std::vector<std::complex<float>> history_;
   std::vector<std::uint64_t> historyGeneration_;
   std::vector<std::complex<float>> input_, sum_;
   std::vector<float> output_; std::vector<std::uint64_t> outputGeneration_;
@@ -294,12 +332,9 @@ class ConvolutionGroup {
 
 class Convolver {
  public:
-  explicit Convolver(const std::vector<float>& ir) {
-    const auto head = std::min<std::size_t>(64, ir.size());
-    std::copy_n(ir.begin(), head, head_.begin());
-    if (ir.size() > 64) groups_.emplace_back(std::span(ir).subspan(64, std::min<std::size_t>(448, ir.size() - 64)), 64, 64);
-    if (ir.size() > 512) groups_.emplace_back(std::span(ir).subspan(512, std::min<std::size_t>(3584, ir.size() - 512)), 512, 512);
-    if (ir.size() > 4096) groups_.emplace_back(std::span(ir).subspan(4096), 4096, 2048);
+  explicit Convolver(std::shared_ptr<const ConvolverKernel> kernel) : kernel_(std::move(kernel)), head_(kernel_->head) {
+    groups_.reserve(kernel_->groups.size());
+    for (const auto& group : kernel_->groups) groups_.emplace_back(group);
   }
   float sample(float x) noexcept {
     history_[write_] = x; double out = 0;
@@ -314,7 +349,9 @@ class Convolver {
     history_ = previous.history_; write_ = previous.write_;
     for (std::size_t i = 0; i < groups_.size(); ++i) groups_[i].takeStateFrom(previous.groups_[i]);
   }
+  [[nodiscard]] const std::shared_ptr<const ConvolverKernel>& kernel() const noexcept { return kernel_; }
  private:
+  std::shared_ptr<const ConvolverKernel> kernel_;
   std::array<float, 64> head_{}, history_{}; std::size_t write_ = 0;
   std::vector<ConvolutionGroup> groups_;
 };
@@ -344,6 +381,60 @@ std::array<std::vector<float>, 2> impulse(double sr, double seconds, std::uint32
   return result;
 }
 
+// Impulse-response cache (control thread; a mutex only guards concurrent prepares such as an offline export).
+// The raw noise impulses depend on (rate, length, seed, space) only, so they are generated once per rate
+// (~40 ms each before). The blended, partitioned spectra are shared by every reverb with the same
+// (rate, space, size): a project with 32 equal reverbs holds one copy. Entries live while a convolver uses
+// them, plus the few most recently built ones so a toggled reverb comes back without a rebuild.
+using StereoImpulse = std::array<std::vector<float>, 2>;
+using StereoKernel = std::array<std::shared_ptr<const ConvolverKernel>, 2>;
+struct ImpulseKey {
+  double sr, seconds; std::uint32_t seed; int space;
+  bool operator<(const ImpulseKey& o) const noexcept { return std::tie(sr, seconds, seed, space) < std::tie(o.sr, o.seconds, o.seed, o.space); }
+};
+struct KernelKey {
+  double sr; int space; float size;
+  bool operator<(const KernelKey& o) const noexcept { return std::tie(sr, space, size) < std::tie(o.sr, o.space, o.size); }
+};
+struct ImpulseCache {
+  std::mutex mutex;
+  std::map<ImpulseKey, std::shared_ptr<const StereoImpulse>> impulses;
+  std::map<KernelKey, std::array<std::weak_ptr<const ConvolverKernel>, 2>> kernels;
+  std::deque<StereoKernel> recent;
+  std::uint64_t builds = 0, hits = 0;
+};
+ImpulseCache& impulseCache() { static ImpulseCache cache; return cache; }
+std::shared_ptr<const StereoImpulse> cachedImpulse(ImpulseCache& cache, double sr, double seconds, std::uint32_t seed, int space) {
+  auto& slot = cache.impulses[{sr, seconds, seed, space}];
+  if (!slot) slot = std::make_shared<const StereoImpulse>(impulse(sr, seconds, seed, space));
+  return slot;
+}
+// The blend `large * size + small * (1 - size)` is the exact float expression the reverb always used.
+StereoKernel blendedKernel(double sr, double shortSeconds, std::uint32_t shortSeed, double longSeconds, std::uint32_t longSeed, int space, float size) {
+  auto& cache = impulseCache();
+  std::lock_guard lock(cache.mutex);
+  auto& entry = cache.kernels[{sr, space, size}];
+  StereoKernel result{entry[0].lock(), entry[1].lock()};
+  if (result[0] && result[1]) { ++cache.hits; return result; }
+  const auto small = cachedImpulse(cache, sr, shortSeconds, shortSeed, space), large = cachedImpulse(cache, sr, longSeconds, longSeed, space);
+  std::vector<float> blend;
+  for (unsigned c = 0; c < 2; ++c) {
+    const auto& l = (*large)[c]; const auto& s = (*small)[c];
+    blend.resize(l.size());
+    for (std::size_t i = 0; i < l.size(); ++i) blend[i] = l[i] * size + (i < s.size() ? s[i] * (1 - size) : 0);
+    result[c] = std::make_shared<const ConvolverKernel>(blend);
+    entry[c] = result[c];
+  }
+  ++cache.builds;
+  cache.recent.push_back(result);
+  while (cache.recent.size() > 4) cache.recent.pop_front();
+  if (cache.kernels.size() > 64) std::erase_if(cache.kernels, [](const auto& item) { return item.second[0].expired() && item.second[1].expired(); });
+  return result;
+}
+void addShared(std::vector<SharedResource>& out, const std::array<std::unique_ptr<Convolver>, 2>& convolvers) {
+  for (const auto& c : convolvers) if (c) out.push_back({c->kernel().get(), c->kernel()->bytes()});
+}
+
 struct ReverbSpace { double shortSeconds; std::uint32_t shortSeed; double longSeconds; std::uint32_t longSeed; };
 constexpr std::array<ReverbSpace, 4> kReverbSpaces{{{1.7, 9183, 4.2, 61427}, {.35, 4421, 1.2, 7717}, {1.1, 3301, 3.2, 8803}, {.9, 5153, 2.6, 6007}}};
 
@@ -354,12 +445,8 @@ class Reverb final : public StereoProcessor {
     const int space = std::clamp(static_cast<int>(std::lround(p("type"))), 0, 3);
     const auto& spec = kReverbSpaces[static_cast<std::size_t>(space)];
     tail_ = .85 + spec.shortSeconds + p("size") * (spec.longSeconds - spec.shortSeconds) + p("predelay") * .001;
-    auto small = impulse(sr, spec.shortSeconds, spec.shortSeed, space), large = impulse(sr, spec.longSeconds, spec.longSeed, space);
-    const float size = static_cast<float>(p("size"));
-    for (unsigned c = 0; c < 2; ++c) {
-      for (std::size_t i = 0; i < large[c].size(); ++i) large[c][i] = large[c][i] * size + (i < small[c].size() ? small[c][i] * (1 - size) : 0);
-      channels_[c] = std::make_unique<Convolver>(large[c]);
-    }
+    const auto kernels = blendedKernel(sr, spec.shortSeconds, spec.shortSeed, spec.longSeconds, spec.longSeed, space, static_cast<float>(p("size")));
+    for (unsigned c = 0; c < 2; ++c) channels_[c] = std::make_unique<Convolver>(kernels[c]);
     tone_.configure(Filter::Lowpass, sr, p("tone"), 1);
     highpass_.configure(Filter::Highpass, sr, p("lowcut"), .5);
     sampleRate_ = sr;
@@ -390,6 +477,7 @@ class Reverb final : public StereoProcessor {
     }
   }
   double tailSeconds() const noexcept override { return wet_ > 0 ? tail_ : 0; }
+  void sharedResources(std::vector<SharedResource>& out) const override { addShared(out, channels_); }
  private:
   std::array<std::unique_ptr<Convolver>, 2> channels_; Biquad tone_, highpass_; double wet_, dry_, tail_ = 0;
   DelayLine predelay_; double delayFrames_; bool lowcut_; double sampleRate_ = 48000;
@@ -550,6 +638,7 @@ class RigModule {
   virtual double tailSeconds() const noexcept { return 0; }
   // Automation: re-read this instance's parameters (no allocation; see StereoProcessor::automate).
   virtual void automate(const RigParams&) noexcept {}
+  virtual void sharedResources(std::vector<SharedResource>&) const {}
   int code() const noexcept { return code_; }
   int instance() const noexcept { return instance_; }
  private:
@@ -756,12 +845,9 @@ class RigReverb final : public RigModule {
  public:
   RigReverb(double sr, const RigParams& p) : RigModule(10, p.instance) {
     if (p.on("reverbEnabled")) {
-      auto small = impulse(sr, 1.7, 9183), large = impulse(sr, 4.2, 61427);
       const auto decay = static_cast<float>(p("reverbDecay"));
-      for (unsigned c = 0; c < 2; ++c) {
-        for (std::size_t i = 0; i < large[c].size(); ++i) large[c][i] = large[c][i] * decay + (i < small[c].size() ? small[c][i] * (1 - decay) : 0);
-        reverb_[c] = std::make_unique<Convolver>(large[c]);
-      }
+      const auto kernels = blendedKernel(sr, 1.7, 9183, 4.2, 61427, 0, decay);
+      for (unsigned c = 0; c < 2; ++c) reverb_[c] = std::make_unique<Convolver>(kernels[c]);
       wet_ = p("reverbMix"); tail_ = (decay > .001 ? 4.2 : 1.7) + .25;
     }
     highpass_.configure(Filter::Highpass, sr, 180, .5);
@@ -786,6 +872,7 @@ class RigReverb final : public RigModule {
     }
   }
   double tailSeconds() const noexcept override { return reverb_[0] && wet_ > 0 ? tail_ : 0; }
+  void sharedResources(std::vector<SharedResource>& out) const override { addShared(out, reverb_); }
  private:
   std::array<std::unique_ptr<Convolver>, 2> reverb_; Biquad highpass_, tone_; double wet_ = 0, tail_ = 0, sampleRate_ = 48000;
 };
@@ -848,6 +935,7 @@ class GuitarRig final : public StereoProcessor {
   double tailSeconds() const noexcept override {
     double total = 0; for (const auto& m : modules_) total += m->tailSeconds(); return total;
   }
+  void sharedResources(std::vector<SharedResource>& out) const override { for (const auto& m : modules_) m->sharedResources(out); }
  private:
   std::vector<std::unique_ptr<RigModule>> modules_;
 };
@@ -983,12 +1071,34 @@ void EffectControl::apply(StereoProcessor& effect) noexcept {
 }
 
 std::size_t estimateEffectMemory(std::string_view type,double sr) noexcept {
-  if (type=="reverb") return static_cast<std::size_t>(sr*4.2*80)+1024*1024;
+  // A convolver instance holds its input spectra (as large as the shared IR spectra: 2 complex floats per IR
+  // sample and channel) and small output rings; the IR spectra themselves are shared (sharedResources).
+  if (type=="reverb") return static_cast<std::size_t>(sr*4.2*36)+1024*1024;
   // The rig holds up to three delay lines and, for each heard reverb, a 4.2 s stereo convolver.
-  if (type=="guitar-rig") return static_cast<std::size_t>(sr*4.2*(24+80))*3+3*1024*1024+65536;
+  if (type=="guitar-rig") return static_cast<std::size_t>(sr*4.2*(24+36))*3+3*1024*1024+65536;
   if (type=="delay") return static_cast<std::size_t>(sr*4.2*24)+65536;
   if (type=="chorus"||type=="flanger") return static_cast<std::size_t>(sr*.06*16)+65536;
   return 4096;
+}
+
+int effectParameterIndex(std::string_view type, std::string_view id) {
+  const auto defs = effectDefs(type);
+  for (std::size_t i = 0; i < defs.size(); ++i) if (id == defs[i].name) return static_cast<int>(i);
+  return -1;
+}
+bool liveEffectParameter(std::string_view type, std::string_view id) {
+  if (effectParameterIndex(type, id) < 0) return false;
+  // Instance parameters of the rig read "<base>_<n>".
+  const auto base = [&](std::string_view name) { return id == name || (id.size() == name.size() + 2 && id.substr(0, name.size()) == name && id[name.size()] == '_'); };
+  if (type == "reverb") return id != "size" && id != "type" && id != "predelay";
+  if (type == "delay") return id != "mode";
+  if (type == "guitar-rig") return id.substr(0, 8) != "rackSlot" && !base("reverbDecay") && !base("reverbEnabled");
+  return true;
+}
+ImpulseCacheStats impulseCacheStats() {
+  auto& cache = impulseCache();
+  std::lock_guard lock(cache.mutex);
+  return {cache.builds, cache.hits};
 }
 
 } // namespace garak::dsp
