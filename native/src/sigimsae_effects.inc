@@ -38,6 +38,7 @@ class KernelBase : public StereoProcessor {
 class ChorusFx final : public KernelBase {
  public:
   ChorusFx(double sr, const Reader& p) : KernelBase(sr), l_(static_cast<std::size_t>(std::ceil(sr * .05)) + 4), r_(l_), rate_(p("rate")) { depth_.set(p("depth")); mix_.set(p("mix")); }
+  void automate(const Reader& p) noexcept override { rate_ = p("rate"); depth_.target = p("depth"); mix_.target = p("mix"); }
   void process(float* s, std::uint32_t frames) noexcept override {
     const double step = 2 * pi * rate_ / sampleRate_;
     for (std::uint32_t i = 0; i < frames; ++i) {
@@ -65,6 +66,7 @@ class FlangerFx final : public KernelBase {
     const double fb = p("feedback"), repeats = fb > .01 ? std::ceil(std::log(.001) / std::log(fb)) : 1;
     tail_ = .0065 * (repeats + 1) + .05;
   }
+  void automate(const Reader& p) noexcept override { rate_ = p("rate"); depth_.target = p("depth"); feedback_.target = p("feedback"); mix_.target = p("mix"); }
   void process(float* s, std::uint32_t frames) noexcept override {
     const double step = 2 * pi * rate_ / sampleRate_;
     for (std::uint32_t i = 0; i < frames; ++i) {
@@ -89,6 +91,7 @@ class FlangerFx final : public KernelBase {
 class PhaserFx final : public KernelBase {
  public:
   PhaserFx(double sr, const Reader& p) : KernelBase(sr), rate_(p("rate")) { depth_.set(p("depth")); feedback_.set(p("feedback")); mix_.set(p("mix")); }
+  void automate(const Reader& p) noexcept override { rate_ = p("rate"); depth_.target = p("depth"); feedback_.target = p("feedback"); mix_.target = p("mix"); }
   void process(float* s, std::uint32_t frames) noexcept override {
     const double step = 2 * pi * rate_ / sampleRate_;
     for (std::uint32_t i = 0; i < frames; ++i) {
@@ -118,11 +121,15 @@ class PhaserFx final : public KernelBase {
 
 class TremoloFx final : public KernelBase {
  public:
-  TremoloFx(double sr, const Reader& p, double bpm) : KernelBase(sr) {
+  TremoloFx(double sr, const Reader& p, double bpm) : KernelBase(sr), bpm_(bpm) {
     const double sync = p("sync"); sync_ = sync; rate_ = sync > 0 ? bpm / 60 / sync : p("rate");
     depth_.set(p("depth")); shape_.set(p("shape")); pan_.set(p("pan") >= .5 ? 1 : 0);
   }
-  void setTempo(double bpm) noexcept override { if (sync_ > 0 && std::isfinite(bpm) && bpm > 0) rate_ = bpm / 60 / sync_; }
+  void setTempo(double bpm) noexcept override { if (std::isfinite(bpm) && bpm > 0) { bpm_ = bpm; if (sync_ > 0) rate_ = bpm / 60 / sync_; } }
+  void automate(const Reader& p) noexcept override {
+    const double sync = p("sync"); sync_ = sync; rate_ = sync > 0 ? bpm_ / 60 / sync : p("rate");
+    depth_.target = p("depth"); shape_.target = p("shape"); pan_.target = p("pan") >= .5 ? 1 : 0;
+  }
   void process(float* s, std::uint32_t frames) noexcept override {
     const double step = 2 * pi * rate_ / sampleRate_;
     for (std::uint32_t i = 0; i < frames; ++i) {
@@ -139,7 +146,7 @@ class TremoloFx final : public KernelBase {
     if (auto* p = dynamic_cast<TremoloFx*>(&previous)) { phase_ = p->phase_; depth_.follow(p->depth_); shape_.follow(p->shape_); pan_.follow(p->pan_); }
   }
  private:
-  double rate_ = 4, phase_ = 0, sync_ = 0; Smooth depth_, shape_, pan_;
+  double bpm_, rate_ = 4, phase_ = 0, sync_ = 0; Smooth depth_, shape_, pan_;
 };
 
 // Zero-latency peak limiter: instant attack, exponential release, hard ceiling guarantee.
@@ -147,6 +154,9 @@ class LimiterFx final : public KernelBase {
  public:
   LimiterFx(double sr, const Reader& p) : KernelBase(sr), ceiling_(dbToGain(p("ceiling"))),
       release_(1 - std::exp(-1 / (p("release") * .001 * sr))), tail_(p("release") * .007) { pre_.set(dbToGain(p("gain"))); }
+  void automate(const Reader& p) noexcept override {
+    ceiling_ = dbToGain(p("ceiling")); release_ = 1 - std::exp(-1 / (p("release") * .001 * sampleRate_)); pre_.target = dbToGain(p("gain"));
+  }
   void process(float* s, std::uint32_t frames) noexcept override {
     const double c = ceiling_;
     double loudest = 0, lowest = 1;
@@ -174,6 +184,12 @@ class GateFx final : public KernelBase {
       attack_(1 - std::exp(-1 / (p("attack") * .001 * sr))), release_(1 - std::exp(-6.9 / (p("release") * .001 * sr))),
       detector_(std::exp(-1 / (.01 * sr))), holdFrames_(static_cast<long>(std::floor(p("hold") * .001 * sr + .5))),
       tail_((p("hold") + p("release") * 1.5) * .001) {}
+  void automate(const Reader& p) noexcept override {
+    const double sr = sampleRate_;
+    open_ = dbToGain(p("threshold")); close_ = open_ * dbToGain(-4);
+    attack_ = 1 - std::exp(-1 / (p("attack") * .001 * sr)); release_ = 1 - std::exp(-6.9 / (p("release") * .001 * sr));
+    holdFrames_ = static_cast<long>(std::floor(p("hold") * .001 * sr + .5));
+  }
   void process(float* s, std::uint32_t frames) noexcept override {
     double loudest = 0, lowest = 1;
     for (std::uint32_t i = 0; i < frames; ++i) {
@@ -210,6 +226,12 @@ class TapeFx final : public KernelBase {
     bump_.configure(Filter::LowShelf, sr, 110, .707, 3 * warmth);
     dc_.configure(Filter::Highpass, sr, 20, .5);
   }
+  void automate(const Reader& p) noexcept override {
+    const double pre = dbToGain(p("drive")), warmth = p("warmth");
+    pre_.target = pre; post_.target = std::pow(pre, -.8); mix_.target = p("mix"); out_.target = dbToGain(p("output"));
+    lowpass_.configure(Filter::Lowpass, sampleRate_, 20000 * std::pow(.25, warmth), .5, 0, true);
+    bump_.configure(Filter::LowShelf, sampleRate_, 110, .707, 3 * warmth, true);
+  }
   void process(float* s, std::uint32_t frames) noexcept override {
     constexpr double bias = .15; const double origin = std::tanh(bias);
     for (std::uint32_t i = 0; i < frames; ++i) {
@@ -237,6 +259,7 @@ class TapeFx final : public KernelBase {
 class BitcrusherFx final : public KernelBase {
  public:
   BitcrusherFx(double sr, const Reader& p) : KernelBase(sr), levels_(std::pow(2.0, p("bits") - 1)), factor_(p("downsample")) { mix_.set(p("mix")); }
+  void automate(const Reader& p) noexcept override { levels_ = std::pow(2.0, p("bits") - 1); factor_ = p("downsample"); mix_.target = p("mix"); }
   void process(float* s, std::uint32_t frames) noexcept override {
     for (std::uint32_t i = 0; i < frames; ++i) {
       const double mix = mix_.next(k_);
@@ -262,6 +285,11 @@ class UtilityFx final : public KernelBase {
     gain_.set(dbToGain(p("gain"))); pan_.set(p("pan")); width_.set(p("mono") >= .5 ? 0 : p("width"));
     signL_.set(phase & 1 ? -1 : 1); signR_.set(phase & 2 ? -1 : 1);
   }
+  void automate(const Reader& p) noexcept override {
+    const int phase = static_cast<int>(std::lround(p("phase")));
+    gain_.target = dbToGain(p("gain")); pan_.target = p("pan"); width_.target = p("mono") >= .5 ? 0 : p("width");
+    signL_.target = phase & 1 ? -1 : 1; signR_.target = phase & 2 ? -1 : 1;
+  }
   void process(float* s, std::uint32_t frames) noexcept override {
     for (std::uint32_t i = 0; i < frames; ++i) {
       const double gain = gain_.next(k_), pan = pan_.next(k_), width = width_.next(k_);
@@ -283,6 +311,14 @@ class UtilityFx final : public KernelBase {
 // adds 0.7 Hz wow, 7.3 Hz flutter and loop saturation. Every repeat passes through the filters.
 class StudioDelay final : public KernelBase {
  public:
+  // Mode (stereo / ping-pong) changes the routing and the track's stereo layout, so it keeps its prepared value.
+  void automate(const Reader& p) noexcept override {
+    const double seconds = std::min(3.9, p("sync") >= .5 ? p("time") * 60 / bpm_ : p("ms") * .001);
+    syncBeats_ = p("sync") >= .5 ? p("time") : 0;
+    wet_.target = p("amount") * .45; dry_.target = p("dry"); feedback_.target = p("feedback"); age_.target = p("age"); time_.target = seconds * sampleRate_;
+    lowcut_ = p("lowcut") > 20.5;
+    low_.configure(Filter::Lowpass, sampleRate_, p("tone"), 1, 0, true); high_.configure(Filter::Highpass, sampleRate_, p("lowcut"), .5, 0, true);
+  }
   StudioDelay(double sr, const Reader& p, double bpm) : KernelBase(sr), l_(static_cast<std::size_t>(std::ceil(sr * 4.1)) + 4), r_(l_),
       glide_(1 - std::exp(-1 / (.08 * sr))), lowcut_(p("lowcut") > 20.5), pingPong_(p("mode") >= .5) {
     const double seconds = std::min(3.9, p("sync") >= .5 ? p("time") * 60 / bpm : p("ms") * .001);
@@ -319,28 +355,43 @@ class StudioDelay final : public KernelBase {
   double tailSeconds() const noexcept override { return tail_; }
   // A synced delay time glides to the new tempo like a time edit does (glide_ smoothing).
   void setTempo(double bpm) noexcept override {
-    if (syncBeats_ <= 0 || !std::isfinite(bpm) || bpm <= 0 || std::abs(bpm - bpm_) < 1e-6) return;
-    bpm_ = bpm; time_.target = std::min(3.9, syncBeats_ * 60 / bpm) * sampleRate_;
+    if (!std::isfinite(bpm) || bpm <= 0 || std::abs(bpm - bpm_) < 1e-6) return;
+    bpm_ = bpm;
+    if (syncBeats_ > 0) time_.target = std::min(3.9, syncBeats_ * 60 / bpm) * sampleRate_;
   }
  private:
   Ring l_, r_; Biquad low_, high_; Smooth wet_, dry_, feedback_, age_, time_;
   double glide_, tail_ = 0, wow_ = 0, flutter_ = 0, syncBeats_ = 0, bpm_ = 120; bool lowcut_, pingPong_;
 };
 
+// Parameter catalogs (mirror src/devices/effects/sigimsaeDefs.ts). Empty for other types.
+std::vector<Def> sigimsaeDefs(std::string_view type) {
+  if (type == "delay") return {{"amount",.3,0,1},{"time",.75,1.0/6,4},{"feedback",.32,0,.95},{"tone",3800,500,16000},{"lowcut",20,20,2000},
+      {"age",0,0,1},{"sync",1,0,1},{"ms",375,1,2000},{"mode",0,0,1},{"dry",1,0,1}};
+  if (type == "chorus") return {{"rate",.8,.05,5},{"depth",.5,0,1},{"mix",.5,0,1}};
+  if (type == "phaser") return {{"rate",.5,.05,5},{"depth",.7,0,1},{"feedback",.4,0,.9},{"mix",1,0,1}};
+  if (type == "flanger") return {{"rate",.25,.05,5},{"depth",.7,0,1},{"feedback",.6,0,.95},{"mix",1,0,1}};
+  if (type == "tremolo") return {{"rate",4,.1,20},{"depth",.5,0,1},{"shape",0,0,1},{"sync",0,0,4},{"pan",0,0,1}};
+  if (type == "limiter") return {{"gain",0,0,24},{"ceiling",-1,-24,0},{"release",100,10,1000}};
+  if (type == "gate") return {{"threshold",-50,-80,0},{"attack",1,.1,50},{"hold",50,0,500},{"release",150,5,2000}};
+  if (type == "tape") return {{"drive",6,0,24},{"warmth",.5,0,1},{"mix",1,0,1},{"output",0,-24,6}};
+  if (type == "bitcrusher") return {{"bits",8,1,16},{"downsample",4,1,32},{"mix",1,0,1}};
+  if (type == "utility") return {{"gain",0,-36,24},{"pan",0,-1,1},{"width",1,0,2},{"mono",0,0,1},{"phase",0,0,3}};
+  return {};
+}
+
 std::unique_ptr<StereoProcessor> makeSigimsae(std::string_view type, const Parameters& params, double sr, double bpm) {
-  if (type == "delay") {
-    Reader p(params, {{"amount",.3,0,1},{"time",.75,1.0/6,4},{"feedback",.32,0,.95},{"tone",3800,500,16000},{"lowcut",20,20,2000},
-      {"age",0,0,1},{"sync",1,0,1},{"ms",375,1,2000},{"mode",0,0,1},{"dry",1,0,1}});
-    return std::make_unique<StudioDelay>(sr, p, bpm);
-  }
-  if (type == "chorus") { Reader p(params, {{"rate",.8,.05,5},{"depth",.5,0,1},{"mix",.5,0,1}}); return std::make_unique<ChorusFx>(sr, p); }
-  if (type == "phaser") { Reader p(params, {{"rate",.5,.05,5},{"depth",.7,0,1},{"feedback",.4,0,.9},{"mix",1,0,1}}); return std::make_unique<PhaserFx>(sr, p); }
-  if (type == "flanger") { Reader p(params, {{"rate",.25,.05,5},{"depth",.7,0,1},{"feedback",.6,0,.95},{"mix",1,0,1}}); return std::make_unique<FlangerFx>(sr, p); }
-  if (type == "tremolo") { Reader p(params, {{"rate",4,.1,20},{"depth",.5,0,1},{"shape",0,0,1},{"sync",0,0,4},{"pan",0,0,1}}); return std::make_unique<TremoloFx>(sr, p, bpm); }
-  if (type == "limiter") { Reader p(params, {{"gain",0,0,24},{"ceiling",-1,-24,0},{"release",100,10,1000}}); return std::make_unique<LimiterFx>(sr, p); }
-  if (type == "gate") { Reader p(params, {{"threshold",-50,-80,0},{"attack",1,.1,50},{"hold",50,0,500},{"release",150,5,2000}}); return std::make_unique<GateFx>(sr, p); }
-  if (type == "tape") { Reader p(params, {{"drive",6,0,24},{"warmth",.5,0,1},{"mix",1,0,1},{"output",0,-24,6}}); return std::make_unique<TapeFx>(sr, p); }
-  if (type == "bitcrusher") { Reader p(params, {{"bits",8,1,16},{"downsample",4,1,32},{"mix",1,0,1}}); return std::make_unique<BitcrusherFx>(sr, p); }
-  if (type == "utility") { Reader p(params, {{"gain",0,-36,24},{"pan",0,-1,1},{"width",1,0,2},{"mono",0,0,1},{"phase",0,0,3}}); return std::make_unique<UtilityFx>(sr, p); }
-  return nullptr;
+  auto defs = sigimsaeDefs(type);
+  if (defs.empty()) return nullptr;
+  Reader p(params, std::move(defs));
+  if (type == "delay") return std::make_unique<StudioDelay>(sr, p, bpm);
+  if (type == "chorus") return std::make_unique<ChorusFx>(sr, p);
+  if (type == "phaser") return std::make_unique<PhaserFx>(sr, p);
+  if (type == "flanger") return std::make_unique<FlangerFx>(sr, p);
+  if (type == "tremolo") return std::make_unique<TremoloFx>(sr, p, bpm);
+  if (type == "limiter") return std::make_unique<LimiterFx>(sr, p);
+  if (type == "gate") return std::make_unique<GateFx>(sr, p);
+  if (type == "tape") return std::make_unique<TapeFx>(sr, p);
+  if (type == "bitcrusher") return std::make_unique<BitcrusherFx>(sr, p);
+  return std::make_unique<UtilityFx>(sr, p);
 }

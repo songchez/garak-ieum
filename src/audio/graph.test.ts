@@ -462,7 +462,7 @@ describe('tempo map × sends × controllers in the Web Audio graph', () => {
     const send = graph.tracks.get('keys')!.sends.get('ret')!.gain as unknown as AudioNodeSpy
     expect(send.connections.has(graph.tracks.get('ret')!.input)).toBe(true)
     const playhead = tempoMapOf(project).bpmAt(6)
-    updateGraph(graph, project, false, playhead)
+    updateGraph(graph, project, false, 6) // the beat: bpm defaults to the tempo there
     expect(update).toHaveBeenLastCalledWith(device.params, playhead, 0, false)
     expect(playhead).toBeGreaterThan(90)
     disposeGraph(graph)

@@ -196,7 +196,7 @@ export interface TrackMidiInput {
 /**
  * One aux send (schema 15; docs/SENDS_RETURNS.md): this track's signal into a return track at `level`
  * (linear gain like Track.volume, 0 = off, 1 = 0 dB, max 2 = +6 dB). Post-fader by default (after pan, fader,
- * mute and solo); `pre` taps after the ?쒓???chain, before pan and fader (still silenced by mute/solo).
+ * mute and solo); `pre` taps after the 시김새 chain, before pan and fader (still silenced by mute/solo).
  */
 export interface TrackSend {
   returnId: string
@@ -205,8 +205,39 @@ export interface TrackSend {
   pre?: boolean
 }
 
-/** `return` (由ы꽩/aux, schema 15): no regions or inputs; fed by other tracks' sends, own ?쒓???chain, out to the master. */
+/** `return` (리턴/aux, schema 15): no regions or inputs; fed by other tracks' sends, own 시김새 chain, out to the master. */
 export type TrackKind = 'instrument' | 'audio' | 'return'
+
+/**
+ * What an automation lane drives (schema 17, docs/AUTOMATION.md). Device lanes follow the device by id, so
+ * moving a 시김새 keeps its lanes and deleting it removes them. `param` is a ParamDef id for built-in devices
+ * and instruments, and the decimal VST3 ParamID for plug-ins. Return tracks are automatable like any track; send levels use kind 'send'. New kinds add a
+ * member here and a case in core/automation.ts targetKey/targetDef; nothing else keys on the shape.
+ */
+export type AutomationTarget =
+  | { kind: 'track'; param: 'volume' | 'pan' | 'mute' }
+  | { kind: 'device'; deviceId: string; param: string }
+  | { kind: 'instrument'; param: string }
+  | { kind: 'plugin-instrument'; param: string }
+  /** Send level (TrackSend.level) of this track's send into return track `returnId`. */
+  | { kind: 'send'; returnId: string }
+/** One breakpoint. value is normalized 0…1 in the target's own range (core/devices.ts toNormalized). */
+export interface AutomationPoint {
+  beat: number
+  value: number
+  /** Curvature of the segment to the next point, −1…1 (0 = straight). Absent = 0. */
+  curve?: number
+}
+export interface AutomationLane {
+  id: string
+  target: AutomationTarget
+  /** Sorted by beat; two points on one beat make a jump. */
+  points: AutomationPoint[]
+  /** Off = the static value plays (Ableton's override, Logic's lane off). Absent = true. */
+  enabled?: boolean
+}
+/** Logic's automation modes: 읽기 plays lanes, 터치/래치/쓰기 also record knob moves during playback. */
+export type AutomationMode = 'read' | 'touch' | 'latch' | 'write'
 
 export interface Track {
   id: string
@@ -259,6 +290,10 @@ export interface Track {
   midiInput?: TrackMidiInput
   /** Audio and instrument tracks only: at most one send per return track (schema 15). Absent = none. */
   sends?: TrackSend[]
+  /** Track automation lanes (schema 17, docs/AUTOMATION.md). Absent = none. Independent of regions. */
+  automation?: AutomationLane[]
+  /** Absent = 'read'. */
+  automationMode?: AutomationMode
 }
 export interface Marker {
   id: string
@@ -279,8 +314,8 @@ export interface TempoPoint {
   curve: TempoCurve
 }
 export interface Project {
-  /** 16: MIDI controller lanes (MidiClip.controllers, bendRange). 15: send/return tracks (Track.kind 'return', Track.sends). 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 16
+  /** 17: track automation lanes (Track.automation, Track.automationMode; send levels and return tracks automatable). 16: MIDI controller lanes (MidiClip.controllers, bendRange). 15: send/return tracks (Track.kind 'return', Track.sends). 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 17
   id: string
   name: string
   /** Tempo at beat 0. With a tempo map this mirrors tempoMap[0].bpm. */

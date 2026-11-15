@@ -170,7 +170,7 @@ describe('region pitch schema', () => {
   it('migrates older projects without transposition and round-trips schema 12', () => {
     const v11 = { ...JSON.parse(JSON.stringify(project(base()))), schemaVersion: 11 }
     const loaded = validateProject(v11)
-    expect(loaded.schemaVersion).toBe(16)
+    expect(loaded.schemaVersion).toBe(17)
     expect(clipsOf(loaded)[0].regionPitch).toBeUndefined()
     expect(transposeSettings(clipsOf(loaded)[0])).toEqual({ semitones: 0, cents: 0, mode: 'keep', formant: false })
     const transposed = project({ ...base({ assetId: 'r' }), regionPitch: { semitones: 3, cents: -20, mode: 'varispeed', originalAssetId: 'orig', rendered: { cents: 280, mode: 'varispeed', formant: false } } })

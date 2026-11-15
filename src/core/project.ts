@@ -11,11 +11,12 @@ import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type ControllerKey, type ControllerPoint, type TempoPoint, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type ControllerKey, type ControllerPoint, type TempoPoint, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend, type AutomationLane, type AutomationMode, type AutomationTarget } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
 import { MAX_TEMPO_POINTS, TEMPO_MAX, TEMPO_MIN, beatAfterSeconds, normalizeTempoPoints, spanSeconds, tempoMapOf, type Tempo } from './tempoMap'
 // sends.ts imports this module too: only use its exports inside functions (no top-level reads).
 import { SEND_LEVEL_MAX, copySend, reconcileSends } from './sends'
+import { AUTOMATION_MODES, MAX_AUTOMATION_LANES, MAX_AUTOMATION_POINTS, copyAutomation, parseTargetKey, pruneAutomation, targetKey } from './automation'
 
 let fallbackSequence = 0
 
@@ -103,7 +104,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 16,
+    schemaVersion: 17,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -398,7 +399,7 @@ export const copyTrackInput = (input: TrackInput): TrackInput => ({ channels: [.
 
 /** A deep copy with new track, clip, note and device IDs; audio assets stay shared. */
 export function duplicateTrack(track: Track): Track {
-  return {
+  const copy: Track = {
     ...track,
     id: uid(),
     name: `${track.name} 복사본`.slice(0, 512),
@@ -411,12 +412,20 @@ export function duplicateTrack(track: Track): Track {
     ...(track.pluginInstrument ? { pluginInstrument: cloneNativePlugin(track.pluginInstrument, uid()) } : {}),
     clips: track.clips.map(clip => duplicateClip(clip, clip.startBeat)),
   }
+  return withCopiedAutomation(track, copy)
+}
+
+/** Lanes follow the copied devices; a copy without lanes carries no automation field. */
+function withCopiedAutomation(source: Track, copy: Track): Track {
+  const { automation: _lanes, ...rest } = copy
+  const automation = copyAutomation(source, copy)
+  return automation ? { ...rest, automation } : rest
 }
 
 /** Logic "New Track With Duplicate Settings": every setting but no clips; arm and monitor stay off.
  * The input and monitor mode are settings and carry over, except that `in` (the I flag) becomes `off`. */
 export function duplicateTrackSettings(track: Track): Track {
-  return {
+  const copy: Track = {
     ...track,
     id: uid(),
     armed: false,
@@ -433,6 +442,7 @@ export function duplicateTrackSettings(track: Track): Track {
     ...(track.pluginInstrument ? { pluginInstrument: cloneNativePlugin(track.pluginInstrument, uid()) } : {}),
     clips: [],
   }
+  return withCopiedAutomation(track, copy)
 }
 
 /** Grows to the last source/manual-loop end; continuous loops never grow the project. */
@@ -792,12 +802,53 @@ function validateTempoMap(input: unknown, bpm: number): TempoPoint[] | undefined
   if (Math.abs(points[0].bpm - bpm) > 1e-6) throw new Error('The first tempo point must match the project tempo.')
   return points.length > 1 ? normalizeTempoPoints(bpm, points) : undefined
 }
+function parseAutomationMode(value: unknown, path: string): AutomationMode {
+  if (typeof value !== 'string' || !AUTOMATION_MODES.includes(value as AutomationMode)) throw new Error(`${path} must be one of ${AUTOMATION_MODES.join(', ')}.`)
+  return value as AutomationMode
+}
+function parseAutomationTarget(value: unknown, path: string): AutomationTarget {
+  const source = object(value, path)
+  let target: AutomationTarget | null = null
+  if (source.kind === 'track') target = parseTargetKey(`track:${text(source.param, `${path} parameter`, 16)}`)
+  else if (source.kind === 'device') target = { kind: 'device', deviceId: text(source.deviceId, `${path} device ID`, 200), param: text(source.param, `${path} parameter`, 120) }
+  else if (source.kind === 'instrument') target = { kind: 'instrument', param: text(source.param, `${path} parameter`, 120) }
+  else if (source.kind === 'plugin-instrument') target = parseTargetKey(`plugin:${text(source.param, `${path} parameter`, 20)}`)
+  else if (source.kind === 'send') target = { kind: 'send', returnId: text(source.returnId, `${path} return ID`, 200) }
+  if (!target) throw new Error(`${path} is not a supported automation target.`)
+  return target
+}
+/** Schema 17 lanes. Points are sorted here so a hand-edited file still evaluates deterministically. */
+function parseAutomation(value: unknown, path: string, id: (value: unknown, path: string) => string): AutomationLane[] {
+  const keys = new Set<string>()
+  let points = 0
+  return list(value, path, MAX_AUTOMATION_LANES).map((laneInput, laneIndex): AutomationLane => {
+    const lanePath = `${path} lane ${laneIndex + 1}`
+    const lane = object(laneInput, lanePath)
+    const target = parseAutomationTarget(lane.target, `${lanePath} target`)
+    const key = targetKey(target)
+    if (keys.has(key)) throw new Error(`${lanePath} duplicates another lane's target.`)
+    keys.add(key)
+    const parsedPoints = list(lane.points, `${lanePath} points`, MAX_AUTOMATION_POINTS).map((pointInput, pointIndex) => {
+      if (++points > MAX_AUTOMATION_POINTS * 4) throw new Error(`${path} contains too many automation points.`)
+      const pointPath = `${lanePath} point ${pointIndex + 1}`
+      const point = object(pointInput, pointPath)
+      const curve = point.curve === undefined ? 0 : number(point.curve, `${pointPath} curve`, -1, 1)
+      return { beat: number(point.beat, `${pointPath} position`, 0, 10_000_000), value: number(point.value, `${pointPath} value`, 0, 1), ...(curve ? { curve } : {}) }
+    }).map((point, index) => ({ point, index })).sort((a, b) => a.point.beat - b.point.beat || a.index - b.index).map(item => item.point)
+    return {
+      id: id(lane.id, `${lanePath} ID`),
+      target,
+      points: parsedPoints,
+      ...(lane.enabled === undefined || flag(lane.enabled, `${lanePath} enabled`) ? {} : { enabled: false }),
+    }
+  })
+}
 
 /** Parse known fields into fresh objects; never trust JSON casts or imported prototypes. */
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 16) throw new Error('This project version is not supported. Expected schema version 1 through 16.')
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 17) throw new Error('This project version is not supported. Expected schema version 1 through 17.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -974,7 +1025,10 @@ export function validateProject(input: unknown): Project {
         }),
       }
     })
-    return {
+    if (version < 17 && (track.automation !== undefined || track.automationMode !== undefined)) throw new Error('Track automation requires project schema version 17 or later.')
+    const automationMode = track.automationMode === undefined ? undefined : parseAutomationMode(track.automationMode, `${path} automation mode`)
+    const automation = track.automation === undefined ? undefined : parseAutomation(track.automation, `${path} automation`, id)
+    const parsed: Track = {
       id: trackId,
       name: text(track.name, `${path} name`),
       kind: track.kind,
@@ -1005,11 +1059,16 @@ export function validateProject(input: unknown): Project {
       ...(inputRoute ? { inputRoute } : {}),
       ...(midiInput ? { midiInput } : {}),
       ...(sends?.length ? { sends } : {}),
+      ...(automation?.length ? { automation } : {}),
+      ...(automationMode && automationMode !== 'read' ? { automationMode } : {}),
     }
+    // Lanes of a device or instrument parameter that is gone (hand-edited or older writers) are dropped, not fatal.
+    return pruneAutomation(parsed)
   })
   // Routes to deleted tracks read as 'none'; a saved loop (only possible by hand-editing) is broken the same way.
   // Sends to a missing track (or one that is not a return) are dropped like deleted returns.
-  const routedTracks = reconcileSends(reconcileTrackRoutes(tracks))
+  // Send lanes whose send was just dropped go with it.
+  const routedTracks = reconcileSends(reconcileTrackRoutes(tracks)).map(pruneAutomation)
   const markers = sortMarkers(list(source.markers ?? [], 'Markers', 10_000).map((markerInput, markerIndex): Marker => {
     const path = `Marker ${markerIndex + 1}`
     const marker = object(markerInput, path)
@@ -1022,7 +1081,7 @@ export function validateProject(input: unknown): Project {
   const bpm = number(source.bpm, 'Tempo', 30, 300)
   const tempoMap = version >= 14 ? validateTempoMap(source.tempoMap, bpm) : undefined
   return {
-    schemaVersion: 16,
+    schemaVersion: 17,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm,

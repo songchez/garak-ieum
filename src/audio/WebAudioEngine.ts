@@ -4,9 +4,10 @@ import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
 import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
 import { numberedInputChoices } from '../core/trackInputs'
 import {
-  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
-  setRouteMonitoring, trackLayoutKey, updateGraph,
+  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
+  setRouteMonitoring, trackLayoutKey, updateEffectTempo, updateGraph,
 } from './graph'
+import { hasActiveAutomation } from '../core/automation'
 import type { EngineGraph } from './graph'
 import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter } from './math'
 import { tempoMapOf } from '../core/tempoMap'
@@ -409,12 +410,9 @@ export class WebAudioEngine implements AudioEngine {
       try {
         if (this.playing && (changedArrangement || changedLayout)) this.restartAt(this.position)
         else if (!this.graph || changedLayout || changedRate) this.replaceGraph()
-        else {
-          // A mixer edit (fader, send level, effect knob) keeps synced effects — returns' delays included — on the
-          // tempo at the playhead, not the project's beat-0 tempo (docs/TEMPO_MAP.md).
-          this.effectBpm = tempoMapOf(project).bpmAt(this.position)
-          updateGraph(this.graph, project, true, this.effectBpm)
-        }
+        // A mixer edit (fader, send level, effect knob) keeps synced effects — returns' delays included — on the
+        // tempo at the playhead, not the project's beat-0 tempo (docs/TEMPO_MAP.md); automated targets keep their lanes.
+        else this.applyStatic(project)
       } catch (error) {
         this.blockEffectGraph(this.context, error)
       }
@@ -515,7 +513,23 @@ export class WebAudioEngine implements AudioEngine {
     if (!this.project) return
     this.position = clamp(beat, 0, this.project.lengthBeats)
     if (this.playing) this.restartAt(this.position)
+    else if (this.graph && hasActiveAutomation(this.project)) this.applyStatic(this.project)
     this.publishSnapshot()
+  }
+
+  /** Static parameter edit. Automated targets keep their lane value at the heard beat; while playing, the
+   * automation already scheduled ahead is replaced from now on (docs/AUTOMATION.md). */
+  private applyStatic(project: Project): void {
+    if (!this.graph || !this.context) return
+    const automated = hasActiveAutomation(project)
+    const beat = this.currentBeat()
+    this.effectBpm = tempoMapOf(project).bpmAt(beat)
+    updateGraph(this.graph, project, true, automated ? beat : undefined, this.effectBpm)
+    resetAutomationState(this.graph)
+    if (automated && this.playing && this.cursorTime > this.context.currentTime) {
+      const anchorBeat = this.anchorBeat, anchorTime = this.anchorTime
+      scheduleAutomation(this.graph, project, this.context.currentTime, this.cursorTime, time => positionAfter(project, anchorBeat, time - anchorTime))
+    }
   }
 
   async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8, trackId?: string): Promise<void> {
@@ -718,6 +732,12 @@ export class WebAudioEngine implements AudioEngine {
     const graph = createGraph(offline, project)
     try {
       scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
+      // Automation is scheduled for the whole render before it starts, so worklet events are queued first.
+      if (hasActiveAutomation(project)) {
+        const tempo = tempoMapOf(project)
+        updateGraph(graph, project, false, 0)
+        scheduleAutomation(graph, project, 0, duration, time => Math.min(project.lengthBeats, tempo.beatAt(time)))
+      }
       scheduleTempoUpdates(offline, graph, project, duration)
       const rendered = await offline.startRendering()
       assertGuitarRigHealthy(offline)
@@ -789,6 +809,7 @@ export class WebAudioEngine implements AudioEngine {
       // Construct before retiring the current graph. A failed effect must never leave
       // a partly connected replacement or quietly substitute the old/dry signal.
       replacement = createGraph(context, this.project)
+      if (hasActiveAutomation(this.project) || !tempoMapOf(this.project).isConstant) updateGraph(replacement, this.project, false, this.currentBeat())
       if (this.graph) {
         const old = this.graph
         if (context.state === 'running') {
@@ -869,6 +890,8 @@ export class WebAudioEngine implements AudioEngine {
       if (segmentSeconds <= 0.00000001) break
       const endBeat = segmentSeconds >= remainingSeconds ? boundary : Math.min(boundary, tempo.beatAfter(this.cursorBeat, segmentSeconds))
       scheduleRange(this.graph, project, this.assets, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true, this.samples)
+      const segmentBeat = this.cursorBeat, segmentTime = this.cursorTime
+      scheduleAutomation(this.graph, project, segmentTime, segmentTime + segmentSeconds, time => tempo.beatAfter(segmentBeat, time - segmentTime))
       if (!this.outputFault) this.metronome.scheduleSegment(this.context, project, this.cursorBeat, endBeat, this.cursorTime)
       this.cursorTime += segmentSeconds
       this.cursorBeat = endBeat
@@ -881,7 +904,8 @@ export class WebAudioEngine implements AudioEngine {
   private followTempo(bpm: number): void {
     if (!this.graph || !this.project || Math.abs(bpm - this.effectBpm) < 0.05) return
     this.effectBpm = bpm
-    updateGraph(this.graph, this.project, true, bpm)
+    // Only non-automated synced effects: a full updateGraph would cancel the scheduled automation.
+    updateEffectTempo(this.graph, this.project, bpm)
   }
 
   /** Waits on the audio clock for a count-in to reach the transport anchor (or for the play to be cancelled). */
@@ -949,6 +973,6 @@ function scheduleTempoUpdates(offline: OfflineAudioContext, graph: EngineGraph, 
     last = bpm
     // Suspend times are quantized to render quanta (128 frames); each one is unique here.
     const at = Math.ceil(time * offline.sampleRate / 128) * 128 / offline.sampleRate
-    offline.suspend(at).then(() => { updateGraph(graph, project, true, bpm); return offline.resume() }).catch(() => undefined)
+    offline.suspend(at).then(() => { updateEffectTempo(graph, project, bpm); return offline.resume() }).catch(() => undefined)
   }
 }

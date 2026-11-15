@@ -11,6 +11,7 @@ import { PanKnob } from './PanKnob'
 import { InputSelect } from './InputSelect'
 import { routeText } from '../core/trackRouting'
 import { returnLetterOf } from '../core/sends'
+import { useDisplayTrack } from './automationUi'
 import './TrackHeader.css'
 
 const MAC = shortcutPlatform() === 'mac'
@@ -43,9 +44,13 @@ export interface TrackHeaderProps {
   onContextMenu(e: React.MouseEvent): void
   onReorderStart(e: React.PointerEvent): void
   onResizeStart(e: React.PointerEvent, all: boolean, reset: boolean): void
+  /** 오토메이션 보기 toggle (A); `active` marks a track that plays automation. */
+  automation?: { visible: boolean; active: boolean; onToggle(): void }
 }
 
 export function TrackHeader(props: TrackHeaderProps) {
+  // Volume, pan and mute follow automation during playback (docs/AUTOMATION.md).
+  const shown = useDisplayTrack(props.track)
   const { track, index, focused, selected, multi, height, config, ui, arm, implicitMute, renaming, engine, loading } = props
   const tier = headerTier(height)
   const [editing, setEditing] = useState(renaming)
@@ -108,16 +113,17 @@ export function TrackHeader(props: TrackHeaderProps) {
         {!track.enabled && <b className="track-off-badge" title="꺼진 트랙"><Icon name="power" size={9}/></b>}
       </div>
       {(kinds.length > 0 || showPan) && <div className="track-controls">
-        {kinds.length > 0 && <TrackButtons track={track} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}
-        {showPan && <PanKnob value={track.pan} size={tier >= 3 ? 24 : 20} ariaLabel={`${track.name} 팬`} onChange={v => props.onChange({ pan: v }, `${track.id}:pan`)}/>}
+        {kinds.length > 0 && <TrackButtons track={shown} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}
+        {showPan && <PanKnob value={shown.pan} size={tier >= 3 ? 24 : 20} ariaLabel={`${track.name} 팬`} onChange={v => props.onChange({ pan: v }, `${track.id}:pan`)}/>}
       </div>}
       {showInput && <InputSelect className="track-input-select" input={track.input} choices={props.inputChoices ?? []} ariaLabel={`${track.name} 입력`} onChange={input => props.onInputChange?.(input)}
         routing={props.routeTracks && props.onRouteChange ? { track, tracks: props.routeTracks, onChange: props.onRouteChange } : undefined}/>}
       {!showInput && tier >= 1 && routeLabel && <span className={`track-route-label${track.inputRoute?.kind === 'none' ? ' missing' : ''}`} title={`입력: ${routeLabel}`}>{routeLabel}</span>}
       {showVolume && <div className="track-volume">
-        <VolumeSlider value={track.volume} orientation="horizontal" meter={{ engine, trackId: track.id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={v => props.onChange({ volume: v }, `${track.id}:volume`)}/>
+        <VolumeSlider value={shown.volume} orientation="horizontal" meter={{ engine, trackId: track.id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={v => props.onChange({ volume: v }, `${track.id}:volume`)}/>
       </div>}
     </div>
+    {props.automation && tier >= 1 && <button type="button" className={`automation-toggle${props.automation.visible ? ' on' : ''}${props.automation.active ? ' active' : ''}`} aria-pressed={props.automation.visible} aria-label={`${track.name} 오토메이션 보기`} title="오토메이션 보기 (A)" onClick={e => { e.stopPropagation(); props.automation!.onToggle() }}><Icon name="automation" size={11}/></button>}
     <i className="track-resize-corner" title={`개별 트랙 확대/축소 (${MOD}드래그: 전체 · ⇧클릭: 초기화)`} onPointerDown={e => { e.stopPropagation(); if (e.button !== 0) return; e.preventDefault(); props.onResizeStart(e, MAC ? e.metaKey : e.ctrlKey, e.shiftKey) }}/>
   </div>
 }

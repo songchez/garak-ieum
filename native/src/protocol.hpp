@@ -218,6 +218,43 @@ inline ProjectTimeline timeline(const Json& value) {
         t.controls.push_back(event);
       }
     }
+    // Automation lanes (docs/AUTOMATION.md): { target: { kind, insertId?, param?, returnId? }, minimum, maximum, logarithmic?,
+    // options?, points: [{ frame, value, curve? }] }.
+    t.unmutedAudible = item.value("unmutedAudible", t.audible);
+    if (item.contains("automation")) {
+      const auto& lanes = item.at("automation");
+      if (!lanes.is_array() || lanes.size() > 256) throw std::runtime_error("Invalid track automation");
+      std::size_t totalPoints = 0;
+      for (const auto& value : lanes) {
+        AutomationLane lane; const auto& target = value.at("target"); const auto kind = string(target, "kind", 16);
+        if (kind == "volume") lane.target = AutomationLane::Target::Volume;
+        else if (kind == "pan") lane.target = AutomationLane::Target::Pan;
+        else if (kind == "mute") lane.target = AutomationLane::Target::Mute;
+        else if (kind == "insert") { lane.target = AutomationLane::Target::Insert; lane.insertId = string(target, "insertId"); lane.param = string(target, "param", 120); }
+        else if (kind == "instrument") { lane.target = AutomationLane::Target::Instrument; lane.param = string(target, "param", 120); }
+        else if (kind == "send") { lane.target = AutomationLane::Target::Send; lane.returnId = string(target, "returnId"); }
+        else throw std::runtime_error("Invalid automation target");
+        lane.minimum = number(value, "minimum", -1e9, 1e9, 0); lane.maximum = number(value, "maximum", -1e9, 1e9, 1);
+        lane.logarithmic = value.value("logarithmic", false);
+        if (lane.logarithmic && !(lane.minimum > 0 && lane.maximum > 0)) throw std::runtime_error("Invalid logarithmic automation range");
+        if (value.contains("options")) {
+          const auto& options = value.at("options");
+          if (!options.is_array() || options.size() > 64) throw std::runtime_error("Invalid automation options");
+          for (const auto& option : options) { if (!option.is_number()) throw std::runtime_error("Invalid automation option"); lane.options.push_back(option.get<double>()); }
+        }
+        const auto& points = value.at("points");
+        if (!points.is_array() || points.size() > 20000 || (totalPoints += points.size()) > 100000) throw std::runtime_error("Automation point limit exceeded");
+        double previous = 0;
+        for (const auto& item : points) {
+          AutomationPoint point;
+          point.frame = number(item, "frame", previous, 1e13, previous);
+          point.value = number(item, "value", 0, 1, 0); point.curve = number(item, "curve", -1, 1, 0);
+          previous = point.frame;
+          lane.points.push_back(point);
+        }
+        t.automation.push_back(std::move(lane));
+      }
+    }
     for (const auto& a : audio) {
       AudioWindow w;
       w.id = static_cast<std::int32_t>(integer(a, "id", 0, 2000000000, 0)); w.assetId = string(a, "assetId");

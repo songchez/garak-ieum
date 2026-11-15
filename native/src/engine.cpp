@@ -282,11 +282,58 @@ struct Voice {
 };
 struct ResolvedWindow { AudioWindow window; std::shared_ptr<const PcmAsset> asset; };
 struct TimedPluginEvent { std::int64_t frame; PluginEvent event; };
+} // namespace
+
+double automationShape(double t,double curve)noexcept{
+  const double x=std::clamp(t,0.0,1.0);
+  if(!(std::abs(curve)>1e-6))return x;
+  const double k=std::clamp(curve,-1.0,1.0)*6;
+  return (std::exp(k*x)-1)/(std::exp(k)-1);
+}
+double evaluateAutomation(const AutomationLane& lane,double frame,std::size_t& hint)noexcept{
+  const auto& p=lane.points;
+  if(p.empty())return 0;
+  if(frame<p.front().frame){hint=0;return p.front().value;}
+  // The last point at or before `frame`: walk from the hint (monotonic playback), else binary search.
+  std::size_t i=hint<p.size()?hint:0;
+  if(p[i].frame>frame||(i+1<p.size()&&p[i+1].frame<=frame&&(i+2>=p.size()||p[i+2].frame<=frame))){
+    i=static_cast<std::size_t>(std::upper_bound(p.begin(),p.end(),frame,[](double f,const AutomationPoint& a){return f<a.frame;})-p.begin())-1;
+  } else while(i+1<p.size()&&p[i+1].frame<=frame)++i;
+  hint=i;
+  const auto& a=p[i];
+  if(i+1==p.size()||!lane.options.empty())return a.value;
+  const auto& b=p[i+1];
+  const double span=b.frame-a.frame;
+  if(!(span>1e-9))return b.value;
+  return a.value+(b.value-a.value)*automationShape((frame-a.frame)/span,a.curve);
+}
+double automationValue(const AutomationLane& lane,double normalized)noexcept{
+  const double n=std::clamp(normalized,0.0,1.0);
+  if(!lane.options.empty())return lane.options[static_cast<std::size_t>(std::lround(n*static_cast<double>(lane.options.size()-1)))];
+  return lane.logarithmic?lane.minimum*std::pow(lane.maximum/lane.minimum,n):lane.minimum+n*(lane.maximum-lane.minimum);
+}
+
+namespace {
 // Same-sample order: reset, then controllers (a pedal-down catches a note-off at that sample; a pedal-up at
 // the sample does not extend it, docs/SUSTAIN_PEDAL.md), then note-offs, then note-ons and parameters.
 constexpr int eventOrder(PluginEvent::Type type)noexcept{
   return type==PluginEvent::Type::AllNotesOff?0:type==PluginEvent::Type::Controller?1:type==PluginEvent::Type::NoteOff?2:3;
 }
+// One prepared automation lane: what it drives in this graph (resolved once, never by name in the callback).
+struct LaneRuntime {
+  std::uint16_t lane=0;           // Index in TrackTimeline::automation.
+  AutomationLane::Target target=AutomationLane::Target::Volume;
+  std::int32_t insert=-1;          // Index in TrackRuntime::inserts.
+  std::int32_t control=-1;         // EffectControl parameter index (built-in insert).
+  std::uint32_t pluginParam=0;     // VST3 ParamID (VST3 insert or instrument).
+  bool plugin=false;
+  double Synth::* synthField=nullptr; // Built-in instrument parameter (member, so moving the track is safe).
+  std::size_t hint=0;
+  float lastSent=-1;               // Last VST3 value queued (avoids repeating flat values).
+};
+constexpr std::uint32_t automationChunk=32;   // Built-in effect parameters update every 32 frames (then glide).
+constexpr std::size_t maxInsertEvents=512;
+
 struct InsertRuntime {
   InsertRuntime() = default;
   InsertRuntime(const InsertRuntime&) = delete;
@@ -296,6 +343,7 @@ struct InsertRuntime {
 
   std::unique_ptr<dsp::StereoProcessor> builtin;
   std::shared_ptr<PluginProcessor> plugin;
+  std::unique_ptr<dsp::EffectControl> control; // Only for automated built-in inserts.
   std::uint16_t source=0; // Index in TrackTimeline::inserts (disabled inserts are skipped here).
 };
 class CompensationDelay {
@@ -410,9 +458,29 @@ struct TrackRuntime {
   std::vector<float> faderTap;
   // Returns only: one entry per send that feeds this return, with its own gain smoothing (owned by the
   // return's task, so returns of one level render in parallel without sharing state).
-  struct Feed { std::int32_t sender=-1; bool pre=false; float target=0; double gain=0; };
+  // `lane`: the sender's Send automation lane for this return (index in its timeline.automation), or -1.
+  struct Feed { std::int32_t sender=-1; bool pre=false; float target=0; double gain=0; std::int32_t lane=-1; std::size_t hint=0; };
   std::vector<Feed> feeds;
   std::vector<float> returnInput;
+  // Automation (docs/AUTOMATION.md), resolved in prepare(). Volume/pan/mute are evaluated per sample.
+  std::vector<LaneRuntime> lanes;
+  std::int32_t volumeLane=-1,panLane=-1,muteLane=-1;
+  double muteGain=1;
+  std::array<PluginEvent,maxInsertEvents> insertEvents{};
+
+  // Value of lane `index` (in its units) at a project frame.
+  double laneValue(LaneRuntime& l,double frame)noexcept{const auto& lane=timeline.automation[l.lane];return automationValue(lane,evaluateAutomation(lane,frame,l.hint));}
+  // VST3 parameter points for one block: at most 32 per parameter (the host queue holds 64), on a fixed grid.
+  template<class Push> void pluginPoints(LaneRuntime& l,std::int64_t frame,std::uint32_t frames,Push&& push)noexcept{
+    const std::uint32_t step=std::max<std::uint32_t>(automationChunk*2,(frames+31)/32);
+    for(std::uint32_t offset=0;offset<frames;offset+=step){
+      const auto value=static_cast<float>(std::clamp(laneValue(l,static_cast<double>(frame+offset)),0.0,1.0));
+      if(value==l.lastSent)continue;
+      l.lastSent=value;
+      PluginEvent e{};e.type=PluginEvent::Type::Parameter;e.offset=offset;e.parameterId=l.pluginParam;e.value=value;
+      push(e);
+    }
+  }
 
   void takeStateFrom(TrackRuntime& previous)noexcept {
     meter=previous.meter;liveUntil=previous.liveUntil;
@@ -431,7 +499,7 @@ struct TrackRuntime {
       else inserts[i].plugin.swap(previous.inserts[i].plugin);
     }
     compensation.takeStateFrom(previous.compensation);peak=previous.peak;
-    fader=previous.fader;panValue=previous.panValue;
+    fader=previous.fader;panValue=previous.panValue;muteGain=previous.muteGain;
     outputDelay.takeStateFrom(previous.outputDelay);
     for(auto&f:feeds)for(const auto&o:previous.feeds)if(o.sender==f.sender&&o.pre==f.pre){f.gain=o.gain;break;}
   }
@@ -764,6 +832,7 @@ struct TrackRuntime {
         buffer[2*offset]+=static_cast<float>(pcmSample(*resolved.asset,position,0)*gain);buffer[2*offset+1]+=static_cast<float>(pcmSample(*resolved.asset,position,1)*gain);
       }
     }
+    for(auto& l:lanes)if(l.synthField)synth.*l.synthField=laneValue(l,static_cast<double>(frame));
     std::size_t eventCount=0;
     if(releaseAudition) {
       blockEvents[eventCount++]={PluginEvent::Type::AllNotesOff,0,-1,60,0,0,0,true};
@@ -775,6 +844,7 @@ struct TrackRuntime {
       // A note ending exactly at the project boundary releases in the first
       // tail block. This applies to live WAVE playback and offline export.
       if(playing||(wavetable&&frame>=projectLength))while(nextEvent<events.size()&&events[nextEvent].frame<frame+frames){const auto& e=events[nextEvent++];if(e.frame>=frame){if(eventCount<blockEvents.size()){blockEvents[eventCount]=e.event;blockEvents[eventCount++].offset=static_cast<std::uint32_t>(e.frame-frame);}else ++overflows;}}
+      if(vst3())for(auto& l:lanes)if(l.plugin&&l.insert<0)pluginPoints(l,frame,frames,[&](const PluginEvent& e){if(eventCount<blockEvents.size())blockEvents[eventCount++]=e;else ++overflows;});
       for(auto& n:pluginNotes)if(n.active){if(n.remaining<frames){if(eventCount<blockEvents.size())blockEvents[eventCount++]={PluginEvent::Type::NoteOff,static_cast<std::uint32_t>(std::max<std::int64_t>(0,n.remaining)),n.id,n.pitch,0,0,0,true};else ++overflows;n.active=false;}else n.remaining-=frames;}
       std::sort(blockEvents.begin(),blockEvents.begin()+static_cast<std::ptrdiff_t>(eventCount),[](const PluginEvent&a,const PluginEvent&b){
         return a.offset<b.offset||(a.offset==b.offset&&eventOrder(a.type)<eventOrder(b.type));});
@@ -802,7 +872,28 @@ struct TrackRuntime {
     }
     if(monitor&&input)for(std::size_t i=0;i<static_cast<std::size_t>(frames)*2;++i)buffer[i]+=input[i];
     if(!preTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,preTap.data());
-    for(auto& effect:inserts){if(effect.builtin){if(context.tempo)effect.builtin->setTempo(context.bpm);effect.builtin->process(buffer.data(),frames);}else effect.plugin->process(buffer.data(),frames,{},context);}
+    for(std::size_t index=0;index<inserts.size();++index){
+      auto& effect=inserts[index];
+      if(lanes.empty()){if(effect.builtin){if(context.tempo)effect.builtin->setTempo(context.bpm);effect.builtin->process(buffer.data(),frames);}else effect.plugin->process(buffer.data(),frames,{},context);continue;}
+      if(effect.plugin){
+        // VST3 insert automation: sample-offset parameter points through IParameterChanges.
+        std::size_t count=0;
+        for(auto& l:lanes)if(l.plugin&&l.insert==static_cast<std::int32_t>(index))pluginPoints(l,frame,frames,[&](const PluginEvent& e){if(count<insertEvents.size())insertEvents[count++]=e;else ++overflows;});
+        // Stable insertion sort by offset (lanes arrive in order; std::stable_sort may allocate).
+        for(std::size_t i=1;i<count;++i){const auto e=insertEvents[i];std::size_t j=i;while(j>0&&insertEvents[j-1].offset>e.offset){insertEvents[j]=insertEvents[j-1];--j;}insertEvents[j]=e;}
+        effect.plugin->process(buffer.data(),frames,std::span<const PluginEvent>(insertEvents.data(),count),context);
+        continue;
+      }
+      if(context.tempo)effect.builtin->setTempo(context.bpm);
+      if(!effect.control){effect.builtin->process(buffer.data(),frames);continue;}
+      // Built-in insert automation: parameters re-read every chunk; the processor glides to them.
+      for(std::uint32_t offset=0;offset<frames;offset+=automationChunk){
+        const auto count=std::min(automationChunk,frames-offset);
+        for(auto& l:lanes)if(l.insert==static_cast<std::int32_t>(index)&&l.control>=0)effect.control->set(l.control,laneValue(l,static_cast<double>(frame+offset)));
+        effect.control->apply(*effect.builtin);
+        effect.builtin->process(buffer.data()+static_cast<std::size_t>(offset)*2,count);
+      }
+    }
     // A reduced-latency monitor deliberately avoids waiting for unrelated tracks. A return's `monitor` is its
     // send input, never a live input: it always stays compensated.
     const bool lowLatencyMonitor=monitor&&!isReturn&&context.playing&&!context.offline&&contextLowLatency;
@@ -811,9 +902,24 @@ struct TrackRuntime {
     const double targetPan=timeline.pan,targetGain=timeline.audible?timeline.gain:0;
     const double smoothing=1-std::exp(-1/(sampleRate*.012));
     peak=0;
+    const bool automatedFader=volumeLane>=0||panLane>=0||muteLane>=0;
+    const double muteSmoothing=1-std::exp(-1/(sampleRate*.003));
     for(std::uint32_t i=0;i<frames;++i) {
-      fader+=(targetGain-fader)*smoothing;panValue+=(targetPan-panValue)*smoothing;
-      const double pan=panValue,gain=fader;
+      double gain,pan;
+      if(!automatedFader){fader+=(targetGain-fader)*smoothing;panValue+=(targetPan-panValue)*smoothing;gain=fader;pan=panValue;}
+      else {
+        // Lanes are evaluated at every sample; mute ramps over ~3 ms (like a region click guard).
+        const double at=static_cast<double>(frame+i);
+        const bool heard=muteLane>=0?timeline.unmutedAudible:timeline.audible;
+        if(volumeLane>=0)fader=heard?std::clamp(laneValue(lanes[static_cast<std::size_t>(volumeLane)],at),0.0,2.0):0;
+        else fader+=((heard?timeline.gain:0)-fader)*smoothing;
+        if(panLane>=0)panValue=std::clamp(laneValue(lanes[static_cast<std::size_t>(panLane)],at),-1.0,1.0);
+        else panValue+=(targetPan-panValue)*smoothing;
+        const double muteTarget=muteLane>=0&&laneValue(lanes[static_cast<std::size_t>(muteLane)],at)>=.5?0:1;
+        muteGain+=(muteTarget-muteGain)*muteSmoothing;if(muteTarget==0&&muteGain<1e-4)muteGain=0;
+        gain=fader*muteGain;
+        pan=panValue;
+      }
       double l=buffer[2*i],r=buffer[2*i+1];
       // Preserve equal-power mono panning. Duplicating a mono voice into the
       // native stereo scratch buffer must not turn full-left into a +6 dB sum.
@@ -832,6 +938,58 @@ struct TrackRuntime {
 };
 static_assert(!std::is_copy_constructible_v<InsertRuntime> && std::is_nothrow_move_constructible_v<InsertRuntime>);
 static_assert(!std::is_copy_constructible_v<TrackRuntime> && std::is_move_constructible_v<TrackRuntime>);
+
+double Synth::* synthField(std::string_view id)noexcept{
+  const std::pair<std::string_view,double Synth::*> fields[]{{"level",&Synth::level},{"tone",&Synth::tone},{"attack",&Synth::attack},{"decay",&Synth::decay},
+    {"sustain",&Synth::sustain},{"release",&Synth::release},{"sub",&Synth::sub},{"bell",&Synth::bell},{"detune",&Synth::detune},{"sweep",&Synth::sweep},
+    {"bark",&Synth::bark},{"tune",&Synth::tune},{"punch",&Synth::punch},{"releaseNoise",&Synth::releaseNoise}};
+  for(const auto& [name,field]:fields)if(name==id)return field;
+  return nullptr;
+}
+// Control thread: validate the lanes and bind each to what it drives in this graph. Lanes whose target is
+// absent here (a disabled insert, an unknown parameter) are ignored, like the Web Audio engine does.
+void prepareAutomation(TrackRuntime& track,const TrackTimeline& t){
+  require(t.automation.size()<=256,"Too many automation lanes");
+  for(std::size_t index=0;index<t.automation.size();++index){
+    const auto& lane=t.automation[index];
+    require(lane.points.size()<=20000,"Too many automation points");
+    double previous=-1;
+    for(const auto& point:lane.points){require(std::isfinite(point.frame)&&point.frame>=0&&point.frame>=previous&&point.value>=0&&point.value<=1&&point.curve>=-1&&point.curve<=1,"Invalid automation point");previous=point.frame;}
+    require(std::isfinite(lane.minimum)&&std::isfinite(lane.maximum)&&(!lane.logarithmic||(lane.minimum>0&&lane.maximum>0)),"Invalid automation range");
+    if(lane.points.empty())continue;
+    LaneRuntime l;l.lane=static_cast<std::uint16_t>(index);l.target=lane.target;
+    switch(lane.target){
+      case AutomationLane::Target::Volume:track.volumeLane=static_cast<std::int32_t>(track.lanes.size());break;
+      case AutomationLane::Target::Pan:track.panLane=static_cast<std::int32_t>(track.lanes.size());break;
+      case AutomationLane::Target::Mute:track.muteLane=static_cast<std::int32_t>(track.lanes.size());break;
+      case AutomationLane::Target::Send:continue; // Evaluated by the fed return (TrackRuntime::Feed::lane).
+      case AutomationLane::Target::Instrument:
+        if(track.vst3()){l.plugin=true;l.pluginParam=static_cast<std::uint32_t>(std::stoul(lane.param));}
+        else if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)l.synthField=synthField(lane.param);
+        if(!l.plugin&&!l.synthField)continue;
+        break;
+      case AutomationLane::Target::Insert:{
+        const auto found=std::find_if(t.inserts.begin(),t.inserts.end(),[&](const BuiltinInsert& e){return e.id==lane.insertId;});
+        if(found==t.inserts.end())continue;
+        const auto source=static_cast<std::uint16_t>(found-t.inserts.begin());
+        const auto runtime=std::find_if(track.inserts.begin(),track.inserts.end(),[&](const InsertRuntime& i){return i.source==source;});
+        if(runtime==track.inserts.end())continue; // Disabled insert.
+        l.insert=static_cast<std::int32_t>(runtime-track.inserts.begin());
+        if(runtime->plugin){l.plugin=true;l.pluginParam=static_cast<std::uint32_t>(std::stoul(lane.param));}
+        else{
+          if(!runtime->control)runtime->control=std::make_unique<dsp::EffectControl>(found->type,found->params);
+          l.control=runtime->control->index(lane.param);
+          if(l.control<0)continue;
+        }
+        break;
+      }
+    }
+    track.lanes.push_back(l);
+  }
+  // Mid-block VST3 points need one event slot each; reserve the worst case against the bounded buffers.
+  std::size_t pluginLanes=0;for(const auto& l:track.lanes)pluginLanes+=l.plugin;
+  require(pluginLanes*32<=maxInsertEvents,"Too many automated VST3 parameters on one track");
+}
 
 std::shared_ptr<const PcmAsset> resolveAsset(const AssetStore& assets,const std::string&id) {
   const auto a=assets.find(id);require(a!=assets.end()&&a->second,"Native PCM asset is not registered");
@@ -866,7 +1024,7 @@ bool sameStructure(const ControlRecipe& a,const ControlRecipe& b) {
     const auto&tx=x.tracks[i];const auto&ty=y.tracks[i];
     const auto samePlugin=[](const PluginSpec&a,const PluginSpec&b){return a.instanceId==b.instanceId&&a.path==b.path&&a.classId==b.classId&&a.state==b.state&&a.controllerState==b.controllerState&&a.isInstrument==b.isInstrument;};
     const auto&sx=tx.source;const auto&sy=ty.source;
-    if(tx.id!=ty.id||tx.isReturn!=ty.isReturn||sx.kind!=sy.kind||sx.instrumentId!=sy.instrumentId||sx.sampleSetId!=sy.sampleSetId||sx.isKit!=sy.isKit||!samePlugin(sx.plugin,sy.plugin)||tx.enabled!=ty.enabled||tx.notes!=ty.notes||tx.controls!=ty.controls||tx.audio!=ty.audio||tx.inserts.size()!=ty.inserts.size())return false;
+    if(tx.id!=ty.id||tx.isReturn!=ty.isReturn||sx.kind!=sy.kind||sx.instrumentId!=sy.instrumentId||sx.sampleSetId!=sy.sampleSetId||sx.isKit!=sy.isKit||!samePlugin(sx.plugin,sy.plugin)||tx.enabled!=ty.enabled||tx.notes!=ty.notes||tx.controls!=ty.controls||tx.audio!=ty.audio||tx.automation!=ty.automation||tx.unmutedAudible!=ty.unmutedAudible||tx.inserts.size()!=ty.inserts.size())return false;
     for(std::size_t j=0;j<tx.inserts.size();++j){const auto&ex=tx.inserts[j];const auto&ey=ty.inserts[j];
       if(ex.id!=ey.id||ex.type!=ey.type||ex.enabled!=ey.enabled||(ex.type=="vst3"&&!samePlugin(ex.plugin,ey.plugin)))return false;
     }
@@ -1358,6 +1516,13 @@ struct RenderEngine::Impl {
       const float*tap=f.pre?s.postTap.data():s.faderTap.data();
       const double target=f.pre&&!s.timeline.audible?0.0:static_cast<double>(f.target);
       if(!tap)continue;
+      if(f.lane>=0) {
+        // Send-level automation: evaluated per sample like the fader lane (docs/AUTOMATION.md).
+        const auto&lane=s.timeline.automation[static_cast<std::size_t>(f.lane)];
+        const bool silent=f.pre&&!s.timeline.audible;
+        for(std::uint32_t i=0;i<count;++i){f.gain=silent?0.0:std::clamp(automationValue(lane,evaluateAutomation(lane,static_cast<double>(block.position+i),f.hint)),0.0,2.0);const auto g2=static_cast<float>(f.gain);in[2*i]+=tap[2*i]*g2;in[2*i+1]+=tap[2*i+1]*g2;}
+        continue;
+      }
       for(std::uint32_t i=0;i<count;++i){f.gain+=(target-f.gain)*smoothing;const auto g2=static_cast<float>(f.gain);in[2*i]+=tap[2*i]*g2;in[2*i+1]+=tap[2*i+1]*g2;}
     }
   }
@@ -1582,7 +1747,10 @@ void prepareRoutes(std::vector<TrackRuntime>& tracks,std::vector<std::uint32_t>&
     if(tracks[i].isReturn)continue;
     for(const auto&send:tracks[i].timeline.sends)
       for(std::size_t r=0;r<count;++r)if(r!=i&&tracks[r].isReturn&&tracks[r].timeline.id==send.returnId) {
-        tracks[r].feeds.push_back({static_cast<std::int32_t>(i),send.pre,send.gain,tracks[i].timeline.audible||!send.pre?static_cast<double>(send.gain):0.0});
+        std::int32_t lane=-1;
+        const auto& lanes=tracks[i].timeline.automation;
+        for(std::size_t l=0;l<lanes.size();++l)if(lanes[l].target==AutomationLane::Target::Send&&lanes[l].returnId==send.returnId&&!lanes[l].points.empty()){lane=static_cast<std::int32_t>(l);break;}
+        tracks[r].feeds.push_back({static_cast<std::int32_t>(i),send.pre,send.gain,tracks[i].timeline.audible||!send.pre?static_cast<double>(send.gain):0.0,lane,0});
         break;
       }
   }
@@ -1739,6 +1907,7 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
       else {effect.builtin=dsp::makeEffect(e.type,e.params,p.sampleRate,p.bpm);track.latency+=effect.builtin->latencyFrames();trackTail+=effect.builtin->tailSeconds();track.stereoEffects|=e.type=="reverb"||e.type=="guitar-rig"||(e.type=="delay"&&e.params.count("mode")&&e.params.at("mode")>=.5)||e.type=="chorus"||e.type=="phaser"||e.type=="flanger"||e.type=="tremolo"||e.type=="utility";}
       require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.inserts.push_back(std::move(effect));
     }
+    prepareAutomation(track,t);
     result->tail=std::max(result->tail,trackTail+.15);tails.push_back(trackTail);
     result->tracks.push_back(std::move(track));
   }

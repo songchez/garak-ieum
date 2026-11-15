@@ -20,7 +20,7 @@ describe('schema 8 track input and monitor mode', () => {
       audio('mono', { input: { channels: [3], label: 'Mic/Inst 4' }, monitorMode: 'auto' }),
       audio('stereo', { input: { channels: [7, 2] }, monitorMode: 'in', monitor: true }),
     ))
-    expect(loaded.schemaVersion).toBe(16)
+    expect(loaded.schemaVersion).toBe(17)
     expect(loaded.tracks[0]).toMatchObject({ input: { channels: [3], label: 'Mic/Inst 4' }, monitorMode: 'auto', monitor: false })
     expect(loaded.tracks[1]).toMatchObject({ input: { channels: [7, 2] }, monitorMode: 'in', monitor: true })
     expect(loaded.tracks[1].input).not.toHaveProperty('label')
@@ -50,7 +50,7 @@ describe('schema 8 track input and monitor mode', () => {
   it('loads schema 7 tracks unchanged: default input and a mode derived from the I flag', () => {
     const legacy = { ...project(audio('on', { monitor: true }), audio('off')), schemaVersion: 7 }
     const loaded = roundTrip(legacy)
-    expect(loaded.schemaVersion).toBe(16)
+    expect(loaded.schemaVersion).toBe(17)
     expect(loaded.tracks.map(track => [track.input, track.monitorMode, monitorModeOf(track)])).toEqual([[undefined, undefined, 'in'], [undefined, undefined, 'auto']])
   })
 

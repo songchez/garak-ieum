@@ -198,7 +198,7 @@ describe('independent effect processing contracts', () => {
       expect((effect.input as unknown as NodeSpy).connections).toEqual(new Set([worklet]))
       expect(worklet.connections).toEqual(new Set([effect.output]))
       effect.update({ time: 0.5 }, 120, 1, true)
-      expect(posted).toEqual([{ type: 'params', params: { time: 0.5 }, bpm: 120 }])
+      expect(posted).toEqual([{ type: 'params', params: { time: 0.5 }, bpm: 120, at: 1 }])
       effect.dispose!()
       expect(posted.at(-1)).toEqual({ type: 'dispose' })
       expect(owned).toEqual([...nodes, worklet])

@@ -1,4 +1,5 @@
 import { EFFECT_DEFS } from './devices'
+import { pruneProjectAutomation } from './automation'
 import { sigimsaeVariant } from './sigimsaeVariants'
 import { deviceFromVariant } from './sigimsaeDevices'
 import { instrumentDef, isInstrumentId } from './instruments'
@@ -319,7 +320,8 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
   }
   changes.updatedTrackIds = [...updatedTracks]; changes.updatedClipIds = [...updatedClips]; changes.updatedDeviceIds = [...updatedDevices]
   changes.projectLengthAfter = next.lengthBeats
-  return { project: next, changes, results }
+  // A removed device or changed instrument takes its automation lanes with it (docs/AUTOMATION.md).
+  return { project: pruneProjectAutomation(next), changes, results }
 }
 
 type CachedResponse = { fingerprint: string; result: CommandResponse | HistoryResponse }

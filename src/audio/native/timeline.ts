@@ -8,10 +8,11 @@ import type { EffectType, MidiClip, Project, TimeSignature, Track, TrackInputRou
 import { reconcileTrackRoutes, routeOf } from '../../core/trackRouting'
 import { reconcileSends, sendsOf } from '../../core/sends'
 import { loopRange } from '../math'
-import { tempoMapOf } from '../../core/tempoMap'
+import { tempoMapOf, type TempoMap } from '../../core/tempoMap'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVE_CODES, fadeCurveOf, fadeLengths } from '../../core/clipEnvelope.js'
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
 import type { NativePluginInstance } from './contracts'
+import { automationShape, isActiveLane, isDiscrete, targetDef } from '../../core/automation'
 
 /** Compilation limits, not promises about native device or plugin capacity. No PCM is allocated here. */
 export const NATIVE_TIMELINE_LIMITS = {
@@ -135,6 +136,22 @@ export interface NativeTrackSend {
   readonly pre: boolean
 }
 
+/** A compiled automation lane (docs/AUTOMATION.md). Values stay normalized; the host maps them with
+ * minimum/maximum/logarithmic/options exactly like core/automation.ts automationValue(). */
+export interface NativeAutomationLane {
+  readonly target:
+    | { readonly kind: 'volume' | 'pan' | 'mute' }
+    | { readonly kind: 'insert'; readonly insertId: string; readonly param: string }
+    | { readonly kind: 'instrument'; readonly param: string }
+    | { readonly kind: 'send'; readonly returnId: string }
+  readonly minimum: number
+  readonly maximum: number
+  readonly logarithmic?: boolean
+  readonly options?: readonly number[]
+  /** Fractional project frames, sorted. */
+  readonly points: readonly { readonly frame: number; readonly value: number; readonly curve?: number }[]
+}
+
 export interface NativeTrackTimeline {
   readonly id: string
   /** A return (aux) track: an audio source with no windows, fed by other tracks' sends; it never sends. */
@@ -163,6 +180,10 @@ export interface NativeTrackTimeline {
    * IEUM WAVE sources get it applied to their note-off frames instead, identically to the Web Audio engine. */
   readonly controls: readonly NativeControlEvent[]
   readonly audio: readonly NativeAudioWindow[]
+  /** Active lanes only; absent when the track has none. */
+  readonly automation?: readonly NativeAutomationLane[]
+  /** Fader audibility with the track unmuted (solo applied); present when a mute lane is active. */
+  readonly unmutedAudible?: boolean
 }
 
 export interface NativeProjectTimeline {
@@ -411,10 +432,81 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
         }
         if (!Object.hasOwn(EFFECT_DEFS, device.type)) throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Unknown builtin insert.')
         return { id: id(device.id), type: device.type, enabled: device.enabled, params: parameters(EFFECT_DEFS[device.type].params, device.params) }
-      }), notes, controls: controls.map(({ frame, controller, value }) => ({ frame, controller, value })), audio }
+      }), notes, controls: controls.map(({ frame, controller, value }) => ({ frame, controller, value })), audio, ...nativeAutomation(track, tempo, sampleRate, project) }
   })
   return { version: 1, projectId: project.id, revision, sampleRate, bpm, ...(tempo.isConstant ? {} : { tempoMap: tempo.points.map(point => ({ ...point })) }), timeSignature, beatsPerBar: project.beatsPerBar,
     lengthFrames, cycle, masterGain: number(project.masterVolume, 0, 2, 'master gain'), assets: [...usedAssets.values()], tracks }
+}
+
+/** Native automation step inside tempo ramps (beats): frame-linear segments this short match beat-linear lanes. */
+export const AUTOMATION_RAMP_STEP_BEATS = 1 / 16
+const MAX_NATIVE_LANE_POINTS = 20_000
+
+/**
+ * Lane points in fractional project frames through the tempo map. Lanes are defined in beats (core/automation.ts
+ * evaluates beat-linearly, like the Web Audio engine); the native host interpolates between frames. So a segment
+ * whose tempo changes inside it is split at every tempo point and, inside ramps, every AUTOMATION_RAMP_STEP_BEATS.
+ * A curved segment's pieces keep the exact shape: the exponential restricted to [f0, f1] is the same shape with
+ * curve × (f1 − f0) (automationShape), so only the frame-vs-beat bend inside one ramp step is approximated.
+ */
+export function automationFrames(points: readonly { beat: number; value: number; curve?: number }[], discrete: boolean, tempo: TempoMap, sampleRate: number,
+  rampStep = AUTOMATION_RAMP_STEP_BEATS): { frame: number; value: number; curve?: number }[] {
+  const frame = (beat: number) => tempo.frameAt(beat, sampleRate)
+  const plain = () => points.map(point => ({ frame: frame(point.beat), value: point.value, ...(point.curve ? { curve: point.curve } : {}) }))
+  if (discrete || tempo.isConstant) return plain()
+  const tempoPoints = tempo.points
+  const cuts = (from: number, to: number): number[] => {
+    const result: number[] = []
+    for (let index = 0; index < tempoPoints.length; index += 1) {
+      const point = tempoPoints[index], next = tempoPoints[index + 1]
+      if (point.beat > from + 1e-9 && point.beat < to - 1e-9) result.push(point.beat)
+      if (!next || point.curve !== 'ramp' || next.beat <= from || point.beat >= to) continue
+      const lo = Math.max(from, point.beat), hi = Math.min(to, next.beat)
+      for (let beat = Math.floor(lo / rampStep + 1) * rampStep; beat < hi - 1e-9; beat += rampStep) if (beat > from + 1e-9) result.push(beat)
+    }
+    return [...new Set(result)].sort((a, b) => a - b)
+  }
+  const out: { frame: number; value: number; curve?: number }[] = []
+  for (let index = 0; index < points.length; index += 1) {
+    const a = points[index], b = points[index + 1]
+    const span = b ? b.beat - a.beat : 0
+    const inner = b && span > 1e-9 ? cuts(a.beat, b.beat) : []
+    if (!inner.length) { out.push({ frame: frame(a.beat), value: a.value, ...(a.curve ? { curve: a.curve } : {}) }); continue }
+    const xs = [a.beat, ...inner, b.beat]
+    const curve = a.curve ?? 0
+    for (let piece = 0; piece < xs.length - 1; piece += 1) {
+      const f0 = (xs[piece] - a.beat) / span, f1 = (xs[piece + 1] - a.beat) / span
+      const value = piece === 0 ? a.value : a.value + (b.value - a.value) * automationShape(f0, curve)
+      const sub = curve * (f1 - f0)
+      out.push({ frame: frame(xs[piece]), value, ...(Math.abs(sub) > 1e-6 ? { curve: sub } : {}) })
+    }
+    if (out.length > MAX_NATIVE_LANE_POINTS) return automationFrames(points, discrete, tempo, sampleRate, rampStep * 2)
+  }
+  return out
+}
+
+/** Active lanes of a track in project frames. Beats map through the project tempo map, like every other event here. */
+function nativeAutomation(track: Track, tempo: TempoMap, sampleRate: number, project: Project): { automation?: NativeAutomationLane[]; unmutedAudible?: boolean } {
+  const lanes: NativeAutomationLane[] = []
+  for (const lane of track.automation ?? []) {
+    if (!isActiveLane(track, lane)) continue
+    const def = targetDef(track, lane.target)!
+    const target = lane.target
+    const native: NativeAutomationLane['target'] = target.kind === 'track' ? { kind: target.param }
+      : target.kind === 'device' ? { kind: 'insert', insertId: target.deviceId, param: target.param }
+        : target.kind === 'send' ? { kind: 'send', returnId: target.returnId }
+          : { kind: 'instrument', param: target.param }
+    const points = lane.points.map(point => ({ beat: number(point.beat, 0, 10_000_000, 'automation position'), value: number(point.value, 0, 1, 'automation value'), ...(point.curve ? { curve: number(point.curve, -1, 1, 'automation curve') } : {}) }))
+    lanes.push({
+      target: native, minimum: def.min, maximum: def.max,
+      ...(def.scale === 'log' && !def.options ? { logarithmic: true } : {}),
+      ...(isDiscrete(def) ? { options: def.options!.map(option => option.value) } : {}),
+      points: automationFrames(points, isDiscrete(def), tempo, sampleRate),
+    })
+  }
+  if (!lanes.length) return {}
+  const muted = lanes.some(lane => lane.target.kind === 'mute')
+  return { automation: lanes, ...(muted ? { unmutedAudible: audibleTrackIds(project.tracks.map(item => item.id === track.id ? { ...item, mute: false } : item)).has(track.id) && track.pluginInstrument?.enabled !== false } : {}) }
 }
 
 export interface NativeTrackSeek {

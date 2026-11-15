@@ -15,6 +15,7 @@ import { trackIcon } from './TrackInspector'
 import { useHistoryGesture } from '../core/historyGesture'
 import { canSend, returnLetter, returnTracks, sendTo, sendersOf, type SendPatch } from '../core/sends'
 import { SendKnob, formatSendDb } from './SendKnob'
+import { useDisplayTrack } from './automationUi'
 
 const deviceName = (device: Device) => device.type === 'vst3' ? device.name : effectDeviceName(device)
 
@@ -53,6 +54,8 @@ type Menu = { kind: 'instrument' | 'add' | 'device'; deviceId?: string; x: numbe
 
 export function ChannelStrip(props: ChannelStripProps) {
   const { track, project, engine, focused, compact, onSelect } = props
+  // Pan, fader and mute follow automation during playback (docs/AUTOMATION.md).
+  const shown = useDisplayTrack(track)
   const [menu, setMenu] = useState<Menu | null>(null)
   const dragFrom = useRef<{ id: string; index: number; pointerId: number } | null>(null)
   const insertGesture = useHistoryGesture('시김새 순서 변경')
@@ -123,10 +126,10 @@ export function ChannelStrip(props: ChannelStripProps) {
     <Sends track={track} project={project} compact={compact} onSendChange={props.onSendChange} />
     <div className="cstrip-slot cstrip-output" title="출력">Stereo Out</div>
     <div className="cstrip-fill" />
-    <div className="cstrip-pan" onClick={stop}><PanKnob value={track.pan} size={compact ? 26 : 30} ariaLabel={`${track.name} 팬`} onChange={pan => props.onTrackChange(id, { pan }, `${id}:pan`)} /></div>
+    <div className="cstrip-pan" onClick={stop}><PanKnob value={shown!.pan} size={compact ? 26 : 30} ariaLabel={`${track.name} 팬`} onChange={pan => props.onTrackChange(id, { pan }, `${id}:pan`)} /></div>
     <div className="cstrip-buttons" onClick={stop}><TrackButtons track={track} kinds={track.kind === 'return' ? RETURN_BUTTONS : BUTTONS} arm={props.arm} recording={props.recording} implicitMute={props.implicitMute} onPress={props.onTrackButton} onSweep={props.onTrackSweep} size="strip" /></div>
-    <div className="cstrip-db">{formatGainDb(track.volume)}</div>
-    <div className="cstrip-fader" onClick={stop}><VolumeSlider value={track.volume} orientation="vertical" meter={{ engine, trackId: id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={volume => props.onTrackChange(id, { volume }, `${id}:volume`)} /></div>
+    <div className="cstrip-db">{formatGainDb(shown!.volume)}</div>
+    <div className="cstrip-fader" onClick={stop}><VolumeSlider value={shown!.volume} orientation="vertical" meter={{ engine, trackId: id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={volume => props.onTrackChange(id, { volume }, `${id}:volume`)} /></div>
     <button type="button" className="cstrip-icon" onClick={e => { if (props.onIconMenu) { stop(e); props.onIconMenu(id, e) } }} aria-label="트랙 아이콘" title={props.onIconMenu ? '트랙 아이콘 변경' : undefined}><Icon name={trackIcon(track)} size={14} /></button>
     <div className="cstrip-name" title={track.name} onDoubleClick={e => { if (props.onOpenColorPalette) { stop(e); props.onOpenColorPalette(id, e) } }}><span>{track.name}</span></div>
     {menu && <ContextMenu x={menu.x} y={menu.y} items={items()} onClose={() => setMenu(null)} trigger={menu.trigger} label={menu.kind === 'instrument' ? '악기 선택' : menu.kind === 'add' ? '시김새 추가' : '시김새'} />}

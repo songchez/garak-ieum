@@ -215,6 +215,31 @@ struct TrackSend {
   bool pre = false;
   bool operator==(const TrackSend&) const = default;
 };
+// Track automation (docs/AUTOMATION.md), compiled by src/audio/native/timeline.ts. Points sit on project
+// frames (fractional) with values normalized 0..1 in the target's range; `curve` bends the segment to the next
+// point exactly like automationShape() in src/core/automation.ts.
+struct AutomationPoint {
+  double frame = 0, value = 0, curve = 0;
+  bool operator==(const AutomationPoint&) const = default;
+};
+struct AutomationLane {
+  // Insert: a built-in effect parameter (by id) or a VST3 insert ParamID. Instrument: a built-in instrument
+  // parameter, or a VST3 instrument ParamID. Send: this track's send level (linear 0..2) into return `returnId`.
+  enum class Target : std::uint8_t { Volume, Pan, Mute, Insert, Instrument, Send };
+  Target target = Target::Volume;
+  std::string insertId, param, returnId;
+  // Normalized -> target units: options (discrete), logarithmic or linear between minimum and maximum.
+  double minimum = 0, maximum = 1;
+  bool logarithmic = false;
+  std::vector<double> options;
+  std::vector<AutomationPoint> points; // Sorted by frame; two points on one frame make a jump.
+  bool operator==(const AutomationLane&) const = default;
+};
+[[nodiscard]] double automationShape(double t, double curve) noexcept;
+// Normalized value at `frame`. `hint` caches the segment for monotonic calls (any start value is valid).
+[[nodiscard]] double evaluateAutomation(const AutomationLane& lane, double frame, std::size_t& hint) noexcept;
+[[nodiscard]] double automationValue(const AutomationLane& lane, double normalized) noexcept;
+
 struct TrackTimeline {
   std::string id;
   // A return (aux) track: an Audio source without windows or inputs, fed by other tracks' sends, rendered
@@ -230,6 +255,9 @@ struct TrackTimeline {
   std::vector<NotePair> notes;
   std::vector<ControlEvent> controls; // Sorted by frame; equal frames keep their order.
   std::vector<AudioWindow> audio;
+  std::vector<AutomationLane> automation;
+  // Fader audibility if the track were unmuted (solo state included); used while a mute lane is active.
+  bool unmutedAudible = true;
 };
 struct ProjectTimeline {
   std::uint32_t version = 1;
