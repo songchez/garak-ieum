@@ -254,7 +254,7 @@ describe('Logic-style key commands', () => {
       for (const platform of ['mac', 'windows'] as const) {
         for (const scope of ['text', 'control', 'dialog', 'outside'] as ShortcutScope[]) expect(resolveProjectShortcut(event, scope, false, platform)).toBeNull()
         for (const scope of ['timeline', 'piano', 'workspace'] as ShortcutScope[]) {
-          expect(resolveProjectShortcut({ ...event, shiftKey: true }, scope, false, platform)).toBeNull()
+          expect(resolveProjectShortcut({ ...event, shiftKey: true }, scope, false, platform)).toBe(event.code === 'KeyR' ? 'captureMidi' : null) // ⇧R: Logic Capture Recording
           // S/Z carry ⌥⌘ track chords and H has Ctrl+Alt+H outside macOS; every other plain key stays silent with Ctrl+Alt.
           const chord = resolveProjectShortcut({ ...event, ctrlKey: true, altKey: true }, scope, false, platform)
           expect(chord === null || !plainCommands.has(chord), `${event.code} with Ctrl+Alt`).toBe(true)

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -204,6 +205,18 @@ struct MetronomeClicks {
   std::array<std::vector<float>, 3> levels;
 };
 
+// One live MIDI message for the next render() call (docs/MIDI_RECORDING.md).
+// offset is callback-relative; 0x90 data2 is the MIDI velocity (0 = note off),
+// 0x80 is note off, 0xB0 with data1 120/123 releases this track's live notes.
+// noteId pairs a note-off with its note-on (-1 matches by pitch).
+struct LiveMidiEvent {
+  std::uint32_t offset = 0;
+  std::uint32_t track = 0;
+  std::uint8_t status = 0, data1 = 0, data2 = 0;
+  std::int32_t noteId = -1;
+};
+inline constexpr std::int64_t notRenderedFrame = std::numeric_limits<std::int64_t>::min();
+
 struct EngineSnapshot {
   std::uint64_t revision = 0, lastAppliedCommand = 0;
   std::int64_t frame = 0;
@@ -383,6 +396,15 @@ class RenderEngine {
   // Calls may be subdivided internally at maxBlockFrames; no allocations/locks/IO.
   void render(float* stereoOutput, const float* input, std::uint32_t frames,
               std::uint32_t inputChannels = 2) noexcept;
+  // Render thread only, immediately before render(): live MIDI applied at its
+  // sample offset inside that call (sub-blocks split there). Fixed capacity, no
+  // locks or allocation; returns how many were accepted. Events for a track that
+  // is rendering ahead wait for the next call (offset 0).
+  std::uint32_t queueLiveMidi(std::span<const LiveMidiEvent> events) noexcept;
+  // Render thread only, after render(): the transport frame that callback-relative
+  // `offset` was rendered at, or notRenderedFrame when the transport was not
+  // playing there (stopped, paused or counting in).
+  [[nodiscard]] std::int64_t renderedTransportFrame(std::uint32_t offset) const noexcept;
   [[nodiscard]] EngineSnapshot snapshot() const noexcept;
   // Returns frames written; each frame holds recordingChannels() samples
   // (stereo for the legacy take). One control-thread consumer.

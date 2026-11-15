@@ -4,6 +4,7 @@ import type { WavetableState } from '../devices/wavetable-synth/model'
 import type { WavetableNativeBridge } from '../devices/wavetable-synth/bridge'
 import type { NativePluginInstance } from '../audio/native/contracts'
 import type { MetronomeEngineState, PlayOptions } from './metronome'
+import type { LiveMidiPort } from '../audio/liveMidi'
 
 /** A key of INSTRUMENTS in core/instruments.ts. Saved files store it as plain text. */
 export type InstrumentId = string
@@ -62,6 +63,8 @@ export interface MidiClip extends ClipBase {
   transpose?: number
   /** Velocity offset −99…99 (MIDI units). Absent = 0. */
   velocity?: number
+  /** Q-강도 0…100: how far quantize moves each note toward its grid line. Absent = 100. */
+  qStrength?: number
 }
 export interface AudioClip extends ClipBase {
   kind: 'audio'
@@ -165,6 +168,17 @@ export interface InputChoice {
   label: string
 }
 
+/** Instrument tracks: the live MIDI a track hears and records (docs/MIDI_RECORDING.md). */
+export interface TrackMidiInput {
+  /** `all` = every enabled input including the computer keyboard; `device` = deviceId only. */
+  source: 'all' | 'none' | 'device'
+  deviceId?: string
+  /** Device name when chosen, shown while the device is unplugged. */
+  deviceName?: string
+  /** 1…16; absent = every channel. */
+  channel?: number
+}
+
 export interface Track {
   id: string
   name: string
@@ -212,6 +226,8 @@ export interface Track {
   /** Audio tracks only. When present it replaces `input` (which is kept for switching back): the track
    * records and monitors another track or the master instead of a physical input. Undoable (schema 11). */
   inputRoute?: TrackInputRoute
+  /** Instrument tracks only. Absent = every MIDI input, every channel. Undoable. */
+  midiInput?: TrackMidiInput
 }
 export interface Marker {
   id: string
@@ -293,5 +309,7 @@ export interface AudioEngine {
   getInputChoices?(): InputChoice[]
   /** How many tracks can record at once: 1 in a browser, more on the native engine (WP2 implements). */
   readonly maxSimultaneousRecordings?: number
+  /** Live MIDI playing and timestamping (docs/MIDI_RECORDING.md). */
+  readonly liveMidi?: LiveMidiPort
   dispose(): void
 }

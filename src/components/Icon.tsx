@@ -8,7 +8,7 @@ import {
   Palette, PanelLeft, Pause, Piano, Play, Plug, Plus, Power, Redo2, RefreshCw, Repeat2,
   Save, Scissors, Search, Settings, Sparkles, SkipBack, SlidersHorizontal, SlidersVertical,
   Snowflake, Square, SquareDashed, SquareDashedMousePointer, TextCursorInput, Trash,
-  Undo2, Upload, Volume2, VolumeX, WavesHorizontal, WavesVertical, Wind, X, Zap,
+  Undo2, Upload, Volume2, VolumeX, WavesHorizontal, WavesVertical, Wind, X, Zap, History,
   Waves, Orbit, Tornado, AudioWaveform, ArrowUpToLine, DoorClosed, CassetteTape, Binary, UnfoldHorizontal,
   type LucideIcon,
 } from 'lucide-react'
@@ -28,7 +28,7 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   scissors: Scissors, cut: Scissors, copy: Copy, paste: ClipboardPaste, trash: Trash,
   rename: TextCursorInput, palette: Palette, region: SquareDashed, track: ListMusic,
   merge: Combine, 'select-all': SquareDashedMousePointer, flag: Flag,
-  refresh: RefreshCw, locate: LocateFixed,
+  refresh: RefreshCw, locate: LocateFixed, capture: History,
   close: X, check: Check, info: Info, grid: LayoutGrid, magnet: Magnet,
   keyboard: Keyboard, panel: PanelLeft, external: ExternalLink, bolt: Zap,
   moon: Moon, metronome: Metronome, plug: Plug, power: Power, ai: Sparkles,

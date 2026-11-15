@@ -990,6 +990,34 @@ struct RenderEngine::Impl {
   std::array<std::uint32_t,EngineSnapshot::maxDynamicsReadings>heldIds{};
   std::array<float,EngineSnapshot::maxDynamicsReadings>heldInput{},heldGain{},lastInput{},lastGain{};
   std::uint32_t meterFrames=0;
+  // Live MIDI from the device thread (queueLiveMidi), applied in render() at
+  // sub-block starts, and where each sub-block of the last render() fell on the
+  // transport (renderedTransportFrame). Both fixed, callback-owned.
+  static constexpr std::uint32_t maxLiveMidi=256,maxRendered=256;
+  std::array<LiveMidiEvent,maxLiveMidi>liveMidi{};std::uint32_t liveMidiCount=0,liveMidiNext=0;
+  struct RenderedSpan{std::uint32_t cursor=0,count=0;std::int64_t position=0;bool playing=false;};
+  std::array<RenderedSpan,maxRendered>rendered{};std::uint32_t renderedCount=0;
+  // Applies queued live events due at `cursor`; returns frames until the next one.
+  std::uint32_t applyLiveMidi(std::uint32_t cursor,std::uint32_t frames)noexcept {
+    while(liveMidiNext<liveMidiCount&&liveMidi[liveMidiNext].offset<=cursor) {
+      auto&ev=liveMidi[liveMidiNext];
+      if(active&&ev.track<active->impl_->tracks.size()) {
+        auto&t=active->impl_->tracks[ev.track];
+        // A track rendering ahead drains first: keep the rest for the next call.
+        if(!own(t))break;
+        markLive(t);
+        const auto type=ev.status&0xF0;
+        if(type==0x90&&ev.data2>0)t.spawn(ev.data1&0x7F,static_cast<float>(ev.data2&0x7F)/127.f,unlimitedFrame,unlimitedFrame,ev.noteId,true,voiceOverflows);
+        else if(type==0x80||type==0x90)t.noteOff(ev.data1&0x7F,ev.noteId,voiceOverflows);
+        else if(type==0xB0&&(ev.data1==120||ev.data1==123))t.allNotesOff(voiceOverflows);
+        // Hook: CC64 (sustain) and other controllers are delivered here once the
+        // track runtime supports them (feat/sustain-pedal). No-op for now.
+      }
+      ++liveMidiNext;
+    }
+    if(liveMidiNext<liveMidiCount&&liveMidi[liveMidiNext].offset>cursor)return std::min(frames-cursor,liveMidi[liveMidiNext].offset-cursor);
+    return frames-cursor;
+  }
 
   // Multi-core processing. Configured on the control thread before the device
   // starts (setProcessing); the pool's workers live as long as this engine.
@@ -1713,9 +1741,9 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
   if(frames)e.deviceBlock.store(frames,std::memory_order_relaxed);
   e.consume();
   e.recordingNow.store(e.recording,std::memory_order_relaxed);
-  std::uint32_t cursor=0;float masterPeak=0;
+  std::uint32_t cursor=0;float masterPeak=0;e.renderedCount=0;e.liveMidiNext=0;
   while(cursor<frames) {
-    auto count=std::min(e.maxBlock,frames-cursor);
+    auto count=std::min({e.maxBlock,frames-cursor,e.applyLiveMidi(cursor,frames)});
     const bool countingIn=e.countInRemaining>0;
     if(countingIn)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,e.countInRemaining));
     if(e.active&&e.playing) {
@@ -1727,6 +1755,7 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       }
       if(e.playing&&e.position<boundary)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,boundary-e.position));
     }
+    if(e.renderedCount<Impl::maxRendered)e.rendered[e.renderedCount++]={cursor,count,e.position,e.active&&e.playing&&!countingIn};
     auto*out=output+static_cast<std::size_t>(cursor)*2;std::fill_n(out,static_cast<std::size_t>(count)*2,0.f);
     if(e.active) {
       auto& p=*e.active->impl_;
@@ -1799,11 +1828,29 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
     if(p.cycle&&e.position>=p.cycle->at(1)){e.position=p.cycle->at(0);e.reset(true,false);}
     else if(!p.cycle&&e.position>=p.lengthFrames){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
   }
+  // Events left behind (a track still draining its render-ahead ring) apply at the start of the next call.
+  {std::uint32_t kept=0;for(std::uint32_t i=e.liveMidiNext;i<e.liveMidiCount;++i){e.liveMidi[kept]=e.liveMidi[i];e.liveMidi[kept++].offset=0;}e.liveMidiCount=kept;e.liveMidiNext=0;}
   e.promote();
   e.publishDynamics(frames);
   e.publish(masterPeak);
 }
 
+std::uint32_t RenderEngine::queueLiveMidi(std::span<const LiveMidiEvent> events)noexcept {
+  auto&e=*impl_;std::uint32_t accepted=0;
+  for(const auto&ev:events) {
+    if(e.liveMidiCount>=Impl::maxLiveMidi)break;
+    // Insertion keeps offsets ordered (stable for equal offsets).
+    auto at=e.liveMidiCount;while(at>0&&e.liveMidi[at-1].offset>ev.offset){e.liveMidi[at]=e.liveMidi[at-1];--at;}
+    e.liveMidi[at]=ev;++e.liveMidiCount;++accepted;
+  }
+  return accepted;
+}
+std::int64_t RenderEngine::renderedTransportFrame(std::uint32_t offset)const noexcept {
+  const auto&e=*impl_;
+  for(std::uint32_t i=0;i<e.renderedCount;++i){const auto&r=e.rendered[i];
+    if(offset>=r.cursor&&offset<r.cursor+r.count)return r.playing?r.position+(offset-r.cursor):notRenderedFrame;}
+  return notRenderedFrame;
+}
 EngineSnapshot RenderEngine::snapshot()const noexcept {
   const auto&e=*impl_;const auto&p=e.published;EngineSnapshot s;
   s.lastAppliedCommand=p.ticket.load(std::memory_order_acquire);s.revision=p.revision.load(std::memory_order_relaxed);s.frame=p.frame.load(std::memory_order_relaxed);s.sampleRate=e.rate;

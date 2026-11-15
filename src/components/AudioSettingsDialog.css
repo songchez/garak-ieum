@@ -105,3 +105,8 @@
 .plugin-settings-group li:last-child{border-bottom:0}
 .plugin-settings-group li svg{grid-row:span 2;color:var(--text-muted)}
 .plugin-settings-group li span{font-size:9px;color:var(--text-muted)}
+/* MIDI 입력 장치 (MidiSettings.tsx) */
+.midi-settings{margin-top:14px}
+.midi-device-list{list-style:none;margin:6px 0;padding:0;display:grid;gap:4px}
+.midi-device-list label{display:flex;align-items:center;gap:8px;font-size:12px}
+.midi-device-list small{color:var(--text-secondary)}

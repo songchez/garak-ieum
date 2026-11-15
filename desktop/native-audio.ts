@@ -46,6 +46,8 @@ interface ActiveTake { id: string; trackId: string; path: string }
 
 // Device control (docs/AUDIO_CORE_PLAN.md, WP1/WP3). Kept apart from METHODS to keep parallel edits separate.
 for (const method of ['devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor']) METHODS.add(method)
+// Live MIDI input (docs/MIDI_RECORDING.md): device list/enable, track routes, injected keyboard notes, panic.
+for (const method of ['midi.devices', 'midi.enable', 'midi.routes', 'midi.inject', 'midi.panic']) METHODS.add(method)
 /** Electron passes only `message` across IPC; the renderer (src/audio/native/deviceErrors.ts) parses this suffix. */
 const NATIVE_ERROR_MARKER = '\n[garak-native-error]'
 export function ipcNativeError(error: unknown): Error {

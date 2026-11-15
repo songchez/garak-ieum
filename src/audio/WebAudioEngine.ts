@@ -19,6 +19,9 @@ import { prepareRouteRecorder, RouteRecordings, type RouteRecordingHost } from '
 import type { TakeCallbacks } from '../core/recording'
 import { WebMetronome } from './webMetronome'
 import type { MetronomeEngineState, PlayOptions } from '../core/metronome'
+import { WebLiveMidi, type LiveVoiceHandle } from './liveMidi'
+import { heardTransportBeat, LIVE_NOTE_HOLD_SECONDS } from '../core/midiRecording'
+import { paramValue } from '../core/devices'
 
 const SCHEDULER_INTERVAL_MS = 25
 const LOOKAHEAD_SECONDS = 0.12
@@ -96,6 +99,8 @@ export class WebAudioEngine implements AudioEngine {
   private removeOutputListeners: (() => void) | null = null
   /** Monitor-only clicks on the audio clock; never part of the graph, recordings or export. */
   private readonly metronome = new WebMetronome()
+  /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md). */
+  readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time) })
 
   constructor(project?: Project, settings: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     this.settings = normalizeAudioSettings(settings)
@@ -529,6 +534,41 @@ export class WebAudioEngine implements AudioEngine {
     const loaded = def.set ? this.samples.get(def.set) : undefined
     if (loaded) scheduleSampled(this.graph, destination, loaded, def.isKit, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params, channel?.chokes)
     else scheduleInstrument(this.graph, destination, instrument, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params)
+  }
+
+  /** A held live note through the track's chain; released by its note-off with the instrument's release. */
+  private startLiveNote(trackId: string, pitch: number, velocity: number): LiveVoiceHandle | null {
+    const context = this.context, graph = this.graph
+    const track = this.project?.tracks.find(item => item.id === trackId)
+    if (!context || !graph || this.outputFault || !track || track.kind !== 'instrument' || !isTrackEnabled(track)) return null
+    if (context.state !== 'running') { void context.resume().catch(() => undefined); return null }
+    const def = instrumentDef(track.instrument)
+    const channel = graph.tracks.get(track.id)
+    if (def.kind === 'native' || !channel) return null
+    const loaded = def.set ? this.samples.get(def.set) : undefined
+    if (def.set && !loaded) { void this.preloadSamples(def.set).catch(() => undefined); return null }
+    const when = context.currentTime
+    // available === duration: no release-noise sample is scheduled at the far end of the hold.
+    const voice = loaded
+      ? scheduleSampled(graph, channel.input, loaded, def.isKit, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, channel.chokes)
+      : scheduleInstrument(graph, channel.input, track.instrument, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams)
+    if (!voice) return null
+    // Drum hits ring out on their own, like timeline notes; note-offs do not cut them.
+    if (def.isKit) return { release: () => undefined }
+    const release = clamp(paramValue(def.params, track.instrumentParams, 'release'), 0.005, 30)
+    return { release: () => voice.release(context.currentTime, release) }
+  }
+
+  /** Transport beat the listener heard at `timeMs` (performance.now base): the output timestamp folds in output latency. */
+  private heardBeatAt(timeMs: number): number | null {
+    const context = this.context
+    if (!this.playing || !context || !this.project) return null
+    const stamp = typeof context.getOutputTimestamp === 'function' ? context.getOutputTimestamp() : undefined
+    const latency = (context as AudioContext & ContextExtras).outputLatency ?? 0
+    const contextTime = stamp && typeof stamp.contextTime === 'number' && typeof stamp.performanceTime === 'number' && stamp.performanceTime > 0
+      ? stamp.contextTime + (timeMs - stamp.performanceTime) / 1000
+      : context.currentTime - (performance.now() - timeMs) / 1000 - (context.baseLatency ?? 0) - latency
+    return heardTransportBeat(this.project, this.anchorBeat, this.anchorTime, contextTime)
   }
 
   /** One source node per stream, rewired to the current graph's track inputs; no context is opened without a stream. */

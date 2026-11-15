@@ -27,6 +27,7 @@ import { nativeRequestError, withNativeCode } from './deviceErrors'
 import { inputChoices, namesByIndex, parseDeviceProbe, snapshotInputNames } from './deviceProfile'
 import { countInBeats, DEFAULT_METRONOME_PREFS, type MetronomeEngineState, type PlayOptions } from '../../core/metronome'
 import { metronomeStrokes } from '../metronomeSounds'
+import { NativeLiveMidi } from './nativeLiveMidi'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
@@ -120,6 +121,9 @@ export class NativeAudioEngine implements AudioEngine {
   private wavePayloads = new Map<string, { params: Track['instrumentParams']; state: Track['instrumentState']; data: string }>()
   private waveNotes = new Map<string, Map<string, WaveAuditionNote>>()
   private nextWaveNoteId = 1_000_000_000
+
+  /** Live MIDI: the host opens devices and plays notes on its audio thread (docs/MIDI_RECORDING.md). */
+  readonly liveMidi = new NativeLiveMidi((method, params) => this.request(method, params), () => this.configured, () => this.project?.bpm ?? 120)
 
   readonly wavetable: WavetableNativeBridge = {
     protocolVersion: 1,
@@ -366,6 +370,7 @@ export class NativeAudioEngine implements AudioEngine {
     this.dynamics = new Map(Object.entries(event.dynamics && typeof event.dynamics === 'object' ? event.dynamics : {}).flatMap(([id, value]) => { const reading = dynamicsReadingFrom(value); return reading ? [[id, reading] as const] : [] }))
     this.masterLevel = Math.max(0, finite(event.masterLevel))
     const rate = finite(event.sampleRate, this.nativeDevice?.sampleRate ?? this.desiredSampleRate)
+    this.liveMidi.receive(event.midi, rate)
     const bpm = this.project?.bpm ?? 120
     const beat = typeof event.frame === 'number' && Number.isFinite(event.frame) && rate > 0
       ? event.frame / rate * bpm / 60 : this.snapshot.beat
@@ -630,6 +635,7 @@ export class NativeAudioEngine implements AudioEngine {
         if (generation !== this.generation || configuration !== this.configurationEpoch) throw abortError()
         if (awaitApplied && result?.revision !== revision) throw new Error('IEUM WAVE의 프로젝트 적용 확인 번호가 일치하지 않습니다.')
         this.appliedRevision = revision
+        this.liveMidi.resync()
       }
     })()
     this.syncTask = task

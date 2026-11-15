@@ -203,7 +203,7 @@ describe('effect resources and master selection', () => {
     const source = new AudioNodeSpy()
     connectMonitor(graph, source as unknown as MediaStreamAudioSourceNode, ['input'])
     const voiceDisconnect = vi.fn()
-    graph.voices.add({ stop() { throw new Error('already closed') }, disconnect: voiceDisconnect })
+    graph.voices.add({ stop() { throw new Error('already closed') }, release() { throw new Error('already closed') }, disconnect: voiceDisconnect })
     disposeGraph(graph)
     disposeGraph(graph)
     expect(dispose).toHaveBeenCalledTimes(1)

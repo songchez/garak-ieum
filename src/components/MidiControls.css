@@ -1,0 +1,5 @@
+.midi-controls{display:flex;align-items:center;gap:2px}
+.midi-activity{width:6px;height:6px;border-radius:50%;margin:0 4px;background:var(--ink-22);transition:background .08s}
+.midi-activity.on{background:var(--accent)}
+.midi-typing-state{font-size:10px;font-variant-numeric:tabular-nums;color:var(--accent);padding:0 4px;white-space:nowrap}
+.midi-mode-select{height:24px;font-size:11px;margin-left:2px;max-width:64px}

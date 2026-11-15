@@ -2,6 +2,7 @@ import type { AudioClip, Clip, MidiClip, Track } from './types'
 import { midiSourceOffset } from './midiRegions'
 import { fadeLengths } from './clipEnvelope.js'
 import { sustainSpans, sustainedEnds, visibleSustain } from './sustain'
+import { quantizePosition } from './quantize'
 
 /** Ticks per beat for Track.delayTicks and ClipBase.delayTicks. */
 export const PPQ = 960
@@ -92,7 +93,7 @@ export function trackNote(track: Track | undefined, pitch: number, velocity: num
 }
 
 /**
- * Notes of one occurrence: quantize+swing → delay → transpose → velocity → limits → crop → gain.
+ * Notes of one occurrence: quantize+swing (× Q-강도) → delay → transpose → velocity → limits → crop → gain.
  * The crop window moves with the delay, so a negative delay plays the first notes early instead of dropping them.
  * The sustain pedal (clip.sustain) is applied per occurrence unless `sustain` is false (docs/SUSTAIN_PEDAL.md):
  * note-offs inside a pedal-down span move to the pedal-up (or occurrence end), and a re-struck pitch cuts its tail.
@@ -101,6 +102,7 @@ export function trackNote(track: Track | undefined, pitch: number, velocity: num
 export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence, sustain = true): PlaybackNote[] {
   const grid = num(clip.quantize)
   const swing = clip.swing === undefined ? 50 : clamp(clip.swing, 0, 100)
+  const strength = clip.qStrength === undefined ? 100 : clamp(clip.qStrength, 0, 100)
   const delay = trackDelay(track, clip)
   const transpose = num(clip.transpose) + num(track.transpose)
   const velocityOffset = num(clip.velocity) + num(track.velocityOffset)
@@ -116,10 +118,7 @@ export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence, sus
     let local = Math.max(0, sourceStart)
     const duration = note.duration + Math.min(0, sourceStart)
     if (duration <= EPSILON) continue
-    if (grid > 0) {
-      const step = Math.round(local / grid)
-      local = clamp(step * grid + (step % 2 ? (swing - 50) / 50 * grid : 0), 0, clip.lengthBeats)
-    }
+    if (grid > 0) local = clamp(quantizePosition(local, grid, swing, strength), 0, clip.lengthBeats)
     const pitch = note.pitch + transpose
     if (pitch < 0 || pitch > 127) continue
     const velocity = clamp(Math.round(clamp(note.velocity, 0, 1) * 127) + velocityOffset, 1, 127)

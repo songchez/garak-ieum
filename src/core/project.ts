@@ -10,7 +10,7 @@ import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMonitorMode } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
 
 let fallbackSequence = 0
@@ -648,6 +648,19 @@ function parseTrackInputRoute(value: unknown, path: string): TrackInputRoute {
   return { kind: 'track', trackId: text(source.trackId, `${path} track ID`, 200), tap: source.tap as TrackInputTap }
 }
 
+/** docs/MIDI_RECORDING.md: an optional field, so no schema bump; older readers ignore it. */
+function parseTrackMidiInput(value: unknown, path: string): TrackMidiInput {
+  const input = object(value, path)
+  if (input.source !== 'all' && input.source !== 'none' && input.source !== 'device') throw new Error(`${path} source must be all, none or device.`)
+  if (input.source === 'device' && input.deviceId === undefined) throw new Error(`${path} needs a device.`)
+  return {
+    source: input.source,
+    ...(input.source === 'device' ? { deviceId: text(input.deviceId, `${path} device`, 512) } : {}),
+    ...(input.source === 'device' && input.deviceName !== undefined ? { deviceName: text(input.deviceName, `${path} device name`, 512) } : {}),
+    ...(input.channel === undefined ? {} : { channel: integer(input.channel, `${path} channel`, 1, 16) }),
+  }
+}
+
 function monitorMode(value: unknown, path: string): TrackMonitorMode {
   if (!MONITOR_MODES.includes(value as TrackMonitorMode)) throw new Error(`${path} must be off, auto or in.`)
   return value as TrackMonitorMode
@@ -803,6 +816,8 @@ export function validateProject(input: unknown): Project {
     if (track.kind !== 'audio' && track.inputRoute !== undefined) throw new Error(`${path} input route requires an audio track.`)
     const inputRoute = track.inputRoute === undefined ? undefined : parseTrackInputRoute(track.inputRoute, `${path} input route`)
     const mode = track.monitorMode === undefined ? undefined : monitorMode(track.monitorMode, `${path} monitor mode`)
+    if (track.kind !== 'instrument' && track.midiInput !== undefined) throw new Error(`${path} MIDI input requires an instrument track.`)
+    const midiInput = track.midiInput === undefined ? undefined : parseTrackMidiInput(track.midiInput, `${path} MIDI input`)
     // Schema ≤7 has only the I flag, and an absent mode keeps deriving from it. A saved mode is authoritative.
     const monitor = mode === undefined ? optional(track.monitor, false, value => flag(value, `${path} monitor`)) : mode === 'in'
     const clips = list(track.clips, `${path} clips`, 100_000).map((clipInput, clipIndex): Clip => {
@@ -859,6 +874,7 @@ export function validateProject(input: unknown): Project {
         ...(clip.sourceOffsetBeats === undefined ? {} : { sourceOffsetBeats: number(clip.sourceOffsetBeats, `${clipPath} MIDI source offset`, 0, 10_000_000) }),
         ...(clip.quantize === undefined ? {} : { quantize: quantize(clip.quantize, `${clipPath} quantize`) }),
         ...(clip.swing === undefined ? {} : { swing: number(clip.swing, `${clipPath} swing`, 0, 100) }),
+        ...(clip.qStrength === undefined ? {} : { qStrength: number(clip.qStrength, `${clipPath} quantize strength`, 0, 100) }),
         ...(clip.transpose === undefined ? {} : { transpose: integer(clip.transpose, `${clipPath} transpose`, -96, 96) }),
         ...(clip.velocity === undefined ? {} : { velocity: integer(clip.velocity, `${clipPath} velocity`, -99, 99) }),
         ...(clip.sustain === undefined ? {} : { sustain: sustainEvents(clip.sustain, clipPath, version) }),
@@ -908,6 +924,7 @@ export function validateProject(input: unknown): Project {
       ...(pluginInstrument ? { pluginInstrument } : {}),
       ...(input ? { input } : {}),
       ...(inputRoute ? { inputRoute } : {}),
+      ...(midiInput ? { midiInput } : {}),
     }
   })
   // Routes to deleted tracks read as 'none'; a saved loop (only possible by hand-editing) is broken the same way.

@@ -13,6 +13,8 @@ import { parseRecordingOffset } from '../core/recordingOffset'
 import { Icon } from './Icon'
 import { useAudioDevices } from './useAudioDevices'
 import AppearanceSettings from './AppearanceSettings'
+import { MidiDevicesSection } from './MidiSettings'
+import type { MidiInputService } from '../audio/MidiInput'
 import './AudioSettingsDialog.css'
 
 type Tab = 'appearance' | 'devices' | 'recording' | 'project' | 'status'
@@ -36,6 +38,8 @@ interface Props {
   blockedReason: string | null
   onApply: (settings: AudioSettings, sampleRate: SampleRate) => Promise<{ persisted: boolean }>
   onClose: () => void
+  /** MIDI 입력 장치 (docs/MIDI_RECORDING.md). */
+  midi?: MidiInputService | null
 }
 
 function SettingRow({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -47,11 +51,11 @@ function Fact({ name, value }: { name: string; value: ReactNode }) { return <><d
 export type SettingsTab = Tab | 'plugins'
 
 export default function AudioSettingsDialog({ initialTab, ...props }: Omit<Props, 'engine'> & { engine: WebAudioEngine | NativeAudioEngine; initialTab?: SettingsTab }) {
-  if (props.engine.kind === 'native') return <NativeAudioSettingsDialog engine={props.engine} settings={props.settings} project={props.project} blockedReason={props.blockedReason} onApply={props.onApply} onClose={props.onClose} initialTab={initialTab}/>
+  if (props.engine.kind === 'native') return <NativeAudioSettingsDialog engine={props.engine} midi={props.midi} settings={props.settings} project={props.project} blockedReason={props.blockedReason} onApply={props.onApply} onClose={props.onClose} initialTab={initialTab}/>
   return <BrowserAudioSettingsDialog {...props} engine={props.engine}/>
 }
 
-function BrowserAudioSettingsDialog({ engine, inputCapture, settings, project, blockedReason, onApply, onClose }: Props) {
+function BrowserAudioSettingsDialog({ engine, inputCapture, settings, project, blockedReason, onApply, onClose, midi }: Props) {
   const [tab, setTab] = useState<Tab>('devices')
   const [draft, setDraft] = useState<AudioSettings>(() => ({ ...settings }))
   const [sampleRate, setSampleRate] = useState<SampleRate>(project.sampleRate)
@@ -171,6 +175,7 @@ function BrowserAudioSettingsDialog({ engine, inputCapture, settings, project, b
               {!audio.supportsRenderSize && draft.renderSizeHint !== 'default' && <button className="audio-small-button" disabled={locked} onClick={() => patch({ renderSizeHint: 'default' })}>브라우저 기본으로 변경</button>}
             </SettingRow>
             <p className="audio-settings-note">지연·렌더 블록은 요청값이며 브라우저가 최종 값을 결정합니다. 오디오 인터페이스의 하드웨어 I/O 버퍼는 드라이버 설정에서 조절하세요.</p>
+            <MidiDevicesSection service={midi} disabled={applying}/>
             <div className="audio-current-strip"><span>처리 지연 <b>{latencyText(audio.baseLatency)}</b></span><span>출력 지연 추정 <b>{latencyText(audio.outputLatency)}</b></span><button disabled={locked || (!outputTesting && (dirty || requiresApply))} onClick={() => outputTesting ? stopOutputTest() : void testOutput()} title={dirty || requiresApply ? '오디오 설정을 적용한 뒤 테스트하세요.' : '현재 적용된 출력으로 테스트 음 재생'}><Icon name={outputTesting ? 'stop' : 'play'} size={13}/>{outputTesting ? '테스트 중지' : '출력 테스트'}</button></div>
           </>}
 

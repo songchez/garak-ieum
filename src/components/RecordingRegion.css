@@ -11,3 +11,7 @@
 .row-compact .recording-region-label{height:100%;border-bottom:0}
 @keyframes recording-indicator-pulse{50%{opacity:.35}}
 @media(prefers-reduced-motion:reduce){.recording-indicator{animation:none}}
+/* MIDI takes: notes appear while they are played. */
+.recording-region--midi{display:flex;flex-direction:column}
+.midi-recording-notes{position:relative;flex:1;margin:3px 0}
+.midi-recording-notes i{position:absolute;height:max(2px,8%);min-width:2px;border-radius:1px;background:var(--danger);transform:translateY(-50%)}

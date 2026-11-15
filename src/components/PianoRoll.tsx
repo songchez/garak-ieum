@@ -13,6 +13,8 @@ import { ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, z
 import { bakeSustain, sustainPressCount } from '../core/sustain'
 import SustainLane from './SustainLane'
 import ContextMenu from './ContextMenu'
+import { QuantizePopover, loadPianoQuantize, savePianoQuantize, type PianoQuantizeSettings } from './QuantizePopover'
+import { quantizeNotes } from '../core/quantize'
 import type { ContextMenuItem } from './ContextMenu'
 import { useZoomHandle, useZoomWheel } from './useZoomWheel'
 import { ZoomControls } from './ZoomControls'
@@ -95,6 +97,8 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [showVelocity, setShowVelocity] = useState(true)
   const [showSustainPref, setShowSustain] = useState<boolean | null>(null)
+  const [quantizeOpen, setQuantizeOpen] = useState(false)
+  const [quantizeSettings, setQuantizeSettings] = useState<PianoQuantizeSettings>(loadPianoQuantize)
   const [snapState, setSnapState] = useState(0)
   const snap = snapProp ?? snapState
   const previousSnap = useRef(.25)
@@ -603,19 +607,13 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
     insertNotes(selected, target - minStart)
   }
 
-  function quantize(lengths: boolean) {
-    const grid = snap || 0.25
+  /** Destructive Q with the popover's settings (strength, swing, start/end); ⇧Q also moves note ends. */
+  function quantize(ends: boolean) {
+    const settings = quantizeSettings
+    const grid = settings.followSnap ? snap || 0.25 : settings.grid
     const targets = selectedIds.size ? selectedIds : new Set(clip.notes.map(note => note.id))
-    let changed = false
-    const next = clip.notes.map(note => {
-      if (!targets.has(note.id)) return note
-      const start = clamp(Math.round(note.start / grid) * grid, 0, Math.max(0, clip.lengthBeats - grid))
-      const duration = Math.min(lengths ? Math.max(grid, Math.round(note.duration / grid) * grid) : note.duration, clip.lengthBeats - start)
-      if (start === note.start && duration === note.duration) return note
-      changed = true
-      return { ...note, start, duration }
-    })
-    if (changed) commit(next)
+    const next = quantizeNotes(clip.notes, { ...settings, grid, ends: settings.ends || ends }, clip.lengthBeats, targets)
+    if (next.some((note, index) => note !== clip.notes[index])) commit(next)
   }
 
   function transposeSelected(direction: 1 | -1, octave: boolean) {
@@ -829,6 +827,10 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
           {primaryNote ? <span className="piano-selection-label">{labelForPitch(primaryNote.pitch)} <span>· {Number((primaryNote.duration / beatUnit).toFixed(3))}박</span></span>
             : selectedNotes.length > 1 && <span className="piano-selection-label">{selectedNotes.length}<span>개 선택</span></span>}
           <ZoomControls area={drumMode ? '드럼 에디터' : '피아노롤'} onZoom={zoomCommand} />
+          <span className="piano-quantize-anchor">
+            <button type="button" className={`piano-lane-toggle piano-quantize-toggle${quantizeOpen ? ' active' : ''}`} aria-expanded={quantizeOpen} aria-haspopup="dialog" onClick={() => setQuantizeOpen(open => !open)} title="퀀타이즈 설정 (Q)">Q</button>
+            {quantizeOpen && <QuantizePopover settings={quantizeSettings} hasSelection={selectedIds.size > 0} onChange={next => { setQuantizeSettings(next); savePianoQuantize(next) }} onApply={() => quantize(false)} onClose={() => setQuantizeOpen(false)} />}
+          </span>
           <button type="button" className={`piano-lane-toggle${showVelocity ? ' active' : ''}`} aria-pressed={showVelocity} onClick={() => setShowVelocity(value => !value)} title="벨로시티 레인 보이기/숨기기">VEL</button>
           <button type="button" className={`piano-lane-toggle${showSustain ? ' active' : ''}`} aria-pressed={showSustain} onClick={() => setShowSustain(!showSustain)} title={`서스테인 페달(CC64) 레인 보이기/숨기기${pedalPresses ? ` · 페달 ${pedalPresses}번` : ''}`}>PED</button>
           <label className="piano-snap" title={`마우스는 기본 자유 이동 · 필요할 때 격자 선택 · ${modLabel}G: 스냅 켬/끔 · 드래그 중 ${mac ? '⌃' : 'Ctrl'}: 세밀하게 · ${mac ? '⌃⇧' : 'Ctrl+Shift'}: 격자 무시 · Shift: 축 고정 · 방향키: 표시 격자 한 칸`}>

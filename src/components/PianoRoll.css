@@ -142,3 +142,14 @@
   .piano-selection-label { display: none; }
   .piano-footer { padding: 0 10px; }
 }
+/* Quantize popover (QuantizePopover.tsx) */
+.piano-quantize-anchor { position: relative; display: inline-flex; }
+.piano-quantize-popover { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 236px; display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 8px 24px rgb(0 0 0 / .28); font-size: 11px; color: var(--text-primary); }
+.piano-quantize-popover label { display: grid; grid-template-columns: 34px 1fr 34px; align-items: center; gap: 6px; }
+.piano-quantize-popover label select { grid-column: 2 / 4; }
+.piano-quantize-popover output { font-variant-numeric: tabular-nums; text-align: right; color: var(--text-secondary); }
+.piano-quantize-popover .piano-quantize-check { display: flex; gap: 6px; }
+.piano-quantize-actions { display: flex; justify-content: flex-end; }
+.piano-quantize-actions button { height: 24px; padding: 0 10px; border-radius: 4px; border: 1px solid var(--accent-border); background: var(--accent-soft); color: var(--accent); font: inherit; cursor: pointer; }
+.piano-quantize-actions button:disabled { opacity: .5; cursor: default; }
+.piano-quantize-popover small { color: var(--text-muted); font-size: 10px; }

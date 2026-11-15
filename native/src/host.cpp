@@ -1,4 +1,6 @@
 #include "protocol.hpp"
+#include "midi_input.hpp"
+#include "midi_routing.hpp"
 #include "garak/device.hpp"
 #include "garak/vst3.hpp"
 #include "ieum_wave/patch.hpp"
@@ -184,6 +186,7 @@ class Host {
     if (engine_) engine_->collectRetired();
     const auto epoch=callbacks_.load();
     std::erase_if(retiredPreview_,[epoch](const auto& item){return epoch>=item.first;});
+    std::erase_if(retiredRoutes_,[epoch](const auto& item){return epoch>=item.first;});
     for (auto& [id,p]:plugins_) {
       p.processor->service();
       const auto status=p.processor->status();
@@ -201,9 +204,10 @@ class Host {
     }
   }
   Json request(const std::string& method,const Json& a) {
-    if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"backends",DeviceHost::availableBackends()},
+    if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"midiInput",true},{"midiDevices",midi::MidiInputManager::supported()},{"backends",DeviceHost::availableBackends()},
       {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}}};
-    if (method=="engine.snapshot") return snapshot();
+    if (method=="engine.snapshot") { auto result=snapshot(); drainMidi(result); return result; }
+    if (method.rfind("midi.",0)==0) return midiRequest(method,a);
     if (method=="devices.list") {
       Json result=Json::array();
       if (test_) return Json::array({{{"id","test-device"},{"name","Test clock (no audio hardware)"},{"backend","test"},{"inputChannels",2},{"outputChannels",2},{"isDefault",true}}});
@@ -229,7 +233,7 @@ class Host {
       if (!engine_) { engine_=std::make_unique<RenderEngine>(project.sampleRate,scratchFrames); engine_->setProcessing(processingOptions(true)); applyMetronome(); }
       auto prepared=engine_->prepare(project,assets_,sets_,resolver(false));
       if(a.value("awaitApplied",false))requireEngine();
-      const auto ticket=engine_->submit(std::move(prepared)); project_=std::move(project); prunePlugins();
+      const auto ticket=engine_->submit(std::move(prepared)); project_=std::move(project); prunePlugins(); publishMidiRoutes();
       if(a.value("awaitApplied",false))awaitApplied(ticket);
       return {{"revision",project_.revision}};
     }
@@ -589,6 +593,7 @@ class Host {
     auto prepared=engine_->prepare(project_,assets_,sets_,resolver(false)); engine_->submit(std::move(prepared));
     (void)engine_->setInputChannels(0,state.inputChannels>1?1:-1); (void)engine_->setInputLayout(inputLayoutOf(state)); (void)engine_->seek(std::min(oldFrame,project_.lengthFrames));
     load_.reset(); callbackRate_.store(state.sampleRate,std::memory_order_relaxed);
+    midiOutputLatency_.store(state.outputLatencyFrames.value_or(0),std::memory_order_relaxed); midiPanic_.store(true,std::memory_order_release);
     configured_=true; nextTest_=Clock::now();
     try { if(!test_) device_.start(); } catch(...) { configured_=false; device_.close(); throw; }
     auto result=deviceJson(currentDevice()); result["testClock"]=test_; return result;
@@ -625,7 +630,7 @@ class Host {
   static void callback(void* context,float* output,const float* input,std::uint32_t frames,std::uint32_t channels) noexcept {
     auto& host=*static_cast<Host*>(context);
     const auto began=Clock::now();
-    if(host.engine_) host.engine_->render(output,input,frames,channels); else std::fill_n(output,std::size_t(frames)*2,0.f);
+    if(host.engine_) { const auto drained=host.routeMidi(frames,began); host.engine_->render(output,input,frames,channels); host.observeMidi(drained,frames); } else std::fill_n(output,std::size_t(frames)*2,0.f);
     auto* audition=host.preview_.load(std::memory_order_acquire);
     if(audition) for(std::uint32_t offset=0;offset<frames;offset+=scratchFrames) {
       const auto count=std::min(scratchFrames,frames-offset); audition->render(host.previewScratch_.data(),nullptr,count,0);
@@ -735,7 +740,7 @@ class Host {
   void closeDevice() {
     if(!test_) device_.close(); configured_=false; testState_={};
     preview_.store(nullptr); previewOwned_.reset(); retiredPreview_.clear(); toneRemaining_.store(0);
-    probe_.store(nullptr); retiredProbes_.clear(); callbackRate_.store(0);
+    probe_.store(nullptr); retiredProbes_.clear(); callbackRate_.store(0); midiOutputLatency_.store(0);
   }
   void close() noexcept {
     try { closeDevice(); if(recording_) recording_->finish(); recording_.reset(); engine_.reset(); plugins_.clear(); assets_.clear(); sets_.clear(); project_={}; pluginError_.clear(); recordingError_=false; } catch(...) {}
@@ -757,6 +762,135 @@ class Host {
   LoadMeter load_; std::atomic<std::uint32_t> callbackRate_{0};
   // Metronome settings outlive engine re-creation (device configure); see applyMetronome.
   std::shared_ptr<const MetronomeClicks> metronomeClicks_; bool metronomeOn_=false; float metronomeVolume_=0;
+  // ---- Live MIDI (docs/MIDI_RECORDING.md) ---------------------------------
+  // Device threads -> midiQueue_ (MPSC) -> callback: routes to tracks with sample
+  // offsets, then stamps every message with its transport frame -> midiObserved_
+  // (SPSC) -> engine.snapshot "midi". Route tables are immutable and published by
+  // atomic pointer like preview_; the callback owns midiRouter_ (sounding notes).
+  struct MidiRouteSpec { std::string trackId; std::optional<std::string> device; midi::MidiRoute route; };
+  midi::InputQueue midiQueue_;
+  midi::SpscRing<midi::ObservedMidi,2048> midiObserved_;
+  std::vector<std::string> midiSources_; // control thread: index -> device id / virtual source name
+  std::unique_ptr<midi::MidiInputManager> midiInputs_;
+  std::vector<MidiRouteSpec> midiRouteSpecs_;
+  std::atomic<const midi::MidiRouteTable*> midiRoutes_{nullptr}; std::unique_ptr<midi::MidiRouteTable> midiRoutesOwned_;
+  std::vector<std::pair<std::uint64_t,std::unique_ptr<midi::MidiRouteTable>>> retiredRoutes_;
+  std::atomic<bool> midiPanic_{false}; std::atomic<std::uint32_t> midiOutputLatency_{0};
+  // Callback-owned.
+  static constexpr std::size_t midiBlockMessages=256;
+  midi::NoteRouter midiRouter_; const midi::MidiRouteTable* midiSeenRoutes_=nullptr;
+  std::array<midi::RawMidi,midiBlockMessages> midiDrained_{}; std::array<std::uint32_t,midiBlockMessages> midiOffsets_{};
+  std::array<LiveMidiEvent,midiBlockMessages*2> midiEvents_{}; std::size_t midiEventCount_=0;
+  Clock::time_point midiPreviousCallback_{};
+  std::uint16_t midiSource(const std::string& id) {
+    const auto found=std::find(midiSources_.begin(),midiSources_.end(),id);
+    if(found!=midiSources_.end()) return std::uint16_t(std::distance(midiSources_.begin(),found));
+    if(midiSources_.size()>=4096) throw std::runtime_error("Too many MIDI sources");
+    midiSources_.push_back(id); return std::uint16_t(midiSources_.size()-1);
+  }
+  midi::MidiInputManager& midiInputs() { if(!midiInputs_) midiInputs_=std::make_unique<midi::MidiInputManager>(midiQueue_,[this](const std::string& id){return midiSource(id);}); return *midiInputs_; }
+  static Json midiDevicesJson(const std::vector<midi::MidiDeviceInfo>& devices) {
+    Json list=Json::array(); for(const auto& d:devices) list.push_back({{"id",d.id},{"name",d.name},{"enabled",d.enabled},{"open",d.open}});
+    return {{"supported",midi::MidiInputManager::supported()},{"devices",list}};
+  }
+  void publishMidiRoutes() {
+    auto table=std::make_unique<midi::MidiRouteTable>();
+    for(const auto& spec:midiRouteSpecs_) {
+      const auto found=std::find_if(project_.tracks.begin(),project_.tracks.end(),[&](const auto& t){return t.id==spec.trackId;});
+      if(found==project_.tracks.end()) continue; // unknown or deleted track: skipped
+      auto route=spec.route; route.track=std::uint32_t(std::distance(project_.tracks.begin(),found));
+      route.source=spec.device?int(midiSource(*spec.device)):midi::anySource; table->routes.push_back(route);
+    }
+    auto previous=std::move(midiRoutesOwned_); midiRoutesOwned_=std::move(table); midiRoutes_.store(midiRoutesOwned_.get(),std::memory_order_release);
+    if(previous) retiredRoutes_.emplace_back(callbacks_.load()+2,std::move(previous));
+  }
+  bool callbackRunning() const { return configured_ && engine_ && currentDevice().running; }
+  Json midiRequest(const std::string& method,const Json& a) {
+    if(method=="midi.devices") return midiDevicesJson(midiInputs().list());
+    if(method=="midi.enable") {
+      const auto& ids=a.at("ids"); if(!ids.is_array()||ids.size()>256) throw std::runtime_error("Invalid MIDI device ids");
+      std::vector<std::string> list; for(const auto& id:ids) { if(!id.is_string()||id.get<std::string>().size()>512) throw std::runtime_error("Invalid MIDI device id"); list.push_back(id.get<std::string>()); }
+      return midiDevicesJson(midiInputs().enable(list));
+    }
+    if(method=="midi.routes") {
+      const auto& routes=a.at("routes"); if(!routes.is_array()||routes.size()>1024) throw std::runtime_error("Invalid MIDI routes");
+      std::vector<MidiRouteSpec> specs;
+      for(const auto& r:routes) {
+        MidiRouteSpec spec; spec.trackId=string(r,"trackId");
+        if(r.contains("device")&&!r.at("device").is_null()) spec.device=string(r,"device");
+        auto& route=spec.route;
+        route.channel=std::uint8_t(integer(r,"channel",0,16,0)); route.transpose=int(integer(r,"transpose",-127,127,0)); route.velocityOffset=int(integer(r,"velocityOffset",-127,127,0));
+        route.keyLow=std::uint8_t(integer(r,"keyLow",0,127,0)); route.keyHigh=std::uint8_t(integer(r,"keyHigh",0,127,127));
+        route.velocityLow=std::uint8_t(integer(r,"velocityLow",1,127,1)); route.velocityHigh=std::uint8_t(integer(r,"velocityHigh",1,127,127));
+        specs.push_back(std::move(spec));
+      }
+      midiRouteSpecs_=std::move(specs); publishMidiRoutes(); return Json::object();
+    }
+    if(method=="midi.inject") {
+      const auto& messages=a.at("messages"); if(!messages.is_array()||messages.size()>64) throw std::runtime_error("Invalid MIDI messages");
+      const auto now=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+      std::vector<midi::RawMidi> parsed;
+      for(const auto& m:messages) {
+        const auto source=midiSource(string(m,"source",128)); const auto& data=m.at("data");
+        if(!data.is_array()||data.empty()||data.size()>3) throw std::runtime_error("Invalid MIDI message");
+        std::array<std::uint8_t,3> bytes{};
+        for(std::size_t i=0;i<data.size();++i) { if(!data[i].is_number_integer()) throw std::runtime_error("Invalid MIDI byte"); const auto v=data[i].get<int>(); if(v<0||v>(i?127:255)) throw std::runtime_error("Invalid MIDI byte"); bytes[i]=std::uint8_t(v); }
+        if(bytes[0]<0x80||bytes[0]>=0xF0) throw std::runtime_error("Only MIDI channel messages can be injected");
+        parsed.push_back({source,bytes[0],bytes[1],bytes[2],now});
+      }
+      for(const auto& raw:parsed) (void)midiQueue_.push(raw);
+      return Json::object();
+    }
+    if(method=="midi.panic") {
+      midiPanic_.store(true,std::memory_order_release);
+      if(engine_) for(std::uint32_t i=0;i<project_.tracks.size()&&i<256;++i) (void)engine_->allNotesOff(i);
+      return Json::object();
+    }
+    throw std::runtime_error("Unknown native audio method: "+method);
+  }
+  /** Callback, before render: drain input, route note events at sample offsets. Returns messages drained. */
+  std::size_t routeMidi(std::uint32_t frames,Clock::time_point began) noexcept {
+    midiEventCount_=0;
+    const auto emit=[this](const LiveMidiEvent& e){ if(midiEventCount_<midiEvents_.size()) midiEvents_[midiEventCount_++]=e; };
+    if(midiPanic_.exchange(false,std::memory_order_acq_rel)) midiRouter_.releaseAll(0,emit);
+    const auto* routes=midiRoutes_.load(std::memory_order_acquire);
+    if(routes!=midiSeenRoutes_) { midiRouter_.retarget(routes,0,emit); midiSeenRoutes_=routes; }
+    const auto rate=double(std::max<std::uint32_t>(1,callbackRate_.load(std::memory_order_relaxed)));
+    // Constant one-callback delay: an event that arrived t after the previous
+    // callback started plays t into this one, so live timing has no block jitter.
+    const auto previous=midiPreviousCallback_.time_since_epoch().count()?midiPreviousCallback_:began;
+    const auto previousNanos=std::chrono::duration_cast<std::chrono::nanoseconds>(previous.time_since_epoch()).count();
+    std::size_t count=0; midi::RawMidi raw;
+    while(count<midiBlockMessages && midiQueue_.pop(raw)) {
+      const auto offset=std::uint32_t(std::clamp<double>(std::floor(double(raw.nanos-previousNanos)*1e-9*rate),0.0,double(frames?frames-1:0)));
+      midiDrained_[count]=raw; midiOffsets_[count]=offset; ++count;
+      midiRouter_.handle(raw.source,raw.status,raw.data1,raw.data2,routes,offset,emit);
+    }
+    midiPreviousCallback_=began;
+    if(midiEventCount_) (void)engine_->queueLiveMidi(std::span<const LiveMidiEvent>(midiEvents_.data(),midiEventCount_));
+    return count;
+  }
+  /** Callback, after render: stamp each drained message for recording/capture.
+   * frame = transport frame it was rendered at - (one callback of scheduling
+   * delay + the device's reported output latency): the frame the player was
+   * hearing when the key was struck. Plug-in delay compensation is not removed. */
+  void observeMidi(std::size_t count,std::uint32_t frames) noexcept {
+    const auto compensation=std::int64_t(frames)+std::int64_t(midiOutputLatency_.load(std::memory_order_relaxed));
+    for(std::size_t i=0;i<count;++i) {
+      const auto& raw=midiDrained_[i]; const auto rendered=engine_->renderedTransportFrame(midiOffsets_[i]);
+      const bool playing=rendered!=notRenderedFrame;
+      (void)midiObserved_.push({raw.source,raw.status,raw.data1,raw.data2,playing,playing?rendered-compensation:0});
+    }
+  }
+  /** engine.snapshot: observed MIDI since the last poll (raw input when no callback runs). */
+  void drainMidi(Json& result) {
+    Json list=Json::array(); midi::ObservedMidi seen; std::size_t taken=0;
+    const auto name=[this](std::uint16_t source){return source<midiSources_.size()?midiSources_[source]:std::string("unknown");};
+    while(taken<512 && midiObserved_.pop(seen)) { list.push_back({{"source",name(seen.source)},{"data",{seen.status,seen.data1,seen.data2}},{"frame",seen.playing?Json(seen.frame):Json(nullptr)}}); ++taken; }
+    if(!callbackRunning()) { midi::RawMidi raw; while(taken<512 && midiQueue_.pop(raw)) { list.push_back({{"source",name(raw.source)},{"data",{raw.status,raw.data1,raw.data2}},{"frame",nullptr}}); ++taken; } }
+    result["midi"]=std::move(list);
+    if(const auto dropped=midiObserved_.takeDropped()) result["midiDropped"]=dropped;
+  }
   void applyMetronome() {
     if(!engine_) return;
     const bool usable=metronomeClicks_ && metronomeClicks_->sampleRate==engine_->snapshot().sampleRate;
