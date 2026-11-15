@@ -1,10 +1,11 @@
 //! One-pole parameter glide (~12 ms), as `Smooth` in native/src/sigimsae_effects.inc and
 //! src/devices/effects/kernels.ts.
 
+use crate::math;
 /// `1 - exp(-1 / (0.012 * rate))`: the per-sample step every glide in the engine uses.
 #[inline]
 pub fn smoothing_coefficient(sample_rate: f64) -> f64 {
-    1.0 - libm::exp(-1.0 / (0.012 * sample_rate))
+    1.0 - math::exp(-1.0 / (0.012 * sample_rate))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -33,7 +34,7 @@ impl Smooth {
         self.value = previous.value;
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn next(&mut self, k: f64) -> f64 {
         self.value += (self.target - self.value) * k;
         self.value

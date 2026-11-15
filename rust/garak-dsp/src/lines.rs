@@ -42,6 +42,16 @@ impl<'a> Carver<'a> {
     }
 }
 
+/// `(x as usize, that as f64)` for a read position already clamped to `[0, len - 2]` (NaN gives 0,
+/// like `as usize`). Goes through `i64`: the signed conversions are single instructions
+/// (cvttsd2si / cvtsi2sd), while `usize` <-> `f64` is a multi-instruction sequence on x86-64 that
+/// sat on the critical path of every delay-line read. Identical values in this range.
+#[inline(always)]
+fn split_index(x: f64) -> (usize, f64) {
+    let whole = x as i64;
+    (whole as usize, whole as f64)
+}
+
 /// Float ring; `read(age)` interpolates `age` frames behind the newest pushed frame.
 #[derive(Debug)]
 pub struct Ring<'a> {
@@ -64,7 +74,7 @@ impl<'a> Ring<'a> {
         self.data.len()
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn push(&mut self, x: f32) {
         self.write = if self.write + 1 >= self.size() { 0 } else { self.write + 1 };
         if let Some(slot) = self.data.get_mut(self.write) {
@@ -72,15 +82,15 @@ impl<'a> Ring<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn read(&self, age: f64) -> f32 {
         let size = self.size();
         if size < 2 {
             return 0.0;
         }
         let age = std_clamp(age, 0.0, (size - 2) as f64);
-        let whole = age as usize;
-        let fraction = age - whole as f64;
+        let (whole, whole_f) = split_index(age);
+        let fraction = age - whole_f;
         let a = (self.write + size - whole) % size;
         let b = if a == 0 { size - 1 } else { a - 1 };
         let av = self.data.get(a).copied().unwrap_or(0.0);
@@ -133,14 +143,14 @@ impl<'a> DelayLine<'a> {
         Self { data, stamps, write: 0, generation: 1 }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn read(&self, delay: f64, channel: usize) -> f32 {
         let size = self.stamps.len();
         if size < 2 {
             return 0.0;
         }
         let delay = std_clamp(delay, 0.0, (size - 2) as f64);
-        let whole = delay as usize;
+        let (whole, whole_f) = split_index(delay);
         let a = (self.write + size - whole) % size;
         let b = (a + size - 1) % size;
         let g = self.generation as f32;
@@ -152,10 +162,10 @@ impl<'a> DelayLine<'a> {
             }
         };
         let (av, bv) = (value(a), value(b));
-        av + (delay - whole as f64) as f32 * (bv - av)
+        av + (delay - whole_f) as f32 * (bv - av)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn put(&mut self, left: f32, right: f32) {
         let w = self.write;
         if let Some([l, r]) = self.data.get_mut(w * 2..w * 2 + 2).and_then(|s| s.first_chunk_mut::<2>()) {
@@ -167,7 +177,7 @@ impl<'a> DelayLine<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn advance(&mut self) {
         self.write += 1;
         if self.write >= self.stamps.len() {

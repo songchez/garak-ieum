@@ -1,19 +1,20 @@
 //! Gain and pan laws of the track channel strip (native/src/engine.cpp, track mix loop), which
 //! follow the W3C `StereoPannerNode` used by the web engine (src/audio/graph.ts).
 
+use crate::math;
 use crate::{PI, clamp, smooth::smoothing_coefficient};
 
 /// `garak::dsp::dbToGain`.
 #[inline]
 pub fn db_to_gain(db: f64) -> f64 {
-    libm::pow(10.0, db / 20.0)
+    math::pow(10.0, db / 20.0)
 }
 
 /// Equal-power mono pan: a mono voice placed at `pan` in [-1, 1] (centre = -3 dB per side).
 #[inline]
 pub fn pan_mono(pan: f64, x: f64) -> (f64, f64) {
     let angle = (clamp(pan, -1.0, 1.0) + 1.0) * PI / 4.0;
-    (x * libm::cos(angle), x * libm::sin(angle))
+    (x * math::cos(angle), x * math::sin(angle))
 }
 
 /// Stereo balance pan: centre is unity; moving left folds the right channel into the left with
@@ -23,10 +24,10 @@ pub fn pan_stereo(pan: f64, l: f64, r: f64) -> (f64, f64) {
     let pan = clamp(pan, -1.0, 1.0);
     if pan < 0.0 {
         let angle = (pan + 1.0) * PI / 2.0;
-        (l + r * libm::cos(angle), r * libm::sin(angle))
+        (l + r * math::cos(angle), r * math::sin(angle))
     } else if pan > 0.0 {
         let angle = pan * PI / 2.0;
-        (l * libm::cos(angle), r + l * libm::sin(angle))
+        (l * math::cos(angle), r + l * math::sin(angle))
     } else {
         (l, r)
     }
@@ -102,7 +103,7 @@ mod tests {
             assert!((l * l + r * r - 1.0).abs() < 1e-12);
         }
         let (l, r) = pan_mono(0.0, 1.0);
-        assert!((l - r).abs() < 1e-12 && (20.0 * libm::log10(l) + 3.0103).abs() < 1e-3);
+        assert!((l - r).abs() < 1e-12 && (20.0 * math::log10(l) + 3.0103).abs() < 1e-3);
         let (l, r) = pan_mono(-1.0, 1.0);
         assert!((l - 1.0).abs() < 1e-12 && r.abs() < 1e-12);
     }

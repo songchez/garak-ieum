@@ -1,6 +1,8 @@
 // CPU baseline: frames per second of every ported effect, C++ vs Rust, through the same
 // StereoProcessor interface (128-frame blocks, 48 kHz, a busy parameter set). Not a test: prints a
-// Markdown table for docs/RUST.md and CI logs. Usage: garak-rust-bench [seconds of audio per run]
+// Markdown table for docs/RUST.md and CI logs. Usage: garak-rust-bench [seconds] [effect ...]
+// Each backend gets `seconds` of audio in total, split into rounds that alternate C++ and Rust; the
+// best round counts. Alternating cancels clock ramps and noisy neighbours on shared CI runners.
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 
@@ -43,7 +45,9 @@ double run(const Case& c, EffectBackend backend, std::size_t totalFrames, const 
 
 int main(int argc, char** argv) {
   const double seconds = argc > 1 ? std::max(0.5, std::atof(argv[1])) : 10.0;
-  const auto totalFrames = static_cast<std::size_t>(48000 * seconds);
+  constexpr int rounds = 5;
+  const auto totalFrames = static_cast<std::size_t>(48000 * seconds / rounds);
+  std::vector<std::string> only(argv + std::min(argc, 2), argv + argc);
   std::vector<float> input(48000 * 2);
   std::uint32_t seed = 1;
   for (auto& x : input) { seed = seed * 1664525u + 1013904223u; x = static_cast<float>((seed / 4294967296.0 * 2 - 1) * 0.5); }
@@ -54,11 +58,15 @@ int main(int argc, char** argv) {
     {"eq", {{"b4On", 1}, {"b5On", 1}, {"b6On", 1}, {"b7On", 1}, {"b8On", 1}, {"b8Slope", 3}}},
     {"filter", {{"slope", 2}}}, {"compressor", {}}, {"drive", {}}, {"reverb", {{"amount", .5}, {"lowcut", 120}}},
   };
-  std::printf("%.1f s of 48 kHz stereo per run, 128-frame blocks.\n\n", seconds);
+  std::printf("%.1f s of 48 kHz stereo per backend (best of %d alternating rounds), 128-frame blocks.\n\n", seconds, rounds);
   std::printf("| effect | C++ (Mframes/s) | Rust (Mframes/s) | Rust / C++ | C++ x realtime |\n|---|---:|---:|---:|---:|\n");
   for (const auto& c : cases) {
-    const double cpp = run(c, EffectBackend::Cpp, totalFrames, input);
-    const double rust = run(c, EffectBackend::Rust, totalFrames, input);
+    if (!only.empty() && std::find(only.begin(), only.end(), c.type) == only.end()) continue;
+    double cpp = 0, rust = 0;
+    for (int round = 0; round < rounds; ++round) {
+      cpp = std::max(cpp, run(c, EffectBackend::Cpp, totalFrames, input));
+      rust = std::max(rust, run(c, EffectBackend::Rust, totalFrames, input));
+    }
     std::printf("| %s | %.2f | %.2f | %.2f | %.0f |\n", c.type, cpp / 1e6, rust / 1e6, rust / cpp, cpp / 48000);
   }
   return EXIT_SUCCESS;

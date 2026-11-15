@@ -5,6 +5,7 @@ use super::Kernel;
 use crate::biquad::{Biquad, FilterType};
 use crate::gain::db_to_gain;
 use crate::lines::{Carver, DelayLine};
+use crate::math;
 use crate::params::{BITCRUSHER, DRIVE, ParamSet, TAPE, index_of};
 use crate::smooth::{Smooth, smoothing_coefficient};
 use crate::{PI, std_clamp};
@@ -37,7 +38,7 @@ impl Tape {
         let mut s = Self {
             sample_rate,
             k: smoothing_coefficient(sample_rate),
-            origin: libm::tanh(TAPE_BIAS),
+            origin: math::tanh(TAPE_BIAS),
             pre: Smooth::default(),
             post: Smooth::default(),
             mix: Smooth::default(),
@@ -47,10 +48,10 @@ impl Tape {
             dc: Biquad::new(),
         };
         s.pre.set(pre);
-        s.post.set(libm::pow(pre, -0.8));
+        s.post.set(math::pow(pre, -0.8));
         s.mix.set(p.get(T_MIX));
         s.out.set(db_to_gain(p.get(T_OUTPUT)));
-        s.lowpass.configure(FilterType::Lowpass, sample_rate, 20000.0 * libm::pow(0.25, warmth), 0.5, 0.0);
+        s.lowpass.configure(FilterType::Lowpass, sample_rate, 20000.0 * math::pow(0.25, warmth), 0.5, 0.0);
         s.bump.configure(FilterType::LowShelf, sample_rate, 110.0, 0.707, 3.0 * warmth);
         s.dc.configure(FilterType::Highpass, sample_rate, 20.0, 0.5, 0.0);
         s
@@ -73,15 +74,15 @@ impl Kernel for Tape {
         let pre = db_to_gain(p.get(T_DRIVE));
         let warmth = p.get(T_WARMTH);
         self.pre.target = pre;
-        self.post.target = libm::pow(pre, -0.8);
+        self.post.target = math::pow(pre, -0.8);
         self.mix.target = p.get(T_MIX);
         self.out.target = db_to_gain(p.get(T_OUTPUT));
         let sr = self.sample_rate;
-        self.lowpass.retarget(FilterType::Lowpass, sr, 20000.0 * libm::pow(0.25, warmth), 0.5, 0.0);
+        self.lowpass.retarget(FilterType::Lowpass, sr, 20000.0 * math::pow(0.25, warmth), 0.5, 0.0);
         self.bump.retarget(FilterType::LowShelf, sr, 110.0, 0.707, 3.0 * warmth);
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         let pre = self.pre.next(self.k);
         let post = self.post.next(self.k);
@@ -90,7 +91,7 @@ impl Kernel for Tape {
         let mut io = [l, r];
         for (c, s) in io.iter_mut().enumerate() {
             let x = f64::from(*s);
-            let shaped = ((libm::tanh(x * pre + TAPE_BIAS) - self.origin) * post) as f32;
+            let shaped = ((math::tanh(x * pre + TAPE_BIAS) - self.origin) * post) as f32;
             let y = f64::from(self.dc.sample(self.bump.sample(self.lowpass.sample(shaped, c), c), c));
             *s = ((x * (1.0 - mix) + y * mix) * out) as f32;
         }
@@ -126,7 +127,7 @@ impl Bitcrusher {
         mix.set(p.get(B_MIX));
         Self {
             k: smoothing_coefficient(sample_rate),
-            levels: libm::pow(2.0, p.get(B_BITS) - 1.0),
+            levels: math::pow(2.0, p.get(B_BITS) - 1.0),
             factor: p.get(B_DOWNSAMPLE),
             countdown: 0.0,
             hold_l: 0.0,
@@ -146,12 +147,12 @@ impl Bitcrusher {
 
 impl Kernel for Bitcrusher {
     fn automate(&mut self, p: &ParamSet) {
-        self.levels = libm::pow(2.0, p.get(B_BITS) - 1.0);
+        self.levels = math::pow(2.0, p.get(B_BITS) - 1.0);
         self.factor = p.get(B_DOWNSAMPLE);
         self.mix.target = p.get(B_MIX);
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         let mix = self.mix.next(self.k);
         if self.countdown <= 0.0 {
@@ -161,8 +162,8 @@ impl Kernel for Bitcrusher {
         }
         self.countdown -= 1.0;
         let levels = self.levels;
-        let ql = libm::floor(self.hold_l * levels + 0.5) / levels;
-        let qr = libm::floor(self.hold_r * levels + 0.5) / levels;
+        let ql = math::floor(self.hold_l * levels + 0.5) / levels;
+        let qr = math::floor(self.hold_r * levels + 0.5) / levels;
         ((f64::from(l) * (1.0 - mix) + ql * mix) as f32, (f64::from(r) * (1.0 - mix) + qr * mix) as f32)
     }
 
@@ -205,14 +206,14 @@ fn fir(coefficients: &[f64; 17], x: f64, state: &mut [f64; 17], write: &mut usiz
 
 impl Saturator {
     pub fn new(amount: f64, bias: f64) -> Self {
-        let origin = libm::tanh(bias);
-        let normal = (libm::tanh(amount + bias) - origin).max(origin - libm::tanh(-amount + bias));
+        let origin = math::tanh(bias);
+        let normal = (math::tanh(amount + bias) - origin).max(origin - math::tanh(-amount + bias));
         let mut coefficients = [0.0; 17];
         let mut sum = 0.0;
         for (i, c) in coefficients.iter_mut().enumerate() {
             let x = i as f64 - 8.0;
-            let sinc = if x == 0.0 { 0.5 } else { libm::sin(PI * 0.5 * x) / (PI * x) };
-            *c = sinc * (0.5 - 0.5 * libm::cos(2.0 * PI * i as f64 / 16.0));
+            let sinc = if x == 0.0 { 0.5 } else { math::sin(PI * 0.5 * x) / (PI * x) };
+            *c = sinc * (0.5 - 0.5 * math::cos(2.0 * PI * i as f64 / 16.0));
             sum += *c;
         }
         for c in &mut coefficients {
@@ -231,7 +232,7 @@ impl Saturator {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn sample(&mut self, input: f32, channel: usize) -> f32 {
         let c = channel.min(1);
         let (Some(up), Some(down), Some(uw), Some(dw)) =
@@ -270,7 +271,7 @@ impl Saturator {
 
 #[inline]
 fn shape(amount: f64, bias: f64, origin: f64, normal: f64, x: f64) -> f64 {
-    (libm::tanh(amount * std_clamp(x, -1.0, 1.0) + bias) - origin) / normal
+    (math::tanh(amount * std_clamp(x, -1.0, 1.0) + bias) - origin) / normal
 }
 
 const D_DRIVE: usize = index_of(DRIVE, "drive");
@@ -321,7 +322,7 @@ impl<'a> Drive<'a> {
         } else {
             self.tone.configure(FilterType::Lowpass, self.sample_rate, p.get(D_TONE), 1.0, 0.0);
         }
-        self.post = self.output / libm::sqrt(self.pre * 2.53);
+        self.post = self.output / math::sqrt(self.pre * 2.53);
     }
 
     pub fn take_state_from(&mut self, p: &mut Self) -> bool {
@@ -336,7 +337,7 @@ impl Kernel for Drive<'_> {
         self.configure(p, true);
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         self.dry.put(l, r);
         let mut io = [l, r];

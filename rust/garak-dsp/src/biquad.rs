@@ -5,6 +5,7 @@
 //! peaking Q is linear, shelf slope is fixed at one. Coefficients glide over ~12 ms after a
 //! retarget so knob moves do not click; the glide advances once per frame (on channel 0).
 
+use crate::math;
 use crate::{PI, clamp, gain::db_to_gain, smooth::smoothing_coefficient};
 
 #[repr(u32)]
@@ -53,10 +54,10 @@ impl Coefficients {
         let hz = clamp(frequency, 1.0, sample_rate * 0.45);
         let q = if pass_q { clamp(q, -60.0, 60.0) } else { clamp(q, 0.0001, 40.0) };
         let omega = 2.0 * PI * hz / sample_rate;
-        let cosine = libm::cos(omega);
-        let sine = libm::sin(omega);
+        let cosine = math::cos(omega);
+        let sine = math::sin(omega);
         let quality = if pass_q { db_to_gain(q) } else { q };
-        let a = libm::pow(10.0, gain_db / 40.0);
+        let a = math::pow(10.0, gain_db / 40.0);
         let alpha = sine / (2.0 * quality);
         let (b0, b1, b2, a0, a1, a2) = match kind {
             FilterType::Lowpass => {
@@ -78,7 +79,7 @@ impl Coefficients {
                 1.0 - alpha / a,
             ),
             FilterType::LowShelf => {
-                let beta = libm::sqrt(2.0 * a) * sine;
+                let beta = math::sqrt(2.0 * a) * sine;
                 (
                     a * ((a + 1.0) - (a - 1.0) * cosine + beta),
                     2.0 * a * ((a - 1.0) - (a + 1.0) * cosine),
@@ -89,7 +90,7 @@ impl Coefficients {
                 )
             }
             FilterType::HighShelf => {
-                let beta = libm::sqrt(2.0 * a) * sine;
+                let beta = math::sqrt(2.0 * a) * sine;
                 (
                     a * ((a + 1.0) + (a - 1.0) * cosine + beta),
                     -2.0 * a * ((a - 1.0) + (a + 1.0) * cosine),
@@ -106,12 +107,12 @@ impl Coefficients {
     /// |H(e^jw)| in dB at `frequency` (same as eqModel.ts `sectionsResponseDb` for one section).
     pub fn response_db(&self, sample_rate: f64, frequency: f64) -> f64 {
         let w = 2.0 * PI * frequency / sample_rate;
-        let (c1, s1, c2, s2) = (libm::cos(w), libm::sin(w), libm::cos(2.0 * w), libm::sin(2.0 * w));
+        let (c1, s1, c2, s2) = (math::cos(w), math::sin(w), math::cos(2.0 * w), math::sin(2.0 * w));
         let nr = self.b0 + self.b1 * c1 + self.b2 * c2;
         let ni = -(self.b1 * s1 + self.b2 * s2);
         let dr = 1.0 + self.a1 * c1 + self.a2 * c2;
         let di = -(self.a1 * s1 + self.a2 * s2);
-        10.0 * libm::log10((nr * nr + ni * ni) / (dr * dr + di * di))
+        10.0 * math::log10((nr * nr + ni * ni) / (dr * dr + di * di))
     }
 }
 
@@ -176,7 +177,7 @@ impl Biquad {
 
     /// One sample on `channel` (0 = left; anything else = right). Channel 0 advances the glide,
     /// so call channel 0 first in each frame, as the C++ and TS kernels do.
-    #[inline]
+    #[inline(always)]
     pub fn sample(&mut self, x: f32, channel: usize) -> f32 {
         if channel == 0 {
             let (c, t, s) = (&mut self.current, &self.target, self.smoothing);
@@ -260,13 +261,13 @@ mod tests {
         f.configure(FilterType::Highpass, SR, 500.0, 0.0, 0.0);
         let mut peak = 0.0f32;
         for i in 0..48_000 {
-            let x = libm::sin(2.0 * PI * 50.0 * f64::from(i) / SR) as f32;
+            let x = math::sin(2.0 * PI * 50.0 * f64::from(i) / SR) as f32;
             let y = f.sample(x, 0);
             if i > 24_000 {
                 peak = peak.max(y.abs());
             }
         }
-        let expected = libm::pow(
+        let expected = math::pow(
             10.0,
             Coefficients::design(FilterType::Highpass, SR, 500.0, 0.0, 0.0).response_db(SR, 50.0) / 20.0,
         );

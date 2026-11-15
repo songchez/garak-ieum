@@ -5,6 +5,7 @@
 use super::{Kernel, TAU, feedback_repeats};
 use crate::biquad::{Biquad, FilterType};
 use crate::lines::{Carver, Ring};
+use crate::math;
 use crate::params::{DELAY, ParamSet, index_of};
 use crate::smooth::{Smooth, smoothing_coefficient};
 use crate::std_max;
@@ -55,7 +56,7 @@ pub struct StudioDelay<'a> {
 
 impl<'a> StudioDelay<'a> {
     fn ring_size(sample_rate: f64) -> usize {
-        libm::ceil(sample_rate * 4.1) as usize + 4
+        math::ceil(sample_rate * 4.1) as usize + 4
     }
 
     pub fn storage_len(sample_rate: f64) -> usize {
@@ -77,7 +78,7 @@ impl<'a> StudioDelay<'a> {
             feedback: Smooth::default(),
             age: Smooth::default(),
             time: Smooth::default(),
-            glide: 1.0 - libm::exp(-1.0 / (0.08 * sample_rate)),
+            glide: 1.0 - math::exp(-1.0 / (0.08 * sample_rate)),
             tail: 0.0,
             wow: 0.0,
             flutter: 0.0,
@@ -151,7 +152,7 @@ impl Kernel for StudioDelay<'_> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, xl: f32, xr: f32) -> (f32, f32) {
         let sr = self.sample_rate;
         let wet = self.wet.next(self.k);
@@ -159,7 +160,7 @@ impl Kernel for StudioDelay<'_> {
         let feedback = self.feedback.next(self.k);
         let age = self.age.next(self.k);
         let time = self.time.next(self.glide);
-        let wobble = age * sr * (0.0014 + 0.0012 * libm::sin(self.wow) + 0.00015 * libm::sin(self.flutter));
+        let wobble = age * sr * (0.0014 + 0.0012 * math::sin(self.wow) + 0.00015 * math::sin(self.flutter));
         let read = std_max(0.0, time + wobble - 1.0);
         let drive = 1.0 + 2.0 * age;
         let mut fl = f64::from(self.low.sample(self.l.read(read), 0));
@@ -169,8 +170,8 @@ impl Kernel for StudioDelay<'_> {
             fr = f64::from(self.high.sample(fr as f32, 1));
         }
         if age > 1e-4 {
-            fl = libm::tanh(fl * drive) / drive;
-            fr = libm::tanh(fr * drive) / drive;
+            fl = math::tanh(fl * drive) / drive;
+            fr = math::tanh(fr * drive) / drive;
         }
         let (xl, xr) = (f64::from(xl), f64::from(xr));
         if self.ping_pong {

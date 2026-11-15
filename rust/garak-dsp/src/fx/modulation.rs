@@ -3,6 +3,7 @@
 
 use super::{Kernel, TAU, feedback_repeats};
 use crate::lines::{Carver, Ring};
+use crate::math;
 use crate::params::{CHORUS, FLANGER, PHASER, ParamSet, TREMOLO, index_of};
 use crate::smooth::{Smooth, smoothing_coefficient};
 use crate::{PI, std_min};
@@ -34,7 +35,7 @@ pub struct Chorus<'a> {
 
 impl<'a> Chorus<'a> {
     fn ring_size(sample_rate: f64) -> usize {
-        libm::ceil(sample_rate * 0.05) as usize + 4
+        math::ceil(sample_rate * 0.05) as usize + 4
     }
 
     pub fn storage_len(sample_rate: f64) -> usize {
@@ -77,13 +78,13 @@ impl Kernel for Chorus<'_> {
         self.mix.target = p.get(C_MIX);
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, xl: f32, xr: f32) -> (f32, f32) {
         let depth = self.depth.next(self.k);
         let mix = self.mix.next(self.k);
         self.l.push(xl);
         self.r.push(xr);
-        let modulation = libm::sin(self.phase) * depth * 0.005;
+        let modulation = math::sin(self.phase) * depth * 0.005;
         let wl = f64::from(self.l.read((0.014 + modulation) * self.sample_rate));
         let wr = f64::from(self.r.read((0.017 - modulation) * self.sample_rate));
         let out = (
@@ -128,7 +129,7 @@ pub struct Flanger<'a> {
 
 impl<'a> Flanger<'a> {
     fn ring_size(sample_rate: f64) -> usize {
-        libm::ceil(sample_rate * 0.012) as usize + 4
+        math::ceil(sample_rate * 0.012) as usize + 4
     }
 
     pub fn storage_len(sample_rate: f64) -> usize {
@@ -176,15 +177,15 @@ impl Kernel for Flanger<'_> {
         self.mix.target = p.get(F_MIX);
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, xl: f32, xr: f32) -> (f32, f32) {
         let depth = self.depth.next(self.k);
         let feedback = self.feedback.next(self.k);
         let mix = self.mix.next(self.k);
         let sr = self.sample_rate;
-        let yl = f64::from(self.l.read((0.0003 + depth * (0.5 + 0.5 * libm::sin(self.phase)) * 0.006) * sr));
+        let yl = f64::from(self.l.read((0.0003 + depth * (0.5 + 0.5 * math::sin(self.phase)) * 0.006) * sr));
         let yr = f64::from(
-            self.r.read((0.0003 + depth * (0.5 + 0.5 * libm::sin(self.phase + PI / 2.0)) * 0.006) * sr),
+            self.r.read((0.0003 + depth * (0.5 + 0.5 * math::sin(self.phase + PI / 2.0)) * 0.006) * sr),
         );
         self.l.push((f64::from(xl) + feedback * yl) as f32);
         self.r.push((f64::from(xr) + feedback * yr) as f32);
@@ -269,7 +270,7 @@ impl Kernel for Phaser {
         self.mix.target = p.get(P_MIX);
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, xl: f32, xr: f32) -> (f32, f32) {
         let depth = self.depth.next(self.k);
         let feedback = self.feedback.next(self.k);
@@ -280,9 +281,9 @@ impl Kernel for Phaser {
             out.iter_mut().zip(self.state.iter_mut()).zip(self.last.iter_mut()).enumerate()
         {
             let x = f64::from(*o);
-            let lfo = 0.5 + 0.5 * libm::sin(self.phase + if c != 0 { PI / 2.0 } else { 0.0 });
-            let frequency = 200.0 * libm::pow(16.0, 0.5 + (lfo - 0.5) * depth);
-            let t = libm::tan(PI * std_min(frequency, sr * 0.45) / sr);
+            let lfo = 0.5 + 0.5 * math::sin(self.phase + if c != 0 { PI / 2.0 } else { 0.0 });
+            let frequency = 200.0 * math::pow(16.0, 0.5 + (lfo - 0.5) * depth);
+            let t = math::tan(PI * std_min(frequency, sr * 0.45) / sr);
             let a = (t - 1.0) / (t + 1.0);
             let mut y = x + feedback * *last;
             for zs in z.iter_mut() {
@@ -331,6 +332,10 @@ pub struct Tremolo {
     depth: Smooth,
     shape: Smooth,
     pan: Smooth,
+    /// `tanh(norm_k)` for the last `norm_k`. The normaliser only changes while `shape` glides, so
+    /// recomputing it on a change gives the same value as calling `tanh` every frame.
+    norm_k: f64,
+    norm: f64,
 }
 
 impl Tremolo {
@@ -346,6 +351,8 @@ impl Tremolo {
             depth: Smooth::default(),
             shape: Smooth::default(),
             pan: Smooth::default(),
+            norm_k: f64::NAN,
+            norm: f64::NAN,
         };
         s.read_rate(p);
         s.depth.set(p.get(T_DEPTH));
@@ -388,13 +395,17 @@ impl Kernel for Tremolo {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, xl: f32, xr: f32) -> (f32, f32) {
         let depth = self.depth.next(self.k);
         let shape = self.shape.next(self.k);
         let pan = self.pan.next(self.k);
         let kk = 0.01 + shape * 9.0;
-        let wave = libm::tanh(kk * libm::sin(self.phase)) / libm::tanh(kk);
+        if kk != self.norm_k {
+            self.norm_k = kk;
+            self.norm = math::tanh(kk);
+        }
+        let wave = math::tanh(kk * math::sin(self.phase)) / self.norm;
         let trem = 1.0 - depth * 0.5 * (1.0 - wave);
         let gl = trem * (1.0 - pan) + (1.0 - depth * 0.5 * (1.0 + wave)) * pan;
         let gr = trem * (1.0 - pan) + (1.0 - depth * 0.5 * (1.0 - wave)) * pan;

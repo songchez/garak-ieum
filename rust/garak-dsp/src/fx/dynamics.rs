@@ -4,6 +4,7 @@
 
 use super::Kernel;
 use crate::gain::db_to_gain;
+use crate::math;
 use crate::params::{COMPRESSOR, GATE, LIMITER, ParamSet, index_of};
 use crate::smooth::{Smooth, smoothing_coefficient};
 use crate::{std_clamp, std_max, std_min};
@@ -76,8 +77,8 @@ impl Compressor {
     fn set(&mut self, threshold: f64, ratio: f64, attack: f64, release: f64, makeup: f64) {
         self.threshold = threshold;
         self.strength = 1.0 - 1.0 / ratio;
-        self.attack = libm::exp(-1.0 / (attack.max(0.00001) * self.rate));
-        self.release = libm::exp(-1.0 / (release.max(0.00001) * self.rate));
+        self.attack = math::exp(-1.0 / (attack.max(0.00001) * self.rate));
+        self.release = math::exp(-1.0 / (release.max(0.00001) * self.rate));
         self.makeup = makeup;
     }
 
@@ -98,12 +99,12 @@ impl Kernel for Compressor {
         );
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         let peak = f64::from(std_max(l.abs(), r.abs()));
         let c = if peak > self.envelope { self.attack } else { self.release };
         self.envelope = peak + c * (self.envelope - peak);
-        let above = 20.0 * libm::log10(std_max(1e-12, self.envelope)) - self.threshold;
+        let above = 20.0 * math::log10(std_max(1e-12, self.envelope)) - self.threshold;
         let half = self.knee / 2.0;
         let over = if above < -half {
             0.0
@@ -153,7 +154,7 @@ impl Limiter {
             sample_rate,
             k: smoothing_coefficient(sample_rate),
             ceiling: db_to_gain(p.get(L_CEILING)),
-            release: 1.0 - libm::exp(-1.0 / (p.get(L_RELEASE) * 0.001 * sample_rate)),
+            release: 1.0 - math::exp(-1.0 / (p.get(L_RELEASE) * 0.001 * sample_rate)),
             tail: p.get(L_RELEASE) * 0.007,
             gain: 1.0,
             pre,
@@ -171,11 +172,11 @@ impl Limiter {
 impl Kernel for Limiter {
     fn automate(&mut self, p: &ParamSet) {
         self.ceiling = db_to_gain(p.get(L_CEILING));
-        self.release = 1.0 - libm::exp(-1.0 / (p.get(L_RELEASE) * 0.001 * self.sample_rate));
+        self.release = 1.0 - math::exp(-1.0 / (p.get(L_RELEASE) * 0.001 * self.sample_rate));
         self.pre.target = db_to_gain(p.get(L_GAIN));
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         let c = self.ceiling;
         let pre = self.pre.next(self.k);
@@ -236,7 +237,7 @@ impl Gate {
             close_level: 0.0,
             attack: 0.0,
             release: 0.0,
-            detector: libm::exp(-1.0 / (0.01 * sample_rate)),
+            detector: math::exp(-1.0 / (0.01 * sample_rate)),
             hold_frames: 0,
             tail: (p.get(G_HOLD) + p.get(G_RELEASE) * 1.5) * 0.001,
             envelope: 0.0,
@@ -263,12 +264,12 @@ impl Kernel for Gate {
         let sr = self.sample_rate;
         self.open_level = db_to_gain(p.get(G_THRESHOLD));
         self.close_level = self.open_level * db_to_gain(-4.0);
-        self.attack = 1.0 - libm::exp(-1.0 / (p.get(G_ATTACK) * 0.001 * sr));
-        self.release = 1.0 - libm::exp(-6.9 / (p.get(G_RELEASE) * 0.001 * sr));
-        self.hold_frames = libm::floor(p.get(G_HOLD) * 0.001 * sr + 0.5) as i64;
+        self.attack = 1.0 - math::exp(-1.0 / (p.get(G_ATTACK) * 0.001 * sr));
+        self.release = 1.0 - math::exp(-6.9 / (p.get(G_RELEASE) * 0.001 * sr));
+        self.hold_frames = math::floor(p.get(G_HOLD) * 0.001 * sr + 0.5) as i64;
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         let peak = f64::from(std_max(l.abs(), r.abs()));
         self.envelope = if peak > self.envelope { peak } else { self.envelope * self.detector };

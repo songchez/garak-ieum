@@ -11,7 +11,8 @@ publish = false
 
 [workspace.dependencies]
 garak-dsp = { path = "garak-dsp" }
-# Pure-Rust libm: identical transcendental results on native and wasm32, and no libc for no_std.
+# Pure-Rust libm for wasm32 (no C library there). Native garak-ffi uses the platform libm instead
+# (garak-dsp feature `platform-math`, src/math.rs).
 libm = { version = "0.2", default-features = false }
 
 # Real-time rules (docs/RUST.md). Each crate opts in with `[lints] workspace = true`.

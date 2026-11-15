@@ -8,6 +8,7 @@
 //! Parameters live in a [`ParamSet`] in catalog order: [`Fx::automate`] re-reads them in place
 //! (new targets glide like the worklet's `configure()` / C++ `automate()`).
 
+use crate::math;
 pub mod color;
 pub mod delay;
 pub mod dynamics;
@@ -29,7 +30,7 @@ pub(crate) const TAU: f64 = 2.0 * crate::PI;
 
 /// `repeats` of the tail estimates: echoes until -60 dB.
 pub(crate) fn feedback_repeats(feedback: f64) -> f64 {
-    if feedback > 0.01 { libm::ceil(libm::log(0.001) / libm::log(feedback)) } else { 1.0 }
+    if feedback > 0.01 { math::ceil(math::log(0.001) / math::log(feedback)) } else { 1.0 }
 }
 
 /// What every effect implements. `frame` is the per-frame body; the block methods default to it.
@@ -51,12 +52,18 @@ pub trait Kernel {
         None
     }
     /// Interleaved stereo in place (native layout); a trailing odd sample is left alone.
+    ///
+    /// One out-of-line loop per kernel (like the C++ virtual `process`), so `frame` is inlined into
+    /// it and the kernel state stays in registers. Inlined into [`Fx`]'s 15-way match instead, the
+    /// loop grew too big for LLVM to inline `frame`, costing a call and a state reload per frame.
+    #[inline(never)]
     fn process_interleaved(&mut self, s: &mut [f32]) {
         for [l, r] in s.as_chunks_mut::<2>().0 {
             (*l, *r) = self.frame(*l, *r);
         }
     }
     /// Planar stereo in place (Web Audio layout), `min(left.len(), right.len())` frames.
+    #[inline(never)]
     fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             (*l, *r) = self.frame(*l, *r);
@@ -293,7 +300,7 @@ mod tests {
             }
             let mut storage = Vec::new();
             let mut fx = make(kind, &mut storage);
-            let mut buf: Vec<f32> = (0..2048).map(|i| libm::sinf(i as f32 * 0.05) * 0.8).collect();
+            let mut buf: Vec<f32> = (0..2048).map(|i| math::sinf(i as f32 * 0.05) * 0.8).collect();
             fx.process_interleaved(&mut buf);
             fx.set_param(0, fx.param(0) * 0.5 + 0.1);
             fx.commit();

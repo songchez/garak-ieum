@@ -10,6 +10,7 @@
 use super::Kernel;
 use crate::biquad::{Biquad, FilterType};
 use crate::lines::{Carver, DelayLine};
+use crate::math;
 use crate::params::{ParamSet, REVERB, index_of};
 use crate::{PI, clamp};
 
@@ -27,7 +28,7 @@ const SPACES: [(f64, u32, f64, u32); 4] =
 
 /// `type` parameter -> space index (lround, clamped).
 pub fn space_of(type_param: f64) -> usize {
-    clamp(libm::round(type_param), 0.0, 3.0) as usize
+    clamp(math::round(type_param), 0.0, 3.0) as usize
 }
 
 fn spec(space: usize) -> (f64, u32, f64, u32) {
@@ -35,7 +36,7 @@ fn spec(space: usize) -> (f64, u32, f64, u32) {
 }
 
 fn impulse_len(sample_rate: f64, seconds: f64) -> usize {
-    libm::ceil(sample_rate * seconds) as usize
+    math::ceil(sample_rate * seconds) as usize
 }
 
 /// Frames of the impulse response of `space` (its long variant).
@@ -51,7 +52,7 @@ pub fn ir_scratch_len(sample_rate: f64, space: usize) -> usize {
 /// dsp.cpp `impulse()`: seeded noise shaped per space, normalised to a fixed RMS.
 fn impulse(sample_rate: f64, mut seed: u32, space: usize, left: &mut [f32], right: &mut [f32]) {
     let length = left.len().min(right.len());
-    let comb = libm::floor(0.0293 * sample_rate + 0.5) as usize;
+    let comb = math::floor(0.0293 * sample_rate + 0.5) as usize;
     let mut power = 0.0f64;
     for channel in [&mut *left, &mut *right] {
         let (mut previous, mut dark) = (0.0f64, 0.0f64);
@@ -60,9 +61,9 @@ fn impulse(sample_rate: f64, mut seed: u32, space: usize, left: &mut [f32], righ
             let noise = f64::from(seed) / 4_294_967_295.0 * 2.0 - 1.0;
             let t = i as f64 / length as f64;
             let value = match space {
-                0 => (noise * libm::pow(1.0 - t, 3.6)) as f32,
-                1 => (noise * libm::pow(1.0 - t, 4.5)) as f32,
-                2 => ((noise - 0.65 * previous) * libm::pow(1.0 - t, 2.4)) as f32,
+                0 => (noise * math::pow(1.0 - t, 3.6)) as f32,
+                1 => (noise * math::pow(1.0 - t, 4.5)) as f32,
+                2 => ((noise - 0.65 * previous) * math::pow(1.0 - t, 2.4)) as f32,
                 _ => {
                     dark += 0.45 * (noise - dark);
                     let echo = if i >= comb {
@@ -70,7 +71,7 @@ fn impulse(sample_rate: f64, mut seed: u32, space: usize, left: &mut [f32], righ
                     } else {
                         0.0
                     };
-                    (dark * libm::pow(1.0 - t, 3.0) + echo) as f32
+                    (dark * math::pow(1.0 - t, 3.0) + echo) as f32
                 }
             };
             if let Some(slot) = channel.get_mut(i) {
@@ -80,7 +81,7 @@ fn impulse(sample_rate: f64, mut seed: u32, space: usize, left: &mut [f32], righ
             power += f64::from(value) * f64::from(value);
         }
     }
-    let power = libm::sqrt(power / (length * 2) as f64).max(0.000125);
+    let power = math::sqrt(power / (length * 2) as f64).max(0.000125);
     let scale = (0.00125 / power * 44100.0 / sample_rate) as f32;
     for v in left.iter_mut().take(length).chain(right.iter_mut().take(length)) {
         *v *= scale;
@@ -247,7 +248,7 @@ pub fn prepare_kernels(left: &[f32], right: &[f32], ir_len: usize, out: &mut [f3
             let (roots, kernels) = region.split_at_mut(n);
             for (i, root) in roots.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                 let theta = (-2.0 * PI * i as f64 / n as f64) as f32;
-                *root = [libm::cosf(theta), libm::sinf(theta)];
+                *root = [math::cosf(theta), math::sinf(theta)];
             }
             let roots = roots.as_chunks::<2>().0;
             let segment = ir.get(g.offset..g.offset + g.len).unwrap_or(&[]);
@@ -307,7 +308,7 @@ impl<'a> Group<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn sample(&mut self, x: f32) -> f32 {
         let GroupSpec { block, base, count, .. } = self.spec;
         let n = self.spec.n();
@@ -448,7 +449,7 @@ impl<'a> Convolver<'a> {
         Self { head, history: [0.0; HEAD], write: 0, groups }
     }
 
-    #[inline]
+    #[inline(always)]
     fn sample(&mut self, x: f32) -> f32 {
         let w = self.write;
         if let Some(slot) = self.history.get_mut(w) {
@@ -578,7 +579,7 @@ impl Kernel for Reverb<'_> {
         self.highpass.retarget(FilterType::Highpass, self.sample_rate, p.get(LOWCUT), 0.5, 0.0);
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         let mut input = [l, r];
         if self.delay_frames > 0.0 {
@@ -623,7 +624,7 @@ mod tests {
         let mut roots = vec![[0.0f32; 2]; n / 2];
         for (i, r) in roots.iter_mut().enumerate() {
             let theta = (-2.0 * PI * i as f64 / n as f64) as f32;
-            *r = [libm::cosf(theta), libm::sinf(theta)];
+            *r = [math::cosf(theta), math::sinf(theta)];
         }
         let original: std::vec::Vec<C32> = (0..n).map(|i| [i as f32 * 0.1 - 0.4, 0.0]).collect();
         let mut data = original.clone();
@@ -642,7 +643,7 @@ mod tests {
         // A short IR spanning the head and the first two groups.
         let ir_len: usize = 1200;
         let ir: std::vec::Vec<f32> =
-            (0..ir_len).map(|i| libm::sinf(i as f32 * 0.37) * 0.999f32.powi(i as i32)).collect();
+            (0..ir_len).map(|i| math::sinf(i as f32 * 0.37) * 0.999f32.powi(i as i32)).collect();
         let mut kernels = vec![0.0f32; kernel_len(ir_len)];
         assert!(prepare_kernels(&ir, &ir, ir_len, &mut kernels));
         let mut state = vec![0.0f32; 2 * channel_state_floats(ir_len)];
@@ -669,7 +670,7 @@ mod tests {
         let (mut l, mut r, mut scratch) =
             (vec![0.0f32; len], vec![0.0f32; len], vec![0.0f32; ir_scratch_len(sr, 1)]);
         assert!(generate_ir(sr, 1, 1.0, &mut l, &mut r, &mut scratch));
-        let rms = libm::sqrt(
+        let rms = math::sqrt(
             l.iter().chain(&r).map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>() / (2 * len) as f64,
         );
         assert!((rms - 0.00125 * 44100.0 / sr).abs() < 1e-6, "{rms}");

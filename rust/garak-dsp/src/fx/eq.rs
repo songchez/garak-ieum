@@ -4,6 +4,7 @@
 use super::Kernel;
 use crate::biquad::{Biquad, FilterType};
 use crate::gain::db_to_gain;
+use crate::math;
 use crate::params::{EQ, FILTER, ParamSet, index_of};
 use crate::{PI, clamp};
 
@@ -26,7 +27,7 @@ fn butterworth(stages: usize) -> [f64; 4] {
     let n = stages.clamp(1, 4);
     let mut q = [0.0; 4];
     for (k, v) in q.iter_mut().take(n).enumerate() {
-        *v = 1.0 / (2.0 * libm::cos((2 * k + 1) as f64 * PI / (4.0 * n as f64)));
+        *v = 1.0 / (2.0 * math::cos((2 * k + 1) as f64 * PI / (4.0 * n as f64)));
     }
     // Insertion sort of the first n (std::sort in the C++).
     for i in 1..n {
@@ -54,8 +55,8 @@ fn pass_stages(
     let stages = stages.clamp(1, STAGES_PER_BAND);
     let q = butterworth(stages);
     for (k, (stage, &qk)) in out.iter_mut().zip(q.iter()).take(stages).enumerate() {
-        let linear = if k + 1 == stages { qk * resonance_q / libm::sqrt(0.5) } else { qk };
-        *stage = Stage { kind, hz, q: 20.0 * libm::log10(linear.max(1e-4)), gain: 0.0 };
+        let linear = if k + 1 == stages { qk * resonance_q / math::sqrt(0.5) } else { qk };
+        *stage = Stage { kind, hz, q: 20.0 * math::log10(linear.max(1e-4)), gain: 0.0 };
     }
     stages
 }
@@ -157,15 +158,15 @@ impl BiquadChain {
         let mut used = [false; SLOTS];
         for (b, ids) in EQ_IDS.iter().enumerate() {
             let [on, kind, freq, gain, q, slope] = *ids;
-            if libm::round(p.get(on)) != 1.0 {
+            if math::round(p.get(on)) != 1.0 {
                 continue; // 0 unused, 2 bypassed
             }
             let hz = clamp(p.get(freq), 10.0, sr * 0.45);
             let (gain, q) = (p.get(gain), p.get(q));
-            let slope = libm::round(p.get(slope)) as usize;
+            let slope = math::round(p.get(slope)) as usize;
             let mut stages = [IDLE; STAGES_PER_BAND];
             let mut count = 1;
-            match libm::round(p.get(kind)) as i32 {
+            match math::round(p.get(kind)) as i32 {
                 0 => stages[0] = Stage { kind: FilterType::Peak, hz, q, gain },
                 1 => stages[0] = Stage { kind: FilterType::LowShelf, hz, q: 1.0, gain },
                 2 => stages[0] = Stage { kind: FilterType::HighShelf, hz, q: 1.0, gain },
@@ -186,8 +187,8 @@ impl BiquadChain {
     }
 
     fn configure_sweep(&mut self, p: &ParamSet, glide: bool) {
-        let stages = [1usize, 2, 4].get(libm::round(p.get(F_SLOPE)) as usize).copied().unwrap_or(1);
-        let mode = libm::round(p.get(F_MODE)) as u32;
+        let stages = [1usize, 2, 4].get(math::round(p.get(F_SLOPE)) as usize).copied().unwrap_or(1);
+        let mode = math::round(p.get(F_MODE)) as u32;
         let (hz, resonance) = (p.get(F_CUTOFF), p.get(F_RESONANCE));
         let mut s = [IDLE; STAGES_PER_BAND];
         let kind = if mode == 0 { FilterType::Lowpass } else { FilterType::Highpass };
@@ -199,7 +200,7 @@ impl BiquadChain {
             s[0] = Stage { kind, hz, q: resonance, gain: 0.0 };
         } else {
             // The default resonance 0.7 is flat.
-            pass_stages(&mut s, kind, hz, libm::sqrt(0.5) * db_to_gain(resonance - 0.7), stages);
+            pass_stages(&mut s, kind, hz, math::sqrt(0.5) * db_to_gain(resonance - 0.7), stages);
         }
         for k in 0..SLOTS {
             if k < stages
@@ -238,7 +239,7 @@ impl Kernel for BiquadChain {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, mut l: f32, mut r: f32) -> (f32, f32) {
         for (f, used) in self.filters.iter_mut().zip(self.used.iter()) {
             if *used {
@@ -254,6 +255,7 @@ impl Kernel for BiquadChain {
     }
 
     /// Filter-major like the C++ chain (same result as frame-major; each stage is independent).
+    #[inline(never)]
     fn process_interleaved(&mut self, s: &mut [f32]) {
         let frames = s.as_chunks_mut::<2>().0;
         for (f, used) in self.filters.iter_mut().zip(self.used.iter()) {
@@ -271,6 +273,7 @@ impl Kernel for BiquadChain {
         }
     }
 
+    #[inline(never)]
     fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
         for (f, used) in self.filters.iter_mut().zip(self.used.iter()) {
             if *used {
@@ -304,7 +307,7 @@ mod tests {
     fn butterworth_table_is_ascending() {
         let q = butterworth(4);
         assert!(q[0] < q[1] && q[1] < q[2] && q[2] < q[3]);
-        assert!((butterworth(1)[0] - libm::sqrt(0.5)).abs() < 1e-12);
+        assert!((butterworth(1)[0] - math::sqrt(0.5)).abs() < 1e-12);
     }
 
     #[test]

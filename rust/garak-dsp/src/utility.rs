@@ -2,6 +2,7 @@
 //! Mirrors `UtilityFx` (native/src/sigimsae_effects.inc) and `UtilityKernel`
 //! (src/devices/effects/kernels.ts); parameter ranges from src/devices/effects/sigimsaeDefs.ts.
 
+use crate::math;
 use crate::{
     clamp,
     fx::Kernel,
@@ -76,7 +77,7 @@ impl Utility {
     pub fn configure(&mut self, params: UtilityParams) {
         let p = params.sanitized();
         // lround of a value in 0..3: round half away from zero.
-        let phase = libm::round(p.phase) as i32;
+        let phase = math::round(p.phase) as i32;
         let targets = [
             db_to_gain(p.gain_db),
             p.pan,
@@ -92,8 +93,12 @@ impl Utility {
         self.configured = true;
     }
 
-    #[inline]
-    fn frame(&mut self, a: f32, b: f32) -> (f32, f32) {
+    /// One frame. `SIDE` is the balance branch when it is known for the whole block (see
+    /// [`Self::pan_side`]): `1` pan > 0, `-1` pan < 0, `2` pan == 0, `0` test every frame.
+    /// Leaving out a factor that is exactly 1 changes no bits, so every `SIDE` gives the C++
+    /// result `(mid + side) * (pan > 0 ? 1 - pan : 1) * gain`.
+    #[inline(always)]
+    fn frame_side<const SIDE: i8>(&mut self, a: f32, b: f32) -> (f32, f32) {
         let k = self.k;
         let gain = self.gain.next(k);
         let pan = self.pan.next(k);
@@ -102,20 +107,69 @@ impl Utility {
         let b = f64::from(b) * self.sign_r.next(k);
         let mid = 0.5 * (a + b);
         let side = 0.5 * (a - b) * width;
-        let l = (mid + side) * (if pan > 0.0 { 1.0 - pan } else { 1.0 }) * gain;
-        let r = (mid - side) * (if pan < 0.0 { 1.0 + pan } else { 1.0 }) * gain;
+        let (l, r) = match SIDE {
+            1 => ((mid + side) * (1.0 - pan) * gain, (mid - side) * gain),
+            -1 => ((mid + side) * gain, (mid - side) * (1.0 + pan) * gain),
+            2 => ((mid + side) * gain, (mid - side) * gain),
+            _ => (
+                (mid + side) * (if pan > 0.0 { 1.0 - pan } else { 1.0 }) * gain,
+                (mid - side) * (if pan < 0.0 { 1.0 + pan } else { 1.0 }) * gain,
+            ),
+        };
         (l as f32, r as f32)
     }
 
-    pub fn process_interleaved(&mut self, stereo: &mut [f32]) {
+    #[inline(always)]
+    fn frame(&mut self, a: f32, b: f32) -> (f32, f32) {
+        self.frame_side::<0>(a, b)
+    }
+
+    /// The balance branch for a whole block, when the pan glide cannot cross zero during it: the
+    /// glide stays between its current value and its target, so equal signs at both ends hold for
+    /// every frame. Hoisting it removes a per-frame select (GCC branches on it, which predicts
+    /// perfectly; LLVM's branchless blend cost ~15% of this very light kernel).
+    fn pan_side(&self) -> i8 {
+        let (v, t) = (self.pan.value, self.pan.target);
+        if v > 0.0 && t > 0.0 {
+            1
+        } else if v < 0.0 && t < 0.0 {
+            -1
+        } else if v == 0.0 && t == 0.0 {
+            2
+        } else {
+            0
+        }
+    }
+
+    #[inline(never)]
+    fn interleaved<const SIDE: i8>(&mut self, stereo: &mut [f32]) {
         for [l, r] in stereo.as_chunks_mut::<2>().0 {
-            (*l, *r) = self.frame(*l, *r);
+            (*l, *r) = self.frame_side::<SIDE>(*l, *r);
+        }
+    }
+
+    #[inline(never)]
+    fn planar<const SIDE: i8>(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            (*l, *r) = self.frame_side::<SIDE>(*l, *r);
+        }
+    }
+
+    pub fn process_interleaved(&mut self, stereo: &mut [f32]) {
+        match self.pan_side() {
+            1 => self.interleaved::<1>(stereo),
+            -1 => self.interleaved::<-1>(stereo),
+            2 => self.interleaved::<2>(stereo),
+            _ => self.interleaved::<0>(stereo),
         }
     }
 
     pub fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            (*l, *r) = self.frame(*l, *r);
+        match self.pan_side() {
+            1 => self.planar::<1>(left, right),
+            -1 => self.planar::<-1>(left, right),
+            2 => self.planar::<2>(left, right),
+            _ => self.planar::<0>(left, right),
         }
     }
 
@@ -156,9 +210,17 @@ impl Kernel for Utility {
         self.configure(UtilityParams::from_set(p));
     }
 
-    #[inline]
+    #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         Utility::frame(self, l, r)
+    }
+
+    fn process_interleaved(&mut self, s: &mut [f32]) {
+        Utility::process_interleaved(self, s);
+    }
+
+    fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
+        Utility::process_planar(self, left, right);
     }
 
     fn reset(&mut self) {}

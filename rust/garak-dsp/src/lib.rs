@@ -8,7 +8,8 @@
 //! - `#![no_std]` without the `alloc` crate: nothing in this crate can allocate.
 //! - No locks, no I/O, no panics: `unwrap`/`expect`/`panic!`/indexing are denied by workspace lints;
 //!   out-of-range inputs are clamped, never rejected.
-//! - Transcendentals come from `libm`, so native and wasm32 compute bit-identical results.
+//! - Transcendentals go through [`math`]: the platform C library natively (`platform-math`, the
+//!   same functions the C++ kernels call), the pure-Rust `libm` crate on wasm32.
 #![no_std]
 
 #[cfg(test)]
@@ -18,6 +19,7 @@ pub mod biquad;
 pub mod fx;
 pub mod gain;
 pub mod lines;
+pub mod math;
 pub mod params;
 pub mod smooth;
 pub mod utility;
@@ -59,11 +61,10 @@ pub(crate) fn std_min<T: PartialOrd>(a: T, b: T) -> T {
 /// `std::clamp(v, lo, hi)` exactly (NaN passes through, unlike [`clamp`]).
 #[inline]
 pub(crate) fn std_clamp(v: f64, lo: f64, hi: f64) -> f64 {
-    if v < lo {
-        lo
-    } else if hi < v {
-        hi
-    } else {
-        v
-    }
+    // min(hi, max(lo, v)) spelled as the two selects x86 MAXSD / MINSD implement exactly (NaN in
+    // the second operand passes through, like std::clamp). Same result as the if / else-if chain
+    // for lo <= hi, but LLVM keeps it branchless; the chain became data-dependent branches that a
+    // limiter clamping every few samples mispredicted constantly. GCC emits maxsd / minsd too.
+    let t = if v < lo { lo } else { v };
+    if hi < t { hi } else { t }
 }

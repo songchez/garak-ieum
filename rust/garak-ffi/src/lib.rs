@@ -4,7 +4,9 @@
 //! Design:
 //! - `#![no_std]` staticlib: links into MinGW, MSVC and Apple toolchains without Rust's std
 //!   runtime libraries (`--print native-static-libs` is empty), so CMake needs no per-platform
-//!   system-library lists. The only libc symbol used is `abort` (panic handler).
+//!   system-library lists. The libc symbols used are `abort` (panic handler) and the C math
+//!   functions behind `garak-dsp`'s `platform-math` (`exp`, `pow`, `tanh`, …), which every C++
+//!   host links already.
 //! - Caller-owned storage: C++ embeds `GarakRsBiquad` / `GarakRsUtility` by value (fixed size,
 //!   8-byte aligned); Rust never allocates. Compile-time asserts keep the sizes honest.
 //! - Every entry point tolerates null pointers (no-op) and never unwinds.

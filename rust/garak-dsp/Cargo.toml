@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Native builds: transcendentals from the platform C library (the same functions the C++ kernels
+# call) instead of `libm`. Ignored on wasm32. garak-ffi turns it on. See src/math.rs.
+platform-math = []
+
 [dependencies]
 libm.workspace = true
 
