@@ -1,0 +1,11 @@
+# Keep this tiny: no machine-specific linkers here, so every platform works out of the box.
+# Windows without Visual Studio builds with `--target x86_64-pc-windows-gnu` (scripts/rust.mjs
+# picks it automatically) and needs MinGW gcc on PATH.
+[target.wasm32-unknown-unknown]
+# Wasm features every AudioWorklet-capable browser has (Chrome 91+, Firefox 89+, Safari 16.4+).
+# The kernels need almost no stack; 64 KiB instead of the default 1 MiB keeps each worklet
+# instance's memory to a few pages.
+rustflags = [
+  "-C", "target-feature=+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext",
+  "-C", "link-arg=-zstack-size=65536",
+]

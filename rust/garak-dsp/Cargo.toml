@@ -1,0 +1,19 @@
+[package]
+name = "garak-dsp"
+description = "가락이음 real-time DSP kernels (no_std, allocation-free)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Native builds: transcendentals from the platform C library (the same functions the C++ kernels
+# call) instead of `libm`. Ignored on wasm32. garak-ffi turns it on. See src/math.rs.
+platform-math = []
+
+[dependencies]
+libm.workspace = true
+
+[lints]
+workspace = true

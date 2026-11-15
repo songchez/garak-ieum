@@ -117,6 +117,21 @@ void validateEffectParameters(std::string_view type, const Parameters& params);
 struct ImpulseCacheStats { std::uint64_t builds = 0, hits = 0; };
 [[nodiscard]] ImpulseCacheStats impulseCacheStats();
 
+// Rust DSP core (docs/RUST.md, stage 1). With GARAK_RUST=ON every built-in effect except the guitar
+// rig also exists as a Rust kernel (rust/garak-dsp) behind the same StereoProcessor interface.
+// makeEffect() keeps using C++ unless a type is switched to Rust: at build time with the CMake list
+// GARAK_RUST_EFFECTS, at start-up with the GARAK_RUST_EFFECTS environment variable ("all" or
+// "chorus,delay"), or at run time with setEffectBackend(). Without GARAK_RUST everything is C++.
+enum class EffectBackend { Cpp, Rust };
+[[nodiscard]] bool rustEffectsAvailable() noexcept;
+[[nodiscard]] bool rustEffectSupported(std::string_view type) noexcept;
+// Control thread. "all" selects every Rust-capable type. No-op for unsupported types or builds.
+void setEffectBackend(std::string_view type, EffectBackend backend) noexcept;
+[[nodiscard]] EffectBackend effectBackend(std::string_view type) noexcept;
+// Explicit backend (parity tests, A/B listening). Throws when Rust is requested but unavailable.
+[[nodiscard]] std::unique_ptr<StereoProcessor> makeEffect(std::string_view type,
+    const Parameters& params, double sampleRate, double bpm, EffectBackend backend);
+
 // Causal, linked-channel compressor/safety ceiling used consistently for playback
 // and offline output. It introduces no lookahead delay.
 class Master {

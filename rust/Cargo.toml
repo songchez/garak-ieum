@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = ["garak-dsp", "garak-ffi", "garak-wasm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+garak-dsp = { path = "garak-dsp" }
+# Pure-Rust libm for wasm32 (no C library there). Native garak-ffi uses the platform libm instead
+# (garak-dsp feature `platform-math`, src/math.rs). `arch`: exact hardware ops (sqrt, fma) where
+# libm has them; on Apple arm64 `fma` is the fmadd that mirrors AppleClang's FP contraction.
+libm = { version = "0.2", default-features = false, features = ["arch"] }
+
+# Real-time rules (docs/RUST.md). Each crate opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# No panics on the audio thread: every construct that can panic is a hard error.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+# Allocation is structurally impossible in garak-dsp (#![no_std], no `alloc` crate).
+std_instead_of_core = "warn"
+float_cmp = "allow"
+many_single_char_names = "allow"
+too_many_arguments = "allow"
+excessive_precision = "allow"
+
+# Fast edit/test loop: incremental, light debug info, and the DSP crate at -O1 so tests that
+# push seconds of audio through filters stay quick.
+[profile.dev]
+opt-level = 0
+debug = "line-tables-only"
+incremental = true
+panic = "abort"
+
+[profile.dev.package.garak-dsp]
+opt-level = 1
+
+[profile.dev.package.libm]
+opt-level = 1
+
+# Native staticlib (linked into C++) and the default for `pnpm rust:build`.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+debug = false
+incremental = false
+
+# Browser AudioWorklet module (`pnpm rust:wasm`). Full LTO + strip keep it small; opt-level 3
+# because the module is far below its size budget (docs/RUST.md) and the worklet is CPU-bound.
+[profile.wasm]
+inherits = "release"
+lto = "fat"
+strip = true

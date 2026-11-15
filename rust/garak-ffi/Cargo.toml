@@ -1,0 +1,20 @@
+[package]
+name = "garak-ffi"
+description = "C ABI over garak-dsp for the native C++ host (staticlib, no_std; links only against the CRT math functions the host already has)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+# Unit tests run in the std test harness; no doctests (a no_std staticlib cannot host them).
+doctest = false
+
+[dependencies]
+# Platform libm: the C++ host links the CRT anyway, and parity with its std::exp etc. is exact.
+garak-dsp = { workspace = true, features = ["platform-math"] }
+
+[lints]
+workspace = true

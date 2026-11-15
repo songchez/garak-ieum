@@ -1,0 +1,10 @@
+# One pinned toolchain for every contributor and CI job (docs/RUST.md).
+# `minimal` skips rust-docs etc.; the first cargo call inside rust/ installs exactly this.
+# Only targets CI needs are pinned. Windows machines without Visual Studio additionally add
+# x86_64-pc-windows-gnu locally (scripts/setup-rust.* does it). It is deliberately not listed
+# here, so macOS / Linux / MSVC users never download it.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

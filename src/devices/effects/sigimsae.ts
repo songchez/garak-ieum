@@ -3,12 +3,17 @@ import { kernelTailSeconds } from './kernels.js'
 import { KERNEL_DEFS, type KernelType } from './sigimsaeDefs.js'
 import type { DynamicsMeterSource, DynamicsReading } from './dynamicsMeter.js'
 import { createStereoScopeTap, unbindDeviceAnalysis } from './analysis.js'
+import { rustDspRequested } from '../../audio/rust/flag.js'
+import { loadGarakWasmModule } from '../../audio/rust/garakWasm.js'
 
 /** Kernels that report input level and gain reduction to the device views. */
 const METERED: ReadonlySet<KernelType> = new Set<KernelType>(['limiter', 'gate'])
 
 const prepared = new WeakMap<BaseAudioContext, Promise<void>>()
 const ready = new WeakSet<BaseAudioContext>()
+/** Rust/WASM kernels (docs/RUST.md): the compiled module per context when `rustDspRequested()`, else absent. */
+const rustModules = new WeakMap<BaseAudioContext, WebAssembly.Module>()
+const baseUrl = () => (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'
 
 /** Registers the shared 시김새 processor once per realtime or offline context. */
 export function prepareSigimsae(context: BaseAudioContext): Promise<void> {
@@ -17,7 +22,9 @@ export function prepareSigimsae(context: BaseAudioContext): Promise<void> {
   if (!context.audioWorklet || typeof AudioWorkletNode === 'undefined') return Promise.reject(new Error('시김새 오디오 프로세서를 사용할 수 없습니다. 지원되는 데스크톱 앱 또는 보안 연결에서 열어 주세요.'))
   const promise = import('./worklet-url.js')
     .then(({ default: url }) => context.audioWorklet.addModule(url))
-    .then(() => { ready.add(context) })
+    // Off by default: without the flag (or the built artifact) the worklet keeps the TS kernels.
+    .then(() => rustDspRequested() ? loadGarakWasmModule(baseUrl()) : null)
+    .then(module => { if (module) rustModules.set(context, module); ready.add(context) })
     .catch(error => {
       prepared.delete(context)
       throw new Error(`시김새 오디오 프로세서를 불러오지 못했습니다: ${error instanceof Error ? error.message : String(error)}`)
@@ -63,7 +70,7 @@ function kernelEffect(type: KernelType): RealtimeEffectModule {
           if (!node) {
             node = remember(new AudioWorkletNode(context, 'garak-sigimsae-v1', {
               numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
-              processorOptions: { type, params: { ...params }, bpm },
+              processorOptions: { type, params: { ...params }, bpm, ...(rustModules.has(context) ? { garakWasm: rustModules.get(context) } : {}) },
             }))
             node.onprocessorerror = () => context.dispatchEvent?.(new Event('error'))
             input.connect(node).connect(output)
