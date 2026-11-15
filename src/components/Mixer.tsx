@@ -16,7 +16,8 @@ export interface MixerProps{
   onTrackButton:(trackId:string,kind:TrackButtonKind,mods:TrackButtonMods)=>void
   onTrackSweep:(trackId:string,kind:TrackButtonKind,value:boolean)=>void
   onInstrumentChange:(trackId:string,instrument:InstrumentId)=>void
-  onAddDevice:(trackId:string,type:EffectType)=>void
+  onAddDevice:(trackId:string,type:EffectType,variantId?:string)=>void
+  onOpenLibrary?:(trackId:string)=>void
   onToggleDevice:(trackId:string,deviceId:string)=>void
   onMoveDevice:(trackId:string,deviceId:string,offset:number)=>void
   onRemoveDevice:(trackId:string,deviceId:string)=>void

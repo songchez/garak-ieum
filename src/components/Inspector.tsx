@@ -25,7 +25,8 @@ export interface InspectorProps {
   onTrackButton: (trackId: string, kind: TrackButtonKind, mods: TrackButtonMods) => void
   onTrackSweep: (trackId: string, kind: TrackButtonKind, value: boolean) => void
   onInstrumentChange: (trackId: string, instrument: InstrumentId) => void
-  onAddDevice: (trackId: string, type: EffectType) => void
+  onAddDevice: (trackId: string, type: EffectType, variantId?: string) => void
+  onOpenLibrary?: (trackId: string) => void
   onToggleDevice: (trackId: string, deviceId: string) => void
   onMoveDevice: (trackId: string, deviceId: string, offset: number) => void
   onRemoveDevice: (trackId: string, deviceId: string) => void
@@ -68,7 +69,7 @@ export function Inspector(props: InspectorProps) {
       <div className="strips">
         {focusedTrack ? <ChannelStrip track={focusedTrack} project={project} engine={props.engine} recording={props.recording} arm={props.arm} implicitMute={props.implicitMute} focused
           onTrackChange={props.onTrackChange} onTrackButton={props.onTrackButton} onTrackSweep={props.onTrackSweep} onInstrumentChange={props.onInstrumentChange}
-          onAddDevice={props.onAddDevice} onToggleDevice={props.onToggleDevice} onMoveDevice={props.onMoveDevice} onRemoveDevice={props.onRemoveDevice} onOpenDevices={props.onOpenDevices}
+          onAddDevice={props.onAddDevice} onToggleDevice={props.onToggleDevice} onMoveDevice={props.onMoveDevice} onRemoveDevice={props.onRemoveDevice} onOpenDevices={props.onOpenDevices} onOpenLibrary={props.onOpenLibrary}
           onOpenColorPalette={props.onOpenColorPalette} onIconMenu={props.onIconMenu} /> : <div className="cstrip cstrip-placeholder"><span>트랙 없음</span></div>}
         <ChannelStrip track={undefined} project={project} engine={props.engine} recording={props.recording} arm="off" implicitMute={false} onTrackChange={props.onTrackChange} onTrackButton={props.onTrackButton} onTrackSweep={props.onTrackSweep} onMasterChange={props.onMasterChange} />
       </div>
