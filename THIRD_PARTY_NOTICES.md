@@ -166,4 +166,6 @@ C++ 엔진은 아래 고정 소스를 사용합니다. 다운로드 URL, 정확�
 
 이 의존성의 원본 archive는 수정하지 않고 SHA-256을 확인해 빌드합니다. 자체 어댑터·호스트·DSP와 테스트 코드는 `native/`에 있습니다. 설치물에는 `resources/native/licenses/<패키지>/`와 동일 manifest를 넣습니다. 대응 소스 ZIP에는 8개 archive를 모두 `native/dependency-sources/`에 넣고 Windows/macOS에서 같은 소스 묶음을 제공합니다. macOS에서 ASIO를 컴파일하지 않더라도 대응 소스 묶음에는 ASIO 원본이 포함됩니다. [빌드/배포 상세](docs/NATIVE_AUDIO.md)
 
+데스크톱 엔진(0.3.0부터)은 `rust/`의 자체 Rust DSP 코어(`garak-dsp`, `garak-ffi`)를 정적으로 링크합니다. 외부 crate 의존성은 없고(`#![no_std]`), Rust 툴체인의 `core`·`compiler_builtins`만 함께 들어갑니다. 이 둘은 The Rust Project Developers의 MIT 또는 Apache-2.0 이중 라이선스입니다. [Rust 라이선스](https://github.com/rust-lang/rust/blob/master/COPYRIGHT)
+
 사용자가 설치한 제3자 VST3 플러그인은 각 제작자의 별도 제품입니다. 그 바이너리는 가락이음의 설치물이나 대응 소스 ZIP에 포함하지 않습니다. ASIO/VST 명칭은 Steinberg의 상표이며, SDK 사용을 Steinberg나 개별 플러그인 제작자의 보증으로 표시하지 않습니다.
