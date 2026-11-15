@@ -181,21 +181,22 @@ impl Biquad {
     pub fn sample(&mut self, x: f32, channel: usize) -> f32 {
         if channel == 0 {
             let (c, t, s) = (&mut self.current, &self.target, self.smoothing);
-            // Each line is one C++ expression; math::mul_add mirrors AppleClang's contraction.
-            c.b0 = math::mul_add(t.b0 - c.b0, s, c.b0);
-            c.b1 = math::mul_add(t.b1 - c.b1, s, c.b1);
-            c.b2 = math::mul_add(t.b2 - c.b2, s, c.b2);
-            c.a1 = math::mul_add(t.a1 - c.a1, s, c.a1);
-            c.a2 = math::mul_add(t.a2 - c.a2, s, c.a2);
+            // Not math::mul_add: AppleClang fuses these, but the opaque fmadd keeps LLVM from
+            // vectorising the five glides and the biquad got slower on arm64 than without it.
+            c.b0 += (t.b0 - c.b0) * s;
+            c.b1 += (t.b1 - c.b1) * s;
+            c.b2 += (t.b2 - c.b2) * s;
+            c.a1 += (t.a1 - c.a1) * s;
+            c.a2 += (t.a2 - c.a2) * s;
         }
         let [l1, r1] = &mut self.z1;
         let [l2, r2] = &mut self.z2;
         let (z1, z2) = if channel == 0 { (l1, l2) } else { (r1, r2) };
         let c = &self.current;
         let x = f64::from(x);
-        let y = math::mul_add(c.b0, x, *z1);
-        *z1 = math::mul_add(c.b1, x, -(c.a1 * y)) + *z2;
-        *z2 = math::mul_add(c.b2, x, -(c.a2 * y));
+        let y = c.b0 * x + *z1;
+        *z1 = c.b1 * x - c.a1 * y + *z2;
+        *z2 = c.b2 * x - c.a2 * y;
         if z1.abs() < 1e-30 {
             *z1 = 0.0;
         }
