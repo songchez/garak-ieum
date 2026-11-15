@@ -2339,7 +2339,7 @@ UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& ass
       if(!(neu.source==old.source)) {
         // A VST3 instrument's parameter values reach the cached instance through the resolver, in place.
         auto a=neu.source,b=old.source;a.plugin.parameters.clear();b.plugin.parameters.clear();
-        if(neu.source.kind==TrackSource::Kind::Vst3&&a==b)plan.pluginParams.push_back(&neu.source.plugin);else replace=true;
+        if(neu.source.kind==TrackSource::Kind::Vst3&&a==b){if(neu.enabled)plan.pluginParams.push_back(&neu.source.plugin);}else replace=true;
       }
     }
     if(!replace&&neu.inserts.size()!=old.inserts.size())replace=true;

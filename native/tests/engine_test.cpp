@@ -1436,6 +1436,19 @@ void updatesKeepVoicesAndTails(){
   append(x,renderSpan(tail,30000,89));append(y,renderSpan(tailReference,30000,89));
   checkSame(x,y,1e-6,"A note edit cut the running reverb tail");
   check(energy(std::vector<float>(x.end()-20000,x.end()))>1e-6,"The reverb tail had already ended");
+  // VST3: a parameter change reaches the cached instance through the resolver; a note edit keeps the held note.
+  auto plugin=std::make_shared<TestPlugin>();plugin->instrument=true;unsigned resolves=0;
+  const PluginResolver resolver=[&](const PluginSpec&,double,std::uint32_t){++resolves;return plugin;};
+  auto vst=project(48000,48000);TrackTimeline inst;inst.id="vst";inst.source.kind=TrackSource::Kind::Vst3;inst.source.plugin.instanceId="synth";inst.source.plugin.isInstrument=true;
+  inst.notes={{1,0,40000,48000,60,.8f},{2,44000,46000,48000,64,.8f}};vst.tracks.push_back(inst);
+  RenderEngine v(48000,64);v.submit(v.prepare(vst,{}, {},resolver));check(v.play(),"Play failed");(void)renderSpan(v,640,64);
+  const auto resets=plugin->resets,before=resolves;
+  auto knobbed=vst;knobbed.revision=1;knobbed.tracks[0].source.plugin.parameters[3]=.7;
+  check(v.update(knobbed,{}, {},resolver).replacedTracks==0&&resolves==before+1,"A VST3 parameter change did not go through the resolver in place");
+  auto moved=knobbed;moved.revision=2;moved.tracks[0].notes[1].onFrame=43000;
+  check(v.update(moved,{}, {},resolver).kind==UpdateResult::Kind::Tracks,"A VST3 note edit was not a track replacement");
+  const auto held=renderSpan(v,640,64);
+  check(plugin->resets==resets,"A VST3 note edit reset the instrument");near(held[0],.02,1e-8,"A VST3 note edit interrupted the held note");
 }
 
 // Adding or removing a track rebuilds the graph, but every other track continues by id.
