@@ -82,11 +82,14 @@ export async function verifyNativeAudioUI(page, { screenshot } = {}) {
   await page.getByRole('button', { name: '시김새 체인', exact: true }).click()
   const expand = page.getByRole('button', { name: '편집 영역 펼치기', exact: true })
   if (await expand.count()) await expand.click()
-  // VST3 effects are added from the chain's own add card; registration lives in Settings › 플러그인.
+  // VST3 effects live in the library's 시김새 side (VST3 category); registration lives in Settings › 플러그인.
   assert.ok(await page.getByRole('list', { name: /시김새 체인$/ }).count())
   assert.equal(await page.getByRole('region', { name: 'VST3 플러그인', exact: true }).count(), 0, 'The separate VST3 panel came back')
-  const pluginGroup = page.getByRole('group', { name: 'VST3 시김새 추가', exact: true })
-  const register = pluginGroup.getByRole('button', { name: /^(VST3 등록…|플러그인 관리…)$/ })
+  const libraryTabs = page.getByRole('tablist', { name: '라이브러리 종류', exact: true })
+  if (!await libraryTabs.count()) await page.getByRole('button', { name: '라이브러리 패널 전환', exact: true }).click()
+  await libraryTabs.getByRole('tab', { name: /^시김새/ }).click()
+  await page.getByRole('listbox', { name: '카테고리', exact: true }).getByRole('option', { name: /^VST3/ }).click()
+  const register = page.getByRole('button', { name: /^(VST3 등록…|VST3 등록·관리…)$/ })
   await register.scrollIntoViewIfNeeded()
   assert.ok(await register.isVisible())
   await register.click()

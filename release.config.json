@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "channel": "preview",
   "publish": true,
-  "notes": "releases/0.1.7.md"
+  "notes": "releases/0.1.8.md"
 }
