@@ -154,7 +154,7 @@ AI 연결 창의 **닫기**는 창만 닫습니다. 접속을 끝내려면 **연
 
 앱을 새로고침하면 새로운 `instanceId`가 생깁니다. 이전 ID로 재시도한 편집은 `INSTANCE_NOT_FOUND`로 거절되어 새 탭에 자동 적용되지 않습니다. `projectId`와 revision 숫자가 우연히 같아도 새 탭은 이전 작업의 중복 방지 캐시를 이어받지 않으므로, **과거 요청의 `instanceId`만 새 값으로 바꿔 재전송하지 않습니다.**
 
-### 현재 적용 가능한 명령 21개
+### 현재 적용 가능한 명령 25개
 
 | 그룹 | 명령 |
 |---|---|
@@ -164,11 +164,17 @@ AI 연결 창의 **닫기**는 창만 닫습니다. 접속을 끝내려면 **연
 | 악기 파라미터 | `instrument.setParam` |
 | MIDI 생성 | `clip.addMidi` |
 | 리전 편집·상태 | `clip.rename`, `clip.move`, `clip.delete`, `clip.repeat`, `clip.setMute`, `clip.setTranspose` |
+| 리전 게인·페이드·피치·페달 | `clip.setGain`, `clip.setFades`, `clip.setPitch`, `clip.setSustain` |
 | 내장 인서트 이펙트 | `effect.add`, `effect.setParam`, `effect.remove`, `effect.setEnabled` |
 
 `track.create`의 악기 트랙에는 `initialClip`으로 첫 MIDI 리전을 함께 만들 수 있습니다. 새 트랙과 음표를 한 번의 적용·Undo로 처리할 때 유용합니다. 같은 revision과 요청에서는 미리 보기·적용의 생성 ID가 일치합니다. 다만 미리 보기는 객체를 만들지 않으므로, 다음 편집은 실제 적용이 성공한 응답의 `createdIds`를 사용합니다.
 
-`clip.move`는 같은 종류의 리전을 받을 수 있는 트랙 사이에서 동작하며 겹침을 유지합니다. `clip.repeat.count`는 원본 외에 만드는 **추가 사본 수**이고, `startBeat`를 생략하면 원본 리전 끝부터 길이만큼 간격을 두고 배치합니다. `clip.setTranspose`는 MIDI 리전의 비파괴 이조이며 오디오 피치 변환은 지원하지 않습니다.
+`clip.move`는 같은 종류의 리전을 받을 수 있는 트랙 사이에서 동작하며 겹침을 유지합니다. `clip.repeat.count`는 원본 외에 만드는 **추가 사본 수**이고, `startBeat`를 생략하면 원본 리전 끝부터 길이만큼 간격을 두고 배치합니다. `clip.setTranspose`는 MIDI 리전의 비파괴 이조입니다. 오디오 리전의 음높이는 `clip.setPitch`를 씁니다.
+
+- `clip.setGain { clipId, gainDb }`: 리전 게인(dB). −60 이하는 무음, 오디오 최대 +24 dB, MIDI 최대 +6.02 dB(넘으면 `INVALID_ARGUMENT`). [리전 게인·페이드](REGION_GAIN_FADES.md)
+- `clip.setFades { clipId, fadeInSeconds?, fadeOutSeconds?, fadeInCurve?, fadeOutCurve? }`: 오디오 리전만. 길이는 초, 곡선은 `linear`·`equalPower`·`sCurve`·`exponential`·`logarithmic`. 하나 이상 지정해야 하며, 한쪽 페이드는 다른 쪽이 남긴 길이까지만 쓰므로 실제 적용 값을 응답 `after`에서 확인합니다.
+- `clip.setPitch { clipId, semitones, cents?, mode?, formant? }`: 오디오 리전만. ±24반음 + ±50센트, `keep`(템포 유지, 기본)·`varispeed`(자연스럽게: 리전 길이가 함께 바뀜), `formant`는 `keep`에서만. 0/0이면 초기화합니다. 렌더는 앱이 오프라인으로 하며 그동안 이전 소리가 납니다. 음표 피치 편집이 적용된 리전은 `TYPE_MISMATCH`입니다. [리전 피치](REGION_PITCH.md)
+- `clip.setSustain { clipId, events: [{ beat, value }] }`: MIDI 리전의 서스테인 페달(CC64) 레인을 통째로 바꿉니다. `beat`는 저장된 음표 시작과 같은 원본 박, `value` 0–127(64 이상 = 밟음), 빈 목록이면 페달 삭제. [서스테인 페달](SUSTAIN_PEDAL.md)
 
 ## 5. 상태 조회와 단위
 
@@ -434,7 +440,7 @@ CLI 서버의 기본 응답 대기 시간은 **10초**이며, 브리지 구현�
 
 ## 9. 현재 지원 경계와 검증
 
-UI 편집과 MCP 편집은 같은 `ProjectSession`을 사용하지만, **기존 UI의 모든 기능이 MCP에 노출된 것은 아닙니다.** 이 문서의 7개 도구·19개 명령이 첫 연결 범위입니다.
+UI 편집과 MCP 편집은 같은 `ProjectSession`을 사용하지만, **기존 UI의 모든 기능이 MCP에 노출된 것은 아닙니다.** 이 문서의 7개 도구·25개 명령이 첫 연결 범위입니다.
 
 현재 MCP에서 지원하지 않는 항목:
 

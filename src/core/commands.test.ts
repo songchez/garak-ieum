@@ -18,7 +18,8 @@ describe('external command contracts', () => {
   it('describes exactly the supported command discriminants and strict envelopes', () => {
     const types = COMMAND_METADATA.map(item => item.type)
     expect(new Set(types).size).toBe(types.length)
-    expect(types).toHaveLength(21)
+    expect(types).toHaveLength(25)
+    for (const type of ['clip.setGain', 'clip.setFades', 'clip.setPitch', 'clip.setSustain']) expect(types).toContain(type)
     expect(types).toContain('instrument.setParam'); expect(types).toContain('track.setInput')
     expect(COMMAND_REQUEST_SCHEMA).toMatchObject({ type: 'object', additionalProperties: false, required: ['projectId', 'expectedRevision', 'operationId', 'commands'] })
     expect(HISTORY_REQUEST_SCHEMA).toMatchObject({ additionalProperties: false })
@@ -40,6 +41,21 @@ describe('external command contracts', () => {
     { type: 'track.setVolumeDb', trackId: 't', volumeDb: 7 },
     { type: 'clip.setTranspose', clipId: 'c', semitones: 0.5 },
     { type: 'clip.repeat', clipId: 'c', count: 0 },
+    { type: 'clip.setGain', clipId: 'c', gainDb: 25 },
+    { type: 'clip.setGain', clipId: 'c', gainDb: -61 },
+    { type: 'clip.setGain', clipId: 'c', gainDb: '3' },
+    { type: 'clip.setFades', clipId: 'c' },
+    { type: 'clip.setFades', clipId: 'c', fadeInSeconds: -0.1 },
+    { type: 'clip.setFades', clipId: 'c', fadeOutCurve: 'cosine' },
+    { type: 'clip.setPitch', clipId: 'c', semitones: 25 },
+    { type: 'clip.setPitch', clipId: 'c', semitones: 1.5 },
+    { type: 'clip.setPitch', clipId: 'c', semitones: 0, cents: 51 },
+    { type: 'clip.setPitch', clipId: 'c', semitones: 24, cents: 10 },
+    { type: 'clip.setPitch', clipId: 'c', semitones: 2, mode: 'tape' },
+    { type: 'clip.setPitch', clipId: 'c', semitones: 2, mode: 'varispeed', formant: true },
+    { type: 'clip.setSustain', clipId: 'c', events: [{ beat: -1, value: 127 }] },
+    { type: 'clip.setSustain', clipId: 'c', events: [{ beat: 0, value: 128 }] },
+    { type: 'clip.setSustain', clipId: 'c', events: [{ beat: 0, value: 127, cc: 64 }] },
     { type: 'track.setMute', trackId: 't', mute: 'false' },
     { type: 'track.rename', trackId: 't', name: '   ' },
   ])('rejects invalid units/types rather than clamping: %j', command => fails(() => parseCommand(command)))

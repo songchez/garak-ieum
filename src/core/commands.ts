@@ -8,7 +8,13 @@ export const COMMAND_LIMITS = Object.freeze({
   maxCreatedTracks: 32, maxCreatedClips: 512, maxRepeatCount: 64,
   maxEffectsPerTrack: 64, maxBeat: 10_000_000, minClipBeats: 0.0625,
   minNoteBeats: 0.000001, minVolumeDb: -120, maxVolumeDb: 20 * Math.log10(2),
+  // Region gain/fades/pitch/sustain mirror core/clipEnvelope.ts, devices/region-pitch/state.ts and core/sustain.ts.
+  minClipGainDb: -60, maxAudioClipGainDb: 24, maxMidiClipGainDb: 20 * Math.log10(2), maxFadeSeconds: 3600,
+  maxRegionSemitones: 24, maxRegionCents: 50, maxSustainEvents: 8192,
 })
+/** Region fade shapes (FadeCurve in core/types.ts). */
+export const COMMAND_FADE_CURVES = ['linear', 'equalPower', 'sCurve', 'exponential', 'logarithmic'] as const
+export type CommandFadeCurve = typeof COMMAND_FADE_CURVES[number]
 
 export type DomainErrorCode =
   | 'INVALID_ARGUMENT' | 'UNSUPPORTED_COMMAND' | 'NOT_FOUND' | 'TYPE_MISMATCH'
@@ -48,6 +54,10 @@ export type DawCommand =
   | { type: 'clip.repeat'; clipId: string; count: number; startBeat?: number }
   | { type: 'clip.setMute'; clipId: string; mute: boolean }
   | { type: 'clip.setTranspose'; clipId: string; semitones: number }
+  | { type: 'clip.setGain'; clipId: string; gainDb: number }
+  | { type: 'clip.setFades'; clipId: string; fadeInSeconds?: number; fadeOutSeconds?: number; fadeInCurve?: CommandFadeCurve; fadeOutCurve?: CommandFadeCurve }
+  | { type: 'clip.setPitch'; clipId: string; semitones: number; cents?: number; mode?: 'keep' | 'varispeed'; formant?: boolean }
+  | { type: 'clip.setSustain'; clipId: string; events: { beat: number; value: number }[] }
   | { type: 'effect.add'; trackId: string; effectType: EffectType; params?: Record<string, number>; variantId?: string }
   | { type: 'effect.setParam'; trackId: string; deviceId: string; paramId: string; value: number }
   | { type: 'effect.remove'; trackId: string; deviceId: string }
@@ -103,6 +113,8 @@ const idSchema: JsonSchema = { type: 'string', minLength: 1, maxLength: 200 }
 const nameSchema: JsonSchema = { type: 'string', minLength: 1, maxLength: 512 }
 const beatSchema: JsonSchema = { type: 'number', minimum: 0, maximum: COMMAND_LIMITS.maxBeat }
 const boolSchema: JsonSchema = { type: 'boolean' }
+const fadeSchema: JsonSchema = { type: 'number', minimum: 0, maximum: COMMAND_LIMITS.maxFadeSeconds }
+const fadeCurveSchema: JsonSchema = { type: 'string', enum: [...COMMAND_FADE_CURVES] }
 const effectTypes = EFFECT_TYPES
 const objectSchema = (properties: Record<string, JsonSchema>, required = Object.keys(properties)): JsonSchema => ({ type: 'object', properties, required, additionalProperties: false })
 const noteSchema = objectSchema({
@@ -147,6 +159,17 @@ export const COMMAND_METADATA = [
   descriptor('clip.repeat', 'Create count additional copies, spaced by clip length. Default first position is the original clip end.', { clipId: idSchema, count: { type: 'integer', minimum: 1, maximum: COMMAND_LIMITS.maxRepeatCount }, startBeat: beatSchema }, ['clipId', 'count']),
   descriptor('clip.setMute', 'Set clip mute explicitly.', { clipId: idSchema, mute: boolSchema }),
   descriptor('clip.setTranspose', 'Set the non-destructive MIDI clip transposition in semitones; original note pitches remain unchanged.', { clipId: idSchema, semitones: { type: 'integer', minimum: -96, maximum: 96 } }),
+  descriptor('clip.setGain', 'Set region gain in dB. -60 or below is silence; audio regions go up to +24 dB, MIDI regions up to +6.02 dB.', { clipId: idSchema, gainDb: { type: 'number', minimum: COMMAND_LIMITS.minClipGainDb, maximum: COMMAND_LIMITS.maxAudioClipGainDb } }),
+  descriptor('clip.setFades', 'Audio regions only: set fade-in/out lengths in seconds and/or their curve shapes. Give at least one field. A fade can use what the other fade leaves of the region; longer values are shortened and the result reports the applied length.', {
+    clipId: idSchema, fadeInSeconds: fadeSchema, fadeOutSeconds: fadeSchema, fadeInCurve: fadeCurveSchema, fadeOutCurve: fadeCurveSchema,
+  }, ['clipId']),
+  descriptor('clip.setPitch', 'Audio regions only: region pitch (docs/REGION_PITCH.md). semitones -24..24 plus cents -50..50. mode keep (default) keeps the length; varispeed changes speed with pitch, so the region length scales. formant only applies in keep mode. 0/0 resets. The app renders the result offline; regions with note-level pitch edits are rejected.', {
+    clipId: idSchema, semitones: { type: 'integer', minimum: -COMMAND_LIMITS.maxRegionSemitones, maximum: COMMAND_LIMITS.maxRegionSemitones },
+    cents: { type: 'integer', minimum: -COMMAND_LIMITS.maxRegionCents, maximum: COMMAND_LIMITS.maxRegionCents }, mode: { type: 'string', enum: ['keep', 'varispeed'] }, formant: boolSchema,
+  }, ['clipId', 'semitones']),
+  descriptor('clip.setSustain', 'MIDI regions only: replace the sustain pedal (CC64) lane. beat uses the same source beats as stored note starts; value 0-127, 64 or more = pedal down. An empty list removes the pedal.', {
+    clipId: idSchema, events: { type: 'array', maxItems: COMMAND_LIMITS.maxSustainEvents, items: objectSchema({ beat: beatSchema, value: { type: 'integer', minimum: 0, maximum: 127 } }) },
+  }),
   descriptor('effect.add', 'Append a built-in insert effect (시김새). variantId (get_catalog effects[].variants) starts from a named library preset of that effect and shows its name; params then override. Unknown parameter names or values outside the catalog are rejected.', { trackId: idSchema, effectType: { type: 'string', enum: effectTypes }, params: { type: 'object', additionalProperties: { type: 'number' }, maxProperties: 32 }, variantId: { type: 'string', enum: SIGIMSAE_VARIANTS.map(variant => variant.id) } }, ['trackId', 'effectType']),
   descriptor('effect.setParam', 'Set one parameter using its native catalog unit, not a normalized knob value.', { trackId: idSchema, deviceId: idSchema, paramId: idSchema, value: { type: 'number' } }),
   descriptor('effect.remove', 'Remove the explicit insert effect.', { trackId: idSchema, deviceId: idSchema }),
@@ -250,6 +273,35 @@ export function parseCommand(value: unknown, index = 0): DawCommand {
     case 'clip.repeat': return { type: c.type, clipId: clipId(), count: numeric(c.count, `${path}.count`, 1, COMMAND_LIMITS.maxRepeatCount, true), ...(c.startBeat === undefined ? {} : { startBeat: numeric(c.startBeat, `${path}.startBeat`, 0, COMMAND_LIMITS.maxBeat) }) }
     case 'clip.setMute': return { type: c.type, clipId: clipId(), mute: boolean(c.mute, `${path}.mute`) }
     case 'clip.setTranspose': return { type: c.type, clipId: clipId(), semitones: numeric(c.semitones, `${path}.semitones`, -96, 96, true) }
+    case 'clip.setGain': return { type: c.type, clipId: clipId(), gainDb: numeric(c.gainDb, `${path}.gainDb`, COMMAND_LIMITS.minClipGainDb, COMMAND_LIMITS.maxAudioClipGainDb) }
+    case 'clip.setFades': {
+      const curve = (value: unknown, key: string): CommandFadeCurve => { if (!COMMAND_FADE_CURVES.includes(value as CommandFadeCurve)) fail(`${path}.${key}`, `must be one of ${COMMAND_FADE_CURVES.join(', ')}`); return value as CommandFadeCurve }
+      const result: DawCommand = { type: c.type, clipId: clipId(),
+        ...(c.fadeInSeconds === undefined ? {} : { fadeInSeconds: numeric(c.fadeInSeconds, `${path}.fadeInSeconds`, 0, COMMAND_LIMITS.maxFadeSeconds) }),
+        ...(c.fadeOutSeconds === undefined ? {} : { fadeOutSeconds: numeric(c.fadeOutSeconds, `${path}.fadeOutSeconds`, 0, COMMAND_LIMITS.maxFadeSeconds) }),
+        ...(c.fadeInCurve === undefined ? {} : { fadeInCurve: curve(c.fadeInCurve, 'fadeInCurve') }),
+        ...(c.fadeOutCurve === undefined ? {} : { fadeOutCurve: curve(c.fadeOutCurve, 'fadeOutCurve') }),
+      }
+      if (Object.keys(result).length === 2) fail(path, 'give at least one of fadeInSeconds, fadeOutSeconds, fadeInCurve, fadeOutCurve')
+      return result
+    }
+    case 'clip.setPitch': {
+      if (c.mode !== undefined && c.mode !== 'keep' && c.mode !== 'varispeed') fail(`${path}.mode`, 'must be keep or varispeed')
+      const semitones = numeric(c.semitones, `${path}.semitones`, -COMMAND_LIMITS.maxRegionSemitones, COMMAND_LIMITS.maxRegionSemitones, true)
+      const cents = c.cents === undefined ? undefined : numeric(c.cents, `${path}.cents`, -COMMAND_LIMITS.maxRegionCents, COMMAND_LIMITS.maxRegionCents, true)
+      if (cents && Math.abs(semitones) === COMMAND_LIMITS.maxRegionSemitones && Math.sign(cents) === Math.sign(semitones)) fail(`${path}.cents`, `the total must stay within ±${COMMAND_LIMITS.maxRegionSemitones} semitones`)
+      const formant = c.formant === undefined ? undefined : boolean(c.formant, `${path}.formant`)
+      if (formant && c.mode === 'varispeed') fail(`${path}.formant`, 'formant preservation only applies in keep mode')
+      return { type: c.type, clipId: clipId(), semitones, ...(cents === undefined ? {} : { cents }), ...(c.mode === undefined ? {} : { mode: c.mode as 'keep' | 'varispeed' }), ...(formant === undefined ? {} : { formant }) }
+    }
+    case 'clip.setSustain': {
+      if (!Array.isArray(c.events) || c.events.length > COMMAND_LIMITS.maxSustainEvents) fail(`${path}.events`, `must be an array of at most ${COMMAND_LIMITS.maxSustainEvents} events`)
+      const events = c.events.map((value, index) => {
+        const p = `${path}.events[${index}]`, e = record(value, p, ['beat', 'value'])
+        return { beat: numeric(e.beat, `${p}.beat`, 0, COMMAND_LIMITS.maxBeat), value: numeric(e.value, `${p}.value`, 0, 127, true) }
+      })
+      return { type: c.type, clipId: clipId(), events }
+    }
     case 'effect.add': {
       if (!effectTypes.includes(c.effectType as EffectType)) fail(`${path}.effectType`, 'unknown built-in effect')
       let params: Record<string, number> | undefined
