@@ -9,19 +9,28 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 const { spawn } = await import('node:child_process')
 const { NativeAudioService } = await import('./native-audio')
 
-type Request = { id: number; method: string; params: Record<string, unknown> }
+type Request = { id: number; method: string; params: Record<string, unknown>; binary?: Buffer }
 type Handler = (params: Record<string, unknown>) => unknown | Promise<unknown>
 
 /** A stand-in host process: JSON lines in, JSON lines out, as the native protocol. */
 function fakeHost(handlers: Record<string, Handler>) {
   const requests: Request[] = []
   const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), killed: false, kill: () => { child.killed = true; child.emit('exit', null, 'SIGTERM') } })
-  let buffered = ''
+  let buffered = Buffer.alloc(0), frame: Buffer | undefined
   const stdin = new Writable({
     write(chunk, _encoding, done) {
-      buffered += chunk.toString()
-      for (let newline = buffered.indexOf('\n'); newline >= 0; newline = buffered.indexOf('\n')) {
-        const request = JSON.parse(buffered.slice(0, newline)) as Request; buffered = buffered.slice(newline + 1)
+      buffered = Buffer.concat([buffered, Buffer.from(chunk)])
+      for (let newline = buffered.indexOf(10); newline >= 0; newline = buffered.indexOf(10)) {
+        const line = buffered.subarray(0, newline).toString()
+        // A binary frame: "#<bytes>" then the raw bytes, for the next request (docs/RENDER_DIFF_PROTOCOL.md).
+        if (line.startsWith('#')) {
+          const size = Number(line.slice(1))
+          if (buffered.length < newline + 1 + size) break
+          frame = Buffer.from(buffered.subarray(newline + 1, newline + 1 + size)); buffered = buffered.subarray(newline + 1 + size)
+          continue
+        }
+        const request = JSON.parse(line) as Request; buffered = buffered.subarray(newline + 1)
+        if (frame) { request.binary = frame; frame = undefined }
         requests.push(request)
         void (async () => {
           try {
@@ -138,6 +147,26 @@ describe('native take files', () => {
     await expect(audio.request('latency.measure', { inputChannel: 0 })).resolves.toMatchObject({ roundTripFrames: 128 })
     for (const method of ['devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor']) await audio.request(method, {})
     expect(host.requests.map(request => request.method)).toEqual(expect.arrayContaining(['devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor']))
+  })
+})
+
+describe('incremental project sync', () => {
+  it('sends a binary frame right before the project.patch that references it and resolves patched VST3 paths', async () => {
+    const { service: audio, host } = await service({})
+    const binary = new Uint8Array(48).map((_, i) => i)
+    await audio.request('project.patch', { revision: 2, header: { projectId: 'p' }, order: ['a'], tracks: [{ id: 'a', source: { kind: 'audio' }, inserts: [], notesBinary: { offset: 0, count: 2 } }], binary })
+    const request = host.requests.find(item => item.method === 'project.patch')!
+    expect(request.params).toMatchObject({ revision: 2, order: ['a'], tracks: [{ id: 'a', notesBinary: { offset: 0, count: 2 } }] })
+    expect(request.params.binary).toBeUndefined()
+    expect([...request.binary!]).toEqual([...binary])
+    await audio.request('project.set', { timeline: { tracks: [] } })
+    expect(host.requests.find(item => item.method === 'project.set')!.binary).toBeUndefined()
+  })
+
+  it('refuses binary frames on other methods and non-byte payloads', async () => {
+    const { service: audio } = await service({})
+    await expect(audio.request('transport.play', { binary: new Uint8Array(4) })).rejects.toThrow(/binary/)
+    await expect(audio.request('project.patch', { tracks: [], binary: [1, 2, 3] })).rejects.toThrow(/binary/)
   })
 })
 
