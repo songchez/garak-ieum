@@ -282,7 +282,7 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
               replaceTrack({ ...track, devices: track.devices.filter(item => item.id !== device.id) })
               result.before = { effectType: device.type }
             } else if (command.type === 'effect.setParam') {
-              if (device.type === 'vst3') throw new DomainError('UNSUPPORTED_COMMAND', 'VST3 파라미터는 데스크톱 디바이스 창에서 조절해 주세요.', { deviceId: device.id })
+              if (device.type === 'vst3') throw new DomainError('UNSUPPORTED_COMMAND', 'VST3 파라미터는 데스크톱 앱의 시김새 체인에서 플러그인 창을 열어 조절해 주세요.', { deviceId: device.id })
               checkParameter(device.type, command.paramId, command.value)
               const before = device.params[command.paramId] ?? EFFECT_DEFS[device.type].params.find(item => item.id === command.paramId)!.default
               result.before = { paramId: command.paramId, value: before }; result.after = { paramId: command.paramId, value: command.value }

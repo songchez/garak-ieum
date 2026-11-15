@@ -68,7 +68,7 @@ flowchart TD
 | [`src/components/Timeline.tsx`](../src/components/Timeline.tsx) | 타임라인, 클립 이동·길이 편집, 재생 커서, 트랙·마스터 미터 |
 | [`src/components/PianoRoll.tsx`](../src/components/PianoRoll.tsx) | 음표·세기 편집, 음표 단위 단축키, 미리듣기 요청 |
 | [`src/components/Mixer.tsx`](../src/components/Mixer.tsx) | 트랙·마스터 믹서 조작 |
-| [`src/components/DeviceChain.tsx`](../src/components/DeviceChain.tsx) | 공통 디바이스 카드·노브, 악기 선택, 이펙트 추가·삭제·순서·바이패스 조작 |
+| [`src/components/DeviceChain.tsx`](../src/components/DeviceChain.tsx) | 시김새 체인 UI: 공통 카드·노브, 악기 선택, 시김새 추가(라이브러리 드롭)·삭제·순서·바이패스 조작 |
 | [`src/components/GuitarRig.tsx`](../src/components/GuitarRig.tsx), [`src/devices/guitar-rig`](../src/devices/guitar-rig) | 기타 앰프 전용 편집기, 수치형 설정·프리셋, 컴프·페달·앰프·캐비닛/마이크 모델, causal 마스터. [사용법과 범위](GUITAR_RIG.md) |
 | [`src/audio/effectPreparation.ts`](../src/audio/effectPreparation.ts) | 실시간/오프라인 컨텍스트별 효과 프로세서 등록, 중복 준비 합치기와 오류 전달 |
 | [`src/components/Waveform.tsx`](../src/components/Waveform.tsx), [`src/core/waveform.ts`](../src/core/waveform.ts) | 원본 구간에 맞춘 파형 표시. 확대 수준과 처리량에 따라 캐시 피크 또는 실제 PCM 사용 |
@@ -143,7 +143,7 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 
 ### 리전 피치 처리
 
-피치 편집기는 `src/devices/pitch-editor/`에 분리한 리전 처리 기능이며, 오디오 소스 카드의 **피치 편집 열기** 또는 하단 탭 줄의 **피치 편집** 버튼으로 여는 떠 있는 편집 창(`PitchEditorWindow`)입니다. 모달이 아니므로 창이 열린 동안에도 재생·실행 취소 등 스튜디오 단축키가 동작합니다. 실시간 인서트 배열에 넣는 대신 오디오 리전의 렌더 자산을 생성하고 이후 일반 트랙 이펙트 체인을 통과시킵니다.
+피치 편집기는 `src/devices/pitch-editor/`에 분리한 리전 처리 기능이며, 오디오 소스 카드의 **피치 편집 열기** 또는 하단 탭 줄의 **피치 편집** 버튼으로 여는 떠 있는 편집 창(`PitchEditorWindow`)입니다. 모달이 아니므로 창이 열린 동안에도 재생·실행 취소 등 스튜디오 단축키가 동작합니다. 실시간 인서트 배열에 넣는 대신 오디오 리전의 렌더 자산을 생성하고 이후 일반 트랙 시김새 체인을 통과시킵니다.
 
 1. 원본 Blob은 그대로 두고 SHA-256과 원본 ID를 저장합니다. Worker의 YIN 분석으로 얻은 음표·피치 곡선은 원본 초 단위 좌표로 고정합니다.
 2. 편집 음표 경계와 피치/포먼트 이동 맵을 분석과 분리합니다. 트림된 리전의 경계 음표를 나누고 두 이동값을 상속하여 보이는 부분을 독립적으로 편집합니다. 음표 수 한도로 경계를 나눌 수 없으면 그 경계 음표를 읽기 전용으로 두어 숨겨진 구간의 변경을 막습니다. 합치기는 피치와 포먼트 이동값이 모두 같은 인접 음표만 허용합니다. 기존 분석을 편집 결과로 덮어쓰지 않습니다.
@@ -169,7 +169,7 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 
 `src/audio/samples.ts`의 `SampleLibrary`는 브라우저와 데스크톱에서 자산 로딩 규격을 공유합니다. 데스크톱은 `OfflineAudioContext`로 압축 파일을 한 번 디코딩해 Float32 PCM과 존 설정을 native host에 등록합니다. 매 callback에서 JS로 재생하거나 디코딩하지 않습니다. 다음의 예약 설명은 브라우저용 경로입니다. 브라우저에서는 `WebAudioEngine.samples`로 접근합니다. `load(setId, context)`는 `manifest.json`을 읽고, 브라우저가 지원하는 포맷(Opus/webm 우선, 아니면 AAC/m4a)을 고른 뒤 모든 존 파일을 동시 6개 이하로 받아 `decodeAudioData`로 디코딩합니다. 세트별로 진행 중인 Promise를 캐시하므로 동시 요청은 한 번만 내려받고, 디코딩된 `AudioBuffer`는 컨텍스트에 묶이지 않아 그래프 재생성과 `OfflineAudioContext` 내보내기에서 그대로 재사용합니다. m4a는 AAC 인코더 지연만큼(44 ms) 재생 시작 위치를 건너뜁니다.
 
-재생 중 아직 준비되지 않은 세트의 음표는 건너뛰고 로드를 시작합니다. 세트가 준비되면 엔진이 현재 박에서 다시 예약하므로 짧은 끊김이 한 번 생길 수 있습니다. 트랙 추가나 악기 변경으로 새 샘플 악기가 프로젝트에 들어오면 `setProject`에서 미리 로드를 시작하고, WAV 내보내기는 프로젝트가 쓰는 모든 세트를 기다린 뒤 렌더링합니다. UI는 `AudioEngine.sampleStatus`·`subscribeSamples`로 로딩·오류 상태를 트랙 헤더에 표시하고, `sampleAttribution`으로 로드된 세트의 출처를 디바이스 카드에 보여 줍니다.
+재생 중 아직 준비되지 않은 세트의 음표는 건너뛰고 로드를 시작합니다. 세트가 준비되면 엔진이 현재 박에서 다시 예약하므로 짧은 끊김이 한 번 생길 수 있습니다. 트랙 추가나 악기 변경으로 새 샘플 악기가 프로젝트에 들어오면 `setProject`에서 미리 로드를 시작하고, WAV 내보내기는 프로젝트가 쓰는 모든 세트를 기다린 뒤 렌더링합니다. UI는 `AudioEngine.sampleStatus`·`subscribeSamples`로 로딩·오류 상태를 트랙 헤더에 표시하고, `sampleAttribution`으로 로드된 세트의 출처를 시김새 체인의 악기 카드에 보여 줍니다.
 
 존 선택(`pickZone`)은 음높이 범위 `[lo, hi]`와 세기 레이어 `[vlo, vhi)`로 고르며 가장 센 레이어는 `vhi`를 포함합니다. 킷은 `root`가 음표 번호와 같은 존만 씁니다. 음높이 악기는 `playbackRate`로 `root`와의 차이를 보정하고 어택·릴리즈 포락선과 루프 구간을 적용하며, 킷은 샘플을 끝까지 재생하되 `decay` 조절기로 줄일 수 있고 같은 `choke` 그룹의 이전 소리를 끊습니다.
 
