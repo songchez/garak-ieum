@@ -59,7 +59,7 @@ class NoteRouter {
         if (!route.accepts(source, channel)) continue;
         int outPitch = 0, outVelocity = 0;
         if (!transformNote(route, pitch, data2 & 0x7F, outPitch, outVelocity)) continue;
-        auto* slot = std::find_if(active_.begin(), active_.end(), [](const Active& a) { return !a.used; });
+        auto slot = std::find_if(active_.begin(), active_.end(), [](const Active& a) { return !a.used; });
         if (slot == active_.end()) { ++overflows_; continue; }
         const auto id = nextId();
         *slot = {true, source, channel, pitch, static_cast<std::uint8_t>(outPitch), route.track, id};
