@@ -1,4 +1,6 @@
 import { EFFECT_DEFS } from './devices'
+import { sigimsaeVariant } from './sigimsaeVariants'
+import { deviceFromVariant } from './sigimsaeDevices'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { copyTrackInput, createDevice, createTrack, fitProjectLength, validateProject } from './project'
 import type { Clip, Device, EffectType, MidiClip, Project, Track } from './types'
@@ -265,11 +267,13 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
           if (command.type === 'effect.add') {
             if (track.devices.length >= COMMAND_LIMITS.maxEffectsPerTrack) throw new DomainError('LIMIT_EXCEEDED', '트랙당 이펙트 한도를 초과했습니다.', { trackId: track.id, limit: COMMAND_LIMITS.maxEffectsPerTrack })
             for (const [id, value] of Object.entries(command.params ?? {})) checkParameter(command.effectType, id, value)
-            const device = { ...createDevice(command.effectType, command.params), id: nextId() }
+            const variant = sigimsaeVariant(command.variantId)
+            const base = variant && variant.effectType === command.effectType ? deviceFromVariant(variant) : createDevice(command.effectType)
+            const device = { ...base, params: { ...base.params, ...command.params }, id: nextId() }
             changes.created.devices += 1
             replaceTrack({ ...track, devices: [...track.devices, device] })
             result.targetId = device.id; result.createdIds = { ...emptyCreatedIds(), deviceIds: [device.id] }
-            result.after = { effectType: device.type, params: { ...device.params }, enabled: device.enabled }
+            result.after = { effectType: device.type, params: { ...device.params }, enabled: device.enabled, ...(device.name ? { name: device.name } : {}) }
           } else {
             const device = knownDevice(track, command.deviceId)
             result.targetId = device.id

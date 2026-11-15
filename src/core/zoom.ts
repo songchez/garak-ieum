@@ -61,9 +61,9 @@ export function wheelPixels(delta: number, deltaMode = 0): number {
 }
 export const wheelFactor = (delta: number, deltaMode = 0) => Math.exp(-wheelPixels(delta, deltaMode) * .0015)
 
-/** Defaults follow the old CSS breakpoints: tall rows on wide screens, short rows on short screens. */
+/** Default rows are tall enough for the full track header (name, buttons, pan, volume): taller on wide screens, a bit shorter on short ones. */
 export function defaultZoom(view: { width: number; height: number } = typeof window === 'undefined' ? { width: 1280, height: 900 } : { width: window.innerWidth, height: window.innerHeight }): ZoomState {
-  const rowHeight = view.height <= 760 ? 62 : view.width >= 1700 ? 80 : 70
+  const rowHeight = view.height <= 760 ? 80 : view.width >= 1700 ? 104 : 96
   return { timeline: { ppb: 30, rowHeight }, piano: { ppb: null, rowHeight: 19 }, mixer: { channelWidth: 110, faderHeight: 110 }, devices: { scale: 1 }, browser: { compact: false } }
 }
 

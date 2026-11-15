@@ -7,7 +7,7 @@ type Processor = {
 const constructors = new Map<string, new () => Processor>()
 const params = {
   sustain: Float32Array.of(0.35), attack: Float32Array.of(10), level: Float32Array.of(0), enabled: Float32Array.of(1),
-  rate: Float32Array.of(0.8), depth: Float32Array.of(0.35), mix: Float32Array.of(0.25),
+  rate: Float32Array.of(0.8), depth: Float32Array.of(0.35), mix: Float32Array.of(0.25), feedback: Float32Array.of(0.35), shape: Float32Array.of(0.2),
 }
 beforeAll(async () => {
   vi.stubGlobal('sampleRate', 48000)
@@ -18,7 +18,7 @@ beforeAll(async () => {
 afterAll(() => vi.unstubAllGlobals())
 
 describe('worklet processor lifecycle and mono/stereo behavior', () => {
-  it.each(['compressor', 'chorus', 'master'])('%s survives initially absent input, emits finite stereo audio, and ends after dispose', name => {
+  it.each(['compressor', 'chorus', 'phaser', 'tremolo', 'master'])('%s survives initially absent input, emits finite stereo audio, and ends after dispose', name => {
     const Factory = constructors.get(`garak-guitar-${name}-v1`)!
     const processor = new Factory()
     const output = [[new Float32Array(128), new Float32Array(128)]]

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createEmptyProject, createTrack, validateProject } from './project'
 import { ProjectSession } from './ProjectSession'
-import { isMidiFile, MEDIA_FILE_ACCEPT, planMediaImport, readMediaFile, type ImportedMedia } from './mediaImport'
+import { importTempoNotice, isMidiFile, MEDIA_FILE_ACCEPT, planMediaImport, readMediaFile, type ImportedMedia } from './mediaImport'
 import { MAX_MIDI_FILE_BYTES, type MidiImportResult } from './midiImport'
 import type { AudioAsset, Project } from './types'
 
@@ -141,5 +141,79 @@ describe('atomic MIDI and audio project import', () => {
     const original = createEmptyProject(), invalid = midi({ tracks: [{ name: 'Invalid pitch', channel: 0, notes: [{ pitch: 128, start: 0, duration: 1, velocity: .8 }] }] })
     expect(() => planMediaImport(original, [audioFile(), midiFile(invalid)])).toThrow(/pitch/i)
     expect(original.tracks).toEqual([])
+  })
+})
+
+describe('audio import tempo', () => {
+  const asset = (id: string, duration: number): AudioAsset => ({ id, name: `${id}.wav`, blob: new Blob(['wave']), peaks: [], buffer: { duration } as AudioBuffer })
+  const tempo = (bpm: number, confidence = .7) => ({ bpm, confidence, firstBeatSeconds: .01 })
+
+  it('fits a confident short loop to the project tempo, keeping the original asset for the renderer', () => {
+    const p = { ...createEmptyProject(), bpm: 120 }
+    // 2 bars at 96 BPM = 5 s.
+    const plan = planMediaImport(p, [{ kind: 'audio', name: 'groove.wav', asset: asset('loop', 5), tempo: tempo(95.6) }])
+    const clip = plan.project.tracks[0].clips[0]
+    expect(clip).toMatchObject({ kind: 'audio', assetId: 'loop', lengthBeats: 8, warp: { enabled: true, sourceBpm: 96, renderBpm: 96, originalAssetId: 'loop', firstBeatSeconds: .01 } })
+    expect(plan.tempos).toEqual([{ clipId: clip.id, name: 'groove', bpm: 96, warped: true }])
+    expect(plan.assets.map(item => item.id)).toEqual(['loop'])
+    expect(validateProject(plan.project)).toEqual(plan.project)
+  })
+
+  it('uses file-name tempo hints even without analysis', () => {
+    const plan = planMediaImport({ ...createEmptyProject(), bpm: 90 }, [{ kind: 'audio', name: 'hat_140bpm.wav', asset: asset('hat', 6) }])
+    expect(plan.project.tracks[0].clips[0]).toMatchObject({ lengthBeats: 14, warp: { enabled: true, sourceBpm: 140 } })
+  })
+
+  it('fits a long file with a clear beat to the project tempo', () => {
+    const p = { ...createEmptyProject(), bpm: 100 }
+    const plan = planMediaImport(p, [{ kind: 'audio', name: 'song.wav', asset: asset('song', 180), tempo: tempo(128, .5) }])
+    const clip = plan.project.tracks[0].clips[0]
+    // 180 s at 128 BPM = 384 beats, kept in beats at any project tempo.
+    expect(clip).toMatchObject({ assetId: 'song', lengthBeats: 384, warp: { enabled: true, sourceBpm: 128, confidence: .5 } })
+    expect(plan.tempos[0]).toMatchObject({ bpm: 128, warped: true })
+  })
+
+  it('analyzes a long file without a clear beat but keeps its original timing', () => {
+    const p = { ...createEmptyProject(), bpm: 100 }
+    const plan = planMediaImport(p, [{ kind: 'audio', name: 'song.wav', asset: asset('song', 180), tempo: tempo(128, .3) }])
+    const clip = plan.project.tracks[0].clips[0]
+    expect(clip).toMatchObject({ assetId: 'song', lengthBeats: 300, warp: { enabled: false, sourceBpm: 128, confidence: .3 } })
+    expect(plan.tempos[0]).toMatchObject({ bpm: 128, warped: false })
+  })
+
+  it('imports unclear or unanalyzed audio exactly as before', () => {
+    const p = createEmptyProject()
+    const plain = planMediaImport(p, [audioFile()]).project.tracks[0].clips[0]
+    expect('warp' in plain).toBe(false)
+    const silent = planMediaImport(p, [{ ...audioFile(), tempo: null } as ImportedMedia])
+    expect('warp' in silent.project.tracks[0].clips[0]).toBe(false)
+    expect(silent.tempos).toEqual([])
+  })
+
+  it('undoes an auto-warped import in one step', () => {
+    const session = new ProjectSession({ ...createEmptyProject(), bpm: 120 })
+    const before = session.getSnapshot().history.present
+    const plan = planMediaImport(before, [{ kind: 'audio', name: 'groove.wav', asset: asset('loop', 5), tempo: tempo(96) }])
+    session.edit(() => plan.project, '', '오디오·MIDI 가져오기')
+    session.dispatch({ type: 'undo' })
+    expect(session.getSnapshot().history.present).toBe(before)
+    session.dispatch({ type: 'redo' })
+    expect(session.getSnapshot().history.present.tracks[0].clips[0]).toMatchObject({ warp: { enabled: true } })
+  })
+})
+
+describe('import tempo notice', () => {
+  it('offers the opposite of what the import decided', () => {
+    expect(importTempoNotice([], 120)).toEqual({ text: '', action: null })
+    const one = importTempoNotice([{ clipId: 'a', name: 'loop', bpm: 100, warped: true }], 120)
+    expect(one.text).toContain('100 BPM')
+    expect(one.text).toContain('120 BPM')
+    expect(one.action).toEqual({ label: '원래 박자로', enable: false, clipIds: ['a'] })
+    const off = importTempoNotice([{ clipId: 'b', name: 'pad', bpm: 97.456, warped: false }, { clipId: 'c', name: 'pad2', bpm: 80, warped: false }], 120)
+    expect(off.text).toContain('2개 파일의 템포를 감지')
+    expect(off.action).toEqual({ label: '템포에 맞추기', enable: true, clipIds: ['b', 'c'] })
+    const mixed = importTempoNotice([{ clipId: 'a', name: 'loop', bpm: 100, warped: true }, { clipId: 'b', name: 'pad', bpm: 97.456, warped: false }], 90)
+    expect(mixed.text).toContain('97.46 BPM')
+    expect(mixed.action?.clipIds).toEqual(['a'])
   })
 })

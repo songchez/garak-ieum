@@ -5,8 +5,10 @@ import { midiEditorClip, midiSourceOffset } from './midiRegions'
 import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
+import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
-import { QUANTIZE_VALUES, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track, type TrackInput, type TrackMonitorMode } from './types'
+import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type Track, type TrackInput, type TrackMonitorMode } from './types'
 
 let fallbackSequence = 0
 
@@ -94,7 +96,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 8,
+    schemaVersion: 10,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -371,7 +373,8 @@ export function joinClips(clips: Clip[], bpm: number): Clip | null {
     reach = Math.max(reach, clip.startBeat + clip.lengthBeats)
   }
   const last = audio.reduce((a, b) => (b.startBeat + b.lengthBeats >= a.startBeat + a.lengthBeats ? b : a))
-  return { ...first, lengthBeats: endBeat - startBeat, fadeOut: last.fadeOut,
+  const { fadeOutCurve: _curve, ...head } = first
+  return { ...head, lengthBeats: endBeat - startBeat, fadeOut: last.fadeOut, ...(last.fadeOutCurve ? { fadeOutCurve: last.fadeOutCurve } : {}),
     ...(first.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(endBeat - startBeat, first.loopLengthBeats) }) }
 }
 
@@ -420,7 +423,7 @@ export function fitProjectLength(project: Project): Project {
   return lengthBeats === project.lengthBeats ? project : { ...project, lengthBeats }
 }
 
-export type DragMode = 'overlap' | 'noOverlap'
+export type DragMode = 'overlap' | 'noOverlap' | 'crossfade'
 
 /** Cuts `piece` so it no longer overlaps [start, end); [] removes it, two clips means it was split around. */
 function cutAround(piece: Clip, start: number, end: number, bpm: number): Clip[] {
@@ -438,13 +441,21 @@ function cutAround(piece: Clip, start: number, end: number, bpm: number): Clip[]
 /**
  * Logic Drag mode (R-05). `noOverlap` trims, splits or removes the clips on `trackIds` that a moved
  * clip now covers; moved clips themselves are never changed. `overlap` returns the project as is.
+ * `crossfade` (Logic X-Fade) crossfades partial audio overlaps instead of cutting them.
  */
 export function applyDragMode(project: Project, trackIds: readonly string[], movedClipIds: readonly string[], mode: DragMode): Project {
   if (mode === 'overlap' || movedClipIds.length === 0) return project
   const moved = new Set(movedClipIds)
   let changed = false
-  const tracks = project.tracks.map(track => {
-    if (!trackIds.includes(track.id)) return track
+  const tracks = project.tracks.map(input => {
+    if (!trackIds.includes(input.id)) return input
+    // X-Fade: partial audio overlaps become crossfades; covered regions and MIDI still resolve like noOverlap.
+    const track = mode === 'crossfade' ? crossfadeOverlaps(input, moved, project.bpm) : input
+    if (track !== input) changed = true
+    const crossfaded = (mover: Clip, clip: Clip) => mode === 'crossfade' && mover.kind === 'audio' && clip.kind === 'audio'
+      && Math.min(mover.startBeat, clip.startBeat) < Math.max(mover.startBeat, clip.startBeat) - EPSILON
+      && Math.abs(mover.startBeat + mover.lengthBeats - (clip.startBeat + clip.lengthBeats)) > EPSILON
+      && (mover.startBeat < clip.startBeat) === (mover.startBeat + mover.lengthBeats < clip.startBeat + clip.lengthBeats)
     const movers = track.clips.filter(clip => moved.has(clip.id))
     if (movers.length === 0) return track
     let trackChanged = false
@@ -452,7 +463,7 @@ export function applyDragMode(project: Project, trackIds: readonly string[], mov
       if (moved.has(clip.id)) return [clip]
       let pieces = [clip]
       for (const mover of movers) {
-        pieces = pieces.flatMap(piece => cutAround(piece, mover.startBeat, mover.startBeat + mover.lengthBeats, project.bpm))
+        pieces = pieces.flatMap(piece => crossfaded(mover, piece) ? [piece] : cutAround(piece, mover.startBeat, mover.startBeat + mover.lengthBeats, project.bpm))
       }
       if (pieces.length !== 1 || pieces[0] !== clip) trackChanged = true
       return pieces
@@ -656,11 +667,24 @@ function params(value: unknown, defs: readonly ParamDef[], path: string): Record
   return result
 }
 
+/** Schema 10 fade shapes; linear stays absent so it saves like older files. */
+function fadeCurves(clip: Record<string, unknown>, path: string, version: number): { fadeInCurve?: FadeCurve; fadeOutCurve?: FadeCurve } {
+  const result: { fadeInCurve?: FadeCurve; fadeOutCurve?: FadeCurve } = {}
+  for (const [key, label] of [['fadeInCurve', 'fade in curve'], ['fadeOutCurve', 'fade out curve']] as const) {
+    const value = clip[key]
+    if (value === undefined) continue
+    if (version < 10) throw new Error('Fade curves require project schema version 10 or later.')
+    if (!isFadeCurve(value)) throw new Error(`${path} ${label} must be one of ${FADE_CURVES.join(', ')}.`)
+    if (value !== 'linear') result[key] = value
+  }
+  return result
+}
+
 /** Parse known fields into fresh objects; never trust JSON casts or imported prototypes. */
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8) throw new Error('This project version is not supported. Expected schema version 1 through 8.')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10) throw new Error('This project version is not supported. Expected schema version 1 through 10.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -734,6 +758,7 @@ export function validateProject(input: unknown): Project {
           type,
           enabled: flag(device.enabled, `${devicePath} enabled`),
           params: params(device.params, EFFECT_DEFS[type].params, `${devicePath} ${type}`),
+          ...(device.name === undefined ? {} : { name: text(device.name, `${devicePath} name`, 80) }),
         }
       })
     }
@@ -760,7 +785,7 @@ export function validateProject(input: unknown): Project {
         name: text(clip.name, `${clipPath} name`),
         startBeat,
         lengthBeats: clipLength,
-        gain: number(clip.gain, `${clipPath} gain`, 0, 2),
+        gain: number(clip.gain, `${clipPath} gain`, 0, clip.kind === 'audio' && version >= 10 ? AUDIO_CLIP_GAIN_MAX : MIDI_CLIP_GAIN_MAX),
         ...(clip.mute === undefined ? {} : { mute: flag(clip.mute, `${clipPath} mute`) }),
         ...(clip.loop === undefined ? {} : { loop: flag(clip.loop, `${clipPath} loop`) }),
         ...(clip.loopLengthBeats === undefined ? {} : { loopLengthBeats: number(clip.loopLengthBeats, `${clipPath} loop length`, clipLength, 10_000_000) }),
@@ -772,14 +797,20 @@ export function validateProject(input: unknown): Project {
         const changed = pitch && hasPitchAudioEdits(pitch)
         if (pitch && changed && clip.assetId === pitch.sourceAssetId) throw new Error(`${clipPath} is missing its pitch render.`)
         if (pitch && !changed && clip.assetId !== pitch.sourceAssetId) throw new Error(`${clipPath} has a pitch render without any pitch or formant changes.`)
+        if (clip.warp !== undefined && version < 9) throw new Error('Audio warp requires project schema version 9 or later.')
+        const assetId = text(clip.assetId, `${clipPath} audio asset ID`, 200)
+        const warp = clip.warp === undefined ? undefined : validateWarp(clip.warp, `${clipPath} warp`)
+        if (warp) checkWarpClip({ assetId, pitch }, warp, clipPath)
         return {
           ...base,
           kind: 'audio',
-          assetId: text(clip.assetId, `${clipPath} audio asset ID`, 200),
+          assetId,
           offsetSeconds: number(clip.offsetSeconds, `${clipPath} source offset`, 0, 10_000_000),
           fadeIn: number(clip.fadeIn, `${clipPath} fade in`, 0, 10_000_000),
           fadeOut: number(clip.fadeOut, `${clipPath} fade out`, 0, 10_000_000),
+          ...fadeCurves(clip, clipPath, version),
           ...(pitch ? { pitch } : {}),
+          ...(warp ? { warp } : {}),
         }
       }
       if (clip.kind !== 'midi') throw new Error(`${clipPath} has an invalid clip type.`)
@@ -848,7 +879,7 @@ export function validateProject(input: unknown): Project {
     }
   }))
   return {
-    schemaVersion: 8,
+    schemaVersion: 10,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm: number(source.bpm, 'Tempo', 30, 300),

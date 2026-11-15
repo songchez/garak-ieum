@@ -1,4 +1,5 @@
-import type { Project } from '../core/types'
+import type { FadeCurve, Project } from '../core/types'
+import { envelopeAt, fadeLengths } from '../core/clipEnvelope.js'
 
 export const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? value : minimum))
@@ -34,14 +35,11 @@ export function normalizedStart(project: Project, beat: number): number {
   return result
 }
 
-/** Fades are seconds, relative to the audible part of a trimmed audio clip. */
-export function clipEnvelope(position: number, duration: number, fadeIn: number, fadeOut: number): number {
+/** Fades are seconds, relative to the audible part of a trimmed audio clip; see core/clipEnvelope.ts. */
+export function clipEnvelope(position: number, duration: number, fadeIn: number, fadeOut: number, inCurve?: FadeCurve, outCurve?: FadeCurve): number {
   if (position < 0 || position > duration || duration <= 0) return 0
-  const attack = clamp(fadeIn, 0, duration / 2)
-  const release = clamp(fadeOut, 0, duration / 2)
-  const inGain = attack > 0 ? clamp(position / attack, 0, 1) : 1
-  const outGain = release > 0 ? clamp((duration - position) / release, 0, 1) : 1
-  return Math.min(inGain, outGain)
+  const [attack, release] = fadeLengths(duration, fadeIn, fadeOut)
+  return envelopeAt(position, duration, attack, release, inCurve, outCurve)
 }
 
 /** Stereo/interleaved little-endian PCM16, including the RIFF padding/size fields. */

@@ -1,6 +1,7 @@
 import { ProjectSession } from '../core/ProjectSession'
 import { COMMAND_LIMITS, COMMAND_METADATA, COMMAND_REQUEST_SCHEMA, HISTORY_REQUEST_SCHEMA, DomainError, type CommandRequest, type HistoryRequest } from '../core/commands'
 import { EFFECT_DEFS } from '../core/devices'
+import { SIGIMSAE_VARIANTS } from '../core/sigimsaeVariants'
 import { GM_KIT_NAMES, INSTRUMENTS } from '../core/instruments'
 import type { Project, Track, TransportSnapshot } from '../core/types'
 import { monitorModeOf } from '../core/trackActions'
@@ -152,7 +153,7 @@ export function createDawRequestHandler(options: DawHostOptions) {
       return {
         units,
         ...(kind === 'effects' ? {} : { instruments: INSTRUMENTS.map(def => ({ id: def.id, name: def.name, nameKo: def.nameKo, kind: def.kind, category: def.category, isKit: def.isKit, description: def.description, params: def.params.map(param => ({ ...param })), ...(def.isKit ? { padNames: { ...(def.padNames ?? GM_KIT_NAMES) } } : {}) })) }),
-        ...(kind === 'instruments' ? {} : { effects: Object.entries(EFFECT_DEFS).map(([id, def]) => ({ id, name: def.name, params: def.params.map(param => ({ ...param })) })) }),
+        ...(kind === 'instruments' ? {} : { effects: Object.entries(EFFECT_DEFS).map(([id, def]) => ({ id, name: def.name, label: def.label ?? def.short, params: def.params.map(param => ({ ...param })), variants: SIGIMSAE_VARIANTS.filter(variant => variant.effectType === id).map(variant => ({ id: variant.id, name: variant.name, label: variant.label, category: variant.category, params: { ...variant.params } })) })) }),
       }
     }
     if (method === 'get_capabilities') {

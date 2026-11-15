@@ -1,5 +1,6 @@
 import type { EffectType, TrackInput } from './types'
 import { EFFECT_TYPES } from '../devices/effects/registry.js'
+import { SIGIMSAE_VARIANTS, sigimsaeVariant } from './sigimsaeVariants.js'
 
 /** The browser and Node MCP server share this contract and the side-effect-free built-in registry. */
 export const COMMAND_LIMITS = Object.freeze({
@@ -47,7 +48,7 @@ export type DawCommand =
   | { type: 'clip.repeat'; clipId: string; count: number; startBeat?: number }
   | { type: 'clip.setMute'; clipId: string; mute: boolean }
   | { type: 'clip.setTranspose'; clipId: string; semitones: number }
-  | { type: 'effect.add'; trackId: string; effectType: EffectType; params?: Record<string, number> }
+  | { type: 'effect.add'; trackId: string; effectType: EffectType; params?: Record<string, number>; variantId?: string }
   | { type: 'effect.setParam'; trackId: string; deviceId: string; paramId: string; value: number }
   | { type: 'effect.remove'; trackId: string; deviceId: string }
   | { type: 'effect.setEnabled'; trackId: string; deviceId: string; enabled: boolean }
@@ -146,7 +147,7 @@ export const COMMAND_METADATA = [
   descriptor('clip.repeat', 'Create count additional copies, spaced by clip length. Default first position is the original clip end.', { clipId: idSchema, count: { type: 'integer', minimum: 1, maximum: COMMAND_LIMITS.maxRepeatCount }, startBeat: beatSchema }, ['clipId', 'count']),
   descriptor('clip.setMute', 'Set clip mute explicitly.', { clipId: idSchema, mute: boolSchema }),
   descriptor('clip.setTranspose', 'Set the non-destructive MIDI clip transposition in semitones; original note pitches remain unchanged.', { clipId: idSchema, semitones: { type: 'integer', minimum: -96, maximum: 96 } }),
-  descriptor('effect.add', 'Append a built-in insert effect. Unknown parameter names or values outside the catalog are rejected.', { trackId: idSchema, effectType: { type: 'string', enum: effectTypes }, params: { type: 'object', additionalProperties: { type: 'number' }, maxProperties: 32 } }, ['trackId', 'effectType']),
+  descriptor('effect.add', 'Append a built-in insert effect (시김새). variantId (get_catalog effects[].variants) starts from a named library preset of that effect and shows its name; params then override. Unknown parameter names or values outside the catalog are rejected.', { trackId: idSchema, effectType: { type: 'string', enum: effectTypes }, params: { type: 'object', additionalProperties: { type: 'number' }, maxProperties: 32 }, variantId: { type: 'string', enum: SIGIMSAE_VARIANTS.map(variant => variant.id) } }, ['trackId', 'effectType']),
   descriptor('effect.setParam', 'Set one parameter using its native catalog unit, not a normalized knob value.', { trackId: idSchema, deviceId: idSchema, paramId: idSchema, value: { type: 'number' } }),
   descriptor('effect.remove', 'Remove the explicit insert effect.', { trackId: idSchema, deviceId: idSchema }),
   descriptor('effect.setEnabled', 'Set insert enable/bypass explicitly.', { trackId: idSchema, deviceId: idSchema, enabled: boolSchema }),
@@ -254,14 +255,20 @@ export function parseCommand(value: unknown, index = 0): DawCommand {
       let params: Record<string, number> | undefined
       if (c.params !== undefined) {
         const source = record(c.params, `${path}.params`)
-        if (Object.keys(source).length > 32) fail(`${path}.params`, 'too many parameters')
+        if (Object.keys(source).length > 256) fail(`${path}.params`, 'too many parameters')
         params = {}
         for (const [key, value] of Object.entries(source)) {
           string(key, `${path}.params key`)
           Object.defineProperty(params, key, { value: numeric(value, `${path}.params.${key}`, -Number.MAX_VALUE, Number.MAX_VALUE), enumerable: true, writable: true, configurable: true })
         }
       }
-      return { type: c.type, trackId: trackId(), effectType: c.effectType as EffectType, ...(params ? { params } : {}) }
+      let variantId: string | undefined
+      if (c.variantId !== undefined) {
+        const variant = sigimsaeVariant(string(c.variantId, `${path}.variantId`))
+        if (!variant || variant.effectType !== c.effectType) fail(`${path}.variantId`, 'unknown variant for this effect')
+        variantId = variant!.id
+      }
+      return { type: c.type, trackId: trackId(), effectType: c.effectType as EffectType, ...(params ? { params } : {}), ...(variantId ? { variantId } : {}) }
     }
     case 'effect.setParam': return { type: c.type, trackId: trackId(), deviceId: deviceId(), paramId: string(c.paramId, `${path}.paramId`), value: numeric(c.value, `${path}.value`, -Number.MAX_VALUE, Number.MAX_VALUE) }
     case 'effect.remove': return { type: c.type, trackId: trackId(), deviceId: deviceId() }

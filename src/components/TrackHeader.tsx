@@ -14,8 +14,8 @@ import './TrackHeader.css'
 const MAC = shortcutPlatform() === 'mac'
 const MOD = MAC ? '⌘' : 'Ctrl+'
 
-/** Rows that fit: 0 = name + M/S on one line, 1 = name over buttons, 2 = + volume, 3 = + pan. */
-export const headerTier = (height: number) => height < 44 ? 0 : height < 72 ? 1 : height < 96 ? 2 : 3
+/** Rows that fit: 0 = name + M/S on one line, 1 = name over buttons, 2 = + volume row and pan beside the buttons, 3 = roomier, + audio input chooser. */
+export const headerTier = (height: number) => height < 44 ? 0 : height < 68 ? 1 : height < 92 ? 2 : 3
 export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : instrumentDef(track.instrument).icon)
 const CONTROL = 'button,input,select,[role="slider"],.track-resize-corner'
 
@@ -59,8 +59,8 @@ export function TrackHeader(props: TrackHeaderProps) {
     if (config.record) kinds.push('arm')
     if (config.monitor && track.kind === 'audio') kinds.push('monitor')
   }
-  const showVolume = tier >= 2 && config.volume, showPan = tier >= 3 && config.pan
-  const showInput = tier >= 2 && track.kind === 'audio' && !!props.onInputChange
+  const showVolume = tier >= 2 && config.volume, showPan = tier >= 2 && config.pan
+  const showInput = tier >= 3 && track.kind === 'audio' && !!props.onInputChange
   const hiddenNow = track.hidden && ui.hideView
 
   function pointerDown(e: React.PointerEvent<HTMLDivElement>) {
@@ -90,7 +90,7 @@ export function TrackHeader(props: TrackHeaderProps) {
     {config.colorBar && <i className="track-color-bar" aria-hidden="true"/>}
     {config.trackNumber && <span className={`track-number${multi && focused ? ' focused' : ''}`} title={multi ? '클릭: 포커스 이동 · 드래그: 순서 바꾸기' : '드래그하여 트랙 순서 바꾸기'}>{index + 1}</span>}
     {config.icon && <span className="track-icon" title="더블 클릭: 라이브러리 · 우클릭: 아이콘 바꾸기" onContextMenu={e => { e.preventDefault(); e.stopPropagation(); props.onIconMenu(e) }}>
-      <Icon name={trackIcon(track)} size={tier === 0 ? 14 : 17}/>
+      <Icon name={trackIcon(track)} size={tier === 0 ? 12 : tier === 1 ? 15 : 17}/>
       {status === 'loading' && <i className="sample-dot loading" title="샘플을 불러오는 중" aria-label="샘플을 불러오는 중"/>}
       {status === 'error' && <i className="sample-dot error" title="샘플을 불러오지 못했습니다" aria-label="샘플을 불러오지 못했습니다"/>}
     </span>}
@@ -100,13 +100,15 @@ export function TrackHeader(props: TrackHeaderProps) {
         {hiddenNow && <b className="track-hide-badge" title="가려진 트랙">H</b>}
         {!track.enabled && <b className="track-off-badge" title="꺼진 트랙"><Icon name="power" size={9}/></b>}
       </div>
-      {kinds.length > 0 && <TrackButtons track={track} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}
+      {(kinds.length > 0 || showPan) && <div className="track-controls">
+        {kinds.length > 0 && <TrackButtons track={track} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}
+        {showPan && <PanKnob value={track.pan} size={tier >= 3 ? 24 : 20} ariaLabel={`${track.name} 팬`} onChange={v => props.onChange({ pan: v }, `${track.id}:pan`)}/>}
+      </div>}
       {showInput && <InputSelect className="track-input-select" input={track.input} choices={props.inputChoices ?? []} ariaLabel={`${track.name} 입력`} onChange={input => props.onInputChange?.(input)}/>}
+      {showVolume && <div className="track-volume">
+        <VolumeSlider value={track.volume} orientation="horizontal" meter={{ engine, trackId: track.id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={v => props.onChange({ volume: v }, `${track.id}:volume`)}/>
+      </div>}
     </div>
-    {(showVolume || showPan) && <div className="track-side">
-      {showVolume && <VolumeSlider value={track.volume} orientation="horizontal" meter={{ engine, trackId: track.id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={v => props.onChange({ volume: v }, `${track.id}:volume`)}/>}
-      {showPan && <PanKnob value={track.pan} size={20} ariaLabel={`${track.name} 팬`} onChange={v => props.onChange({ pan: v }, `${track.id}:pan`)}/>}
-    </div>}
     <i className="track-resize-corner" title={`개별 트랙 확대/축소 (${MOD}드래그: 전체 · ⇧클릭: 초기화)`} onPointerDown={e => { e.stopPropagation(); if (e.button !== 0) return; e.preventDefault(); props.onResizeStart(e, MAC ? e.metaKey : e.ctrlKey, e.shiftKey) }}/>
   </div>
 }

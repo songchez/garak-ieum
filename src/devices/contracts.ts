@@ -1,6 +1,6 @@
 import type { EffectType } from '../core/types.js'
 
-export type ParamUnit = 'hz' | 'db' | 's' | 'ms' | 'pct' | 'signed' | 'ct' | 'st' | 'x' | 'q' | 'ratio' | 'gain' | 'pan'
+export type ParamUnit = 'hz' | 'db' | 's' | 'ms' | 'pct' | 'signed' | 'ct' | 'st' | 'x' | 'q' | 'ratio' | 'gain' | 'pan' | 'bits'
 
 export interface ParamDef {
   id: string
@@ -14,8 +14,12 @@ export interface ParamDef {
 }
 
 export interface EffectDef {
+  /** Characterful display name (e.g. "대청 Hall"). */
   name: string
+  /** Compact button label. */
   short: string
+  /** Plain type label shown under the name (e.g. "리버브"). */
+  label?: string
   params: readonly ParamDef[]
 }
 

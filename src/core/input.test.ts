@@ -203,7 +203,7 @@ describe('Logic-style key commands', () => {
     [L('M'), 'muteTrack', ['timeline', 'workspace']], [L('S'), 'soloTrack', ['timeline', 'workspace']],
     [L('M', ALT), 'toggleTrackOn', ['timeline', 'workspace']], [L('S', ALT), 'clearRecallSolo', ['timeline', 'workspace']],
     [L('C', ALT), 'colorPalette', ['timeline', 'workspace']], [L('T', ALT), 'configureTrackHeader', ['timeline', 'workspace']],
-    [L('I'), 'toggleInspector', ['timeline', 'workspace']], [L('Y'), 'toggleLibrary', ['timeline', 'workspace']], [L('X'), 'toggleMixer', ['timeline', 'workspace']],
+    [L('I'), 'toggleInspector', ['timeline', 'workspace']], [L('X'), 'toggleMixer', ['timeline', 'workspace']],
     [L('F'), 'toggleBrowser', ['timeline', 'workspace']], [L('G'), 'globalTracks', ['timeline', 'workspace']], [L('H'), 'toggleHideView', ['timeline', 'workspace']],
     [k("'", 'Quote', ALT), 'createMarker', ['timeline', 'workspace']],
     [k('ArrowUp', 'ArrowUp', SHIFT), 'trackUpExtend', ['timeline', 'workspace']], [k('ArrowDown', 'ArrowDown', SHIFT), 'trackDownExtend', ['timeline', 'workspace']],
@@ -249,7 +249,7 @@ describe('Logic-style key commands', () => {
 
   it('never fires single-letter or punctuation commands with a modifier or in text', () => {
     const plain = [L('L'), L('M'), L('S'), L('C'), L('R'), L('K'), L('Z'), L('Q'), L('I'), L('Y'), L('X'), L('F'), L('G'), L('H'), k(';', 'Semicolon'), k(',', 'Comma'), k('.', 'Period')]
-    const plainCommands = new Set(['loopClip', 'muteTrack', 'soloTrack', 'cycle', 'record', 'metronome', 'zoomToFit', 'quantize', 'toggleInspector', 'toggleLibrary', 'toggleMixer', 'toggleBrowser', 'globalTracks', 'toggleHideView', 'moveToPlayhead', 'rewind', 'forward'])
+    const plainCommands = new Set(['loopClip', 'muteTrack', 'soloTrack', 'cycle', 'record', 'metronome', 'zoomToFit', 'quantize', 'toggleInspector', 'toggleMixer', 'toggleBrowser', 'globalTracks', 'toggleHideView', 'moveToPlayhead', 'rewind', 'forward'])
     for (const event of plain) {
       for (const platform of ['mac', 'windows'] as const) {
         for (const scope of ['text', 'control', 'dialog', 'outside'] as ShortcutScope[]) expect(resolveProjectShortcut(event, scope, false, platform)).toBeNull()

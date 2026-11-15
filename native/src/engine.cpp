@@ -607,8 +607,8 @@ struct TrackRuntime {
       for(auto absolute=start;absolute<end;++absolute){const auto delta=absolute-w.startFrame;const auto offset=static_cast<std::size_t>(absolute-frame);
         const double envelopePos=w.clipOffsetFrames+delta;
         double gain=w.gain;
-        if(w.fadeInFrames>0)gain*=std::min(1.0,envelopePos/w.fadeInFrames);
-        if(w.fadeOutFrames>0)gain=std::min(gain,w.gain*std::clamp((w.clipLengthFrames-envelopePos)/w.fadeOutFrames,0.0,1.0));
+        if(w.fadeInFrames>0)gain*=fadeShape(w.fadeInCurve,envelopePos/w.fadeInFrames);
+        if(w.fadeOutFrames>0)gain=std::min(gain,w.gain*fadeShape(w.fadeOutCurve,(w.clipLengthFrames-envelopePos)/w.fadeOutFrames));
         if(click>0)gain*=std::min({1.0,delta/click,(w.endFrame-absolute)/click});
         const double position=w.sourceStartFrame+delta*w.sourceSampleRate/sampleRate;
         buffer[2*offset]+=static_cast<float>(pcmSample(*resolved.asset,position,0)*gain);buffer[2*offset+1]+=static_cast<float>(pcmSample(*resolved.asset,position,1)*gain);
@@ -1304,8 +1304,8 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
       // Leave room for all queued live notes and their auto-release events.
       require(end-begin+1<=maxPluginEvents-maxVoices*2-1,"Instrument note density exceeds the bounded event buffer");
     }
-    for(const auto&w:t.audio){require(w.startFrame>=0&&w.endFrame>w.startFrame&&w.endFrame<=p.lengthFrames&&w.clipLengthFrames>0&&w.clipOffsetFrames>=0&&w.fadeInFrames>=0&&w.fadeOutFrames>=0,"Invalid native audio window");
-      checked(w.gain,0,2,"Invalid audio window gain");checked(w.sourceStartFrame,0,1e15,"Invalid audio source offset");checked(w.sourceSampleRate,8000,192000,"Invalid source sample rate");
+    for(const auto&w:t.audio){require(w.startFrame>=0&&w.endFrame>w.startFrame&&w.endFrame<=p.lengthFrames&&w.clipLengthFrames>0&&w.clipOffsetFrames>=0&&w.fadeInFrames>=0&&w.fadeOutFrames>=0&&w.fadeInCurve>=0&&w.fadeInCurve<=4&&w.fadeOutCurve>=0&&w.fadeOutCurve<=4,"Invalid native audio window");
+      checked(w.gain,0,16,"Invalid audio window gain");checked(w.sourceStartFrame,0,1e15,"Invalid audio source offset");checked(w.sourceSampleRate,8000,192000,"Invalid source sample rate");
       auto a=resolveAsset(assets,w.assetId);require(w.sourceSampleRate==a->sampleRate&&w.sourceStartFrame<a->frames(),"Audio window does not match registered PCM");
       track.stereoSource|=a->channels>1;
       recipe->assets.push_back(a);
@@ -1316,7 +1316,7 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
     for(const auto&e:t.inserts){require(!e.id.empty()&&insertIds.insert(e.id).second,"Duplicate native insert ID");if(!e.enabled)continue;
       InsertRuntime effect;
       if(e.type=="vst3"){require(static_cast<bool>(resolvePlugin),"No native VST3 host is available");effect.plugin=resolvePlugin(e.plugin,p.sampleRate,impl_->maxBlock);require(static_cast<bool>(effect.plugin),"VST3 effect could not be prepared");const auto latency=effect.plugin->latencyFrames();require(latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.latency+=latency;trackTail+=checked(effect.plugin->tailSeconds(),0,3600,"Invalid plugin tail time");track.stereoEffects=true;}
-      else {effect.builtin=dsp::makeEffect(e.type,e.params,p.sampleRate,p.bpm);track.latency+=effect.builtin->latencyFrames();trackTail+=effect.builtin->tailSeconds();track.stereoEffects|=e.type=="reverb"||e.type=="guitar-rig";}
+      else {effect.builtin=dsp::makeEffect(e.type,e.params,p.sampleRate,p.bpm);track.latency+=effect.builtin->latencyFrames();trackTail+=effect.builtin->tailSeconds();track.stereoEffects|=e.type=="reverb"||e.type=="guitar-rig"||(e.type=="delay"&&e.params.count("mode")&&e.params.at("mode")>=.5)||e.type=="chorus"||e.type=="phaser"||e.type=="flanger"||e.type=="tremolo"||e.type=="utility";}
       require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.inserts.push_back(std::move(effect));
     }
     result->tail=std::max(result->tail,trackTail+.15);

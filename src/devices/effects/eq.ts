@@ -5,7 +5,7 @@ import { parameterReader, setParameter, noTail } from './shared.js'
 const eqBand = (id: string, label: string): ParamDef => ({ id, label, min: -18, max: 18, default: 0, unit: 'db' })
 
 const definition: EffectDef = {
-  name: '3밴드 EQ', short: 'EQ',
+  name: 'Curve 3', short: 'EQ', label: '3밴드 EQ',
   params: [eqBand('low', '저음'), eqBand('mid', '중음'), { id: 'midFreq', label: '중음 주파수', min: 200, max: 5000, default: 1000, unit: 'hz', scale: 'log' }, eqBand('high', '고음')],
 }
 

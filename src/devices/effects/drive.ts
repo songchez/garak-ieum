@@ -16,7 +16,7 @@ function shaperCurve(): Float32Array<ArrayBuffer> {
 }
 
 const definition: EffectDef = {
-  name: '드라이브', short: '드라이브',
+  name: 'Hot Tube', short: '드라이브', label: '드라이브',
   params: [
     { id: 'drive', label: '드라이브', min: 0, max: 36, default: 9, unit: 'db' },
     { id: 'tone', label: '톤', min: 500, max: 20000, default: 9000, unit: 'hz', scale: 'log' },

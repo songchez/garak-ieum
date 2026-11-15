@@ -1,5 +1,6 @@
 import type { AudioClip, Clip, MidiClip, Track } from './types'
 import { midiSourceOffset } from './midiRegions'
+import { fadeLengths } from './clipEnvelope.js'
 
 /** Ticks per beat for Track.delayTicks and ClipBase.delayTicks. */
 export const PPQ = 960
@@ -127,8 +128,11 @@ export function playbackNotes(track: Track, clip: MidiClip, occ: Occurrence): Pl
   return notes
 }
 
-/** Audio occurrences with delay applied; where clips overlap, the later-starting clip cuts the earlier one (V-09). */
-export function audioWindows(track: Track, projectEnd: number): AudioWindow[] {
+/**
+ * Audio occurrences with delay applied; where clips overlap, the later-starting clip cuts the earlier one (V-09).
+ * With `bpm`, the earlier clip keeps playing under the later clip's fade-in (crossfade, docs/REGION_GAIN_FADES.md).
+ */
+export function audioWindows(track: Track, projectEnd: number, bpm?: number): AudioWindow[] {
   const expanded: (AudioWindow & { order: number })[] = []
   track.clips.forEach((clip, order) => {
     if (clip.kind !== 'audio' || clip.mute) return
@@ -143,11 +147,17 @@ export function audioWindows(track: Track, projectEnd: number): AudioWindow[] {
     for (const other of expanded) {
       if (other.clip.id === window.clip.id || other.start >= end) continue
       const later = other.start > window.start + EPSILON || (other.start >= window.start - EPSILON && other.order > window.order)
-      if (later) end = Math.max(window.start, other.start)
+      if (later) end = Math.max(window.start, Math.min(end, other.start + crossfadeBeats(other.clip, bpm)))
     }
     if (end - window.start > EPSILON) windows.push({ clip: window.clip, start: window.start, end, sourceOffsetBeats: window.sourceOffsetBeats })
   }
   return windows
+}
+
+/** Beats of `clip`'s effective fade-in, during which an earlier overlapping clip keeps sounding. */
+function crossfadeBeats(clip: AudioClip, bpm: number | undefined): number {
+  if (!bpm || !(bpm > 0) || !(clip.fadeIn > 0)) return 0
+  return fadeLengths(clip.lengthBeats * 60 / bpm, clip.fadeIn, clip.fadeOut)[0] * bpm / 60
 }
 
 export function midiEvents(track: Track, projectEnd: number): PlaybackNote[] {

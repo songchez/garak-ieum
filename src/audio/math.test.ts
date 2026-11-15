@@ -3,7 +3,7 @@ import type { Project } from '../core/types'
 import { clipEnvelope, encodePcm16Wav, normalizedStart, positionAfter } from './math'
 
 const project: Project = {
-  schemaVersion: 8, id: 'test', name: 'Test', bpm: 120, sampleRate: 48000, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4,
+  schemaVersion: 10, id: 'test', name: 'Test', bpm: 120, sampleRate: 48000, timeSignature: { numerator: 4, denominator: 4 }, beatsPerBar: 4,
   lengthBeats: 32, masterVolume: 0.8,
   loop: { enabled: true, startBeat: 8, endBeat: 16 }, tracks: [], markers: [],
 }
@@ -31,7 +31,7 @@ describe('clip fades', () => {
 
   it('keeps overlong fades nonoverlapping after a short trim', () => {
     expect(clipEnvelope(0.1, 0.4, 5, 5)).toBeCloseTo(0.5)
-    expect(clipEnvelope(0.2, 0.4, 5, 5)).toBe(1)
+    expect(clipEnvelope(0.2, 0.4, 5, 5)).toBeCloseTo(1, 12)
     expect(clipEnvelope(0.4, 0.4, 5, 5)).toBe(0)
   })
 })

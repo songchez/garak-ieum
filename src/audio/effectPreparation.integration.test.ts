@@ -14,11 +14,13 @@ describe('built-in worklet registration', () => {
     await prepareEffects(live)
     await prepareEffects(live)
     await prepareEffects(offline)
-    expect(liveLoad).toHaveBeenCalledTimes(1)
-    expect(offlineLoad).toHaveBeenCalledTimes(1)
-    const url = liveLoad.mock.calls[0][0] as string
-    expect(url).not.toMatch(/^blob:|^data:/)
-    expect(offlineLoad).toHaveBeenCalledWith(url)
+    // One module for the guitar rig, one shared by the kernel-backed 시김새.
+    expect(liveLoad).toHaveBeenCalledTimes(2)
+    expect(offlineLoad).toHaveBeenCalledTimes(2)
+    for (const [url] of liveLoad.mock.calls) {
+      expect(String(url)).not.toMatch(/^blob:|^data:/)
+      expect(offlineLoad).toHaveBeenCalledWith(url)
+    }
   })
 
   it('fails explicitly when the built-in processor cannot load', async () => {

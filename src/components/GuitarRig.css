@@ -1,13 +1,471 @@
 .gr-backdrop{position:fixed;inset:0;z-index:700;display:flex;align-items:center;justify-content:center;padding:16px;background:#101713bb;backdrop-filter:blur(5px)}
 .gr-editor{--gr-text:#eee9dc;--gr-muted:#b6c1b3;--gr-accent:#9bc8b5;--gr-brass:#d4ba7e;--gr-line:#63705b61;width:min(1120px,100%);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;min-height:0;border:1px solid #73846a88;border-radius:15px;background:#252d27;color:var(--gr-text);box-shadow:0 30px 120px #0009;overflow:hidden;outline:none;font-size:12px;text-align:left}
-.gr-editor *{box-sizing:border-box}.gr-editor h2,.gr-editor h3,.gr-editor h4,.gr-editor p{margin:0}.gr-editor button,.gr-editor select,.gr-editor input{font:inherit}.gr-editor button{touch-action:manipulation;color:inherit}.gr-editor button:focus-visible,.gr-editor select:focus-visible,.gr-editor input:focus-visible,.gr-editor [role=slider]:focus-visible{outline:2px solid #b8d6b4;outline-offset:3px}.gr-editor button:disabled{opacity:.45;cursor:default}.gr-editor select{border:1px solid #6e7c6680;background:#253329;color:#eee9dc;border-radius:6px;min-height:32px;padding:5px 27px 5px 9px}.gr-header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 26px;background:linear-gradient(115deg,#374237,#28322b);border-bottom:1px solid var(--gr-line);flex-shrink:0}.gr-heading{min-width:0}.gr-eyebrow{font-size:8px;letter-spacing:.19em;color:#bac9b0}.gr-heading h2{font-size:25px;font-weight:600;letter-spacing:-1px;line-height:1.45}.gr-heading p{color:#b9c6b2;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:480px}.gr-header-actions{display:flex;align-items:center;gap:18px}.gr-power{display:flex;align-items:center;gap:7px;border:1px solid #6f796b;background:#28302a;border-radius:20px;padding:8px 12px;font-size:10px;white-space:nowrap;color:#b8beb0!important}.gr-power.is-on{color:#cfe2c8!important;border-color:#96b98980;background:#a6c39014}.gr-power.is-on svg{color:#b2d293}.gr-close{width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:6px;background:#101b1722;color:#c7cebc!important}.gr-close:hover{background:#ffffff12}.gr-toolbar{display:flex;align-items:center;gap:15px;padding:11px 26px;border-bottom:1px solid var(--gr-line);background:#222d25;flex-shrink:0}.gr-preset{display:flex;align-items:center;gap:10px}.gr-preset>span{font-size:8px;letter-spacing:.12em;color:#a6b7a0}.gr-preset select{width:176px;color:#e8d8b0;border-color:#ac955777;background:#d4ba7e0a}.gr-preset-description{font-size:10px;line-height:1.6;color:#aebda7}.gr-reset{display:flex;align-items:center;gap:6px;margin-left:auto;white-space:nowrap;font-size:10px!important;padding:7px 9px;border:1px solid var(--gr-line);border-radius:5px;background:#18241c55;color:#c5cbb7!important}.gr-scroll{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:20px 26px 16px;min-height:0}.gr-input-bar{display:flex;align-items:center;gap:11px;padding:12px 14px;background:#34403266;border:1px solid var(--gr-line);border-radius:8px;margin-bottom:20px;color:#b7c5ae}.gr-input-bar>svg{flex-shrink:0;color:#b4c7a6}.gr-input-bar>div{flex:1;min-width:120px}.gr-input-bar strong{font-size:11px;color:#d1d9c5;font-weight:550}.gr-input-bar p{font-size:9px;line-height:1.6;color:#a5b29b;margin-top:3px}.gr-monitor,.gr-settings{display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 9px;white-space:nowrap;border:1px solid #71806488;border-radius:5px;background:#1d2a2255;font-size:10px!important}.gr-monitor.is-on{background:#b5cf9818;border-color:#aac58c;color:#d0e3ba}.gr-settings{color:#c3cdb7!important}.gr-bypass-note{padding:10px 12px;margin:0 0 18px!important;border:1px solid #b79d5f77;border-radius:6px;background:#af934b10;color:#d7c28f;font-size:10px;line-height:1.7}.gr-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;min-height:32px}.gr-section-head>div{display:flex;align-items:center;gap:8px}.gr-section-head h3{font:500 17px Georgia,'Noto Serif KR',serif;color:#dedbc8;letter-spacing:.02em}.gr-section-index{border:1px solid #7e906555;color:#9cad89;font:8px ui-monospace,monospace;border-radius:50%;width:21px;height:21px;display:grid;place-items:center}.gr-section-caption{font-size:9px;color:#94a487}.gr-choice{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:10px;color:#bdc5ae}.gr-choice>span{white-space:nowrap}.gr-choice select{max-width:220px;flex:1;min-width:0;font-size:11px}.gr-amplifier{margin-bottom:25px}.gr-amplifier>.gr-section-head{max-width:800px;margin-left:auto;margin-right:auto}.gr-amp-stage{width:100%;max-width:720px;position:relative;margin:0 auto}.gr-amp-visual{aspect-ratio:3/1;position:relative}.gr-amp-art{display:block;width:100%;height:auto;pointer-events:none;filter:drop-shadow(0 9px 9px #0005)}.gr-amp-brand{position:absolute;top:28%;left:38%;width:24%;text-align:center;font-family:Georgia,'Noto Serif KR',serif;font-size:30px;letter-spacing:1px;color:#ebd7a3;text-shadow:0 2px 2px #000b}.gr-amp-brand small{display:block;margin-top:3px;font:7px ui-sans-serif,system-ui,sans-serif;letter-spacing:.2em;color:#c8bf9f}.gr-amp-model{position:absolute;left:7.64%;top:63%;width:13.89%;text-align:center;color:#433b25;font-size:16px;font-family:Georgia,serif;letter-spacing:.08em}.gr-amp-model small{display:block;font:6px ui-sans-serif,system-ui,sans-serif;letter-spacing:.18em;margin-top:7px;font-weight:700}.gr-amp-led{position:absolute;left:88.19%;top:56.67%;width:10px;height:10px;border-radius:50%;border:2px solid #786a35;background:#d6ed8d;box-shadow:0 0 6px #d6ed8d99}.gr-amp-switch{position:absolute;left:87.08%;top:63.75%;width:3.61%;height:14.58%;border:2px solid #50452d;border-radius:5px;background:linear-gradient(#6f5d38,#312d24);box-shadow:0 2px 2px #0005;padding:3px}.gr-amp-switch span{display:block;height:100%;border-radius:2px;background:linear-gradient(#332e22,#685b37);border-top:2px solid #a39465}.gr-amp-switch[aria-pressed=false] span{transform:rotate(180deg)}.gr-amp-power-label{position:absolute;left:86.38%;top:79.6%;width:4.86%;text-align:center;font-size:6px;letter-spacing:.1em;color:#4b4128;font-weight:700}.gr-amp-knobs{position:absolute;inset:0;pointer-events:none}.gr-placed-knob{position:absolute;transform:translate(-50%,-37px);pointer-events:auto}.gr-amp-stage[data-bypassed=true] .gr-amp-led{background:#60583d;box-shadow:none}.gr-amp-stage[data-bypassed=true] .gr-amp-knobs{opacity:.67}.gr-lower-grid{display:grid;grid-template-columns:minmax(390px,1fr) minmax(310px,384px);gap:36px;max-width:940px;margin:0 auto}.gr-pedal-grid{display:grid;grid-template-columns:repeat(2,180px);justify-content:center;gap:17px 18px}.gr-pedal-cell{width:180px}.gr-pedal-stage{position:relative;width:180px;height:300px}.gr-pedal-art{display:block;width:180px;height:300px;pointer-events:none;filter:drop-shadow(0 7px 7px #0006)}.gr-pedal-comp .gr-pedal-art{filter:saturate(.4) brightness(1.08) drop-shadow(0 7px 7px #0006)}.gr-pedal-chorus .gr-pedal-art{filter:hue-rotate(27deg) saturate(.88) drop-shadow(0 7px 7px #0006)}.gr-pedal-delay .gr-pedal-art{filter:hue-rotate(-106deg) saturate(.8) drop-shadow(0 7px 7px #0006)}.gr-pedal-name{position:absolute;left:25px;right:25px;top:24px;text-align:center;color:#304b39}.gr-pedal-name h4{font-size:17px;line-height:20px;font-weight:650;letter-spacing:-.5px}.gr-pedal-name>span{display:block;font-size:6px;line-height:8px;margin-top:2px;letter-spacing:.08em;font-weight:700}.gr-pedal-chorus .gr-pedal-name{color:#294350}.gr-pedal-delay .gr-pedal-name{color:#593b29}.gr-pedal-led{position:absolute;left:86px;top:203px;width:8px;height:8px;border-radius:50%;border:1px solid #7d774e;background:#eef9ad;box-shadow:0 0 7px #f4ffad99;pointer-events:none}.gr-pedal-stage[data-bypassed=true] .gr-pedal-led{background:#4f4a36;box-shadow:none}.gr-pedal-stage[data-bypassed=true] .gr-placed-knob{opacity:.67}.gr-footswitch{position:absolute;left:65px;top:224px;width:50px;height:52px;border:0;border-radius:50%;background:transparent}.gr-footswitch:hover{box-shadow:0 0 0 2px #ecf0d3aa}.gr-footswitch:active{background:#20332833}.gr-pedal-caption{display:flex;align-items:center;justify-content:center;gap:7px;font-size:8px;color:#94a488;margin:3px 0 0}.gr-pedal-caption button{border:1px solid #73836466;background:#202d2255;border-radius:4px;padding:4px 6px;font:8px ui-monospace,monospace;color:#a2b197}.gr-pedal-caption button[aria-pressed=true]{color:#d8e2bb;border-color:#acb98677;background:#b9c99812}.gr-cabinet{min-width:0}.gr-small-toggle{padding:5px 8px;border:1px solid #73836466;border-radius:5px;background:#1b291f66;color:#9fae92!important;font-size:9px!important}.gr-small-toggle[aria-pressed=true]{color:#e3d2a2!important;border-color:#bba66777;background:#c7ac6c12}.gr-cabinet-stage{position:relative;width:100%;max-width:384px;aspect-ratio:3/2;margin:0 auto}.gr-cabinet-stage>img{display:block;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 9px 10px #0006)}.gr-cabinet-badge{position:absolute;left:38%;right:38%;top:21.5%;text-align:center;font-family:Georgia,'Noto Serif KR',serif;font-size:15px;color:#e0cf9f;text-shadow:0 1px 2px #000}.gr-cabinet-stage[data-bypassed=true]>img{opacity:.55}.gr-mic-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.gr-mic-guide{fill:none;stroke:#f2d894a6;stroke-width:2;stroke-dasharray:5 5}.gr-mic-center{fill:#f1d48a}.gr-mic-marker{fill:#f1d48a18;stroke:#f1d48a;stroke-width:2;filter:drop-shadow(0 1px 2px #000)}.gr-mic-marker text{fill:#ffedb9;stroke:none;font:bold 13px ui-monospace,monospace;letter-spacing:1px}.gr-cab-controls{display:grid;gap:15px;margin:12px auto 0;max-width:384px;padding:18px 14px;border-top:1px solid var(--gr-line)}.gr-range{display:block;color:#bac4ac;font-size:10px}.gr-range>span{display:flex;justify-content:space-between;gap:10px}.gr-range output{color:var(--gr-brass);font:10px ui-monospace,monospace}.gr-range input{display:block;width:100%;height:27px;margin:5px 0 0;accent-color:var(--gr-brass);cursor:ew-resize}.gr-range small{display:flex;justify-content:space-between;font-size:8px;color:#97a88a}.gr-model-note{color:#94a487;font-size:9px;line-height:1.8}.gr-signal-path{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:7px 16px;list-style:none;padding:14px 0 0;margin:25px 0 0;border-top:1px solid var(--gr-line);font-size:9px;color:#b0bda2}.gr-signal-path li{display:flex;align-items:center;gap:6px;white-space:nowrap}.gr-signal-path li:not(:last-child)::after{content:'→';padding-left:9px;color:#6f815f}.gr-signal-path li>span{font:7px ui-monospace,monospace;color:#80956f}.gr-footer{display:flex;align-items:center;justify-content:space-between;gap:15px;border-top:1px solid var(--gr-line);background:#202b23;padding:11px 26px;flex-shrink:0}.gr-footer p{font-size:9px;color:#9daa90;line-height:1.8}.gr-footer p:first-child{color:#c4c9ae}.gr-footer kbd{font:8px ui-monospace,monospace;border:1px solid #71815d66;border-radius:3px;padding:1px 3px;background:#16231966}
+.gr-editor *{box-sizing:border-box}.gr-editor h2,.gr-editor h3,.gr-editor h4,.gr-editor p{margin:0}.gr-editor button,.gr-editor select,.gr-editor input{font:inherit}.gr-editor button{touch-action:manipulation;color:inherit}.gr-editor button:focus-visible,.gr-editor select:focus-visible,.gr-editor input:focus-visible,.gr-editor [role=slider]:focus-visible{outline:2px solid #b8d6b4;outline-offset:3px}.gr-editor button:disabled{opacity:.45;cursor:default}.gr-editor select{border:1px solid #6e7c6680;background:#253329;color:#eee9dc;border-radius:6px;min-height:32px;padding:5px 27px 5px 9px}.gr-header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 26px;background:linear-gradient(115deg,#374237,#28322b);border-bottom:1px solid var(--gr-line);flex-shrink:0}.gr-heading{min-width:0}.gr-eyebrow{font-size:8px;letter-spacing:.19em;color:#bac9b0}.gr-heading h2{font-size:25px;font-weight:600;letter-spacing:-1px;line-height:1.45}.gr-heading p{color:#b9c6b2;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:480px}.gr-header-actions{display:flex;align-items:center;gap:18px}.gr-power{display:flex;align-items:center;gap:7px;border:1px solid #6f796b;background:#28302a;border-radius:20px;padding:8px 12px;font-size:10px;white-space:nowrap;color:#b8beb0!important}.gr-power.is-on{color:#cfe2c8!important;border-color:#96b98980;background:#a6c39014}.gr-power.is-on svg{color:#b2d293}.gr-close{width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:6px;background:#101b1722;color:#c7cebc!important}.gr-close:hover{background:#ffffff12}.gr-toolbar{display:flex;align-items:center;gap:15px;padding:11px 26px;border-bottom:1px solid var(--gr-line);background:#222d25;flex-shrink:0}.gr-preset{display:flex;align-items:center;gap:10px}.gr-preset>span{font-size:8px;letter-spacing:.12em;color:#a6b7a0}.gr-preset select{width:176px;color:#e8d8b0;border-color:#ac955777;background:#d4ba7e0a}.gr-preset-description{font-size:10px;line-height:1.6;color:#aebda7}.gr-reset{display:flex;align-items:center;gap:6px;margin-left:auto;white-space:nowrap;font-size:10px!important;padding:7px 9px;border:1px solid var(--gr-line);border-radius:5px;background:#18241c55;color:#c5cbb7!important}.gr-scroll{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:20px 26px 16px;min-height:0}.gr-input-bar{display:flex;align-items:center;gap:11px;padding:12px 14px;background:#34403266;border:1px solid var(--gr-line);border-radius:8px;margin-bottom:20px;color:#b7c5ae}.gr-input-bar>svg{flex-shrink:0;color:#b4c7a6}.gr-input-bar>div{flex:1;min-width:120px}.gr-input-bar strong{font-size:11px;color:#d1d9c5;font-weight:550}.gr-input-bar p{font-size:9px;line-height:1.6;color:#a5b29b;margin-top:3px}.gr-monitor,.gr-settings{display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 9px;white-space:nowrap;border:1px solid #71806488;border-radius:5px;background:#1d2a2255;font-size:10px!important}.gr-monitor.is-on{background:#b5cf9818;border-color:#aac58c;color:#d0e3ba}.gr-settings{color:#c3cdb7!important}.gr-bypass-note{padding:10px 12px;margin:0 0 18px!important;border:1px solid #b79d5f77;border-radius:6px;background:#af934b10;color:#d7c28f;font-size:10px;line-height:1.7}.gr-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;min-height:32px}.gr-section-head>div{display:flex;align-items:center;gap:8px}.gr-section-head h3{font:500 17px Georgia,'Noto Serif KR',serif;color:#dedbc8;letter-spacing:.02em}.gr-section-index{border:1px solid #7e906555;color:#9cad89;font:8px ui-monospace,monospace;border-radius:50%;width:21px;height:21px;display:grid;place-items:center}.gr-section-caption{font-size:9px;color:#94a487}.gr-choice{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:10px;color:#bdc5ae}.gr-choice>span{white-space:nowrap}.gr-choice select{max-width:220px;flex:1;min-width:0;font-size:11px}.gr-amplifier{margin-bottom:25px}.gr-amplifier>.gr-section-head{max-width:800px;margin-left:auto;margin-right:auto}.gr-amp-stage{width:100%;max-width:720px;position:relative;margin:0 auto}.gr-amp-visual{aspect-ratio:2/1;position:relative}.gr-amp-art{display:block;width:100%;height:auto;pointer-events:none;filter:drop-shadow(0 9px 9px #0005)}.gr-amp-brand{position:absolute;top:calc(100% + 2px);left:0;right:0;text-align:center;font-family:Georgia,'Noto Serif KR',serif;font-size:14px;letter-spacing:.06em;color:#e7d39e;text-shadow:0 1px 2px #000b;pointer-events:none}.gr-amp-model{position:absolute;left:7.64%;top:63%;width:13.89%;text-align:center;color:#433b25;font-size:16px;font-family:Georgia,serif;letter-spacing:.08em}.gr-amp-model small{display:block;font:6px ui-sans-serif,system-ui,sans-serif;letter-spacing:.18em;margin-top:7px;font-weight:700}.gr-amp-led{position:absolute;transform:translate(-50%,-50%);width:10px;height:10px;border-radius:50%;border:2px solid #786a35;background:#d6ed8d;box-shadow:0 0 6px #d6ed8d99}.gr-amp-switch{position:absolute;transform:translate(-50%,-50%);width:26px;height:34px;border:2px solid #50452d;border-radius:5px;background:linear-gradient(#6f5d38,#312d24);box-shadow:0 2px 2px #0005;padding:3px}.gr-amp-switch span{display:block;height:100%;border-radius:2px;background:linear-gradient(#332e22,#685b37);border-top:2px solid #a39465}.gr-amp-switch[aria-pressed=false] span{transform:rotate(180deg)}.gr-amp-stage[data-panel=dark] .knob-readout,.gr-amp-stage[data-panel=dark] .knob-label{color:#eadfc2}.gr-amp-stage[data-panel=dark] .knob-image-scale{color:#d9c79a}.gr-amp-stage{margin-bottom:22px}.gr-amp-knobs{position:absolute;inset:0;pointer-events:none}.gr-placed-knob{position:absolute;transform:translate(-50%,-37px);pointer-events:auto}.gr-amp-stage[data-bypassed=true] .gr-amp-led{background:#60583d;box-shadow:none}.gr-amp-stage[data-bypassed=true] .gr-amp-knobs{opacity:.67}.gr-lower-grid{display:grid;grid-template-columns:minmax(390px,1fr) minmax(310px,384px);gap:36px;max-width:940px;margin:0 auto}.gr-pedal-grid{display:grid;grid-template-columns:repeat(2,180px);justify-content:center;gap:17px 18px}.gr-pedal-cell{width:180px}.gr-pedal-stage{position:relative;width:180px;height:300px}.gr-pedal-art{display:block;width:180px;height:300px;pointer-events:none;filter:drop-shadow(0 7px 7px #0006)}.gr-pedal-name{position:absolute;left:25px;right:25px;top:24px;text-align:center;color:#304b39}.gr-pedal-name h4{font-size:17px;line-height:20px;font-weight:650;letter-spacing:-.5px}.gr-pedal-name>span{display:block;font-size:6px;line-height:8px;margin-top:2px;letter-spacing:.08em;font-weight:700}.gr-pedal-comp .gr-pedal-name{color:#27306a}.gr-pedal-drive .gr-pedal-name{color:#1d4f36}.gr-pedal-chorus .gr-pedal-name{color:#1d3a57}.gr-pedal-delay .gr-pedal-name{color:#fbe8cc;text-shadow:0 1px 2px #0009}.gr-pedal-led{position:absolute;left:86px;top:203px;width:8px;height:8px;border-radius:50%;border:1px solid #7d774e;background:#eef9ad;box-shadow:0 0 7px #f4ffad99;pointer-events:none}.gr-pedal-stage[data-bypassed=true] .gr-pedal-led{background:#4f4a36;box-shadow:none}.gr-pedal-stage[data-bypassed=true] .gr-placed-knob{opacity:.67}.gr-footswitch{position:absolute;left:65px;top:224px;width:50px;height:52px;border:0;border-radius:50%;background:transparent}.gr-footswitch:hover{box-shadow:0 0 0 2px #ecf0d3aa}.gr-footswitch:active{background:#20332833}.gr-pedal-caption{display:flex;align-items:center;justify-content:center;gap:7px;font-size:8px;color:#94a488;margin:3px 0 0}.gr-pedal-caption button{border:1px solid #73836466;background:#202d2255;border-radius:4px;padding:4px 6px;font:8px ui-monospace,monospace;color:#a2b197}.gr-pedal-caption button[aria-pressed=true]{color:#d8e2bb;border-color:#acb98677;background:#b9c99812}.gr-cabinet{min-width:0}.gr-small-toggle{padding:5px 8px;border:1px solid #73836466;border-radius:5px;background:#1b291f66;color:#9fae92!important;font-size:9px!important}.gr-small-toggle[aria-pressed=true]{color:#e3d2a2!important;border-color:#bba66777;background:#c7ac6c12}.gr-cabinet-stage{position:relative;width:100%;max-width:384px;aspect-ratio:3/2;margin:0 auto}.gr-cabinet-stage>img{display:block;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 9px 10px #0006)}.gr-cabinet-name{position:absolute;left:0;right:0;bottom:-4px;text-align:center;font-family:Georgia,'Noto Serif KR',serif;font-size:12px;letter-spacing:.06em;color:#e0cf9f;text-shadow:0 1px 2px #000;pointer-events:none}.gr-cabinet-stage[data-bypassed=true]>img{opacity:.55}.gr-mic-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.gr-mic-guide{fill:none;stroke:#f2d894a6;stroke-width:2;stroke-dasharray:5 5}.gr-mic-center{fill:#f1d48a}.gr-mic-marker{fill:#f1d48a18;stroke:#f1d48a;stroke-width:2;filter:drop-shadow(0 1px 2px #000)}.gr-mic-marker text{fill:#ffedb9;stroke:none;font:bold 13px ui-monospace,monospace;letter-spacing:1px}.gr-mic-pick{display:flex;align-items:center;gap:12px}.gr-mic-pick .gr-choice{flex:1;min-width:0}.gr-mic-photo{width:96px;height:72px;object-fit:contain;flex-shrink:0;filter:drop-shadow(0 4px 5px #0007)}.gr-cab-controls{display:grid;gap:15px;margin:12px auto 0;max-width:384px;padding:18px 14px;border-top:1px solid var(--gr-line)}.gr-range{display:block;color:#bac4ac;font-size:10px}.gr-range>span{display:flex;justify-content:space-between;gap:10px}.gr-range output{color:var(--gr-brass);font:10px ui-monospace,monospace}.gr-range input{display:block;width:100%;height:27px;margin:5px 0 0;accent-color:var(--gr-brass);cursor:ew-resize}.gr-range small{display:flex;justify-content:space-between;font-size:8px;color:#97a88a}.gr-model-note{color:#94a487;font-size:9px;line-height:1.8}.gr-signal-path{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:7px 16px;list-style:none;padding:14px 0 0;margin:25px 0 0;border-top:1px solid var(--gr-line);font-size:9px;color:#b0bda2}.gr-signal-path li{display:flex;align-items:center;gap:6px;white-space:nowrap}.gr-signal-path li:not(:last-child)::after{content:'→';padding-left:9px;color:#6f815f}.gr-signal-path li>span{font:7px ui-monospace,monospace;color:#80956f}.gr-footer{display:flex;align-items:center;justify-content:space-between;gap:15px;border-top:1px solid var(--gr-line);background:#202b23;padding:11px 26px;flex-shrink:0}.gr-footer p{font-size:9px;color:#9daa90;line-height:1.8}.gr-footer p:first-child{color:#c4c9ae}.gr-footer kbd{font:8px ui-monospace,monospace;border:1px solid #71815d66;border-radius:3px;padding:1px 3px;background:#16231966}
 /* The 128×128 cap is already circular and centered at 64,64. Only the cap rotates. */
-.knob--image{width:62px;gap:1px;padding:0}.knob-image-visual{position:relative;display:block;flex-shrink:0}.knob-image-cap{display:block;position:absolute;inset:0;width:100%;height:100%;transform-origin:50% 50%;pointer-events:none;user-select:none}.knob-image-shadow{position:absolute;inset:4px;border-radius:50%;box-shadow:0 3px 4px #0007}.knob-image-scale{position:absolute;left:-6px;top:-6px;width:calc(100% + 12px);height:calc(100% + 12px);pointer-events:none;fill:none;stroke:currentColor;stroke-width:1.2;color:#51492e}.knob-image-track{opacity:.2;stroke-width:.6}.knob--image .knob-readout{order:-1;font-size:8px;line-height:14px;color:#423b28;font-weight:600}.knob--image .knob-label{font-size:7px;line-height:12px;color:#423b28;font-weight:750;letter-spacing:.03em}.gr-pedal-stage .knob-readout,.gr-pedal-stage .knob-label{color:#284233}.gr-pedal-stage .knob-image-scale{color:#3b5543}.gr-pedal-chorus .knob-readout,.gr-pedal-chorus .knob-label{color:#29444d}.gr-pedal-delay .knob-readout,.gr-pedal-delay .knob-label{color:#533824}.gr-pedal-delay .knob-image-scale{color:#674b31}.gr-editor .knob--image:focus-visible{outline-color:#fff7d5;outline-offset:3px;background:#e8edd21a}
-@media(max-width:930px){.gr-lower-grid{grid-template-columns:1fr;gap:28px}.gr-pedal-grid{grid-template-columns:repeat(4,180px);gap:12px}.gr-cabinet{max-width:600px;width:100%;margin:0 auto}.gr-section-caption{font-size:8px}.gr-cab-controls{max-width:500px}.gr-input-bar{flex-wrap:wrap}.gr-input-bar>div{flex-basis:calc(100% - 40px)}.gr-monitor{margin-left:28px}.gr-input-bar p{font-size:10px}}
+.knob--image{width:62px;gap:1px;padding:0}.knob-image-visual{position:relative;display:block;flex-shrink:0}.knob-image-cap{display:block;position:absolute;inset:0;width:100%;height:100%;transform-origin:50% 50%;pointer-events:none;user-select:none}.knob-image-shadow{position:absolute;inset:4px;border-radius:50%;box-shadow:0 3px 4px #0007}.knob-image-scale{position:absolute;left:-6px;top:-6px;width:calc(100% + 12px);height:calc(100% + 12px);pointer-events:none;fill:none;stroke:currentColor;stroke-width:1.2;color:#51492e}.knob-image-track{opacity:.2;stroke-width:.6}.knob--image .knob-readout{order:-1;font-size:8px;line-height:14px;color:#423b28;font-weight:600}.knob--image .knob-label{font-size:7px;line-height:12px;color:#423b28;font-weight:750;letter-spacing:.03em}.gr-pedal-stage .knob-readout,.gr-pedal-stage .knob-label{color:#284233}.gr-pedal-stage .knob-image-scale{color:#3b5543}.gr-pedal-chorus .knob-readout,.gr-pedal-chorus .knob-label{color:#29444d}.gr-pedal-comp .knob-readout,.gr-pedal-comp .knob-label{color:#2a2f55}.gr-pedal-delay .knob-readout,.gr-pedal-delay .knob-label{color:#fbe8cc;text-shadow:0 1px 1px #0008}.gr-pedal-delay .knob-image-scale{color:#f2d7b0}.gr-editor .knob--image:focus-visible{outline-color:#fff7d5;outline-offset:3px;background:#e8edd21a}
+@media(max-width:930px){.gr-lower-grid{grid-template-columns:1fr;gap:28px}.gr-pedal-grid{grid-template-columns:repeat(4,180px);gap:12px}.gr-cabinet{max-width:600px;width:100%;margin:0 auto}.gr-section-caption{font-size:8px}.gr-mic-pick{display:flex;align-items:center;gap:12px}.gr-mic-pick .gr-choice{flex:1;min-width:0}.gr-mic-photo{width:96px;height:72px;object-fit:contain;flex-shrink:0;filter:drop-shadow(0 4px 5px #0007)}.gr-cab-controls{max-width:500px}.gr-input-bar{flex-wrap:wrap}.gr-input-bar>div{flex-basis:calc(100% - 40px)}.gr-monitor{margin-left:28px}.gr-input-bar p{font-size:10px}}
 @media(max-width:850px){.gr-pedal-grid{grid-template-columns:repeat(2,180px);gap:18px}.gr-heading p{max-width:300px}.gr-preset-description{display:none}}
-@media(max-width:760px){.gr-backdrop{padding:10px}.gr-editor{max-height:calc(100dvh - 20px);border-radius:12px}.gr-header{padding:15px 18px;gap:10px}.gr-heading h2{font-size:22px}.gr-eyebrow{font-size:7px}.gr-header-actions{gap:8px}.gr-power{font-size:9px!important;padding:7px 9px}.gr-toolbar{padding:10px 18px;gap:10px}.gr-scroll{padding:16px 18px}.gr-footer{padding:10px 18px}.gr-amp-knobs{position:static;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:13px 0;padding:18px 4px 12px;margin-top:10px;border:1px solid var(--gr-line);border-radius:8px;background:#35403355}.gr-amp-knobs .gr-placed-knob{position:static;transform:none;justify-self:center}.gr-amp-knobs .knob-readout,.gr-amp-knobs .knob-label{color:#d3d7ba}.gr-amp-knobs .knob-image-scale{color:#a2b98e}.gr-amp-brand{font-size:clamp(14px,3.8vw,26px)}.gr-amp-brand small{font-size:5px}.gr-amp-model{font-size:12px}.gr-amp-model small{font-size:5px;margin-top:4px}.gr-amp-led{width:7px;height:7px;border-width:1px}.gr-amp-power-label{font-size:5px}.gr-amp-switch{padding:2px;border-width:1px}.gr-footer{flex-wrap:wrap;gap:1px}.gr-footer p{font-size:8px}}
-@media(max-width:500px){.gr-backdrop{padding:6px}.gr-editor{max-height:calc(100dvh - 12px)}.gr-header{padding:13px 12px}.gr-heading h2{font-size:20px}.gr-heading p{font-size:8px;max-width:190px}.gr-eyebrow{letter-spacing:.1em;font-size:6px}.gr-header-actions{gap:5px}.gr-power{font-size:0!important;padding:8px;border-radius:50%}.gr-power svg{width:15px;height:15px}.gr-close{width:28px;height:28px}.gr-toolbar{padding:9px 12px}.gr-preset{gap:7px}.gr-preset select{width:150px;font-size:11px}.gr-preset>span{font-size:7px}.gr-reset{font-size:9px!important;gap:4px;padding:7px}.gr-scroll{padding:13px 12px}.gr-input-bar{padding:10px;gap:7px}.gr-input-bar p{font-size:9px}.gr-input-bar strong{font-size:10px}.gr-monitor{margin-left:23px}.gr-settings,.gr-monitor{font-size:9px!important}.gr-section-head h3{font-size:16px}.gr-choice{gap:7px;font-size:9px}.gr-choice select{max-width:170px;font-size:10px}.gr-amp-knobs{grid-template-columns:repeat(3,1fr);row-gap:14px}.gr-amp-model{font-size:9px}.gr-amp-model small{font-size:4px;margin-top:3px}.gr-amp-brand small{margin-top:1px}.gr-amp-power-label{font-size:4px}.gr-section-index{display:none}.gr-cab-controls{padding-left:3px;padding-right:3px}.gr-footer{padding:9px 12px}.gr-signal-path{font-size:8px;gap:7px 10px}.gr-signal-path li:not(:last-child)::after{padding-left:4px}}
+@media(max-width:760px){.gr-backdrop{padding:10px}.gr-editor{max-height:calc(100dvh - 20px);border-radius:12px}.gr-header{padding:15px 18px;gap:10px}.gr-heading h2{font-size:22px}.gr-eyebrow{font-size:7px}.gr-header-actions{gap:8px}.gr-power{font-size:9px!important;padding:7px 9px}.gr-toolbar{padding:10px 18px;gap:10px}.gr-scroll{padding:16px 18px}.gr-footer{padding:10px 18px}.gr-amp-knobs{position:static;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:13px 0;padding:18px 4px 12px;margin-top:10px;border:1px solid var(--gr-line);border-radius:8px;background:#35403355}.gr-amp-knobs .gr-placed-knob{position:static;transform:none;justify-self:center}.gr-amp-knobs .knob-readout,.gr-amp-knobs .knob-label{color:#d3d7ba}.gr-amp-knobs .knob-image-scale{color:#a2b98e}.gr-amp-brand{font-size:clamp(14px,3.8vw,26px)}.gr-amp-led{width:7px;height:7px;border-width:1px}.gr-amp-switch{padding:2px;border-width:1px}.gr-footer{flex-wrap:wrap;gap:1px}.gr-footer p{font-size:8px}}
+@media(max-width:500px){.gr-backdrop{padding:6px}.gr-editor{max-height:calc(100dvh - 12px)}.gr-header{padding:13px 12px}.gr-heading h2{font-size:20px}.gr-heading p{font-size:8px;max-width:190px}.gr-eyebrow{letter-spacing:.1em;font-size:6px}.gr-header-actions{gap:5px}.gr-power{font-size:0!important;padding:8px;border-radius:50%}.gr-power svg{width:15px;height:15px}.gr-close{width:28px;height:28px}.gr-toolbar{padding:9px 12px}.gr-preset{gap:7px}.gr-preset select{width:150px;font-size:11px}.gr-preset>span{font-size:7px}.gr-reset{font-size:9px!important;gap:4px;padding:7px}.gr-scroll{padding:13px 12px}.gr-input-bar{padding:10px;gap:7px}.gr-input-bar p{font-size:9px}.gr-input-bar strong{font-size:10px}.gr-monitor{margin-left:23px}.gr-settings,.gr-monitor{font-size:9px!important}.gr-section-head h3{font-size:16px}.gr-choice{gap:7px;font-size:9px}.gr-choice select{max-width:170px;font-size:10px}.gr-amp-knobs{grid-template-columns:repeat(3,1fr);row-gap:14px}.gr-amp-model{font-size:9px}.gr-amp-model small{font-size:4px;margin-top:3px}.gr-amp-brand small{margin-top:1px}.gr-amp-power-label{font-size:4px}.gr-section-index{display:none}.gr-mic-pick{display:flex;align-items:center;gap:12px}.gr-mic-pick .gr-choice{flex:1;min-width:0}.gr-mic-photo{width:96px;height:72px;object-fit:contain;flex-shrink:0;filter:drop-shadow(0 4px 5px #0007)}.gr-cab-controls{padding-left:3px;padding-right:3px}.gr-footer{padding:9px 12px}.gr-signal-path{font-size:8px;gap:7px 10px}.gr-signal-path li:not(:last-child)::after{padding-left:4px}}
 @media(max-width:460px){.gr-pedal-grid{grid-template-columns:180px;gap:18px}.gr-pedals>.gr-section-head>div{justify-content:center;width:100%}}
 @media(prefers-reduced-motion:reduce){.gr-backdrop{backdrop-filter:none}}
 
 .gr-audio-notice{display:flex;align-items:flex-start;gap:8px;padding:10px 12px;margin:-8px 0 18px!important;border:1px solid #c8ac6877;border-radius:6px;background:#b4995012;color:#e0cf9e;font-size:10px;line-height:1.75;overflow-wrap:anywhere}.gr-audio-notice>svg{flex-shrink:0;margin-top:2px}
+/* Rack workspace: equipment browser on the left, signal-ordered rack on the right (top → bottom). */
+.gr-editor{width:min(1280px,100%);height:calc(100dvh - 32px)}
+.gr-toolbar .gr-monitor{margin-left:auto}.gr-toolbar .gr-reset{margin-left:0}
+.gr-audio-notice{display:flex;gap:8px;align-items:center;margin:0;padding:8px 26px;background:#af934b14;color:#d7c28f;font-size:10px;border-bottom:1px solid var(--gr-line)}
+.gr-workspace{flex:1;min-height:0;display:grid;grid-template-columns:232px minmax(0,1fr)}
+.gr-browser{overflow:auto;scrollbar-width:thin;padding:16px 14px;border-right:1px solid var(--gr-line);background:linear-gradient(#1d2520,#19201c)}
+.gr-browser h3{font:600 13px/1.4 ui-sans-serif,system-ui,sans-serif;letter-spacing:.12em;color:#dcd6c2;margin:0 0 4px}
+.gr-browser-hint{font-size:9px;line-height:1.6;color:#95a48c;margin:0 0 14px!important}
+.gr-browser-group{margin-bottom:16px}.gr-browser-group h4{font-size:8px;letter-spacing:.16em;color:#8d9c85;margin:0 0 6px;text-transform:uppercase}
+.gr-browser-item{display:flex;align-items:center;gap:10px;width:100%;padding:6px 8px;margin-bottom:5px;border:1px solid #3c4a40;border-radius:8px;background:#232c26;cursor:grab;text-align:left}
+.gr-browser-item:hover{border-color:#7d8f6f;background:#2a352e}.gr-browser-item:active{cursor:grabbing}
+.gr-browser-item img{width:56px;height:42px;object-fit:contain;flex-shrink:0;filter:drop-shadow(0 2px 3px #0008);pointer-events:none}
+.gr-browser-item span{display:flex;flex-direction:column;min-width:0}.gr-browser-item strong{font-size:11px;font-weight:600;color:#e6e0cc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gr-browser-item small{font-size:9px;color:#93a28a}.gr-browser-item[data-used=true]{opacity:.62}.gr-browser-item[data-used=true] small{color:#c9b47c}
+.gr-rack-scroll{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;background:radial-gradient(ellipse at top,#2c3630,#1c231f 70%)}
+.gr-rack{position:relative;max-width:860px;margin:0 auto;padding:18px 28px 28px 52px}
+.gr-rack::before{content:'';position:absolute;left:30px;top:28px;bottom:28px;width:2px;background:linear-gradient(#9bc8b5aa,#d4ba7e99);border-radius:2px}
+.gr-terminal{position:relative;display:flex;align-items:center;gap:9px;padding:9px 12px;border:1px solid #4a5a4e;border-radius:8px;background:#18201b;color:#b5c2ad;font-size:10px}
+.gr-terminal::before{content:'';position:absolute;left:-27px;top:50%;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:#9bc8b5;box-shadow:0 0 0 3px #1c231f}
+.gr-terminal strong{font:600 10px ui-monospace,monospace;letter-spacing:.14em;color:#dfe8d6}.gr-terminal-out::before{background:#d4ba7e}
+.gr-rack-empty{margin:10px 0!important;padding:18px;border:1px dashed #5a6a5c;border-radius:8px;color:#a8b5a0;font-size:11px;text-align:center}
+.gr-insert{position:relative;height:18px;display:flex;align-items:center;justify-content:center}
+.gr-insert-line{position:absolute;left:0;right:0;top:50%;height:2px;margin-top:-1px;border-radius:2px;background:transparent;transition:background .12s,box-shadow .12s}
+.gr-insert[data-active=true]{height:34px}.gr-insert[data-active=true] .gr-insert-line{background:#d4ba7e;box-shadow:0 0 10px #d4ba7e88}
+.gr-insert-add{position:relative;z-index:1;width:20px;height:20px;display:grid;place-items:center;padding:0;border:1px solid #5d6e5f;border-radius:50%;background:#202a24;color:#b9c8b0!important;opacity:0;transition:opacity .12s}
+.gr-insert:hover .gr-insert-add,.gr-insert-add:focus-visible,.gr-insert-add[aria-expanded=true]{opacity:1}
+.gr-insert-menu{position:absolute;z-index:5;top:26px;left:50%;transform:translateX(-50%);min-width:240px;padding:6px;border:1px solid #6b7c66;border-radius:10px;background:#1b231e;box-shadow:0 14px 40px #000a}
+.gr-insert-menu button{display:flex;align-items:center;gap:10px;width:100%;padding:6px 8px;border:0;border-radius:6px;background:transparent;text-align:left}
+.gr-insert-menu button:hover,.gr-insert-menu button:focus-visible{background:#2d3a31}.gr-insert-menu img{width:40px;height:30px;object-fit:contain}
+.gr-insert-menu span{display:flex;flex-direction:column;font-size:11px;color:#e6e0cc}.gr-insert-menu small{font-size:9px;color:#93a28a}
+.gr-module{position:relative;border:1px solid #4d5d50;border-radius:10px;background:linear-gradient(#2a332d,#222a25);box-shadow:0 6px 18px #0006,inset 0 1px 0 #ffffff0d}
+.gr-module::before{content:'';position:absolute;left:-27px;top:20px;width:8px;height:8px;border-radius:50%;background:#7f9b8c;box-shadow:0 0 0 3px #1c231f}
+.gr-module[data-bypassed=true]::before{background:#55605a}
+.gr-module-head{display:flex;align-items:center;gap:9px;padding:7px 10px;border-bottom:1px solid #3d4a40;background:linear-gradient(#323d35,#2a332d);border-radius:10px 10px 0 0}
+.gr-grip{display:grid;place-items:center;width:18px;height:24px;color:#8a9a82;cursor:grab;border-radius:4px}.gr-grip:hover{background:#ffffff0f;color:#d4dccb}.gr-grip:active{cursor:grabbing}
+.gr-module-index{font:600 9px ui-monospace,monospace;color:#8fa086;letter-spacing:.06em}
+.gr-module-power{width:22px;height:22px;display:grid;place-items:center;padding:0;border:1px solid #5a6a5c;border-radius:50%;background:#1a221d}
+.gr-module-power i{width:8px;height:8px;border-radius:50%;background:#4f584f}.gr-module-power[aria-pressed=true] i{background:#c9f08a;box-shadow:0 0 7px #c9f08acc}
+.gr-module-head h3{display:flex;align-items:baseline;gap:8px;margin:0;font:600 13px Georgia,"Noto Serif KR",serif;color:#ebe4cf;white-space:nowrap}
+.gr-module-head h3 small{font:9px ui-sans-serif,system-ui,sans-serif;letter-spacing:.08em;color:#93a28a}
+.gr-module-head .gr-choice{margin-left:auto;gap:7px}.gr-module-head .gr-choice select{min-height:26px;max-width:230px;font-size:10px}
+.gr-module-tools{display:flex;gap:2px;margin-left:auto}.gr-module-head .gr-choice+.gr-module-tools{margin-left:6px}
+.gr-module-tools button{width:24px;height:24px;display:grid;place-items:center;padding:0;border:0;border-radius:5px;background:transparent;color:#a9b7a1!important}
+.gr-module-tools button:hover:not(:disabled){background:#ffffff12;color:#eef2e6!important}
+.gr-module-body{padding:16px 18px 18px}
+.gr-module[data-bypassed=true] .gr-module-body{opacity:.6;filter:saturate(.55)}
+.gr-module .gr-amp-stage{margin:0 auto 4px;max-width:640px}
+.gr-cab-face{display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,300px);gap:22px;align-items:center}
+.gr-cab-face .gr-cabinet-stage{max-width:420px;width:100%}.gr-cab-face .gr-cab-controls{margin:0;padding:0;border:0;max-width:none}
+.gr-pedal-face{display:flex;align-items:center;justify-content:center;gap:34px}
+.gr-pedal-readout{display:grid;grid-template-columns:auto auto;gap:8px 18px;margin:0;padding:14px 16px;border:1px solid #3d4a40;border-radius:8px;background:#1a211d;min-width:180px}
+.gr-pedal-readout div{display:contents}.gr-pedal-readout dt{font:600 8px ui-monospace,monospace;letter-spacing:.12em;color:#8fa086}.gr-pedal-readout dd{margin:0;font:11px ui-monospace,monospace;color:#e2cf98;text-align:right}
+.gr-pedal-stage .knob-readout,.gr-pedal-stage .knob-label{text-shadow:0 1px 1px #fff8}.gr-pedal-delay .knob-readout,.gr-pedal-delay .knob-label{text-shadow:0 1px 2px #000b}
+.gr-pedal-fuzz .knob-readout,.gr-pedal-fuzz .knob-label{color:#3a2c05}.gr-pedal-fuzz .knob-image-scale{color:#4a3a0a}
+.gr-pedal-tremolo .knob-readout,.gr-pedal-tremolo .knob-label{color:#143c39}.gr-pedal-tremolo .knob-image-scale{color:#1d4f4a}
+.gr-pedal-phaser .knob-readout,.gr-pedal-phaser .knob-label,.gr-pedal-reverb .knob-readout,.gr-pedal-reverb .knob-label{color:#f6ead6;text-shadow:0 1px 2px #000c}
+.gr-pedal-phaser .knob-image-scale{color:#e7d2f5}.gr-pedal-reverb .knob-image-scale{color:#e9d6b2}
+.gr-tuner-screen{position:absolute;display:grid;grid-template-columns:1fr auto;grid-template-rows:1fr auto;align-items:center;gap:0 6px;padding:5px 9px 6px;border-radius:3px;color:#ffb347;font-family:ui-monospace,monospace;pointer-events:none;overflow:hidden}
+.gr-tuner-screen[data-in-tune=true]{color:#8ff0a4}
+.gr-tuner-note{font-size:27px;line-height:1;font-weight:700;text-shadow:0 0 6px currentColor}.gr-tuner-note sub{font-size:11px;font-weight:600;vertical-align:baseline;margin-left:1px}
+.gr-tuner-cents{font-size:11px;justify-self:end;opacity:.9}
+.gr-tuner-scale{grid-column:1/-1;position:relative;height:9px;border-bottom:1px solid #ffb34766}
+.gr-tuner-center{position:absolute;left:50%;top:0;bottom:0;width:1px;background:#8ff0a4aa}
+.gr-tuner-needle{position:absolute;top:-1px;bottom:-1px;width:3px;margin-left:-1.5px;border-radius:1px;background:currentColor;box-shadow:0 0 5px currentColor;transition:left 60ms linear}
+.gr-tuner-message{grid-column:1/-1;grid-row:1/-1;text-align:center;font:600 9px/1.45 ui-sans-serif,system-ui,sans-serif;color:#d9c9a8;opacity:.85}
+.gr-tuner-screen[data-state=native] .gr-tuner-message{color:#f0b5a0}
+.gr-tuner-readout{max-width:300px}.gr-tuner-readout dd{white-space:normal;line-height:1.5}
+@media(prefers-reduced-motion:reduce){.gr-tuner-needle{transition:none}}
+.gr-sr-only{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media(max-width:900px){.gr-workspace{grid-template-columns:1fr}.gr-browser{display:flex;gap:10px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--gr-line);padding:10px 12px}.gr-browser h3,.gr-browser-hint{display:none}.gr-browser-group{margin:0;display:flex;gap:6px;align-items:center}.gr-browser-group h4{display:none}.gr-browser-item{width:auto;margin:0}.gr-cab-face{grid-template-columns:1fr}.gr-rack{padding:14px 14px 20px 40px}}
+/* ── Amp stage on top, two 4-slot effect racks below (pedals before the amp, effects loop after) ── */
+.gr-rig-scroll{position:relative;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:14px 22px 24px;display:flex;flex-direction:column;gap:16px;background:radial-gradient(ellipse 80% 60% at 50% 0,#2b3530,#171c19 72%)}
+.gr-rig-scroll>*{width:100%;max-width:980px;margin-inline:auto}
+.gr-flow{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:6px;margin:0 auto;padding:0;list-style:none;font:600 9px ui-monospace,monospace;letter-spacing:.12em;color:#7f8c80}
+.gr-flow li{padding:3px 9px;border:1px solid #33403a;border-radius:10px;background:#151a17;white-space:nowrap}
+.gr-flow li+li::before{content:'→';margin:0 8px 0 -10px;color:#5d6a60;position:relative;left:-6px}
+.gr-flow li[data-on=true]{color:#e3cc93;border-color:#5d5235}.gr-flow li[data-on=false]{opacity:.6}
+
+/* Amp stage: amp head and cabinet side by side on a tolex backdrop. */
+.gr-stage{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:18px;padding:12px 16px 16px;border-radius:12px;background:linear-gradient(#2c2018,#120d0a);box-shadow:inset 0 0 0 1px #4a3626,inset 0 1px 0 #ffffff14,0 12px 28px #0008}
+.gr-stage>div{min-width:0;display:flex;flex-direction:column;gap:8px}
+.gr-stage-head{display:flex;align-items:center;gap:9px;min-height:28px}
+.gr-stage-head h3{margin:0;font:700 10px ui-monospace,monospace;letter-spacing:.22em;color:#e3cc93}
+.gr-stage-head .gr-choice{display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto;min-width:0}
+.gr-stage-head .gr-choice span{font:600 8px ui-monospace,monospace;letter-spacing:.14em;color:#b9a57a}
+.gr-stage-head .gr-choice select{min-height:26px;max-width:230px;padding:0 24px 0 9px;font-size:11px;border-color:#ffffff2e;background-color:#0000004d;color:#f3eddc}
+.gr-unit-power{flex-shrink:0;width:20px;height:20px;display:grid;place-items:center;padding:0;border:1px solid #0009;border-radius:50%;background:radial-gradient(circle at 40% 35%,#3a403c,#121614);box-shadow:inset 0 1px 1px #ffffff1a,0 1px 0 #ffffff1f;cursor:pointer}
+.gr-unit-power i{width:8px;height:8px;border-radius:50%;background:#4a1e18;box-shadow:inset 0 1px 1px #0008}
+.gr-unit-power[aria-pressed=true] i{background:radial-gradient(circle at 40% 35%,#f4ffd6,#b8ec6c 55%,#6aa531);box-shadow:0 0 8px #c9f08add,0 0 2px #fff}
+.gr-stage [data-bypassed=true]>:not(.gr-stage-head),.gr-stage>[data-bypassed=true]>:not(.gr-stage-head){filter:saturate(.4) brightness(.75)}
+.gr-amp-shelf{display:flex;justify-content:center;align-items:center;flex:1}
+.gr-stage .gr-amp-stage{width:100%;max-width:560px;margin:0 auto}
+.gr-stage .gr-cab-face{display:flex;flex-direction:column;gap:10px}
+.gr-stage .gr-cab-face .gr-cabinet-stage{max-width:300px;width:100%;margin:0 auto}
+.gr-stage .gr-cab-face .gr-cab-controls{min-width:0;width:100%;max-width:none;margin:0;padding:10px 12px;border:1px solid #ffffff14;border-radius:8px;background:#0000004d;display:flex;flex-direction:column;gap:8px}
+.gr-stage .gr-choice select{max-width:100%;min-width:0}
+.gr-mic-pick{display:flex;align-items:center;gap:10px;min-width:0}.gr-mic-pick .gr-choice{flex:1;min-width:0}.gr-mic-photo{width:64px;height:48px;object-fit:contain;flex-shrink:0}
+.gr-range small{gap:8px}.gr-range small span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gr-placed-knob .knob-readout,.gr-placed-knob .knob-label{color:#f1ead6!important;text-shadow:none!important;background:#0a0f0cc4;border-radius:3px;padding:0 4px;line-height:12px}
+.gr-placed-knob .knob-readout{margin-bottom:2px}.gr-placed-knob .knob-label{margin-top:2px}
+.gr-placed-knob .knob-image-scale{color:#f1ead6!important;opacity:.75}
+
+/* Effect rack: a brushed-aluminium frame with an engraved title, steel rails with square holes, corner
+   screws and a recessed pedalboard mat. Textures are inline SVG so no image asset is needed. */
+.gr-fxrack{--rail:30px;--brush-h:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='160'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.0025 0.9' numOctaves='3' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.7 0 0 0 -0.28'/%3E%3C/filter%3E%3Crect width='420' height='160' filter='url(%23b)'/%3E%3C/svg%3E");
+  position:relative;padding:34px calc(var(--rail) + 22px) 24px;border-radius:10px;
+  background:var(--brush-h),linear-gradient(180deg,#e4e7e3 0,#aeb4af 7%,#c9cec9 30%,#b4b9b4 62%,#8f9590 93%,#c2c7c2 100%);
+  box-shadow:inset 0 1px 0 #ffffffd0,inset 0 -2px 0 #00000059,inset 1px 0 0 #ffffff66,inset -1px 0 0 #0000004d,0 0 0 1px #2e322f,0 18px 34px #000b,0 4px 8px #0008}
+.gr-fxrack::before{content:'';position:absolute;inset:5px;border-radius:7px;pointer-events:none;box-shadow:inset 0 0 0 1px #ffffff40,0 0 0 1px #00000026}
+.gr-fxrack-head{position:absolute;left:calc(var(--rail) + 22px);right:calc(var(--rail) + 22px);top:9px;display:flex;align-items:baseline;gap:12px;margin:0}
+.gr-fxrack-head h3{margin:0;font:800 11px ui-monospace,monospace;letter-spacing:.26em;color:#2b2f2c;text-shadow:0 1px 0 #ffffffb3,0 -1px 0 #00000026}
+.gr-fxrack[data-rack=post] .gr-fxrack-head h3{color:#3a2f17}
+.gr-fxrack-head span{font-size:10px;font-weight:600;color:#4c524d;text-shadow:0 1px 0 #ffffff80}
+.gr-rail{position:absolute;top:30px;bottom:14px;width:var(--rail);border-radius:4px;pointer-events:none;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='30' height='24'%3E%3Crect x='9' y='8.6' width='12' height='9' rx='2' fill='%23ffffff' fill-opacity='.45'/%3E%3Crect x='9' y='7.4' width='12' height='9' rx='2' fill='%23070807'/%3E%3C/svg%3E") 50% 0/30px 24px repeat-y,
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='300'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9 0.004' numOctaves='3' seed='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.6 0 0 0 -0.25'/%3E%3C/filter%3E%3Crect width='60' height='300' filter='url(%23b)'/%3E%3C/svg%3E"),
+    linear-gradient(90deg,#6d736e 0,#b9beb9 18%,#dfe2de 38%,#a3a9a4 64%,#727873 100%);
+  box-shadow:inset 0 0 0 1px #0000004d,inset 0 1px 0 #ffffff80,0 1px 2px #0006}
+.gr-rail-left{left:12px}.gr-rail-right{right:12px}
+.gr-screw{position:absolute;z-index:1;width:15px;height:15px;pointer-events:none;filter:drop-shadow(0 1px 1px #0009);
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cdefs%3E%3CradialGradient id='g' cx='.35' cy='.3' r='.85'%3E%3Cstop offset='0' stop-color='%23fbfcfa'/%3E%3Cstop offset='.5' stop-color='%23a6aca7'/%3E%3Cstop offset='1' stop-color='%234a4f4b'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='8' cy='8' r='7.2' fill='url(%23g)' stroke='%23222523' stroke-width='.8'/%3E%3Cpath d='M4.4 8h7.2M8 4.4v7.2' stroke='%232a2e2b' stroke-width='1.6' stroke-linecap='round' transform='rotate(22 8 8)'/%3E%3C/svg%3E") 0 0/100% 100%}
+.gr-screw[data-pos^=t]{top:8px}.gr-screw[data-pos^=b]{bottom:3px}
+.gr-screw[data-pos$=l]{left:calc(12px + var(--rail) / 2 - 7.5px)}.gr-screw[data-pos$=r]{right:calc(12px + var(--rail) / 2 - 7.5px)}
+.gr-screw[data-pos=tr]{transform:rotate(70deg)}.gr-screw[data-pos=bl]{transform:rotate(130deg)}.gr-screw[data-pos=br]{transform:rotate(200deg)}
+.gr-fxrack-bay{position:relative;padding:18px 18px 22px;border-radius:6px;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.4' numOctaves='2' seed='11' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.22 0 0 0 -0.06'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E"),radial-gradient(ellipse 90% 70% at 50% 40%,#1e2220,#0c0e0d 85%);
+  box-shadow:inset 0 4px 12px #000,inset 0 0 0 1px #000,0 1px 0 #ffffffb3,0 -1px 0 #00000059}
+.gr-fxrack-grid{position:relative;z-index:1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px 10px}
+
+/* A slot is just the pedal standing on the mat: a small label above it, no tray around it. */
+.gr-slot,.gr-slot-empty,.gr-slot-gap{position:relative;min-height:310px;border-radius:8px}
+.gr-slot{display:flex;flex-direction:column;align-items:center;background:none;box-shadow:none}
+.gr-slot[data-dragging=true]{opacity:.3}
+.gr-slot[data-drop-before=true]::before,.gr-slot[data-drop-after=true]::after{content:'';position:absolute;z-index:4;top:30px;bottom:10px;width:3px;border-radius:2px;background:#e2c47e;box-shadow:0 0 12px #e2c47e}
+.gr-slot[data-drop-before=true]::before{left:-7px}.gr-slot[data-drop-after=true]::after{right:-7px}
+.gr-slot-head{display:flex;align-items:center;gap:6px;width:min(100%,190px);height:24px;padding:0 2px 0 6px;margin-bottom:4px;border:0;border-radius:5px;background:none;cursor:grab;user-select:none}
+.gr-slot-head:active{cursor:grabbing}
+.gr-slot-number{font:700 9px ui-monospace,monospace;color:#7f8c80}
+.gr-slot-head h4{flex:1;min-width:0;margin:0;font:700 11px Georgia,"Noto Serif KR",serif;color:#d8d2bd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gr-slot[data-selected=true] .gr-slot-head h4{color:#f0d896}.gr-slot[data-selected=true] .gr-slot-number{color:#d4ba7e}
+.gr-slot[data-bypassed=true] .gr-slot-head h4{color:#8d978c}
+.gr-slot-tools{display:flex;gap:1px;opacity:.6}
+.gr-slot-tools button{width:22px;height:22px;display:grid;place-items:center;padding:0;border:0;border-radius:4px;background:transparent;color:#d5ddce!important;cursor:pointer}
+.gr-slot-tools button:disabled{opacity:.3;cursor:default}
+.gr-slot-bay{position:relative;flex:1;display:grid;place-items:center;padding:4px 0 10px;background:none}
+
+/* Depth: a stacked body edge, a soft cast shadow on the mat, a top-left light sheen, a lift on hover. */
+.gr-slot-bay::before{content:'';position:absolute;left:50%;bottom:14px;width:150px;height:24px;margin-left:-75px;border-radius:50%;background:radial-gradient(closest-side,#000d,#0000);pointer-events:none}
+.gr-slot-bay .gr-pedal-stage{scale:.88}
+.gr-slot-bay .gr-pedal-art{filter:drop-shadow(0 2px 0 #3b3b3b) drop-shadow(0 2px 0 #1d1d1d) drop-shadow(0 2px 0 #0b0b0b) drop-shadow(0 12px 10px #000b)}
+.gr-slot-bay .gr-pedal-stage::after{content:'';position:absolute;inset:11px 12.5px;border-radius:9px;pointer-events:none;background:linear-gradient(140deg,#ffffff3d 0,#ffffff0d 28%,#0000 52%,#00000033 100%);mix-blend-mode:soft-light}
+.gr-slot-bay .gr-pedal-stage::before{content:'';position:absolute;inset:11px 12.5px;border-radius:9px;pointer-events:none;box-shadow:inset 0 1px 0 #ffffff59,inset 0 -2px 2px #00000040;z-index:1}
+.gr-slot[data-selected=true] .gr-slot-bay .gr-pedal-art{filter:drop-shadow(0 0 1.5px #f0d896) drop-shadow(0 2px 0 #1d1d1d) drop-shadow(0 3px 0 #0b0b0b) drop-shadow(0 14px 12px #000c)}
+.gr-slot-bay .gr-pedal-stage[data-bypassed=true] .gr-pedal-art{filter:drop-shadow(0 1px 0 #2a2a2a) drop-shadow(0 3px 0 #0b0b0b) drop-shadow(0 12px 10px #000b) saturate(.55) brightness(.78)}
+.gr-pedal-led[data-on=true]{background:#ff5638;border-color:#7d2d1e;box-shadow:0 0 8px #ff5a3a,0 0 2px #fff}
+
+/* Patch cables (SVG overlay, never takes pointer events). */
+.gr-cables{position:absolute;left:0;top:0;z-index:2;overflow:visible;pointer-events:none}
+.gr-cable-cord{fill:none;stroke:#050505;stroke-width:9;stroke-linecap:round;stroke-linejoin:round}
+.gr-cable-core{fill:none;stroke:#1d1f1e;stroke-width:6.6;stroke-linecap:round;stroke-linejoin:round}
+.gr-cable-sheen{fill:none;stroke:#ffffff38;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;transform:translate(-1.4px,-1.4px)}
+
+/* Free space: the next slot is a dashed pedal outline with "+"; the rest of the row stays bare mat. */
+.gr-slot-empty{display:grid;place-items:center;background:none;box-shadow:none}
+.gr-slot-add>button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;width:142px;height:250px;margin-top:20px;border:2px dashed #3a443e;border-radius:14px;background:#ffffff05;color:#7f8c80!important;font-size:11px;cursor:pointer;transition:border-color .12s,color .12s,background .12s}
+.gr-slot-add>button:hover,.gr-slot-add>button[aria-expanded=true],.gr-slot-add[data-drop=true]>button{border-color:#d4ba7e;color:#e3cc93!important;background:#d4ba7e0d}
+.gr-slot-add .gr-insert-menu{top:50%;left:50%;transform:translate(-50%,-20%);min-width:250px;max-height:320px;overflow:auto;z-index:6}
+.gr-slot-empty[data-short=true],.gr-slot-gap[data-short=true]{min-height:70px!important}
+.gr-slot-add[data-short=true]>button{flex-direction:row;width:100%;height:52px;margin:0}
+.gr-insert-menu button:disabled{opacity:.4;cursor:not-allowed}
+.gr-rack-count{margin:0 auto!important;font:600 9px ui-monospace,monospace;letter-spacing:.1em;color:#7f8c80;text-align:center}
+
+/* The amp stage gets the same aluminium edge so both parts read as one rig. */
+.gr-stage{box-shadow:inset 0 0 0 1px #4a3626,inset 0 1px 0 #ffffff14,0 0 0 3px #9ea49f,0 0 0 4px #2e322f,0 12px 28px #0008}
+
+/* Browser: effects only, always addable, a count badge for pedals already in a rack. */
+.gr-browser-item{position:relative}
+.gr-browser-item[aria-disabled=true]{opacity:.45;cursor:not-allowed}
+.gr-browser-count{margin-left:auto;flex-shrink:0;padding:1px 6px;border-radius:8px;background:#d4ba7e;color:#1d1a10;font:700 9px ui-monospace,monospace;font-style:normal}
+.gr-browser-plus{flex-shrink:0;display:grid;place-items:center;width:18px;height:18px;margin-left:auto;border-radius:50%;background:#3a4a3f;color:#e6efd9;opacity:0;transition:opacity .12s}
+.gr-browser-count+.gr-browser-plus{margin-left:4px}
+.gr-browser-item:hover .gr-browser-plus,.gr-browser-item:focus-visible .gr-browser-plus{opacity:1}
+.gr-browser-item strong{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.25}
+.gr-browser-item img{width:44px;height:40px}
+
+@media(max-width:1100px){.gr-slot-bay .gr-pedal-stage{scale:.76}.gr-slot,.gr-slot-empty,.gr-slot-gap{min-height:270px}.gr-slot-add>button{width:130px;height:220px}}
+@media(max-width:900px){.gr-rig-scroll{padding:12px 10px 18px}.gr-stage{grid-template-columns:1fr}.gr-fxrack{--rail:20px}.gr-fxrack-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.gr-slot-bay .gr-pedal-stage{scale:.88}.gr-slot,.gr-slot-empty,.gr-slot-gap{min-height:340px}}
+@media(max-width:520px){.gr-fxrack-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* ── Road-case rack: black textured case, aluminium edge extrusion, chrome corner caps, black anodised
+   EIA rails (three square holes per 1U), an engraved metal nameplate. Overrides the frame above. ── */
+.gr-fxrack{--rail:26px;--case:16px;
+  padding:42px calc(var(--case) + var(--rail) + 12px) calc(var(--case) + 8px);border-radius:12px;
+  background:
+    radial-gradient(circle at 0 0,#fdfdfb 0,#c7ccc7 5px,#7f857f 11px,#3b3f3c 16px,#0000 17px) 0 0/34px 34px no-repeat,
+    radial-gradient(circle at 100% 0,#fdfdfb 0,#c7ccc7 5px,#7f857f 11px,#3b3f3c 16px,#0000 17px) 100% 0/34px 34px no-repeat,
+    radial-gradient(circle at 0 100%,#e9ebe8 0,#b9beb9 5px,#6f756f 11px,#2f3330 16px,#0000 17px) 0 100%/34px 34px no-repeat,
+    radial-gradient(circle at 100% 100%,#e9ebe8 0,#b9beb9 5px,#6f756f 11px,#2f3330 16px,#0000 17px) 100% 100%/34px 34px no-repeat,
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='t'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' seed='4' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.32 0 0 0 -0.1'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23t)'/%3E%3C/svg%3E"),
+    linear-gradient(#262927,#151716 60%,#1b1d1c);
+  box-shadow:
+    inset 0 0 0 1px #0a0b0a,
+    inset 0 0 0 3px #8e948f, inset 0 0 0 4px #e3e6e2, inset 0 0 0 6px #a5aba6, inset 0 0 0 7px #3d413e,
+    inset 0 9px 14px -6px #0009,
+    0 0 0 1px #050605,0 20px 36px #000c,0 4px 10px #0009}
+.gr-fxrack::before{inset:7px;border-radius:7px;box-shadow:inset 0 1px 0 #ffffff1f}
+/* Nameplate: a brushed strip riveted to the top of the case. */
+.gr-fxrack-head{left:50%;right:auto;top:11px;transform:translateX(-50%);align-items:center;gap:12px;padding:4px 30px 5px;border-radius:3px;white-space:nowrap;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='40'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.004 0.9' numOctaves='2' seed='9' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.6 0 0 0 -0.22'/%3E%3C/filter%3E%3Crect width='300' height='40' filter='url(%23b)'/%3E%3C/svg%3E"),
+    radial-gradient(circle at 12px 50%,#f2f4f1 0,#9aa09b 2.4px,#454a46 3.4px,#0000 3.8px),radial-gradient(circle at calc(100% - 12px) 50%,#f2f4f1 0,#9aa09b 2.4px,#454a46 3.4px,#0000 3.8px),
+    linear-gradient(#e6e9e5,#b7bcb7 48%,#a2a8a3 52%,#cdd1cc);
+  box-shadow:0 1px 0 #ffffff26,0 2px 4px #000b,inset 0 1px 0 #fff,inset 0 -1px 0 #0000004d}
+.gr-fxrack-head h3{font:800 10px ui-monospace,monospace;letter-spacing:.3em;color:#232624;text-shadow:0 1px 0 #ffffffcc}
+.gr-fxrack[data-rack=post] .gr-fxrack-head h3{color:#4a3611}
+.gr-fxrack-head span{font-size:9.5px;color:#3e433f;text-shadow:0 1px 0 #ffffffa6}
+/* Rails: black anodised steel, chamfered edges, EIA hole pattern (1U = 30px: holes at 4, 15, 26). */
+.gr-rail{top:38px;bottom:calc(var(--case) + 2px);width:var(--rail);border-radius:2px;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='30'%3E%3Cg fill='%23000'%3E%3Crect x='9.5' y='1.5' width='7' height='6' rx='.8'/%3E%3Crect x='9.5' y='12' width='7' height='6' rx='.8'/%3E%3Crect x='9.5' y='22.5' width='7' height='6' rx='.8'/%3E%3C/g%3E%3Cg fill='%23ffffff' fill-opacity='.16'%3E%3Crect x='9.5' y='7.5' width='7' height='.8'/%3E%3Crect x='9.5' y='18' width='7' height='.8'/%3E%3Crect x='9.5' y='28.5' width='7' height='.8'/%3E%3C/g%3E%3Crect x='2' y='29.4' width='22' height='.6' fill='%23ffffff' fill-opacity='.05'/%3E%3C/svg%3E") 50% 0/26px 30px repeat-y,
+    linear-gradient(90deg,#0b0c0b 0,#2f3331 14%,#44494645 30%,#1c1f1d 50%,#2a2e2b 78%,#0d0e0d 100%),#1a1c1b;
+  box-shadow:inset 1px 0 0 #ffffff1f,inset -1px 0 0 #00000080,inset 0 1px 0 #ffffff26,0 0 0 1px #000,0 2px 4px #000a}
+.gr-rail-left{left:calc(var(--case) + 6px)}.gr-rail-right{right:calc(var(--case) + 6px)}
+.gr-screw{width:12px;height:12px}
+.gr-screw[data-pos^=t]{top:24px}.gr-screw[data-pos^=b]{bottom:calc(var(--case) - 9px)}
+.gr-screw[data-pos$=l]{left:calc(var(--case) + 6px + var(--rail) / 2 - 6px)}.gr-screw[data-pos$=r]{right:calc(var(--case) + 6px + var(--rail) / 2 - 6px)}
+.gr-fxrack-bay{box-shadow:inset 0 5px 14px #000,inset 0 0 0 1px #000,0 0 0 1px #ffffff14,0 1px 0 #ffffff1a}
+@media(max-width:900px){.gr-fxrack{--rail:18px;--case:12px}}
+
+/* Jack sockets on the pedal body: a chrome housing with a hex nut on each side (input left, output right). */
+.gr-port{position:absolute;top:30%;z-index:2;width:9px;height:16px;margin-top:-8px;border-radius:2px;pointer-events:none;background:linear-gradient(#f2f3f1,#a9afaa 45%,#6c726d 70%,#c9cdc8);box-shadow:0 1px 2px #000a,inset 0 0 0 .6px #0007}
+.gr-port::after{content:'';position:absolute;top:50%;width:9px;height:9px;margin-top:-4.5px;border-radius:50%;background:radial-gradient(circle,#050505 0 2px,#d9dcd8 2.6px,#8a908b 3.6px,#3c403d 4.5px)}
+.gr-port-in{left:5px}.gr-port-in::after{left:-5px}
+.gr-port-out{right:5px}.gr-port-out::after{right:-5px}
+/* Road-case ball corners: a stamped steel corner plate with a chrome dome on the tip. */
+.gr-corner{position:absolute;z-index:3;width:34px;height:34px;pointer-events:none}
+.gr-corner::before{content:'';position:absolute;inset:0;border-radius:4px;background:linear-gradient(135deg,#eceeeb,#9ca29d 40%,#5f6560 75%,#a7ada8);clip-path:polygon(0 0,100% 0,100% 30%,30% 30%,30% 100%,0 100%);box-shadow:inset 0 0 0 1px #0006}
+.gr-corner::after{content:'';position:absolute;left:-3px;top:-3px;width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 36% 32%,#ffffff 0,#e3e6e2 18%,#9aa09b 48%,#4a4f4b 74%,#232624 100%);box-shadow:0 2px 3px #000b,0 0 0 1px #1a1c1b}
+.gr-corner[data-pos=tl]{left:-2px;top:-2px}
+.gr-corner[data-pos=tr]{right:-2px;top:-2px;transform:scaleX(-1)}
+.gr-corner[data-pos=bl]{left:-2px;bottom:-2px;transform:scaleY(-1)}
+.gr-corner[data-pos=br]{right:-2px;bottom:-2px;transform:scale(-1,-1)}
+.gr-rail{background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='30'%3E%3Cg fill='%23ffffff' fill-opacity='.22'%3E%3Crect x='9.5' y='2.3' width='7' height='6' rx='.8'/%3E%3Crect x='9.5' y='12.8' width='7' height='6' rx='.8'/%3E%3Crect x='9.5' y='23.3' width='7' height='6' rx='.8'/%3E%3C/g%3E%3Cg fill='%23020202'%3E%3Crect x='9.5' y='1.5' width='7' height='6' rx='.8'/%3E%3Crect x='9.5' y='12' width='7' height='6' rx='.8'/%3E%3Crect x='9.5' y='22.5' width='7' height='6' rx='.8'/%3E%3C/g%3E%3C/svg%3E") 50% 0/26px 30px repeat-y,
+    linear-gradient(90deg,#1a1d1b 0,#4c524e 16%,#6a706c 34%,#3b403d 56%,#4e5450 80%,#1c1f1d 100%)}
+/* Amp and cabinet are separate sections now (pedals → amp → loop → cabinet). */
+.gr-stage.gr-stage-amp,.gr-stage.gr-stage-cab{display:flex;flex-direction:column;gap:8px}
+.gr-stage[data-bypassed=true]>:not(.gr-stage-head){filter:saturate(.4) brightness(.75)}
+.gr-stage-amp .gr-amp-stage{max-width:620px}
+.gr-stage-cab .gr-cab-face{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;align-items:center}
+.gr-stage-cab .gr-cab-face .gr-cabinet-stage{max-width:380px}
+@media(max-width:900px){.gr-stage-cab .gr-cab-face{grid-template-columns:1fr}}
+
+/* ── Long amp head (CSS-drawn): tolex body, piping, vented front with emblem, full-width control panel ── */
+.gr-amphead{--tolex:#191a1a;--piping:#d8d1bb;--jewel:#ff4836;--ink:#1d1f1e;position:relative;width:100%;max-width:900px;margin:22px auto 6px;padding:14px 16px 16px;border-radius:12px;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='t'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' seed='21' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.42 0 0 0 -0.16'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23t)'/%3E%3C/svg%3E"),
+    linear-gradient(#ffffff14,#0000 30%,#00000040),var(--tolex);
+  box-shadow:inset 0 0 0 1px #0009,inset 0 2px 0 #ffffff1f,inset 0 -3px 6px #0007,0 18px 30px #000c,0 4px 8px #0009}
+/* Piping: the thin welt inset around the front, a classic head detail. */
+.gr-amphead::before{content:'';position:absolute;inset:7px;border-radius:8px;pointer-events:none;box-shadow:inset 0 0 0 2px var(--piping),inset 0 0 0 3px #0006,0 0 0 1px #0005}
+.gr-amphead[data-bypassed=true]{filter:saturate(.5) brightness(.78)}
+.gr-amphead-handle{position:absolute;left:50%;top:-20px;width:200px;height:26px;margin-left:-100px;border-radius:14px 14px 4px 4px;
+  background:linear-gradient(#2b2522,#120f0e);box-shadow:inset 0 2px 0 #ffffff26,inset 0 -2px 3px #000a,0 3px 5px #000a}
+.gr-amphead-handle::before,.gr-amphead-handle::after{content:'';position:absolute;bottom:-3px;width:26px;height:14px;border-radius:3px;background:linear-gradient(#f1f2ef,#8e948f 55%,#4d524e);box-shadow:0 1px 2px #000c}
+.gr-amphead-handle::before{left:-10px}.gr-amphead-handle::after{right:-10px}
+.gr-amphead-corner{position:absolute;width:22px;height:22px;pointer-events:none;background:linear-gradient(135deg,#f3f4f1,#a5aba6 40%,#5a605b 80%);clip-path:polygon(0 0,100% 0,100% 34%,34% 34%,34% 100%,0 100%);filter:drop-shadow(0 1px 1px #000c)}
+.gr-amphead-corner[data-pos=tl]{left:-1px;top:-1px;border-top-left-radius:10px}
+.gr-amphead-corner[data-pos=tr]{right:-1px;top:-1px;transform:scaleX(-1);border-top-left-radius:10px}
+.gr-amphead-corner[data-pos=bl]{left:-1px;bottom:-1px;transform:scaleY(-1);border-top-left-radius:10px}
+.gr-amphead-corner[data-pos=br]{right:-1px;bottom:-1px;transform:scale(-1,-1);border-top-left-radius:10px}
+
+/* Front: ventilation slots either side of a metal emblem (no speaker — the cabinet is the speaker). */
+.gr-amphead-front{position:relative;display:flex;align-items:center;gap:22px;height:64px;padding:0 26px;margin-bottom:12px}
+.gr-amphead-vents{flex:1;height:30px;border-radius:4px;background:repeating-linear-gradient(90deg,#00000000 0 6px,#000000c8 6px 10px,#ffffff14 10px 11px,#00000000 11px 16px);box-shadow:inset 0 2px 3px #0009;opacity:.9}
+.gr-amphead-emblem{flex-shrink:0;width:120px;height:34px;background:linear-gradient(#ffffff,#c9cec9 30%,#868c87 55%,#e6e9e5 80%,#9da39e);box-shadow:0 2px 3px #000b,inset 0 0 0 1px #0005;border-radius:6px}
+.gr-amphead[data-emblem=diamond] .gr-amphead-emblem{width:40px;height:40px;border-radius:4px;transform:rotate(45deg);background:linear-gradient(135deg,#fff3c9,#d6b35f 40%,#8b6a24 70%,#e9cf8a)}
+.gr-amphead[data-emblem=jar] .gr-amphead-emblem{width:46px;height:52px;border-radius:44% 44% 38% 38% / 30% 30% 60% 60%;background:radial-gradient(circle at 38% 30%,#f2c79c,#b57441 45%,#5c3317 85%)}
+.gr-amphead[data-emblem=shield] .gr-amphead-emblem{width:54px;height:48px;border-radius:6px 6px 50% 50% / 6px 6px 70% 70%;background:linear-gradient(#ffe0b8,#d08a4e 45%,#7c4219 80%,#e2a56d)}
+.gr-amphead[data-emblem=cloud] .gr-amphead-emblem{width:90px;height:30px;border-radius:15px;background:linear-gradient(#ffffff,#efe6cc 40%,#b7ab88 75%,#f5efdc)}
+
+/* Control panel: a full-width metal plate with screws; labels are silkscreened in the panel's ink. */
+.gr-amphead-panel{position:relative;display:flex;align-items:center;gap:18px;min-height:104px;padding:10px 30px 8px;border-radius:6px;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='120'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.003 0.9' numOctaves='3' seed='5' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0.55 0 0 0 -0.2'/%3E%3C/filter%3E%3Crect width='420' height='120' filter='url(%23b)'/%3E%3C/svg%3E"),
+    radial-gradient(circle at 12px 12px,#f5f6f4 0,#9aa09b 2.6px,#3e423f 3.6px,#0000 4px),radial-gradient(circle at calc(100% - 12px) 12px,#f5f6f4 0,#9aa09b 2.6px,#3e423f 3.6px,#0000 4px),
+    radial-gradient(circle at 12px calc(100% - 12px),#f5f6f4 0,#9aa09b 2.6px,#3e423f 3.6px,#0000 4px),radial-gradient(circle at calc(100% - 12px) calc(100% - 12px),#f5f6f4 0,#9aa09b 2.6px,#3e423f 3.6px,#0000 4px),
+    var(--plate,linear-gradient(#eef0ed,#c3c8c3 45%,#aab0ab 55%,#d7dbd6));
+  box-shadow:inset 0 1px 0 #ffffffb3,inset 0 -1px 0 #0006,0 0 0 2px #0008,0 2px 4px #000a;color:var(--ink)}
+.gr-amphead[data-panel=gold]{--plate:linear-gradient(#f7e3a6,#d4b064 45%,#b8913f 55%,#e6cc85)}
+.gr-amphead[data-panel=black]{--plate:linear-gradient(#3a3d3b,#1d1f1e 50%,#141615);--ink:#e9dcc4}
+.gr-amphead[data-panel=copper]{--plate:linear-gradient(#f2c49a,#c27b47 45%,#a8622f 55%,#dc9d6b)}
+.gr-amphead[data-panel=cream]{--plate:linear-gradient(#fbf6e6,#e8dfc3 50%,#d7cba8);--ink:#2c3b33}
+.gr-amphead-knobs{flex:1;display:flex;justify-content:space-around;align-items:center;min-width:0}
+.gr-amphead-knobs .knob--image{width:78px}
+.gr-amphead .knob-label{font:800 9px ui-monospace,monospace!important;letter-spacing:.16em;color:var(--ink)!important;text-shadow:none!important}
+.gr-amphead .knob-readout{font:10px ui-monospace,monospace!important;color:var(--ink)!important;text-shadow:none!important;opacity:.8}
+.gr-amphead .knob-image-scale{color:var(--ink)!important;opacity:.6}
+.gr-amphead-jack,.gr-amphead-power{flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:6px;font:800 8px ui-monospace,monospace;letter-spacing:.14em}
+.gr-amphead-jack i{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle,#050505 0 4px,#e2e5e1 4.6px 6.5px,#7d837e 7.4px 9.5px,#2f3330 10.5px);box-shadow:0 1px 2px #000b}
+.gr-amphead-jewel{width:18px;height:18px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#ffffff99,#0000 40%),radial-gradient(circle,#4a1a12,#200806);box-shadow:0 0 0 3px #b9beb9,0 0 0 4px #333,0 2px 3px #000b}
+.gr-amphead-jewel[data-on=true]{background:radial-gradient(circle at 40% 35%,#ffffffcc,#0000 35%),radial-gradient(circle,var(--jewel),color-mix(in srgb,var(--jewel) 45%,#000));box-shadow:0 0 0 3px #b9beb9,0 0 0 4px #333,0 0 14px var(--jewel)}
+.gr-amphead-toggle{position:relative;width:24px;height:32px;padding:0;border:0;border-radius:4px;background:linear-gradient(#2a2d2b,#121413);box-shadow:inset 0 0 0 1px #000,0 1px 0 #ffffff40;cursor:pointer}
+.gr-amphead-toggle span{position:absolute;left:50%;top:50%;width:8px;height:22px;margin:-20px 0 0 -4px;border-radius:4px;background:linear-gradient(90deg,#8d938e,#f6f7f5 45%,#9aa09b);box-shadow:0 2px 2px #000b;transform-origin:50% 100%;transition:transform .1s}
+.gr-amphead-toggle[aria-pressed=false] span{transform:translateY(18px) scaleY(-1)}
+@media(max-width:900px){.gr-amphead-front{height:44px}.gr-amphead-emblem{width:70px}.gr-amphead-panel{flex-wrap:wrap;padding:10px 16px}.gr-amphead-knobs{order:3;flex-basis:100%;flex-wrap:wrap}}
+.gr-amphead-toggle span{top:3px;height:14px;margin:0 0 0 -4px;transform:none;transition:top .1s}
+.gr-amphead-toggle[aria-pressed=false] span{top:15px;transform:none;background:linear-gradient(90deg,#6f7570,#c9cdc8 45%,#7c827d)}
+.gr-amphead-corner{width:18px;height:18px}
+
+/* Slot name: small, centred, right above the pedal; it is also the drag handle. */
+.gr-slot-title{max-width:170px;margin:0 auto 2px;padding:1px 8px;border-radius:4px;font:700 10px Georgia,"Noto Serif KR",serif;letter-spacing:.02em;color:#cfc9b4;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:grab;user-select:none}
+.gr-slot-title:active{cursor:grabbing}
+.gr-slot[data-selected=true] .gr-slot-title{color:#f0d896}
+.gr-slot[data-bypassed=true] .gr-slot-title{color:#8d978c}
+/* Menus opened from the rig editor sit above its backdrop. */
+body:has([data-guitar-rig-dialog]) .context-menu{z-index:760}
+/* Title sits right on top of the pedal: the stage scales from its top edge, and the art's transparent margin is pulled under the title. */
+.gr-slot-bay{align-items:start;justify-items:center;padding:0 0 10px}
+.gr-slot-bay .gr-pedal-stage{transform-origin:50% 0}
+.gr-slot-title{margin:0 auto -8px;position:relative;z-index:3}
+.gr-slot,.gr-slot-empty,.gr-slot-gap{min-height:290px}
+.gr-slot-bay::before{bottom:auto;top:252px}
+@media(max-width:1100px){.gr-slot,.gr-slot-empty,.gr-slot-gap{min-height:252px}.gr-slot-bay::before{top:218px}}
+/* Compact rack: the frame and slots hug the pedals. */
+.gr-fxrack{padding-top:36px;padding-bottom:calc(var(--case) + 4px)}
+.gr-fxrack-head{top:8px}
+.gr-rail{top:32px}
+.gr-fxrack-bay{padding:8px 16px 10px}
+.gr-fxrack-grid{row-gap:6px}
+.gr-slot,.gr-slot-empty,.gr-slot-gap{min-height:268px}
+.gr-slot-bay{padding:0}
+.gr-slot-bay::before{top:244px}
+.gr-slot-add{position:relative;z-index:3}
+.gr-slot-add>button{width:136px;height:236px;margin-top:14px;background:#141715e6}
+.gr-slot-empty[data-short=true],.gr-slot-gap[data-short=true]{min-height:56px!important}
+.gr-slot-add[data-short=true]>button{height:44px;margin:0}
+@media(max-width:1100px){.gr-slot,.gr-slot-empty,.gr-slot-gap{min-height:236px}.gr-slot-bay::before{top:212px}.gr-slot-add>button{width:118px;height:204px}}
+
+/* ── Compact pass: frame, rails and slots hug the pedals; amp and cabinet sections lose dead space. ── */
+.gr-rig-scroll{gap:12px;padding-top:12px}
+.gr-fxrack{--rail:20px;--case:12px;padding:30px calc(var(--case) + var(--rail) + 8px) calc(var(--case) + 2px)}
+.gr-fxrack-head{top:6px;padding:3px 22px 3px;gap:10px}
+.gr-fxrack-head h3{font-size:9.5px;letter-spacing:.26em}
+.gr-fxrack-head span{font:700 9px ui-monospace,monospace;letter-spacing:.08em}
+.gr-rail{top:26px;bottom:calc(var(--case) + 2px)}
+.gr-rail-left{left:calc(var(--case) + 4px)}.gr-rail-right{right:calc(var(--case) + 4px)}
+.gr-screw{width:11px;height:11px}.gr-screw[data-pos^=t]{top:13px}.gr-screw[data-pos^=b]{bottom:2px}
+.gr-screw[data-pos$=l]{left:calc(var(--case) + 4px + var(--rail) / 2 - 5.5px)}.gr-screw[data-pos$=r]{right:calc(var(--case) + 4px + var(--rail) / 2 - 5.5px)}
+.gr-fxrack-bay{padding:6px 10px 4px}
+.gr-fxrack-grid{gap:2px 8px}
+/* The stage scales visually but keeps its 300px box: give back the unused height under the pedal. */
+.gr-slot-bay .gr-pedal-stage{margin-bottom:-36px}
+.gr-slot,.gr-slot-empty,.gr-slot-gap{min-height:0}
+.gr-slot-bay{padding:0 0 12px}
+.gr-slot-bay::before{top:auto;bottom:6px}
+.gr-slot-add>button{width:132px;height:232px;margin-top:12px}
+.gr-fxrack-add{position:absolute;z-index:4;top:5px;right:calc(var(--case) + var(--rail) + 14px);width:22px;height:22px;display:grid;place-items:center;padding:0;border:0;border-radius:4px;cursor:pointer;
+  background:linear-gradient(#e6e9e5,#aeb4af);color:#232624!important;box-shadow:0 1px 3px #000b,inset 0 1px 0 #fff}
+.gr-stage{padding:10px 14px 12px}
+.gr-stage-head{min-height:24px}
+.gr-amphead{margin:16px auto 2px;padding:10px 12px 12px}
+.gr-amphead-front{height:46px;margin-bottom:8px}
+.gr-amphead-vents{height:22px}
+.gr-amphead-emblem{height:28px}
+.gr-amphead[data-emblem=diamond] .gr-amphead-emblem{width:32px;height:32px}
+.gr-amphead[data-emblem=jar] .gr-amphead-emblem{width:36px;height:40px}
+.gr-amphead[data-emblem=shield] .gr-amphead-emblem{width:42px;height:38px}
+.gr-amphead-panel{min-height:90px;padding:6px 26px 4px}
+.gr-stage-cab .gr-cab-face{grid-template-columns:minmax(0,.9fr) minmax(0,1fr);gap:18px}
+.gr-stage-cab .gr-cab-face .gr-cabinet-stage{max-width:300px}
+.gr-stage-cab .gr-cab-controls{padding:8px 12px!important;gap:6px!important}
+@media(max-width:1100px){.gr-slot-bay .gr-pedal-stage{margin-bottom:-72px}.gr-slot-add>button{width:116px;height:200px}}
+@media(max-width:900px){.gr-slot-bay .gr-pedal-stage{margin-bottom:-36px}}
+.gr-slot-title{height:16px;line-height:16px;padding-top:0;padding-bottom:0}
+
+/* User presets: save / overwrite / delete next to the preset picker. */
+.gr-preset-save,.gr-preset-delete,.gr-preset-form button,.gr-preset-confirm button{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border:1px solid #5b6b5c;border-radius:7px;background:#243029;color:#e6e0cc!important;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
+.gr-preset-save:hover,.gr-preset-delete:hover,.gr-preset-form button:hover:not(:disabled),.gr-preset-confirm button:hover{border-color:#d4ba7e;background:#2d3a31}
+.gr-preset-delete{width:30px;padding:0;justify-content:center}
+.gr-preset-form{display:flex;align-items:center;gap:6px;min-width:0}
+.gr-preset-form input{width:220px;max-width:40vw;height:30px;padding:0 10px;border:1px solid #d4ba7e;border-radius:7px;background:#141a16;color:#f1ead6;font-size:12px}
+.gr-preset-form button[type=submit]{background:#d4ba7e;border-color:#d4ba7e;color:#1d1a10!important}
+.gr-preset-form button:disabled{opacity:.45;cursor:default}
+.gr-preset-confirm{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#f0c9a8}
+.gr-preset-confirm .gr-preset-danger{border-color:#c4644a;background:#4a2219;color:#ffd9cc!important}
+.gr-toolbar .gr-preset-description{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Preset picker (shadcn Select/Combobox look): trigger, popover, search, groups, check. ── */
+.gr-preset-label{font:700 9px ui-monospace,monospace;letter-spacing:.18em;color:#93a28a}
+.rp{position:relative;min-width:0}
+.rp-trigger{display:flex;align-items:center;justify-content:space-between;gap:10px;width:260px;max-width:34vw;height:36px;padding:0 10px 0 12px;border:1px solid #47564a;border-radius:8px;background:#151b17;color:#ebe4cf!important;text-align:left;cursor:pointer;box-shadow:0 1px 2px #0006;transition:border-color .12s,box-shadow .12s}
+.rp-trigger:hover{border-color:#6f8170}
+.rp-trigger[aria-expanded=true],.rp-trigger:focus-visible{border-color:#d4ba7e;box-shadow:0 0 0 3px #d4ba7e33;outline:none}
+.rp-trigger svg{flex-shrink:0;opacity:.6;transition:transform .15s}.rp-trigger[aria-expanded=true] svg{transform:rotate(180deg)}
+.rp-trigger-text{display:flex;flex-direction:column;min-width:0;line-height:1.15}
+.rp-trigger-text strong{font-size:12.5px;font-weight:600;color:#f1ead6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rp-trigger-text strong[data-placeholder=true]{color:#a9b6a3;font-weight:500}
+.rp-trigger-text small{font-size:10px;color:#8f9d89;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rp-popover{position:absolute;z-index:40;top:calc(100% + 6px);left:0;width:340px;max-width:calc(100vw - 32px);padding:4px;border:1px solid #3d4a41;border-radius:10px;background:#151b17;box-shadow:0 16px 40px #000c,0 2px 6px #0008;animation:rp-in .12s ease-out}
+@keyframes rp-in{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.rp-popover{animation:none}}
+.rp-search{display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;margin:0 -4px 4px;border-bottom:1px solid #2f3a33;color:#8f9d89}
+.rp-search input{flex:1;min-width:0;height:100%;border:0;background:transparent;color:#f1ead6;font-size:12.5px;outline:none}
+.rp-search input::placeholder{color:#76846f}
+.rp-list{max-height:320px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:2px 0}
+.rp-group+.rp-group{margin-top:4px;padding-top:4px;border-top:1px solid #2a342e}
+.rp-label{padding:6px 8px 4px;font-size:10.5px;font-weight:600;letter-spacing:.02em;color:#8f9d89}
+.rp-item{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;cursor:pointer;user-select:none}
+.rp-item[data-active=true]{background:#26302a}
+.rp-item[data-selected=true] .rp-item-text>span{color:#f0d896}
+.rp-check{flex-shrink:0;display:grid;place-items:center;width:16px;color:#d4ba7e}
+.rp-item-text{display:flex;flex-direction:column;gap:1px;min-width:0}
+.rp-item-text>span{font-size:12.5px;font-weight:500;color:#ebe4cf;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rp-item-text small{font-size:10.5px;line-height:1.35;color:#8f9d89;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rp-empty,.rp-hint{margin:0!important;padding:10px 12px;font-size:11px;color:#8f9d89}
+.rp-hint{padding:2px 8px 8px 32px}
+.rp-separator{height:1px;margin:4px -4px;background:#2f3a33}
+.rp-footer{display:flex;align-items:center;gap:8px;width:100%;padding:8px;border:0;border-radius:6px;background:transparent;color:#e3cc93!important;font-size:12px;font-weight:600;text-align:left;cursor:pointer}
+.rp-footer:hover,.rp-footer:focus-visible{background:#26302a;outline:none}
+
+/* ── One connected rig: no boxes around amp and cabinet, the same small label row on every part, and
+   cables running between the parts down the margins. ── */
+.rp-search input:focus-visible,.rp-search input:focus{outline:none!important;box-shadow:none!important}
+.gr-rig-scroll{padding:12px 46px 28px}
+.gr-rig-column{position:relative;display:flex;flex-direction:column;gap:18px;width:100%;max-width:960px;margin:0 auto}
+.gr-rig-cables{position:absolute;left:0;top:0;z-index:6;overflow:visible;pointer-events:none}
+.gr-stage,.gr-stage.gr-stage-amp,.gr-stage.gr-stage-cab{padding:0;border:0;border-radius:0;background:none!important;box-shadow:none!important}
+.gr-stage-head{display:flex;align-items:center;gap:10px;min-height:26px;padding:0 4px}
+.gr-stage-head h3,.gr-fxrack-head h3{font:800 10px ui-monospace,monospace;letter-spacing:.26em}
+/* Amp and cabinet labels use the racks' brushed nameplate so every part reads the same. */
+.gr-stage-head h3{padding:3px 14px;border-radius:3px;color:#232624;text-shadow:0 1px 0 #ffffffcc;background:linear-gradient(#e6e9e5,#b7bcb7 48%,#a2a8a3 52%,#cdd1cc);box-shadow:0 1px 3px #000b,inset 0 1px 0 #fff}
+.gr-stage-head .gr-choice{margin-left:auto}
+.gr-stage-head .gr-choice span{display:none}
+.gr-stage-head .gr-choice select{min-height:28px;max-width:240px;border-radius:7px;border-color:#47564a;background-color:#151b17;color:#ebe4cf;font-size:11.5px}
+.gr-stage-head .gr-unit-power{margin-right:-2px}
+.gr-stage-amp .gr-amphead{margin-top:14px}
+.gr-stage-cab .gr-cab-face{grid-template-columns:minmax(0,.85fr) minmax(0,1fr);gap:28px;align-items:center;padding:4px 4px 0}
+.gr-stage-cab .gr-cab-face .gr-cabinet-stage{position:relative;max-width:300px;margin:0 auto;filter:drop-shadow(0 16px 18px #000c)}
+.gr-stage-cab .gr-cab-controls{border:0!important;border-radius:10px!important;background:#ffffff08!important;box-shadow:inset 0 0 0 1px #ffffff0d!important}
+/* Jacks the column cables plug into. */
+.gr-case-jack{position:absolute;z-index:4;width:14px;height:14px;border-radius:50%;background:radial-gradient(circle,#050505 0 2.5px,#d9dcd8 3px 4.5px,#7d837e 5px 6px,#2f3330 6.5px);box-shadow:0 1px 2px #000b}
+.gr-case-jack[data-side=left]{left:3px;bottom:46px}
+.gr-case-jack[data-side=right]{right:3px;top:46px}
+.gr-cab-jack{position:absolute;z-index:2;left:6%;top:12%;width:16px;height:16px;border-radius:50%;background:radial-gradient(circle,#050505 0 3px,#d9dcd8 3.5px 5px,#7d837e 5.5px 7px,#2f3330 7.5px);box-shadow:0 1px 2px #000b}
+.gr-stage-head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center}
+.gr-stage-head h3{grid-column:2;font-size:10.5px;padding:4px 18px}
+.gr-stage-head .gr-unit-power{grid-column:1;grid-row:1;justify-self:start}
+.gr-stage-head .gr-choice{grid-column:3;grid-row:1;justify-self:end;margin:0}
+
+/* ── Frameless racks: the road case is gone, only a faint floor and the nameplate remain, so pedals sit on
+   the background like the amp and cabinet do. Cables are one tidy layer over the whole rig. ── */
+.gr-fxrack{padding:30px 0 2px;border-radius:12px;background:#ffffff05;box-shadow:inset 0 0 0 1px #ffffff0a}
+.gr-fxrack::before,.gr-rail,.gr-screw,.gr-corner,.gr-case-jack{display:none}
+.gr-fxrack-head{top:4px}
+.gr-fxrack-bay{padding:4px 10px 2px;background:none;box-shadow:none}
+.gr-fxrack-add{top:4px;right:10px}
+.gr-rig-cables{z-index:2}
+.gr-cable-cord{stroke-width:7}
+.gr-cable-core{stroke-width:5}
+.gr-cable-sheen{stroke-width:1.2;stroke:#ffffff2e;transform:translate(-1px,-1px)}

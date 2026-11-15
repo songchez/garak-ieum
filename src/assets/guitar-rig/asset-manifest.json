@@ -1,101 +1,7 @@
 {
-  "version": 1,
-  "origin": "Original generated artwork from the Garakieum guitar workshop asset kit. PNG files are copied without pixel edits.",
+  "version": 2,
+  "origin": "Garakieum guitar workshop artwork. Gear names are original homage names, not product names or trademarks.",
   "assets": {
-    "amp-panel.png": {
-      "pixels": [
-        1440,
-        480
-      ],
-      "canvasAspect": [
-        3,
-        1
-      ],
-      "nominalCss": [
-        720,
-        240
-      ],
-      "knobCenters": [
-        [
-          190,
-          164
-        ],
-        [
-          266,
-          164
-        ],
-        [
-          342,
-          164
-        ],
-        [
-          418,
-          164
-        ],
-        [
-          494,
-          164
-        ],
-        [
-          570,
-          164
-        ]
-      ]
-    },
-    "pedal-body.png": {
-      "pixels": [
-        360,
-        600
-      ],
-      "canvasAspect": [
-        3,
-        5
-      ],
-      "css": [
-        180,
-        300
-      ],
-      "knobCenters": [
-        [
-          52,
-          97
-        ],
-        [
-          128,
-          97
-        ],
-        [
-          90,
-          162
-        ]
-      ],
-      "footswitchCenter": [
-        90,
-        250
-      ]
-    },
-    "cabinet.png": {
-      "pixels": [
-        768,
-        512
-      ],
-      "canvasAspect": [
-        3,
-        2
-      ],
-      "nominalCss": [
-        384,
-        256
-      ],
-      "micSpeakerCenter": [
-        225,
-        260
-      ],
-      "micPositionPathEnd": [
-        345,
-        260
-      ]
-    },
     "knob-cap.png": {
       "pixels": [
         128,
@@ -118,6 +24,542 @@
         135
       ],
       "circleRadius": 60
+    },
+    "amps/amp-twinline.webp": {
+      "pixels": [
+        1200,
+        600
+      ],
+      "canvasAspect": [
+        2,
+        1
+      ],
+      "ampModel": 0,
+      "name": "Twinline '65",
+      "controlPanelPercent": [
+        15,
+        68.3,
+        85,
+        87.3
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "amps/amp-plexton.webp": {
+      "pixels": [
+        1200,
+        600
+      ],
+      "canvasAspect": [
+        2,
+        1
+      ],
+      "ampModel": 1,
+      "name": "Plexton 59",
+      "controlPanelPercent": [
+        9.2,
+        70,
+        90.8,
+        86.7
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "amps/amp-onggi.webp": {
+      "pixels": [
+        1200,
+        600
+      ],
+      "canvasAspect": [
+        2,
+        1
+      ],
+      "ampModel": 2,
+      "name": "옹기 Lead",
+      "controlPanelPercent": [
+        10.3,
+        65,
+        90,
+        85
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "amps/amp-topboost.webp": {
+      "pixels": [
+        1200,
+        600
+      ],
+      "canvasAspect": [
+        2,
+        1
+      ],
+      "ampModel": 3,
+      "name": "Topboost 30",
+      "controlPanelPercent": [
+        9.2,
+        66,
+        91.7,
+        85.7
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "amps/amp-cheongja.webp": {
+      "pixels": [
+        1200,
+        600
+      ],
+      "canvasAspect": [
+        2,
+        1
+      ],
+      "ampModel": 4,
+      "name": "청자 Jazz",
+      "controlPanelPercent": [
+        15.8,
+        67.7,
+        90,
+        87.3
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "cabinet-compact.webp": {
+      "pixels": [
+        768,
+        512
+      ],
+      "canvasAspect": [
+        3,
+        2
+      ],
+      "nominalCss": [
+        384,
+        256
+      ],
+      "cabinet": 0,
+      "name": "소반 1×12",
+      "micSpeakerCenter": [
+        395,
+        248
+      ],
+      "micSpeakerRadius": 138,
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "cabinet-open.webp": {
+      "pixels": [
+        768,
+        512
+      ],
+      "canvasAspect": [
+        3,
+        2
+      ],
+      "nominalCss": [
+        384,
+        256
+      ],
+      "cabinet": 1,
+      "name": "Blackline 2×12",
+      "micSpeakerCenter": [
+        217,
+        251
+      ],
+      "micSpeakerRadius": 123,
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "cabinet-stack.webp": {
+      "pixels": [
+        768,
+        512
+      ],
+      "canvasAspect": [
+        3,
+        2
+      ],
+      "nominalCss": [
+        384,
+        256
+      ],
+      "cabinet": 2,
+      "name": "Brit 4×12",
+      "micSpeakerCenter": [
+        286,
+        170
+      ],
+      "micSpeakerRadius": 75,
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "cabinet-tiny.webp": {
+      "pixels": [
+        768,
+        512
+      ],
+      "canvasAspect": [
+        3,
+        2
+      ],
+      "nominalCss": [
+        384,
+        256
+      ],
+      "cabinet": 3,
+      "name": "장독 1×10",
+      "micSpeakerCenter": [
+        384,
+        262
+      ],
+      "micSpeakerRadius": 128,
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "cabinet-chime.webp": {
+      "pixels": [
+        768,
+        512
+      ],
+      "canvasAspect": [
+        3,
+        2
+      ],
+      "nominalCss": [
+        384,
+        256
+      ],
+      "cabinet": 4,
+      "name": "Chime 2×12",
+      "micSpeakerCenter": [
+        242,
+        300
+      ],
+      "micSpeakerRadius": 112,
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "mics/mic-dm75.webp": {
+      "pixels": [
+        480,
+        360
+      ],
+      "micType": 0,
+      "name": "DM-75",
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "mics/mic-ribbon.webp": {
+      "pixels": [
+        480,
+        360
+      ],
+      "micType": 1,
+      "name": "RB-212",
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "mics/mic-moonjar.webp": {
+      "pixels": [
+        480,
+        360
+      ],
+      "micType": 2,
+      "name": "달항아리 C8",
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "mics/mic-janggu.webp": {
+      "pixels": [
+        480,
+        360
+      ],
+      "micType": 3,
+      "name": "장구 D42",
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "mics/mic-pencil.webp": {
+      "pixels": [
+        480,
+        360
+      ],
+      "micType": 4,
+      "name": "Pencil 84",
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP."
+    },
+    "pedals/pedal-comp.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "다듬이 Comp",
+      "inUse": true,
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates."
+    },
+    "pedals/pedal-drive.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "Green Howler",
+      "inUse": true,
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates."
+    },
+    "pedals/pedal-chorus.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "Blue Ripple",
+      "inUse": true,
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates."
+    },
+    "pedals/pedal-delay.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "메아리 Delay",
+      "inUse": true,
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates."
+    },
+    "pedals/pedal-fuzz.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "Bumble Fuzz",
+      "inUse": true,
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates.",
+      "rackModule": "fuzz",
+      "rackCode": 7,
+      "knobStyle": "chicken"
+    },
+    "pedals/pedal-phaser.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "Swirl Phase",
+      "inUse": true,
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates.",
+      "rackModule": "phaser",
+      "rackCode": 8,
+      "knobStyle": "chrome"
+    },
+    "pedals/pedal-reverb.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "범종 Reverb",
+      "inUse": true,
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates.",
+      "rackModule": "reverb",
+      "rackCode": 10,
+      "knobStyle": "copper"
+    },
+    "pedals/pedal-tremolo.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "Tide Tremolo",
+      "inUse": true,
+      "knobCenters": [
+        [
+          52,
+          97
+        ],
+        [
+          128,
+          97
+        ],
+        [
+          90,
+          162
+        ]
+      ],
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates.",
+      "rackModule": "tremolo",
+      "rackCode": 9,
+      "knobStyle": "cream"
+    },
+    "pedals/pedal-tuner.webp": {
+      "pixels": [
+        360,
+        600
+      ],
+      "css": [
+        180,
+        300
+      ],
+      "name": "조율 Tuner",
+      "inUse": true,
+      "footswitchCenter": [
+        90,
+        250
+      ],
+      "source": "Generated with Google Gemini from no-logo/no-text prompts; white background removed, fitted to the canvas and saved as WebP. A separately generated chrome footswitch and the original LED are composited at fixed coordinates.",
+      "rackModule": "tuner",
+      "rackCode": 11,
+      "displayWindowCss": [
+        28,
+        48,
+        134,
+        56
+      ],
+      "note": "No knobs. Note name, cents needle and status are HTML overlaid on the dark display window."
     }
   },
   "rendering": "Uniform image scaling only; below the compact breakpoint amp knobs reflow into a separate grid. Shadows, ticks, labels and readouts remain fixed while only knob-cap rotates.",

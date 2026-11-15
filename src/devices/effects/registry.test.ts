@@ -70,14 +70,23 @@ function audioProject(devices: Device[]): Project {
 
 describe('built-in effect modules share one catalog', () => {
   it('retains saved IDs, ordering, and original numeric defaults in UI and MCP', () => {
-    expect(EFFECT_TYPES).toEqual(['eq', 'filter', 'compressor', 'drive', 'delay', 'reverb', 'guitar-rig'])
+    expect(EFFECT_TYPES).toEqual(['eq', 'filter', 'compressor', 'drive', 'delay', 'reverb', 'guitar-rig', 'chorus', 'phaser', 'flanger', 'tremolo', 'limiter', 'gate', 'tape', 'bitcrusher', 'utility'])
     expect(Object.fromEntries(EFFECT_TYPES.filter(type => type !== 'guitar-rig').map(type => [type, defaultParams(EFFECT_DEFS[type].params)]))).toEqual({
       eq: { low: 0, mid: 0, midFreq: 1000, high: 0 },
       filter: { cutoff: 1200, resonance: 0.7, mode: 0 },
       compressor: { threshold: -18, ratio: 4, attack: 10, release: 150, makeup: 0 },
       drive: { drive: 9, tone: 9000, mix: 1, output: 0 },
-      delay: { amount: 0.3, time: 0.75, feedback: 0.32, tone: 3800 },
-      reverb: { amount: 0.3, size: 0.35, tone: 9000 },
+      delay: { amount: 0.3, time: 0.75, feedback: 0.32, tone: 3800, lowcut: 20, age: 0, sync: 1, ms: 375, mode: 0 },
+      reverb: { amount: 0.3, size: 0.35, tone: 9000, type: 0, predelay: 0, lowcut: 20 },
+      chorus: { rate: 0.8, depth: 0.5, mix: 0.5 },
+      phaser: { rate: 0.5, depth: 0.7, feedback: 0.4, mix: 1 },
+      flanger: { rate: 0.25, depth: 0.7, feedback: 0.6, mix: 1 },
+      tremolo: { rate: 4, depth: 0.5, shape: 0, sync: 0, pan: 0 },
+      limiter: { gain: 0, ceiling: -1, release: 100 },
+      gate: { threshold: -50, attack: 1, hold: 50, release: 150 },
+      tape: { drive: 6, warmth: 0.5, mix: 1, output: 0 },
+      bitcrusher: { bits: 8, downsample: 4, mix: 1 },
+      utility: { gain: 0, pan: 0, width: 1, mono: 0, phase: 0 },
     })
     const command = COMMAND_METADATA.find(command => command.type === 'effect.add')!
     const schema = command.inputSchema.properties as Record<string, Record<string, unknown>>
@@ -98,8 +107,8 @@ describe('built-in effect modules share one catalog', () => {
 })
 
 describe('independent effect processing contracts', () => {
-  // The worklet-backed guitar rig has separate lifecycle and rendering tests.
-  it.each(EFFECT_TYPES.filter(type => type !== 'guitar-rig'))('%s gives the host ownership of every node it creates', type => {
+  // Worklet-backed modules (guitar rig, kernel 시김새) have separate lifecycle and DSP tests.
+  it.each(EFFECT_TYPES.filter(type => !EFFECT_MODULES[type].prepare))('%s gives the host ownership of every node it creates', type => {
     const { nodes, owned, effect } = create(type)
     effect.update({}, 120, 4, false)
     expect(owned).toEqual(nodes)
@@ -161,19 +170,33 @@ describe('independent effect processing contracts', () => {
     expect(shaper.curve![2047]).toBe(1)
   })
 
-  it('delay follows musical tempo and keeps feedback inside its own device', () => {
-    const { nodes, effect } = create('delay')
-    const [input, output, delay, wet, tone, feedback] = nodes
-    effect.update({ time: 0.75, amount: 0.8, feedback: 0.6 }, 90, 3, true)
-    expect(delay.delayTime.value).toBe(0.5)
-    expect(wet.gain.value).toBeCloseTo(0.36)
-    expect(feedback.gain.value).toBe(0.6)
-    expect(input.connections).toEqual(new Set([output, delay]))
-    expect(delay.connections).toEqual(new Set([wet, tone]))
-    expect(tone.connections).toEqual(new Set([feedback]))
-    expect(feedback.connections).toEqual(new Set([delay]))
-    effect.update({ time: 0.75 }, 120, 4, false)
-    expect(delay.delayTime.value).toBe(0.375)
+  it('kernel-backed modules build their worklet with the saved parameters on first update', async () => {
+    const constructed: { name: string; options: { processorOptions: unknown; outputChannelCount: number[] } }[] = []
+    const posted: unknown[] = []
+    vi.stubGlobal('AudioWorkletNode', class extends NodeSpy {
+      port = { postMessage: (message: unknown) => posted.push(message), close: vi.fn() }
+      onprocessorerror: unknown = null
+      constructor(_context: unknown, name: string, options: never) { super('worklet'); constructed.push({ name, options }) }
+    })
+    try {
+      const { context, nodes } = contextSpy()
+      expect(() => EFFECT_MODULES.delay.create(context, node => node)).toThrow(/준비/)
+      Object.assign(context, { audioWorklet: { addModule: vi.fn(async () => undefined) } })
+      await EFFECT_MODULES.delay.prepare!(context)
+      const owned: AudioNode[] = []
+      const effect = EFFECT_MODULES.delay.create(context, node => { owned.push(node); return node })
+      expect(constructed).toHaveLength(0)
+      effect.update({ time: 1, mode: 1 }, 90, 0, false)
+      expect(constructed).toEqual([{ name: 'garak-sigimsae-v1', options: expect.objectContaining({ outputChannelCount: [2], processorOptions: { type: 'delay', params: { time: 1, mode: 1 }, bpm: 90 } }) }])
+      const worklet = owned[2] as unknown as NodeSpy
+      expect((effect.input as unknown as NodeSpy).connections).toEqual(new Set([worklet]))
+      expect(worklet.connections).toEqual(new Set([effect.output]))
+      effect.update({ time: 0.5 }, 120, 1, true)
+      expect(posted).toEqual([{ type: 'params', params: { time: 0.5 }, bpm: 120 }])
+      effect.dispose!()
+      expect(posted.at(-1)).toEqual({ type: 'dispose' })
+      expect(owned).toEqual([...nodes, worklet])
+    } finally { vi.unstubAllGlobals() }
   })
 
   it('reverb keeps deterministic context-local impulses and room blend', () => {

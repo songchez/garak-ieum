@@ -64,9 +64,9 @@ function Harness() {
   const [color, setColor] = useState('#6f9fd0')
   return <div style={{ position: 'fixed', inset: 0, zIndex: 100, overflow: 'auto', padding: 16, background: 'var(--ink-10)', color: 'var(--ink-87)', display: 'flex', gap: 18, alignItems: 'flex-start' }}>
     <Column label="H 40 · W 248 (tier 0)" width={248} height={40} config={config} hideView recording={false}/>
-    <Column label="H 70 · W 248 (tier 1)" width={248} height={70} config={config} hideView={false} recording/>
-    <Column label="H 120 · W 248 (tier 3)" width={248} height={120} config={config} hideView recording={false}/>
-    <Column label="H 80 · W 208 (tier 2, 너비<230 → 슬라이더 숨김)" width={208} height={80} config={DEFAULT_HEADER_CONFIG} hideView={false} recording={false}/>
+    <Column label="H 60 · W 248 (tier 1)" width={248} height={60} config={config} hideView={false} recording/>
+    <Column label="H 96 · W 248 (tier 3, 기본)" width={248} height={96} config={config} hideView recording={false}/>
+    <Column label="H 80 · W 200 (tier 2, 너비<210 → 팬 숨김)" width={200} height={80} config={DEFAULT_HEADER_CONFIG} hideView={false} recording={false}/>
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, width: 160 }}>
       <div style={{ fontSize: 8, color: 'var(--ink-48)', letterSpacing: 1 }}>STRIP SIZE</div>
       <TrackButtons track={TRACKS[2]} kinds={['mute', 'solo', 'arm', 'monitor']} arm="armed" recording={false} implicitMute={false} size="strip" onPress={stubs.onButton} onSweep={stubs.onSweep}/>

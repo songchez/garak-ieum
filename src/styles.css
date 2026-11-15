@@ -92,3 +92,5 @@
 .browser-search:focus-within,.library-search:focus-within{border-color:var(--focus);box-shadow:0 0 0 1px var(--focus)}
 .browser-search input,.library-search input{color:var(--text-primary)}
 .browser-search input::placeholder,.library-search input::placeholder{color:var(--text-muted);opacity:1}
+/* Side order: library (left) · timeline · inspector (right). */
+.studio-body>.file-browser{border-left:0;border-right:1px solid var(--border-subtle)}.studio-body>.inspector{border-right:0;border-left:1px solid var(--border-subtle)}

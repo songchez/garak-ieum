@@ -1,5 +1,5 @@
 // Dev-only visual harness: `await import('/src/dev/inspectorHarness.tsx')` in the browser console mounts
-// Library + Inspector + Browser + NewTracksDialog over the app with demo data and a silent fake engine.
+// Inspector + Browser (library) + NewTracksDialog over the app with demo data and a silent fake engine.
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AudioAsset, AudioEngine, Clip, InstrumentId, Project, Track } from '../core/types'
@@ -7,8 +7,7 @@ import { createDemoProject, createDevice, createTrack, moveDevice } from '../cor
 import { effectiveArm, implicitlyMuted, pressTrackButton, sweepTrackButton } from '../core/trackActions'
 import type { InspectorSections } from '../core/trackUi'
 import { Inspector, type ClipEntry } from '../components/Inspector'
-import { Library } from '../components/Library'
-import { Browser } from '../components/Browser'
+import { Browser, type LibraryTab } from '../components/Browser'
 import { NewTracksDialog } from '../components/NewTracksDialog'
 import '../styles.css'
 
@@ -26,6 +25,7 @@ const fakeEngine: AudioEngine = {
 function Harness() {
   const [project, setProject] = useState<Project>(() => { const p = createDemoProject(); p.tracks[2].devices = [createDevice('eq'), createDevice('reverb', { amount: .4 }), createDevice('compressor')]; p.tracks[2].devices[1].enabled = false; const audio = createTrack('audio'); audio.name = 'Vocal'; p.tracks.push(audio); const second = p.tracks[2].clips[1]; if (second?.kind === 'midi') { second.transpose = 3; second.mute = true; second.quantize = .25 } return p })
   const [focusedId, setFocusedId] = useState(project.tracks[2].id)
+  const [libraryTab, setLibraryTab] = useState<LibraryTab>('instrument')
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(() => new Set(project.tracks[2].clips.slice(0, 2).map(c => c.id)))
   const [sections, setSections] = useState<InspectorSections>({ region: true, track: true, strips: true })
   const [dialog, setDialog] = useState(new URLSearchParams(location.search).get('dialog') === '1')
@@ -36,7 +36,6 @@ function Harness() {
   const edit = (fn: (p: Project) => Project) => setProject(fn)
   const editTrack = (id: string, fn: (t: Track) => Track) => edit(p => ({ ...p, tracks: p.tracks.map(t => t.id === id ? fn(t) : t) }))
   return <div style={{ position: 'fixed', inset: 0, display: 'flex', background: 'var(--ink-09)', zIndex: 1000 }}>
-    <Library focusedTrack={focused} engine={fakeEngine} onSelectPatch={id => { if (focused) editTrack(focused.id, t => ({ ...t, instrument: id })); say(`patch ${id}`) }} onPreview={id => say(`preview ${id}`)} onAddTrack={id => say(`add track ${id}`)} />
     <Inspector project={project} focusedTrack={focused} selection={selection} engine={fakeEngine} recording={false} arm={focused ? effectiveArm(focused, focusedId, project.tracks) : 'off'} implicitMute={focused ? implicitlyMuted(focused, project) : false}
       sections={sections} onSectionsChange={setSections}
       onClipsEdit={(fn: (c: Clip) => Clip) => edit(p => ({ ...p, tracks: p.tracks.map(t => ({ ...t, clips: t.clips.map(c => selectedClipIds.has(c.id) ? fn(c) : c) })) }))}
@@ -57,7 +56,7 @@ function Harness() {
       <pre style={{ margin: 0, fontSize: 10, color: 'var(--ink-54)' }}>{log.join('\n')}</pre>
       <pre style={{ margin: 0, fontSize: 9, color: 'var(--ink-42)', overflow: 'auto' }}>{JSON.stringify(selection.map(e => { const { notes: _n, ...rest } = e.clip as Clip & { notes?: unknown }; return rest }), null, 1)}</pre>
     </div>
-    <Browser assets={new Map<string, AudioAsset>()} onAddAsset={a => say(`add asset ${a.name}`)} onImport={() => say('import')} />
+    <Browser assets={new Map<string, AudioAsset>()} engine={fakeEngine} focusedTrack={focused} tab={libraryTab} onTabChange={setLibraryTab} onUse={(item, opts) => { if (item.kind === 'instrument' && focused && !opts?.newTrack) editTrack(focused.id, t => ({ ...t, instrument: item.instrument })); say(`use ${JSON.stringify(item)}${opts?.newTrack ? ' (new track)' : ''}`) }} onPreview={id => say(`preview ${id}`)} onImport={() => say('import')} />
     {dialog && <NewTracksDialog focusedKind={focused?.kind} focusedInstrument={focused?.instrument} onCreate={opts => { say(`create ${JSON.stringify(opts)}`); setDialog(false) }} onClose={() => setDialog(false)} />}
   </div>
 }

@@ -15,3 +15,12 @@
 .editor-panel-body>.audio-editor .audio-editor-settings{flex-shrink:0}
 .studio-main:has(>.resizable-editor-panel.is-maximized)>.arrangement{display:none}
 .resizable-editor-panel.is-collapsed .editor-selection{opacity:.7}
+/* Narrow centre column: tabs scroll instead of pushing the clip/zoom tools out of the panel. */
+.editor-toolbar{min-width:0;overflow:hidden}
+.editor-toolbar>.editor-tabs{flex:0 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.editor-toolbar>.editor-tabs::-webkit-scrollbar{display:none}
+.editor-toolbar>.editor-actions{flex-shrink:0}
+.editor-toolbar>.editor-selection{flex:0 1 auto}
+/* Very narrow: icon-only tabs and no selection caption, so every tab and tool stays visible. */
+.editor-toolbar{container-type:inline-size}
+@container (max-width: 680px){.editor-toolbar>.editor-selection{display:none}.editor-toolbar>.editor-tabs{gap:12px}.editor-toolbar>.editor-tabs button{font-size:0;gap:0;padding:0 4px}}

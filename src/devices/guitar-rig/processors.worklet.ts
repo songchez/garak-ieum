@@ -1,6 +1,7 @@
 import { GuitarCompressor } from './compressor.js'
 import { GuitarChorus } from './chorus.js'
 import { GuitarMaster } from './master.js'
+import { GuitarPhaser, GuitarTremolo } from './modulation.js'
 
 declare const sampleRate: number
 declare abstract class AudioWorkletProcessor {
@@ -95,8 +96,86 @@ class ChorusProcessor extends AudioWorkletProcessor {
   }
 }
 
+class PhaserProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [
+      { name: 'rate', defaultValue: 0.45, minValue: 0.05, maxValue: 4, automationRate: 'k-rate' },
+      { name: 'depth', defaultValue: 0.7, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
+      { name: 'feedback', defaultValue: 0.35, minValue: 0, maxValue: 0.85, automationRate: 'k-rate' },
+      { name: 'enabled', defaultValue: 0, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
+    ]
+  }
+  private readonly phaser = new GuitarPhaser(sampleRate)
+  private readonly frame = new Float64Array(2)
+  private disposed = false
+  private initialized = false
+  constructor(options?: unknown) {
+    super(options)
+    this.port.onmessage = event => { if (event.data?.type === 'dispose') this.disposed = true }
+  }
+  process(inputs: Float32Array[][], outputs: Float32Array[][], params: Record<string, Float32Array>): boolean {
+    const output = outputs[0]
+    if (this.disposed) {
+      for (const channel of output) channel.fill(0)
+      return false
+    }
+    this.phaser.configure(params.rate[0], params.depth[0], params.feedback[0], params.enabled[0] >= 0.5, !this.initialized)
+    this.initialized = true
+    const input = inputs[0] ?? []
+    const a = input[0], b = input[1] ?? a
+    const frames = output[0]?.length ?? 0
+    for (let i = 0; i < frames; i += 1) {
+      const l = a && Number.isFinite(a[i]) ? Math.max(-32, Math.min(32, a[i])) : 0
+      const r = b && Number.isFinite(b[i]) ? Math.max(-32, Math.min(32, b[i])) : 0
+      this.phaser.sample(l, r, this.frame)
+      output[0][i] = this.frame[0]
+      if (output[1]) output[1][i] = this.frame[1]
+    }
+    return true
+  }
+}
+
+class TremoloProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [
+      { name: 'rate', defaultValue: 4.5, minValue: 0.5, maxValue: 12, automationRate: 'k-rate' },
+      { name: 'depth', defaultValue: 0.5, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
+      { name: 'shape', defaultValue: 0, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
+      { name: 'enabled', defaultValue: 0, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
+    ]
+  }
+  private readonly tremolo = new GuitarTremolo(sampleRate)
+  private disposed = false
+  private initialized = false
+  constructor(options?: unknown) {
+    super(options)
+    this.port.onmessage = event => { if (event.data?.type === 'dispose') this.disposed = true }
+  }
+  process(inputs: Float32Array[][], outputs: Float32Array[][], params: Record<string, Float32Array>): boolean {
+    const output = outputs[0]
+    if (this.disposed) {
+      for (const channel of output) channel.fill(0)
+      return false
+    }
+    this.tremolo.configure(params.rate[0], params.depth[0], params.shape[0], params.enabled[0] >= 0.5, !this.initialized)
+    this.initialized = true
+    const input = inputs[0] ?? []
+    const frames = output[0]?.length ?? 0
+    for (let i = 0; i < frames; i += 1) {
+      const gain = this.tremolo.gain()
+      for (let channel = 0; channel < output.length; channel += 1) {
+        const value = (input[channel] ?? input[0])?.[i] ?? 0
+        output[channel][i] = Number.isFinite(value) ? Math.max(-32, Math.min(32, value)) * gain : 0
+      }
+    }
+    return true
+  }
+}
+
 registerProcessor('garak-guitar-compressor-v1', CompressorProcessor)
 registerProcessor('garak-guitar-chorus-v1', ChorusProcessor)
+registerProcessor('garak-guitar-phaser-v1', PhaserProcessor)
+registerProcessor('garak-guitar-tremolo-v1', TremoloProcessor)
 
 class MasterProcessor extends AudioWorkletProcessor {
   private readonly master = new GuitarMaster(sampleRate)

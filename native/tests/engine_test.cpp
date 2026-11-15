@@ -116,6 +116,29 @@ void audioWindowsAndLoop(){
   RenderEngine offline(48000,64);offline.setOffline(true);offline.submit(offline.prepare(loop,{}));check(offline.play(),"Play failed");(void)render(offline,180);check(offline.snapshot().frame==180,"Offline rendering incorrectly followed audition cycle");
 }
 
+void regionGainFadesAndCrossfade(){
+  // Region gain (+24 dB range), curved fades and an overlap crossfade, mirroring src/core/clipEnvelope.ts.
+  near(fadeShape(0,.25),.25,1e-12,"Linear fade shape");near(fadeShape(1,.5),std::sin(3.14159265358979323846/4),1e-12,"Equal-power fade shape");
+  near(fadeShape(2,.25),(1-std::cos(3.14159265358979323846/4))/2,1e-12,"S-curve fade shape");near(fadeShape(3,.5),.25,1e-12,"Exponential fade shape");near(fadeShape(4,.5),.75,1e-12,"Logarithmic fade shape");
+  near(fadeShape(1,-1),0,0,"Fade shape below range");near(fadeShape(2,2),1,0,"Fade shape above range");
+  const double center=1/std::sqrt(2.0),pi=3.14159265358979323846;
+  auto p=project(48000,48000);TrackTimeline t;t.id="audio";
+  AudioWindow w{1,"dc",0,48000,0,48000,0,48000,4.f,4800,9600};w.fadeInCurve=1;w.fadeOutCurve=2;t.audio.push_back(w);p.tracks.push_back(t);
+  AssetStore assets{{"dc",asset("dc",48000,std::vector<float>(48000,.125f))}};
+  RenderEngine engine(48000,256);engine.submit(engine.prepare(p,assets));check(engine.play(),"Play failed");const auto out=render(engine,48000,113);
+  near(out[2400*2],.125*4*std::sin(pi/4)*center,1e-6,"Equal-power fade-in midpoint");
+  near(out[24000*2],.125*4*center,1e-6,"Region gain above unity (+12 dB)");
+  near(out[(48000-2400)*2],.125*4*(1-std::cos(pi/4))/2*center,1e-6,"S-curve fade-out quarter point");
+  auto bad=p;bad.tracks[0].audio[0].fadeInCurve=7;bool rejected=false;try{(void)engine.prepare(bad,assets);}catch(const std::exception&){rejected=true;}check(rejected,"An unknown fade curve was accepted");
+
+  auto x=project(48000,48000);TrackTimeline c;c.id="xfade";
+  AudioWindow a{1,"dc",0,30000,0,48000,0,30000,1.f,0,6000};a.fadeOutCurve=1;AudioWindow b{2,"dc",24000,48000,0,48000,0,24000,1.f,6000,0};b.fadeInCurve=1;
+  c.audio={a,b};x.tracks.push_back(c);
+  RenderEngine cross(48000,256);cross.submit(cross.prepare(x,assets));check(cross.play(),"Play failed");const auto mix=render(cross,48000,128);
+  for(std::int64_t f:{24600,27000,29400}){const double k=(f-24000)/6000.0;near(mix[f*2],.125*(std::sin((1-k)*pi/2)+std::sin(k*pi/2))*center,1e-6,"Equal-power crossfade sum");}
+  near(mix[20000*2],.125*center,1e-6,"Before the crossfade only the first region plays");near(mix[40000*2],.125*center,1e-6,"After the crossfade only the second region plays");
+}
+
 void sampledZonesAndMissingAssets(){
   AssetStore assets{{"quiet",asset("quiet",48000,std::vector<float>(20000,.04f))},{"loud",asset("loud",48000,std::vector<float>(20000,.12f))}};
   SampleSet set;set.id="set";set.isKit=true;set.zones={{"quiet",36,36,36,0,.5,0,0,{},1},{"loud",36,36,36,.5,1,0,0,{},1}};
@@ -270,7 +293,7 @@ void builtinEffectsAndGuitar(){
     near(std::hypot(real,imaginary),std::pow(10,.7/20),2e-6,"Persisted low/high-pass resonance changed units during migration");
   }
   std::vector<float>input(12000*2);for(std::size_t i=0;i<input.size()/2;++i)input[2*i]=input[2*i+1]=static_cast<float>(.08*std::sin(2*dsp::pi*440*i/48000));
-  for(const auto*name:{"eq","filter","compressor","drive","delay","reverb","guitar-rig"}){
+  for(const auto*name:{"eq","filter","compressor","drive","delay","reverb","guitar-rig","chorus","phaser","flanger","tremolo","limiter","gate","tape","bitcrusher","utility"}){
     auto effect=dsp::makeEffect(name,{},48000,120);auto output=input;allocations=deallocations=0;watchAllocations=true;
     for(std::size_t at=0;at<12000;at+=127)effect->process(output.data()+2*at,static_cast<std::uint32_t>(std::min<std::size_t>(127,12000-at)));
     watchAllocations=false;check(!allocations&&!deallocations,"Native insert allocated in its callback");check(energy(output)>.001,"Native effect unexpectedly silenced input");
@@ -279,9 +302,64 @@ void builtinEffectsAndGuitar(){
   auto rig=dsp::makeEffect("guitar-rig",bypass,48000,120);auto output=input;rig->process(output.data(),12000);checkSame(input,output,0,"All-bypass guitar rig is not transparent");check(rig->latencyFrames()==0,"All-bypass guitar rig reported unnecessary delay");
   auto a=dsp::makeEffect("guitar-rig",{{"micPosition",0},{"micType",0}},48000,120),b=dsp::makeEffect("guitar-rig",{{"micPosition",1},{"micType",1}},48000,120);
   auto x=input,y=input;a->process(x.data(),12000);b->process(y.data(),12000);double difference=0;for(std::size_t i=0;i<x.size();++i)difference+=std::abs(x[i]-y[i]);check(difference>.1,"Native microphone controls did not affect the audio");
+  // User-arranged rack: an empty rack is transparent, and moving the drive after the amp changes the tone.
+  Parameters emptyRack;for(int slot=0;slot<10;++slot)emptyRack["rackSlot"+std::to_string(slot)]=0;
+  auto none=dsp::makeEffect("guitar-rig",emptyRack,48000,120);auto bare=input;none->process(bare.data(),12000);checkSame(input,bare,0,"Empty guitar rack is not transparent");check(none->latencyFrames()==0&&none->tailSeconds()==0,"Empty guitar rack reported latency or tail");
+  Parameters reordered{{"driveEnabled",1},{"rackSlot0",3},{"rackSlot1",2},{"rackSlot2",4},{"rackSlot3",0},{"rackSlot4",0},{"rackSlot5",0}},usual{{"driveEnabled",1},{"rackSlot0",2},{"rackSlot1",3},{"rackSlot2",4},{"rackSlot3",0},{"rackSlot4",0},{"rackSlot5",0}};
+  auto ra=dsp::makeEffect("guitar-rig",reordered,48000,120),rb=dsp::makeEffect("guitar-rig",usual,48000,120);auto ox=input,oy=input;ra->process(ox.data(),12000);rb->process(oy.data(),12000);
+  double moved=0;for(std::size_t i=0;i<ox.size();++i)moved+=std::abs(ox[i]-oy[i]);check(moved>.1,"Guitar rack order did not change the processing order");
   rejects([]{(void)dsp::makeEffect("unimplemented",{},48000,120);},"Unknown effect was silently skipped");
   rejects([]{(void)dsp::makeEffect("eq",{{"wrongParameter",1}},48000,120);},"Unknown parameter was silently ignored");
   rejects([]{(void)dsp::makeEffect("delay",{{"feedback",1}},48000,120);},"Unstable feedback was accepted");
+}
+
+// 시김새 (docs/SIGIMSAE.md): limiter ceiling, gate closing, utility sums, modulation stability, bypass.
+void sigimsaeEffects(){
+  std::vector<float>tone(24000*2);for(std::size_t i=0;i<tone.size()/2;++i)tone[2*i]=tone[2*i+1]=static_cast<float>(.08*std::sin(2*dsp::pi*440*i/48000));
+  for(const auto*name:{"chorus","phaser","flanger","tremolo","limiter","gate","tape","bitcrusher","utility"}){
+    auto effect=dsp::makeEffect(name,{},48000,120);auto output=tone;allocations=deallocations=0;watchAllocations=true;
+    for(std::size_t at=0;at<24000;at+=127)effect->process(output.data()+2*at,static_cast<std::uint32_t>(std::min<std::size_t>(127,24000-at)));
+    watchAllocations=false;check(!allocations&&!deallocations,"Sigimsae effect allocated in its callback");check(energy(output)>.001,"Sigimsae effect unexpectedly silenced input");
+    auto replacement=dsp::makeEffect(name,{},48000,120);allocations=deallocations=0;watchAllocations=true;replacement->takeStateFrom(*effect);watchAllocations=false;check(!allocations&&!deallocations,"Sigimsae state transfer allocated");
+  }
+  // Limiter: a +6 dBFS sine driven another 12 dB never passes a -3 dB ceiling.
+  std::vector<float>loud(24000*2);for(std::size_t i=0;i<loud.size()/2;++i){loud[2*i]=static_cast<float>(2*std::sin(2*dsp::pi*97*i/48000));loud[2*i+1]=static_cast<float>(1.5*std::sin(2*dsp::pi*211*i/48000));}
+  auto limiter=dsp::makeEffect("limiter",{{"gain",12},{"ceiling",-3},{"release",50}},48000,120);auto limited=loud;limiter->process(limited.data(),24000);
+  double peak=0;for(auto v:limited)peak=std::max(peak,static_cast<double>(std::abs(v)));check(peak<=dsp::dbToGain(-3)+1e-6,"Limiter exceeded its ceiling");check(peak>dsp::dbToGain(-3)*.9,"Limiter output collapsed");
+  // Gate: opens on the tone, closes to exact silence once the input stops; never opens below threshold.
+  std::vector<float>burst(48000*2,0.f);for(std::size_t i=0;i<12000;++i)burst[2*i]=burst[2*i+1]=tone[2*i];for(std::size_t i=24000;i<48000;++i)burst[2*i]=burst[2*i+1]=static_cast<float>(1e-4*std::sin(i*.3));
+  auto gate=dsp::makeEffect("gate",{{"threshold",-40},{"hold",20},{"release",40}},48000,120);auto gated=burst;gate->process(gated.data(),48000);
+  double opened=0;for(std::size_t i=4000;i<12000;++i)opened+=std::abs(gated[2*i]);check(opened>100,"Gate did not open on a loud tone");
+  for(std::size_t i=24000;i<48000;++i)check(gated[2*i]==0&&gated[2*i+1]==0,"Gate leaked noise below its threshold after closing");
+  // Utility: mono is the exact L/R average; polarity on both sides negates; neutral is transparent.
+  std::vector<float>split(4000*2);for(std::size_t i=0;i<4000;++i){split[2*i]=static_cast<float>(std::sin(i*.05));split[2*i+1]=static_cast<float>(.3*std::cos(i*.11));}
+  auto mono=dsp::makeEffect("utility",{{"mono",1}},48000,120);auto summed=split;mono->process(summed.data(),4000);
+  for(std::size_t i=0;i<4000;++i){near(summed[2*i],.5*(split[2*i]+split[2*i+1]),1e-6,"Utility mono is not the L/R average");check(summed[2*i]==summed[2*i+1],"Utility mono left/right differ");}
+  auto invert=dsp::makeEffect("utility",{{"phase",3}},48000,120);auto inverted=split;invert->process(inverted.data(),4000);for(std::size_t i=0;i<inverted.size();++i)near(inverted[i],-split[i],1e-6,"Utility polarity invert is wrong");
+  auto neutral=dsp::makeEffect("utility",{},48000,120);auto same=split;neutral->process(same.data(),4000);checkSame(split,same,1e-6,"Neutral utility is not transparent");
+  // Modulation and feedback at their most extreme stay finite and bounded on full-scale noise.
+  std::vector<float>noise(96000*2);std::uint32_t seed=7;for(auto&v:noise){seed=seed*1664525u+1013904223u;v=static_cast<float>(static_cast<double>(seed)/4294967295.0*2-1);}
+  const std::pair<const char*,Parameters>extreme[]={{"chorus",{{"rate",5},{"depth",1},{"mix",1}}},{"phaser",{{"rate",5},{"depth",1},{"feedback",.9},{"mix",1}}},
+    {"flanger",{{"rate",5},{"depth",1},{"feedback",.95},{"mix",1}}},{"tremolo",{{"rate",20},{"depth",1},{"shape",1},{"pan",1}}},{"tremolo",{{"sync",1.0/6},{"depth",1}}},
+    {"delay",{{"amount",1},{"feedback",.95},{"age",1},{"mode",1},{"lowcut",2000},{"time",1.0/6}}},{"tape",{{"drive",24},{"warmth",1}}},{"bitcrusher",{{"bits",1},{"downsample",32}}}};
+  for(const auto&[name,params]:extreme){auto effect=dsp::makeEffect(name,params,48000,120);auto out=noise;effect->process(out.data(),96000);for(auto v:out)check(std::isfinite(v)&&std::abs(v)<40,"Extreme sigimsae settings diverged");}
+  // Studio delay: ping-pong starts on the left, the right answers one delay later; time follows tempo.
+  std::vector<float>click(48000*2,0.f);click[0]=click[1]=1;
+  auto pong=dsp::makeEffect("delay",{{"mode",1},{"amount",1},{"feedback",.5},{"time",.5},{"tone",16000}},48000,120);auto bounced=click;pong->process(bounced.data(),48000);
+  auto peakAt=[&](unsigned c,std::size_t from,std::size_t to){std::size_t best=from;for(std::size_t i=from;i<to;++i)if(std::abs(bounced[2*i+c])>std::abs(bounced[2*best+c]))best=i;return best;};
+  const auto firstLeft=peakAt(0,100,20000),firstRight=peakAt(1,100,30000);check(firstLeft>11900&&firstLeft<12100,"Ping-pong first repeat is not one 1/8 at 120 BPM on the left");check(firstRight>23900&&firstRight<24100,"Ping-pong right repeat is not one delay later");
+  rejects([]{(void)dsp::makeEffect("delay",{{"time",.1}},48000,120);},"Delay accepted a time outside its range");
+  rejects([]{(void)dsp::makeEffect("limiter",{{"ceiling",1}},48000,120);},"Limiter accepted a ceiling above 0 dB");
+  // Reverb spaces: each type has its own impulse; pre-delay holds the wet signal back.
+  std::vector<double>energyBy;for(int type=0;type<4;++type){auto verb=dsp::makeEffect("reverb",{{"amount",1},{"type",static_cast<double>(type)},{"predelay",100}},48000,120);auto out=click;verb->process(out.data(),48000);
+    double early=0;for(std::size_t i=1;i<4700;++i)early+=std::abs(out[2*i]);check(early==0,"Reverb pre-delay leaked early output");energyBy.push_back(energy(out));}
+  check(energyBy[0]!=energyBy[1]&&energyBy[1]!=energyBy[2]&&energyBy[2]!=energyBy[3],"Reverb space types sound identical");
+  // Bypass is bit-exact at the engine: a disabled insert renders exactly like no insert.
+  for(const auto*name:{"chorus","phaser","flanger","tremolo","limiter","gate","tape","bitcrusher","utility","delay"}){
+    auto p=project(48000,12000);auto t=synthTrack();t.source.params["level"]=.2;t.notes={{1,0,6000,12000,60,1}};auto plain=p;plain.tracks.push_back(t);
+    t.inserts={{"fx",name,false,{},{}}};p.tracks.push_back(t);
+    RenderEngine a(48000,256),b(48000,256);a.submit(a.prepare(plain,{}));b.submit(b.prepare(p,{}));check(a.play()&&b.play(),"Play failed");checkSame(render(a,12000),render(b,12000),0,"Bypassed sigimsae effect is not bit-exact");
+  }
 }
 
 void reverbPartitionAccuracy(){
@@ -563,8 +641,105 @@ void processingStress(){
 }
 } // namespace
 
+// Rack-only pedals (fuzz 7, phaser 8, tremolo 9, reverb 10, tuner 11): each changes the audio only when
+// it is both in the rack and switched on; the tuner mutes; the reverb rings on after the input stops.
+Parameters rigRack(std::initializer_list<int> codes,Parameters extra={}){
+  int slot=0;for(int code:codes)extra["rackSlot"+std::to_string(slot++)]=code;
+  for(;slot<10;++slot)extra["rackSlot"+std::to_string(slot)]=0;
+  return extra;
+}
+std::vector<float> rigRender(const Parameters&params,const std::vector<float>&input,std::uint32_t frames){
+  auto rig=dsp::makeEffect("guitar-rig",params,48000,120);auto output=input;allocations=deallocations=0;watchAllocations=true;
+  for(std::uint32_t at=0;at<frames;at+=128)rig->process(output.data()+2*at,std::min<std::uint32_t>(128,frames-at));
+  watchAllocations=false;check(!allocations&&!deallocations,"Guitar rig pedal allocated in its callback");
+  for(auto v:output)check(std::isfinite(v),"Guitar rig pedal produced non-finite audio");
+  return output;
+}
+double rigDifference(const std::vector<float>&a,const std::vector<float>&b){double d=0;for(std::size_t i=0;i<a.size();++i)d+=std::abs(a[i]-b[i]);return d/a.size();}
+void guitarRigPedalsAndTuner(){
+  constexpr std::uint32_t frames=24000;
+  std::vector<float>input(frames*2);for(std::size_t i=0;i<frames;++i)input[2*i]=input[2*i+1]=static_cast<float>(.2*std::sin(2*dsp::pi*220*i/48000));
+  const struct{int code;const char*enabled;const char*knob;double other;}pedals[]={{7,"fuzzEnabled","fuzzTone",.9},{8,"phaserEnabled","phaserRate",3},{9,"tremoloEnabled","tremoloDepth",1},{10,"reverbEnabled","reverbMix",.8}};
+  for(const auto&pedal:pedals){
+    const auto dry=rigRender(rigRack({pedal.code}),input,frames);
+    checkSame(input,dry,0,"A switched-off rack pedal is not transparent");
+    const auto on=rigRender(rigRack({pedal.code},{{pedal.enabled,1}}),input,frames);
+    check(rigDifference(input,on)>1e-3,"A rack pedal did not change the audio when switched on");
+    const auto knob=rigRender(rigRack({pedal.code},{{pedal.enabled,1},{pedal.knob,pedal.other}}),input,frames);
+    check(rigDifference(on,knob)>1e-4,"A rack pedal knob did not change the audio");
+    const auto outside=rigRender(rigRack({},{{pedal.enabled,1}}),input,frames);
+    checkSame(input,outside,0,"A pedal outside the rack still processed audio");
+  }
+  // Fuzz reports its oversampling delay only when it can be heard.
+  check(dsp::makeEffect("guitar-rig",rigRack({7},{{"fuzzEnabled",1}}),48000,120)->latencyFrames()==8,"Fuzz latency was not reported");
+  check(dsp::makeEffect("guitar-rig",rigRack({7}),48000,120)->latencyFrames()==0,"Bypassed fuzz reported latency");
+  // Tuner engaged = silence after it; off = transparent.
+  const auto tunerOff=rigRender(rigRack({11}),input,frames);checkSame(input,tunerOff,0,"Disengaged tuner is not transparent");
+  const auto tunerOn=rigRender(rigRack({11},{{"tunerEnabled",1}}),input,frames);check(energy(tunerOn)==0,"Engaged tuner did not mute the output");
+  // Reverb: a tail after an impulse-like burst and a reported tail length; longer decay rings longer.
+  std::vector<float>burst(frames*2);for(std::size_t i=0;i<480;++i)burst[2*i]=burst[2*i+1]=static_cast<float>(.5*std::sin(2*dsp::pi*440*i/48000));
+  const auto shortVerb=rigRender(rigRack({10},{{"reverbEnabled",1},{"reverbDecay",0},{"reverbMix",.8}}),burst,frames);
+  const auto longVerb=rigRender(rigRack({10},{{"reverbEnabled",1},{"reverbDecay",1},{"reverbMix",.8}}),burst,frames);
+  double tailShort=0,tailLong=0;for(std::size_t i=2*12000;i<burst.size();++i){tailShort+=shortVerb[i]*shortVerb[i];tailLong+=longVerb[i]*longVerb[i];}
+  check(tailLong>1e-6,"Reverb produced no tail after the input stopped");check(tailLong>tailShort,"Reverb decay did not lengthen the tail");
+  near(dsp::makeEffect("guitar-rig",rigRack({10},{{"reverbEnabled",1}}),48000,120)->tailSeconds(),4.45,1e-9,"Reverb tail length");
+  check(dsp::makeEffect("guitar-rig",rigRack({10}),48000,120)->tailSeconds()==0,"Bypassed reverb reported a tail");
+  // Order still matters with the new pedals: fuzz before vs after the tremolo.
+  const Parameters both{{"fuzzEnabled",1},{"tremoloEnabled",1},{"tremoloDepth",1}};
+  const auto fuzzFirst=rigRender(rigRack({7,9},both),input,frames),tremFirst=rigRender(rigRack({9,7},both),input,frames);
+  check(rigDifference(fuzzFirst,tremFirst)>1e-3,"Moving the fuzz after the tremolo did not change the processing order");
+  // The default rack (no new modules) is unchanged by the new parameters' defaults.
+  const auto legacy=rigRender({},input,frames),explicitDefaults=rigRender({{"fuzzGain",26},{"reverbMix",.25},{"tunerEnabled",0}},input,frames);
+  checkSame(legacy,explicitDefaults,0,"New pedal defaults changed the default rack");
+  rejects([]{(void)dsp::makeEffect("guitar-rig",{{"rackSlot0",44}},48000,120);},"Out-of-range rack slot value was accepted");
+  const auto unknown=rigRender(rigRack({12,15,16+12}),input,frames);checkSame(input,unknown,0,"An unknown rack module code still processed audio");
+}
+std::uint64_t pcmHash(const std::vector<float>&data){std::uint64_t h=1469598103934665603ull;for(auto v:data){std::uint32_t bits;std::memcpy(&bits,&v,4);for(int b=0;b<4;++b){h^=(bits>>(8*b))&255u;h*=1099511628211ull;}}return h;}
+// Repeated rack modules: slot value = module code + 16 x instance; instance k > 0 reads `<param>_<k+1>`.
+void guitarRigInstances(){
+  constexpr std::uint32_t frames=24000;
+  std::vector<float>input(frames*2);for(std::size_t i=0;i<frames;++i)input[2*i]=input[2*i+1]=static_cast<float>(.2*std::sin(2*dsp::pi*220*i/48000));
+  // A single-instance project renders bit-identically to the pre-instance engine, including a live rebuild.
+  const Parameters full{{"driveEnabled",1},{"chorusEnabled",1},{"delayEnabled",1},{"fuzzEnabled",1},{"phaserEnabled",1},{"tremoloEnabled",1},{"reverbEnabled",1},{"ampModel",2},{"cabinet",3},{"micType",4},
+    {"rackSlot0",1},{"rackSlot1",7},{"rackSlot2",2},{"rackSlot3",3},{"rackSlot4",4},{"rackSlot5",8},{"rackSlot6",5},{"rackSlot7",9},{"rackSlot8",6},{"rackSlot9",10}};
+  auto first=dsp::makeEffect("guitar-rig",full,48000,120);auto a=input;for(std::uint32_t at=0;at<frames;at+=128)first->process(a.data()+2*at,std::min<std::uint32_t>(128,frames-at));
+  Parameters edited=full;edited["driveGain"]=20;edited["ampBass"]=5;edited["delayTime"]=500;
+  auto second=dsp::makeEffect("guitar-rig",edited,48000,120);second->takeStateFrom(*first);auto b=input;for(std::uint32_t at=0;at<frames;at+=128)second->process(b.data()+2*at,std::min<std::uint32_t>(128,frames-at));
+  // Golden values recorded from the single-instance engine before repeated modules were added.
+  check(pcmHash(a)==6328021044086178046ull,"Single-instance guitar rig output changed");
+  check(pcmHash(b)==12222664419027344049ull,"Single-instance guitar rig rebuild output changed");
+  check(second->latencyFrames()==32,"Single-instance guitar rig latency changed");near(second->tailSeconds(),8.84,1e-12,"Single-instance guitar rig tail changed");
+  // Slot value 2 + 16 is a second drive: alone (with its own switch) it sounds like the first drive alone.
+  const auto drive1=rigRender(rigRack({2},{{"driveEnabled",1}}),input,frames);
+  const auto drive2=rigRender(rigRack({2+16},{{"driveEnabled_2",1}}),input,frames);
+  checkSame(drive1,drive2,0,"A second drive instance did not parse as a drive");
+  checkSame(input,rigRender(rigRack({2+16},{{"driveEnabled",1}}),input,frames),0,"A second drive instance followed the first drive's switch");
+  // Two drives in series differ from one; the second instance reads its own knobs.
+  const auto twoDrives=rigRender(rigRack({2,2+16},{{"driveEnabled",1},{"driveEnabled_2",1}}),input,frames);
+  check(rigDifference(drive1,twoDrives)>1e-3,"Two drives in series sounded like one");
+  const auto hotter=rigRender(rigRack({2,2+16},{{"driveEnabled",1},{"driveEnabled_2",1},{"driveGain_2",28}}),input,frames);
+  check(rigDifference(twoDrives,hotter)>1e-4,"driveGain_2 did not affect the second drive");
+  check(dsp::makeEffect("guitar-rig",rigRack({2,2+16,2+32},{{"driveEnabled",1},{"driveEnabled_2",1},{"driveEnabled_3",1}}),48000,120)->latencyFrames()==24,"Drive instances did not sum their latency");
+  // A repeated (code, instance) is skipped; a third instance is allowed, a fourth (2 + 48) is out of range.
+  checkSame(drive1,rigRender(rigRack({2,2},{{"driveEnabled",1}}),input,frames),0,"A repeated drive slot was processed twice");
+  rejects([]{(void)dsp::makeEffect("guitar-rig",{{"rackSlot0",2+48}},48000,120);},"A fourth module instance was accepted");
+  // Only one tuner: instance 1 (11 + 16) is ignored even with its switch on.
+  rejects([]{(void)dsp::makeEffect("guitar-rig",{{"tunerEnabled_2",1}},48000,120);},"A second tuner's parameter was accepted");
+  const auto tuner2=rigRender(rigRack({11+16},{{"tunerEnabled",1}}),input,frames);checkSame(input,tuner2,0,"A second tuner instance was not ignored");
+  // Instance parameters of every module exist with the base ranges.
+  for(const char*name:{"compSustain_3","ampModel_2","cabinetEnabled_2","micType_2","micDistance_3","chorusMix_2","delayFeedback_3","fuzzLevel_2","phaserFeedback_3","tremoloShape_2","reverbMix_3"})
+    (void)dsp::makeEffect("guitar-rig",{{name,0}},48000,120);
+  rejects([]{(void)dsp::makeEffect("guitar-rig",{{"ampModel_2",5}},48000,120);},"An instance parameter ignored the base range");
+  // Live rebuilds carry state by (code, instance): inserting a module before the second delay keeps its echoes.
+  std::vector<float>burst(frames*2);for(std::size_t i=0;i<480;++i)burst[2*i]=burst[2*i+1]=static_cast<float>(.5*std::sin(2*dsp::pi*440*i/48000));
+  const Parameters echo{{"delayEnabled_2",1},{"delayMix_2",.6},{"delayFeedback_2",.6},{"delayTime_2",200}};
+  auto before=dsp::makeEffect("guitar-rig",rigRack({6+16},echo),48000,120);auto head=burst;before->process(head.data(),6000);
+  auto after=dsp::makeEffect("guitar-rig",rigRack({8,6+16},echo),48000,120);after->takeStateFrom(*before);
+  std::vector<float>silence(12000*2);after->process(silence.data(),12000);check(energy(silence)>1e-4,"Rebuilt rig dropped the second delay's echoes");
+  check(dsp::makeEffect("guitar-rig",rigRack({6,6+16},{{"delayEnabled",1},{"delayEnabled_2",1}}),48000,120)->tailSeconds()>dsp::makeEffect("guitar-rig",rigRack({6},{{"delayEnabled",1}}),48000,120)->tailSeconds(),"Delay instances did not sum their tails");
+}
 int main(){
-  const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
+  const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
     {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}

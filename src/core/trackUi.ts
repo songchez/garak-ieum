@@ -1,12 +1,12 @@
 /** Tracks-area UI state that outlives a session: view toggles, snap, header layout, per-track zoom. Persistence follows zoom.ts. */
 
 export type SnapMode = 'smart' | 'bar' | 'beat' | 'division' | 'ticks' | 'off'
-export type DragMode = 'overlap' | 'noOverlap'
+export type DragMode = 'overlap' | 'noOverlap' | 'crossfade'
 
 export const SNAP_MODES: readonly SnapMode[] = ['smart', 'bar', 'beat', 'division', 'ticks', 'off']
 export const SNAP_MODE_LABELS: Readonly<Record<SnapMode, string>> = { smart: '스마트', bar: '마디', beat: '비트', division: '분할', ticks: '틱', off: '끔' }
-export const DRAG_MODES: readonly DragMode[] = ['overlap', 'noOverlap']
-export const DRAG_MODE_LABELS: Readonly<Record<DragMode, string>> = { overlap: '겹침', noOverlap: '겹치지 않음' }
+export const DRAG_MODES: readonly DragMode[] = ['overlap', 'noOverlap', 'crossfade']
+export const DRAG_MODE_LABELS: Readonly<Record<DragMode, string>> = { overlap: '겹침', noOverlap: '겹치지 않음', crossfade: '크로스페이드' }
 
 /** Stable icon keys used by the track picker and saved projects. */
 export const TRACK_ICON_OPTIONS: readonly (readonly [name: string, label: string])[] = [
@@ -27,7 +27,6 @@ export interface ViewState {
   globalTracks: boolean
   gridLines: boolean
   inspectorOpen: boolean
-  libraryOpen: boolean
   browserOpen: boolean
   inspectorSections: InspectorSections
 }
@@ -41,8 +40,7 @@ export const DEFAULT_VIEW: ViewState = {
   globalTracks: false,
   gridLines: true,
   inspectorOpen: true,
-  libraryOpen: true,
-  browserOpen: false,
+  browserOpen: true,
   inspectorSections: { region: true, track: true, strips: true },
 }
 
@@ -119,7 +117,6 @@ export function sanitizeView(raw: unknown, fallback: ViewState = DEFAULT_VIEW): 
     globalTracks: bool(r.globalTracks, fallback.globalTracks),
     gridLines: bool(r.gridLines, fallback.gridLines),
     inspectorOpen: bool(r.inspectorOpen, fallback.inspectorOpen),
-    libraryOpen: bool(r.libraryOpen, fallback.libraryOpen),
     browserOpen: bool(r.browserOpen, fallback.browserOpen),
     inspectorSections: {
       region: bool(sections.region, fallback.inspectorSections.region),

@@ -2,10 +2,13 @@ import { MAX_MIDI_FILE_BYTES, parseMidiFile, type MidiImportResult } from './mid
 import { quarterNotesPerBar, validateTimeSignature } from './meter'
 import { createTrack, fitProjectLength, insertTracks, MIN_CLIP_BEATS, uid, validateProject } from './project'
 import type { AudioAsset, AudioClip, MidiClip, Project, Track } from './types'
+import { decideWarp, type TempoAnalysis } from '../devices/audio-warp/tempo'
+import { clipWithWarpDecision } from '../devices/audio-warp/state'
 
 export const MEDIA_FILE_ACCEPT = 'audio/*,.wav,.mp3,.ogg,.flac,.m4a,.aiff,.mid,.midi,.smf'
 export type ImportedMedia =
-  | { kind: 'audio'; name: string; asset: AudioAsset }
+  /** tempo: offline analysis result; null = analyzed without a clear beat; absent = not analyzed. */
+  | { kind: 'audio'; name: string; asset: AudioAsset; tempo?: TempoAnalysis | null }
   | { kind: 'midi'; name: string; midi: MidiImportResult }
 
 export function isMidiFile(file: Pick<File, 'name' | 'type'>): boolean {
@@ -30,6 +33,8 @@ export interface MediaImportPlan {
   audioFiles: number
   midiFiles: number
   warnings: string[]
+  /** Detected tempos of imported audio; warped = fitted to the project tempo. */
+  tempos: Array<{ clipId: string; name: string; bpm: number; warped: boolean }>
 }
 
 const filename = (name: string): string => name.replace(/\.[^.]+$/, '').trim().slice(0, 256) || '가져온 파일'
@@ -39,7 +44,7 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
   const beat = target.beat ?? 0
   if (!Number.isFinite(beat) || beat < 0) throw new Error('파일을 놓을 위치가 유효하지 않습니다.')
   let next = project
-  const warnings = new Set<string>(), assets: AudioAsset[] = [], placements: MediaImportPlan['placements'] = []
+  const warnings = new Set<string>(), assets: AudioAsset[] = [], placements: MediaImportPlan['placements'] = [], tempos: MediaImportPlan['tempos'] = []
   const newTracks: Track[] = []
   let audioFiles = 0, midiFiles = 0, targetUsed = false
   const initialMidi = media.length === 1 && media[0].kind === 'midi' && !project.tracks.length && !project.markers.length && beat === 0 ? media[0].midi : null
@@ -67,8 +72,12 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
       const existing = !targetUsed && target.trackId ? next.tracks.find(track => track.id === target.trackId && track.kind === 'audio') : undefined
       if (existing) targetUsed = true
       const track = existing ?? { ...createTrack('audio'), name }
-      const clip: AudioClip = { id: uid(), kind: 'audio', name, startBeat: beat, lengthBeats: item.asset.buffer.duration * next.bpm / 60, gain: 1,
+      const plain: AudioClip = { id: uid(), kind: 'audio', name, startBeat: beat, lengthBeats: item.asset.buffer.duration * next.bpm / 60, gain: 1,
         assetId: item.asset.id, offsetSeconds: 0, fadeIn: .005, fadeOut: .01 }
+      // Short loops with a clear tempo fit the project tempo; long files only remember theirs.
+      const decision = decideWarp({ name: item.name, durationSeconds: item.asset.buffer.duration, beatsPerBar: next.beatsPerBar, analysis: item.tempo ?? null })
+      const clip = decision ? clipWithWarpDecision(plain, decision, next.bpm) : plain
+      if (clip.warp) tempos.push({ clipId: clip.id, name, bpm: clip.warp.sourceBpm, warped: clip.warp.enabled })
       assets.push(item.asset); audioFiles++
       append(track, clip, !!existing)
       continue
@@ -100,5 +109,24 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
   // is individually valid. Validate before the caller commits any assets.
   // Keep the original objects so an existing instrument/patch retains identity.
   validateProject(next)
-  return { project: next, assets, placements, audioFiles, midiFiles, warnings: [...warnings] }
+  return { project: next, assets, placements, audioFiles, midiFiles, warnings: [...warnings], tempos }
+}
+
+/**
+ * The import toast's tempo sentence and its one-click undo of the import decision:
+ * warped files offer "원래 박자로", unwarped files with a detected tempo "템포에 맞추기".
+ */
+export function importTempoNotice(tempos: MediaImportPlan['tempos'], projectBpm: number): { text: string; action: { label: string; enable: boolean; clipIds: string[] } | null } {
+  const warped = tempos.filter(item => item.warped), detected = tempos.filter(item => !item.warped)
+  const bpm = (value: number) => `${+value.toFixed(2)} BPM`
+  const parts: string[] = []
+  if (warped.length === 1) parts.push(`원본 템포 ${bpm(warped[0].bpm)}을 감지해 프로젝트 템포(${bpm(projectBpm)})에 맞췄습니다.`)
+  else if (warped.length) parts.push(`${warped.length}개 파일을 프로젝트 템포(${bpm(projectBpm)})에 맞췄습니다.`)
+  if (detected.length === 1) parts.push(`감지한 템포 ${bpm(detected[0].bpm)} — 원래 박자로 넣었습니다.`)
+  else if (detected.length) parts.push(`${detected.length}개 파일의 템포를 감지해 원래 박자로 넣었습니다.`)
+  if (warped.length) parts.push('리전의 W 표시를 누르면 워프를 켜고 끌 수 있습니다.')
+  else if (detected.length) parts.push('리전의 BPM 표시를 누르면 프로젝트 템포에 맞춥니다.')
+  const action = warped.length ? { label: '원래 박자로', enable: false, clipIds: warped.map(item => item.clipId) }
+    : detected.length ? { label: '템포에 맞추기', enable: true, clipIds: detected.map(item => item.clipId) } : null
+  return { text: parts.join(' '), action }
 }

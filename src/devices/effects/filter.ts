@@ -5,7 +5,7 @@ import { parameterReader, setParameter, noTail } from './shared.js'
 const FILTER_MODES: BiquadFilterType[] = ['lowpass', 'highpass', 'bandpass']
 
 const definition: EffectDef = {
-  name: '필터', short: '필터',
+  name: 'Sweep', short: '필터', label: '필터',
   params: [
     { id: 'cutoff', label: '컷오프', min: 20, max: 20000, default: 1200, unit: 'hz', scale: 'log' },
     { id: 'resonance', label: '레조넌스', min: 0.1, max: 18, default: 0.7, unit: 'q', scale: 'log' },

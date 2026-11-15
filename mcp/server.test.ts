@@ -238,7 +238,10 @@ describe('MCP stdio → loopback → DAW integration', () => {
     expect(undo.isError).toBe(false)
     expect(session.getSnapshot().history.present.tracks).toHaveLength(0)
     const catalog = (await call('get_catalog', { kind: 'effects' })).value
-    expect(catalog.effects.map((effect: { id: string }) => effect.id).sort()).toEqual(['compressor', 'delay', 'drive', 'eq', 'filter', 'guitar-rig', 'reverb'])
+    expect(catalog.effects.map((effect: { id: string }) => effect.id).sort()).toEqual(['bitcrusher', 'chorus', 'compressor', 'delay', 'drive', 'eq', 'filter', 'flanger', 'gate', 'guitar-rig', 'limiter', 'phaser', 'reverb', 'tape', 'tremolo', 'utility'])
+    const reverbEntry = catalog.effects.find((effect: { id: string }) => effect.id === 'reverb')
+    expect(reverbEntry.label).toBe('리버브')
+    expect(reverbEntry.variants.map((variant: { id: string }) => variant.id)).toContain('reverb-booth')
     expect(catalog).not.toHaveProperty('instruments')
     expect((await call('get_capabilities')).value.unsupported).toContain('transport control')
 

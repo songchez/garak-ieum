@@ -58,19 +58,47 @@ export interface AudioClip extends ClipBase {
   kind: 'audio'
   assetId: string
   offsetSeconds: number
+  /** Seconds of the audible region. fadeIn + fadeOut beyond the region shrink in proportion. */
   fadeIn: number
   fadeOut: number
+  /** Fade shapes (schema 10). Absent = linear. */
+  fadeInCurve?: FadeCurve
+  fadeOutCurve?: FadeCurve
   /** Original/analysis/edit state. assetId is the committed, duration-preserving render. */
   pitch?: PitchEditDocument
+  /** Detected tempo and warp state (schema 9). Never combined with pitch. */
+  warp?: AudioWarp
+}
+/**
+ * Offline warp: while enabled, assetId is a render of originalAssetId stretched by
+ * sourceBpm / renderBpm, so the clip keeps its length in beats. offsetSeconds is in
+ * the render's seconds. While off (or when renderBpm === sourceBpm), assetId is the original.
+ */
+export interface AudioWarp {
+  enabled: boolean
+  /** Tempo of the original file (detected, from the file name, or typed). */
+  sourceBpm: number
+  /** First detected beat in original-file seconds (informational alignment hint). */
+  firstBeatSeconds: number
+  /** 0–1. 0 means typed by hand. */
+  confidence: number
+  originalAssetId: string
+  /** Project tempo the current assetId was rendered for. */
+  renderBpm: number
 }
 export type Clip = MidiClip | AudioClip
+/** Region fade shapes; see core/clipEnvelope.ts. */
+export type FadeCurve = 'linear' | 'equalPower' | 'sCurve' | 'exponential' | 'logarithmic'
 export type EffectType = 'eq' | 'filter' | 'compressor' | 'drive' | 'delay' | 'reverb' | 'guitar-rig'
+  | 'chorus' | 'phaser' | 'flanger' | 'tremolo' | 'limiter' | 'gate' | 'tape' | 'bitcrusher' | 'utility'
 /** One builtin insert effect. */
 export interface EffectDevice {
   id: string
   type: EffectType
   enabled: boolean
   params: Record<string, number>
+  /** Display name chosen from a library variant or by the user; absent shows the module name. */
+  name?: string
 }
 /** A native VST3 effect in the same chain as builtin effects (desktop engine only). */
 export interface PluginDevice extends NativePluginInstance {
@@ -150,8 +178,8 @@ export interface TimeSignature {
   denominator: TimeSignatureDenominator
 }
 export interface Project {
-  /** 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 8
+  /** 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 10
   id: string
   name: string
   bpm: number

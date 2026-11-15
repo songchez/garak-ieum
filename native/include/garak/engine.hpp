@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -123,8 +124,22 @@ struct AudioWindow {
   std::int64_t clipOffsetFrames = 0, clipLengthFrames = 0;
   float gain = 1;
   std::int64_t fadeInFrames = 0, fadeOutFrames = 0;
+  // Fade shapes (src/core/clipEnvelope.ts FADE_CURVE_CODES): 0 linear, 1 equal power, 2 S-curve, 3 exponential, 4 logarithmic.
+  std::int32_t fadeInCurve = 0, fadeOutCurve = 0;
   bool operator==(const AudioWindow&) const = default;
 };
+// Gain of a region fade at progress x (0 = silent end, 1 = full level); matches fadeShape() in clipEnvelope.ts.
+[[nodiscard]] inline double fadeShape(std::int32_t curve, double x) noexcept {
+  const double t = x < 0 ? 0 : x > 1 ? 1 : x;
+  constexpr double pi = 3.14159265358979323846;
+  switch (curve) {
+    case 1: return std::sin(t * pi / 2);
+    case 2: return (1 - std::cos(t * pi)) / 2;
+    case 3: return t * t;
+    case 4: return 1 - (1 - t) * (1 - t);
+    default: return t;
+  }
+}
 // Physical device input channels (zero based) a track records and monitors.
 // channels[1] < 0 is mono. A track without one uses the device default input.
 struct TrackInput {

@@ -57,7 +57,7 @@ try {
 
   const preset = editor.getByRole('combobox', { name: '기타 앰프 프리셋', exact: true })
   await preset.selectOption('lead')
-  assert.equal(await editor.getByRole('combobox', { name: '마이크 성향', exact: true }).inputValue(), '1')
+  assert.equal(await editor.getByRole('combobox', { name: '마이크', exact: true }).inputValue(), '1')
   await preset.press('Control+z')
   await page.waitForFunction(value => Number(document.querySelector('[role="slider"][aria-label="앰프 게인"]')?.getAttribute('aria-valuenow')) === value, coarse)
   await preset.selectOption('wide-clean')
@@ -91,7 +91,7 @@ try {
   await preset.press('Escape')
   assert.equal(await page.getByRole('button', { name: '기타 앰프 편집기 열기', exact: true }).evaluate(element => element === document.activeElement), true)
   await page.reload()
-  await page.getByRole('button', { name: '디바이스', exact: true }).click()
+  await page.getByRole('button', { name: '시김새 체인', exact: true }).click()
   await page.getByRole('button', { name: '기타 앰프 편집기 열기', exact: true }).click()
   assert.equal(await page.locator('.gr-range input').first().inputValue(), '0.8')
   assert.equal(await page.getByRole('button', { name: '코러스 페달 켜기/바이패스', exact: true }).getAttribute('aria-pressed'), 'false')

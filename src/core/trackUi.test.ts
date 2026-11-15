@@ -14,7 +14,7 @@ describe('defaults', () => {
   it('match the spec', () => {
     expect(DEFAULT_VIEW).toEqual({
       zoomFocused: false, catch: true, scrollInPlay: false, snap: { on: true, mode: 'smart', relative: false }, dragMode: 'noOverlap',
-      globalTracks: false, gridLines: true, inspectorOpen: true, libraryOpen: true, browserOpen: false, inspectorSections: { region: true, track: true, strips: true },
+      globalTracks: false, gridLines: true, inspectorOpen: true, browserOpen: true, inspectorSections: { region: true, track: true, strips: true },
     })
     expect(DEFAULT_HEADER_CONFIG).toEqual({ mute: true, solo: true, record: true, monitor: true, onOff: false, hide: false, volume: true, pan: true, trackNumber: true, colorBar: false, icon: true })
     expect(DEFAULT_TRACK_HEADER.headerWidth).toBe(248)
@@ -25,7 +25,7 @@ describe('defaults', () => {
 
   it('has Korean labels for every mode', () => {
     expect(SNAP_MODE_LABELS).toEqual({ smart: '스마트', bar: '마디', beat: '비트', division: '분할', ticks: '틱', off: '끔' })
-    expect(DRAG_MODE_LABELS).toEqual({ overlap: '겹침', noOverlap: '겹치지 않음' })
+    expect(DRAG_MODE_LABELS).toEqual({ overlap: '겹침', noOverlap: '겹치지 않음', crossfade: '크로스페이드' })
   })
 })
 

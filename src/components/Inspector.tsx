@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { AudioEngine, Clip, EffectType, InputChoice, InstrumentId, Project, Track, TrackInput } from '../core/types'
 import type { TrackButtonKind, TrackButtonMods } from '../core/trackActions'
 import type { InspectorSections } from '../core/trackUi'
-import { RegionInspector, regionTitle, type ClipEntry } from './RegionInspector'
+import { RegionInspector, regionTitle, type ClipEntry, type WarpControls } from './RegionInspector'
 import { TrackInspector } from './TrackInspector'
 import { ChannelStrip } from './ChannelStrip'
 import './Inspector.css'
@@ -35,6 +35,8 @@ export interface InspectorProps {
   onIconMenu: (trackId: string, e: React.MouseEvent) => void
   inputChoices?: readonly InputChoice[]
   onTrackInput?: (trackId: string, input: TrackInput | null) => void
+  /** Audio region warp controls; omitted hides them. */
+  warp?: WarpControls
 }
 
 function Section({ id, open, title, onToggle, children, className = '' }: { id: string; open: boolean; title: React.ReactNode; onToggle: () => void; children?: React.ReactNode; className?: string }) {
@@ -56,7 +58,7 @@ export function Inspector(props: InspectorProps) {
     : <span onDoubleClick={e => { if (single) { e.stopPropagation(); setRenaming(single.name) } }} title={single ? '더블클릭: 이름 변경' : undefined}>{regionTitle(selection)}</span>
   return <div className="inspector" aria-label="인스펙터">
     <Section id="region" open={sections.region} title={regionHead} onToggle={() => toggle('region')} className="insp-region">
-      {selection.length > 0 && <RegionInspector selection={selection} bpm={project.bpm} beatsPerBar={project.beatsPerBar} onClipsEdit={props.onClipsEdit} />}
+      {selection.length > 0 && <RegionInspector selection={selection} bpm={project.bpm} beatsPerBar={project.beatsPerBar} onClipsEdit={props.onClipsEdit} warp={props.warp} />}
     </Section>
     <Section id="track" open={sections.track} title={focusedTrack ? `트랙: ${focusedTrack.name}` : '트랙'} onToggle={() => toggle('track')} className="insp-track">
       {focusedTrack ? <TrackInspector track={focusedTrack} bpm={project.bpm} onTrackChange={props.onTrackChange} onInstrumentChange={props.onInstrumentChange} onOpenColorPalette={props.onOpenColorPalette} onIconMenu={props.onIconMenu} inputChoices={props.inputChoices} onInputChange={props.onTrackInput} /> : <p className="insp-empty">트랙을 선택해주세요</p>}

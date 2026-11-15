@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <complex>
+#include <deque>
+#include <string>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -13,7 +15,8 @@ double bounded(double v, double lo, double hi) noexcept { return std::clamp(v, l
 struct Def { const char* name; double fallback, minimum, maximum; };
 class Reader {
  public:
-  Reader(const Parameters& p, std::initializer_list<Def> defs) : params_(p), defs_(defs) {
+  Reader(const Parameters& p, std::initializer_list<Def> defs) : Reader(p, std::vector<Def>(defs)) {}
+  Reader(const Parameters& p, std::vector<Def> defs) : params_(p), defs_(std::move(defs)) {
     for (const auto& [name, value] : p) {
       const auto it = std::find_if(defs_.begin(), defs_.end(), [&](const Def& d) { return name == d.name; });
       if (it == defs_.end()) throw std::invalid_argument("Unknown effect parameter: " + name);
@@ -316,14 +319,24 @@ class Convolver {
   std::vector<ConvolutionGroup> groups_;
 };
 
-std::array<std::vector<float>, 2> impulse(double sr, double seconds, std::uint32_t seed) {
+// Space 0 hall, 1 room, 2 plate, 3 spring; keep in sync with src/devices/effects/reverb.ts reverbImpulse().
+std::array<std::vector<float>, 2> impulse(double sr, double seconds, std::uint32_t seed, int space = 0) {
   const auto length = static_cast<std::size_t>(std::ceil(sr * seconds));
   std::array<std::vector<float>, 2> result{std::vector<float>(length), std::vector<float>(length)};
+  const auto comb = static_cast<std::size_t>(std::floor(.0293 * sr + .5));
   double power = 0;
-  for (auto& channel : result) for (std::size_t i = 0; i < length; ++i) {
-    seed = seed * 1664525u + 1013904223u;
-    channel[i] = static_cast<float>((static_cast<double>(seed) / 4294967295.0 * 2 - 1) * std::pow(1 - static_cast<double>(i) / length, 3.6));
-    power += static_cast<double>(channel[i]) * channel[i];
+  for (auto& channel : result) {
+    double previous = 0, dark = 0;
+    for (std::size_t i = 0; i < length; ++i) {
+      seed = seed * 1664525u + 1013904223u;
+      const double noise = static_cast<double>(seed) / 4294967295.0 * 2 - 1, t = static_cast<double>(i) / length;
+      if (space == 0) channel[i] = static_cast<float>(noise * std::pow(1 - t, 3.6));
+      else if (space == 1) channel[i] = static_cast<float>(noise * std::pow(1 - t, 4.5));
+      else if (space == 2) channel[i] = static_cast<float>((noise - .65 * previous) * std::pow(1 - t, 2.4));
+      else { dark += .45 * (noise - dark); channel[i] = static_cast<float>(dark * std::pow(1 - t, 3) + (i >= comb ? .55 * channel[i - comb] : 0)); }
+      previous = noise;
+      power += static_cast<double>(channel[i]) * channel[i];
+    }
   }
   power = std::max(.000125, std::sqrt(power / (length * 2)));
   const auto scale = static_cast<float>(.00125 / power * 44100 / sr);
@@ -331,31 +344,47 @@ std::array<std::vector<float>, 2> impulse(double sr, double seconds, std::uint32
   return result;
 }
 
+struct ReverbSpace { double shortSeconds; std::uint32_t shortSeed; double longSeconds; std::uint32_t longSeed; };
+constexpr std::array<ReverbSpace, 4> kReverbSpaces{{{1.7, 9183, 4.2, 61427}, {.35, 4421, 1.2, 7717}, {1.1, 3301, 3.2, 8803}, {.9, 5153, 2.6, 6007}}};
+
 class Reverb final : public StereoProcessor {
  public:
-  Reverb(double sr, const Reader& p) : wet_(p("amount") * .5), tail_(.85 + 1.7 + p("size") * 2.5) {
-    auto small = impulse(sr, 1.7, 9183), large = impulse(sr, 4.2, 61427);
+  Reverb(double sr, const Reader& p) : wet_(p("amount") * .5), predelay_(static_cast<std::size_t>(sr * .25) + 4),
+      delayFrames_(p("predelay") * .001 * sr), lowcut_(p("lowcut") > 20.5) {
+    const int space = std::clamp(static_cast<int>(std::lround(p("type"))), 0, 3);
+    const auto& spec = kReverbSpaces[static_cast<std::size_t>(space)];
+    tail_ = .85 + spec.shortSeconds + p("size") * (spec.longSeconds - spec.shortSeconds) + p("predelay") * .001;
+    auto small = impulse(sr, spec.shortSeconds, spec.shortSeed, space), large = impulse(sr, spec.longSeconds, spec.longSeed, space);
     const float size = static_cast<float>(p("size"));
     for (unsigned c = 0; c < 2; ++c) {
       for (std::size_t i = 0; i < large[c].size(); ++i) large[c][i] = large[c][i] * size + (i < small[c].size() ? small[c][i] * (1 - size) : 0);
       channels_[c] = std::make_unique<Convolver>(large[c]);
     }
     tone_.configure(Filter::Lowpass, sr, p("tone"), 1);
+    highpass_.configure(Filter::Highpass, sr, p("lowcut"), .5);
   }
   void process(float* s, std::uint32_t frames) noexcept override {
-    for (std::uint32_t i = 0; i < frames; ++i) for (unsigned c = 0; c < 2; ++c)
-      s[2 * i + c] += static_cast<float>(wet_ * tone_.sample(channels_[c]->sample(s[2 * i + c]), c));
+    for (std::uint32_t i = 0; i < frames; ++i) {
+      float in[2]{s[2 * i], s[2 * i + 1]};
+      if (delayFrames_ > 0) { predelay_.put(in[0], in[1]); in[0] = predelay_.read(delayFrames_, 0); in[1] = predelay_.read(delayFrames_, 1); predelay_.advance(); }
+      for (unsigned c = 0; c < 2; ++c) {
+        float wet = tone_.sample(channels_[c]->sample(in[c]), c);
+        if (lowcut_) wet = highpass_.sample(wet, c);
+        s[2 * i + c] += static_cast<float>(wet_ * wet);
+      }
+    }
   }
-  void reset() noexcept override { for (auto& c : channels_) c->reset(); tone_.reset(); }
+  void reset() noexcept override { for (auto& c : channels_) c->reset(); tone_.reset(); highpass_.reset(); predelay_.reset(); }
   void takeStateFrom(StereoProcessor& previous) noexcept override {
     if (auto* p = dynamic_cast<Reverb*>(&previous)) {
       for (std::size_t i = 0; i < channels_.size(); ++i) channels_[i]->takeStateFrom(*p->channels_[i]);
-      tone_.takeHistoryFrom(p->tone_);
+      tone_.takeHistoryFrom(p->tone_); highpass_.takeHistoryFrom(p->highpass_); predelay_.takeStateFrom(p->predelay_);
     }
   }
   double tailSeconds() const noexcept override { return wet_ > 0 ? tail_ : 0; }
  private:
-  std::array<std::unique_ptr<Convolver>, 2> channels_; Biquad tone_; double wet_, tail_;
+  std::array<std::unique_ptr<Convolver>, 2> channels_; Biquad tone_, highpass_; double wet_, tail_ = 0;
+  DelayLine predelay_; double delayFrames_; bool lowcut_;
 };
 
 class Chorus {
@@ -378,30 +407,214 @@ class Chorus {
   DelayLine line_; double sampleRate_, phaseStep_, depth_, mix_, phase_ = 0;
 };
 
-class GuitarRig final : public StereoProcessor {
+// Keep Phaser and Tremolo in sync with src/devices/guitar-rig/modulation.ts (the web worklets).
+class Phaser {
  public:
-  GuitarRig(double sr, const Reader& p) : comp_(sr, -12 - p("compSustain") * 30, 1 + p("compSustain") * 7,
-        p("compAttack") * .001, .09 + p("compSustain") * .1, dbToGain(p("compLevel") + p("compSustain") * 6)),
-      driveShaper_(2.8, .12), ampShaper_(2.4, .08), powerShaper_(2.4 * .65, -.08),
-      chorus_(sr, p("chorusRate"), p("chorusDepth"), p("chorusMix")),
-      delay_(sr, p("delayTime") * .001, p("delayMix"), p("delayFeedback"), 4400, true) {
-    compEnabled_ = p("compEnabled") >= .5; driveEnabled_ = p("driveEnabled") >= .5;
-    ampEnabled_ = p("ampEnabled") >= .5; cabEnabled_ = p("cabinetEnabled") >= .5;
-    chorusEnabled_ = p("chorusEnabled") >= .5; delayEnabled_ = p("delayEnabled") >= .5;
-    drivePre_ = dbToGain(p("driveGain")); drivePost_ = dbToGain(p("driveLevel")) / std::pow(drivePre_, .4);
-    driveInput_.configure(Filter::Highpass, sr, 95, .707); driveDc_.configure(Filter::Highpass, sr, 25, .707);
-    driveTone_.configure(Filter::Lowpass, sr, 1200 * std::pow(8, p("driveTone")), .707);
-    const int model = static_cast<int>(std::round(p("ampModel")));
+  Phaser(double sr, double rate, double depth, double feedback, bool enabled)
+      : sampleRate_(sr), phaseStep_(2 * pi * rate / sr), depth_(depth), feedback_(feedback),
+        target_(enabled ? 1 : 0), mix_(target_), smoothing_(1 - std::exp(-1 / (.012 * sr))) {}
+  void process(float* s, std::uint32_t frames) noexcept {
+    for (std::uint32_t i = 0; i < frames; ++i) {
+      if (target_ == 0 && mix_ < 1e-6) { mix_ = 0; continue; }
+      mix_ += (target_ - mix_) * smoothing_;
+      for (unsigned c = 0; c < 2; ++c) {
+        const double x = s[2 * i + c];
+        const double lfo = .5 + .5 * std::sin(phase_ + (c ? pi / 2 : 0));
+        const double frequency = 200 * std::pow(16.0, .5 + (lfo - .5) * depth_);
+        const double t = std::tan(pi * std::min(frequency, sampleRate_ * .45) / sampleRate_), a = (t - 1) / (t + 1);
+        double y = x + feedback_ * last_[c];
+        for (auto& z : state_[c]) {
+          const double output = a * y + z;
+          z = y - a * output; if (std::abs(z) < 1e-30) z = 0;
+          y = output;
+        }
+        last_[c] = y;
+        s[2 * i + c] = static_cast<float>(x * (1 - mix_) + mix_ * .5 * (x + y));
+      }
+      phase_ += phaseStep_; if (phase_ >= 2 * pi) phase_ -= 2 * pi;
+    }
+  }
+  void reset() noexcept { state_ = {}; last_ = {}; phase_ = 0; }
+  void takeStateFrom(const Phaser& previous) noexcept { state_ = previous.state_; last_ = previous.last_; phase_ = previous.phase_; mix_ = previous.mix_; }
+ private:
+  double sampleRate_, phaseStep_, depth_, feedback_, target_, mix_, smoothing_, phase_ = 0;
+  std::array<std::array<double, 6>, 2> state_{}; std::array<double, 2> last_{};
+};
+
+class Tremolo {
+ public:
+  Tremolo(double sr, double rate, double depth, double shape, bool enabled)
+      : phaseStep_(2 * pi * rate / sr), depth_(depth), k_(.01 + shape * 9), target_(enabled ? 1 : 0), enabled_(target_),
+        smoothing_(1 - std::exp(-1 / (.012 * sr))) {}
+  void process(float* s, std::uint32_t frames) noexcept {
+    for (std::uint32_t i = 0; i < frames; ++i) {
+      if (target_ == 0 && enabled_ < 1e-6) { enabled_ = 0; continue; }
+      enabled_ += (target_ - enabled_) * smoothing_;
+      const double wave = std::tanh(k_ * std::sin(phase_)) / std::tanh(k_);
+      phase_ += phaseStep_; if (phase_ >= 2 * pi) phase_ -= 2 * pi;
+      const auto gain = static_cast<float>(1 - enabled_ * depth_ * .5 * (1 - wave));
+      s[2 * i] *= gain; s[2 * i + 1] *= gain;
+    }
+  }
+  void reset() noexcept { phase_ = 0; }
+  void takeStateFrom(const Tremolo& previous) noexcept { phase_ = previous.phase_; enabled_ = previous.enabled_; }
+ private:
+  double phaseStep_, depth_, k_, target_, enabled_, smoothing_, phase_ = 0;
+};
+
+// User-arranged rack (src/devices/guitar-rig/definition.ts GUITAR_RIG_MODULES): 1 comp, 2 drive,
+// 3 amp, 4 cabinet, 5 chorus, 6 delay, 7 fuzz, 8 phaser, 9 tremolo, 10 reverb, 11 tuner. A slot stores
+// `code + 16 x instance`; instance 0 reads the original parameter names and instance k > 0 appends
+// `_<k+1>` (driveGain_2). The tuner allows a single instance.
+constexpr int kRigModuleCodes = 12, kRigInstanceStride = 16, kRigMaxInstances = 3, kRigSlots = 18;
+constexpr int rigMaxInstances(int code) noexcept { return code == 11 ? 1 : kRigMaxInstances; }
+const std::array<std::vector<const char*>, kRigModuleCodes> kRigModuleParams{{
+  {},
+  {"compEnabled", "compSustain", "compAttack", "compLevel"},
+  {"driveEnabled", "driveGain", "driveTone", "driveLevel"},
+  {"ampEnabled", "ampGain", "ampBass", "ampMid", "ampTreble", "ampPresence", "ampLevel", "ampModel"},
+  {"cabinetEnabled", "cabinet", "micType", "micPosition", "micDistance"},
+  {"chorusEnabled", "chorusRate", "chorusDepth", "chorusMix"},
+  {"delayEnabled", "delayTime", "delayFeedback", "delayMix"},
+  {"fuzzEnabled", "fuzzGain", "fuzzTone", "fuzzLevel"},
+  {"phaserEnabled", "phaserRate", "phaserDepth", "phaserFeedback"},
+  {"tremoloEnabled", "tremoloRate", "tremoloDepth", "tremoloShape"},
+  {"reverbEnabled", "reverbDecay", "reverbTone", "reverbMix"},
+  {"tunerEnabled"},
+}};
+
+const std::vector<Def>& guitarRigDefs() {
+  static const std::vector<Def> defs = [] {
+    static const Def base[] = {{"compSustain",.35,0,1},{"compAttack",10,.5,50},{"compLevel",0,-18,18},
+      {"driveGain",9,0,30},{"driveTone",.5,0,1},{"driveLevel",-3,-24,12},{"chorusRate",.8,.1,5},{"chorusDepth",.35,0,1},{"chorusMix",.25,0,.6},
+      {"delayTime",320,30,1200},{"delayFeedback",.3,0,.85},{"delayMix",.2,0,.6},{"ampGain",10,0,36},{"ampBass",0,-12,12},{"ampMid",0,-12,12},
+      {"ampTreble",0,-12,12},{"ampPresence",0,-9,9},{"ampLevel",-6,-36,6},{"compEnabled",1,0,1},{"driveEnabled",0,0,1},{"chorusEnabled",0,0,1},
+      {"delayEnabled",0,0,1},{"ampEnabled",1,0,1},{"cabinetEnabled",1,0,1},{"ampModel",0,0,4},{"cabinet",1,0,4},{"micType",0,0,4},
+      {"micPosition",.35,0,1},{"micDistance",.15,0,1},
+      {"fuzzGain",26,0,40},{"fuzzTone",.45,0,1},{"fuzzLevel",-14,-36,0},{"phaserRate",.45,.05,4},{"phaserDepth",.7,0,1},{"phaserFeedback",.35,0,.85},
+      {"tremoloRate",4.5,.5,12},{"tremoloDepth",.5,0,1},{"tremoloShape",0,0,1},{"reverbDecay",.45,0,1},{"reverbTone",.5,0,1},{"reverbMix",.25,0,.8},
+      {"fuzzEnabled",0,0,1},{"phaserEnabled",0,0,1},{"tremoloEnabled",0,0,1},{"reverbEnabled",0,0,1},{"tunerEnabled",0,0,1}};
+    static std::deque<std::string> names;  // stable storage for the generated names
+    std::vector<Def> out(std::begin(base), std::end(base));
+    for (int code = 1; code < kRigModuleCodes; ++code) for (int instance = 1; instance < rigMaxInstances(code); ++instance)
+      for (const char* param : kRigModuleParams[code]) {
+        const auto it = std::find_if(std::begin(base), std::end(base), [&](const Def& d) { return std::string_view(d.name) == param; });
+        names.push_back(std::string(param) + "_" + std::to_string(instance + 1));
+        out.push_back({names.back().c_str(), it->fallback, it->minimum, it->maximum});
+      }
+    const std::array<double, kRigSlots> slotDefaults{1, 2, 3, 4, 5, 6};
+    const double maxSlot = kRigModuleCodes - 1 + kRigInstanceStride * (kRigMaxInstances - 1);
+    for (int slot = 0; slot < kRigSlots; ++slot) {
+      names.push_back("rackSlot" + std::to_string(slot));
+      out.push_back({names.back().c_str(), slotDefaults[slot], 0, maxSlot});
+    }
+    return out;
+  }();
+  return defs;
+}
+
+// Reads one module instance's parameters by their base names.
+struct RigParams {
+  const Reader& reader; int instance;
+  double operator()(const char* base) const { return instance ? reader(std::string(base) + "_" + std::to_string(instance + 1)) : reader(base); }
+  bool on(const char* base) const { return (*this)(base) >= .5; }
+};
+
+class RigModule {
+ public:
+  RigModule(int code, int instance) : code_(code), instance_(instance) {}
+  virtual ~RigModule() = default;
+  virtual void process(float* s, std::uint32_t frames) noexcept = 0;
+  virtual void reset() noexcept = 0;
+  virtual void takeStateFrom(RigModule& previous) noexcept = 0;
+  virtual std::uint32_t latencyFrames() const noexcept { return 0; }
+  virtual double tailSeconds() const noexcept { return 0; }
+  int code() const noexcept { return code_; }
+  int instance() const noexcept { return instance_; }
+ private:
+  int code_, instance_;
+};
+
+class RigComp final : public RigModule {
+ public:
+  RigComp(double sr, const RigParams& p) : RigModule(1, p.instance), comp_(sr, -12 - p("compSustain") * 30, 1 + p("compSustain") * 7,
+      p("compAttack") * .001, .09 + p("compSustain") * .1, dbToGain(p("compLevel") + p("compSustain") * 6)), enabled_(p.on("compEnabled")) {}
+  void process(float* s, std::uint32_t frames) noexcept override { if (enabled_) comp_.process(s, frames); }
+  void reset() noexcept override { comp_.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override { if (auto* p = dynamic_cast<RigComp*>(&previous)) comp_.takeStateFrom(p->comp_); }
+ private:
+  Compressor comp_; bool enabled_;
+};
+
+class RigDrive final : public RigModule {
+ public:
+  RigDrive(double sr, const RigParams& p) : RigModule(2, p.instance), shaper_(2.8, .12), enabled_(p.on("driveEnabled")) {
+    pre_ = dbToGain(p("driveGain")); post_ = dbToGain(p("driveLevel")) / std::pow(pre_, .4);
+    input_.configure(Filter::Highpass, sr, 95, .707); dc_.configure(Filter::Highpass, sr, 25, .707);
+    tone_.configure(Filter::Lowpass, sr, 1200 * std::pow(8, p("driveTone")), .707);
+  }
+  void process(float* s, std::uint32_t frames) noexcept override {
+    if (enabled_) for (std::uint32_t i = 0; i < frames; ++i) for (unsigned c = 0; c < 2; ++c) {
+      float x = input_.sample(s[2 * i + c], c);
+      x = shaper_.sample(static_cast<float>(x * pre_), c);
+      s[2 * i + c] = static_cast<float>(dc_.sample(tone_.sample(x,c),c) * post_);
+    }
+  }
+  void reset() noexcept override { shaper_.reset(); input_.reset(); tone_.reset(); dc_.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override {
+    if (auto* p = dynamic_cast<RigDrive*>(&previous)) {
+      shaper_.takeStateFrom(p->shaper_); input_.takeHistoryFrom(p->input_); tone_.takeHistoryFrom(p->tone_); dc_.takeHistoryFrom(p->dc_);
+    }
+  }
+  std::uint32_t latencyFrames() const noexcept override { return enabled_ ? 8u : 0u; }
+ private:
+  Saturator shaper_; Biquad input_, tone_, dc_; double pre_ = 1, post_ = 1; bool enabled_;
+};
+
+class RigAmp final : public RigModule {
+ public:
+  RigAmp(double sr, const RigParams& p) : RigModule(3, p.instance), shaper_(2.4, .08), power_(2.4 * .65, -.08), enabled_(p.on("ampEnabled")) {
+    const int model = std::clamp(static_cast<int>(std::round(p("ampModel"))), 0, 4);
     const double gain = dbToGain(p("ampGain"));
-    const std::array<double, 3> pre{.55, 1.5, 3.5}, inter{.8, 1.2, 1.65}, highpass{45, 75, 100}, lowpass{9500, 6600, 5200}, compensation{.9, .55, .42};
-    ampPre_ = gain * pre[model]; ampInter_ = inter[model]; ampPost_ = dbToGain(p("ampLevel")) * compensation[model] / std::pow(gain, .15);
-    ampInput_.configure(Filter::Highpass, sr, highpass[model], .707); ampInterFilter_.configure(Filter::Lowpass, sr, lowpass[model], .707); ampDc_.configure(Filter::Highpass, sr, 25, .707);
+    // Keep in sync with src/devices/guitar-rig/voicing.ts: 0 clean, 1 crunch, 2 lead, 3 chime, 4 jazz clean.
+    const std::array<double, 5> pre{.55, 1.5, 3.5, 1.0, .4}, inter{.8, 1.2, 1.65, 1.05, .7}, highpass{45, 75, 100, 90, 40}, lowpass{9500, 6600, 5200, 8200, 6000}, compensation{.9, .55, .42, .7, 1.0};
+    pre_ = gain * pre[model]; inter_ = inter[model]; post_ = dbToGain(p("ampLevel")) * compensation[model] / std::pow(gain, .15);
+    input_.configure(Filter::Highpass, sr, highpass[model], .707); interFilter_.configure(Filter::Lowpass, sr, lowpass[model], .707); dc_.configure(Filter::Highpass, sr, 25, .707);
     eq_[0].configure(Filter::LowShelf, sr, 150, .707, p("ampBass")); eq_[1].configure(Filter::Peak, sr, 750, .8, p("ampMid"));
     eq_[2].configure(Filter::HighShelf, sr, 2600, .707, p("ampTreble")); eq_[3].configure(Filter::HighShelf, sr, 4200, .707, p("ampPresence"));
-    const int cab = static_cast<int>(std::round(p("cabinet"))), mic = static_cast<int>(std::round(p("micType")));
+  }
+  void process(float* s, std::uint32_t frames) noexcept override {
+    if (enabled_) for (std::uint32_t i = 0; i < frames; ++i) for (unsigned c = 0; c < 2; ++c) {
+      float x = input_.sample(s[2 * i + c], c);
+      x = shaper_.sample(static_cast<float>(x * pre_), c);
+      x = power_.sample(static_cast<float>(interFilter_.sample(x,c) * inter_), c);
+      x = dc_.sample(x,c); for (auto& f : eq_) x = f.sample(x,c);
+      s[2 * i + c] = static_cast<float>(x * post_);
+    }
+  }
+  void reset() noexcept override {
+    shaper_.reset(); power_.reset(); input_.reset(); interFilter_.reset(); dc_.reset(); for (auto& f : eq_) f.reset();
+  }
+  void takeStateFrom(RigModule& previous) noexcept override {
+    if (auto* p = dynamic_cast<RigAmp*>(&previous)) {
+      shaper_.takeStateFrom(p->shaper_); power_.takeStateFrom(p->power_);
+      input_.takeHistoryFrom(p->input_); interFilter_.takeHistoryFrom(p->interFilter_); dc_.takeHistoryFrom(p->dc_);
+      for (std::size_t i = 0; i < eq_.size(); ++i) eq_[i].takeHistoryFrom(p->eq_[i]);
+    }
+  }
+  std::uint32_t latencyFrames() const noexcept override { return enabled_ ? 16u : 0u; }
+ private:
+  Saturator shaper_, power_; Biquad input_, interFilter_, dc_; std::array<Biquad, 4> eq_;
+  double pre_ = 1, inter_ = 1, post_ = 1; bool enabled_;
+};
+
+class RigCabinet final : public RigModule {
+ public:
+  RigCabinet(double sr, const RigParams& p) : RigModule(4, p.instance), enabled_(p.on("cabinetEnabled")) {
+    const int cab = std::clamp(static_cast<int>(std::round(p("cabinet"))), 0, 4), mic = std::clamp(static_cast<int>(std::round(p("micType"))), 0, 4);
     const double edge = p("micPosition"), far = p("micDistance");
-    const std::array<double, 3> hp{95,75,62}, resonance{145,118,95}, baseCutoff{6500,7200,5700}, micCutoff{1,.76,1.15}, q{.9,.75,1.1}, resonantGain{2.4,1.5,3.4}, proximity{2,3,1};
-    const std::array<double, 3> mids{620,750,480}, midGain{-1.5,-2.3,-3.4}, presenceFreq{3200,2300,4200}, presenceGain{3.4,-.6,2.2}, shelfGain{0,-2,1};
+    const std::array<double, 5> hp{95,75,62,120,85}, resonance{145,118,95,175,125}, baseCutoff{6500,7200,5700,5600,7800}, micCutoff{1,.76,1.15,.92,1.25}, q{.9,.75,1.1,1.0,.8}, resonantGain{2.4,1.5,3.4,1.8,1.6}, proximity{2,3,1,2.5,.5};
+    const std::array<double, 5> mids{620,750,480,800,900}, midGain{-1.5,-2.3,-3.4,-.8,-1.2}, presenceFreq{3200,2300,4200,2800,5500}, presenceGain{3.4,-.6,2.2,2.0,2.8}, shelfGain{0,-2,1,-1,2};
     const double cutoff = baseCutoff[cab] * micCutoff[mic] * (1 - .33 * edge) * (1 - .12 * far);
     cab_[0].configure(Filter::Highpass, sr, hp[cab], .72);
     cab_[1].configure(Filter::Peak, sr, resonance[cab], q[cab], resonantGain[cab] + (1 - far) * proximity[mic]);
@@ -411,50 +624,184 @@ class GuitarRig final : public StereoProcessor {
     cab_[5].configure(Filter::Lowpass, sr, cutoff, .68); cab_[6].configure(Filter::Lowpass, sr, cutoff * 1.15, .55);
   }
   void process(float* s, std::uint32_t frames) noexcept override {
-    if (compEnabled_) comp_.process(s, frames);
-    if (driveEnabled_) for (std::uint32_t i = 0; i < frames; ++i) for (unsigned c = 0; c < 2; ++c) {
-      float x = driveInput_.sample(s[2 * i + c], c);
-      x = driveShaper_.sample(static_cast<float>(x * drivePre_), c);
-      s[2 * i + c] = static_cast<float>(driveDc_.sample(driveTone_.sample(x,c),c) * drivePost_);
-    }
-    if (ampEnabled_) for (std::uint32_t i = 0; i < frames; ++i) for (unsigned c = 0; c < 2; ++c) {
-      float x = ampInput_.sample(s[2 * i + c], c);
-      x = ampShaper_.sample(static_cast<float>(x * ampPre_), c);
-      x = powerShaper_.sample(static_cast<float>(ampInterFilter_.sample(x,c) * ampInter_), c);
-      x = ampDc_.sample(x,c); for (auto& f : eq_) x = f.sample(x,c);
-      s[2 * i + c] = static_cast<float>(x * ampPost_);
-    }
-    if (cabEnabled_) for (auto& f : cab_) for (std::uint32_t i = 0; i < frames; ++i) {
+    if (enabled_) for (auto& f : cab_) for (std::uint32_t i = 0; i < frames; ++i) {
       s[2 * i] = f.sample(s[2 * i], 0); s[2 * i + 1] = f.sample(s[2 * i + 1], 1);
     }
-    if (chorusEnabled_) chorus_.process(s, frames);
-    if (delayEnabled_) delay_.process(s, frames);
   }
-  void reset() noexcept override {
-    comp_.reset(); driveShaper_.reset(); ampShaper_.reset(); powerShaper_.reset(); chorus_.reset(); delay_.reset();
-    driveInput_.reset(); driveTone_.reset(); driveDc_.reset(); ampInput_.reset(); ampInterFilter_.reset(); ampDc_.reset();
-    for (auto& f : eq_) f.reset();
-    for (auto& f : cab_) f.reset();
+  void reset() noexcept override { for (auto& f : cab_) f.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override {
+    if (auto* p = dynamic_cast<RigCabinet*>(&previous)) for (std::size_t i = 0; i < cab_.size(); ++i) cab_[i].takeHistoryFrom(p->cab_[i]);
   }
-  void takeStateFrom(StereoProcessor& previous) noexcept override {
-    if (auto* p = dynamic_cast<GuitarRig*>(&previous)) {
-      comp_.takeStateFrom(p->comp_); driveShaper_.takeStateFrom(p->driveShaper_); ampShaper_.takeStateFrom(p->ampShaper_); powerShaper_.takeStateFrom(p->powerShaper_);
-      chorus_.takeStateFrom(p->chorus_); delay_.takeStateFrom(p->delay_);
-      driveInput_.takeHistoryFrom(p->driveInput_); driveTone_.takeHistoryFrom(p->driveTone_); driveDc_.takeHistoryFrom(p->driveDc_);
-      ampInput_.takeHistoryFrom(p->ampInput_); ampInterFilter_.takeHistoryFrom(p->ampInterFilter_); ampDc_.takeHistoryFrom(p->ampDc_);
-      for (std::size_t i = 0; i < eq_.size(); ++i) eq_[i].takeHistoryFrom(p->eq_[i]);
-      for (std::size_t i = 0; i < cab_.size(); ++i) cab_[i].takeHistoryFrom(p->cab_[i]);
+ private:
+  std::array<Biquad, 7> cab_; bool enabled_;
+};
+
+class RigChorus final : public RigModule {
+ public:
+  RigChorus(double sr, const RigParams& p) : RigModule(5, p.instance), chorus_(sr, p("chorusRate"), p("chorusDepth"), p("chorusMix")), enabled_(p.on("chorusEnabled")) {}
+  void process(float* s, std::uint32_t frames) noexcept override { if (enabled_) chorus_.process(s, frames); }
+  void reset() noexcept override { chorus_.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override { if (auto* p = dynamic_cast<RigChorus*>(&previous)) chorus_.takeStateFrom(p->chorus_); }
+  double tailSeconds() const noexcept override { return enabled_ ? .04 : 0; }
+ private:
+  Chorus chorus_; bool enabled_;
+};
+
+class RigDelay final : public RigModule {
+ public:
+  RigDelay(double sr, const RigParams& p) : RigModule(6, p.instance),
+      delay_(sr, p("delayTime") * .001, p("delayMix"), p("delayFeedback"), 4400, true), enabled_(p.on("delayEnabled")) {}
+  void process(float* s, std::uint32_t frames) noexcept override { if (enabled_) delay_.process(s, frames); }
+  void reset() noexcept override { delay_.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override { if (auto* p = dynamic_cast<RigDelay*>(&previous)) delay_.takeStateFrom(p->delay_); }
+  double tailSeconds() const noexcept override { return enabled_ ? delay_.tailSeconds() : 0; }
+ private:
+  Delay delay_; bool enabled_;
+};
+
+// Fuzz (keep in sync with src/devices/guitar-rig/index.ts): tone 500 Hz - 5 kHz, no gain compensation.
+class RigFuzz final : public RigModule {
+ public:
+  RigFuzz(double sr, const RigParams& p) : RigModule(7, p.instance), shaper_(4.5, .3), enabled_(p.on("fuzzEnabled")) {
+    pre_ = dbToGain(p("fuzzGain")); post_ = dbToGain(p("fuzzLevel"));
+    input_.configure(Filter::Highpass, sr, 40, .707); dc_.configure(Filter::Highpass, sr, 25, .707);
+    tone_.configure(Filter::Lowpass, sr, 500 * std::pow(10, p("fuzzTone")), .707);
+  }
+  void process(float* s, std::uint32_t frames) noexcept override {
+    if (enabled_) for (std::uint32_t i = 0; i < frames; ++i) for (unsigned c = 0; c < 2; ++c) {
+      float x = input_.sample(s[2 * i + c], c);
+      x = shaper_.sample(static_cast<float>(x * pre_), c);
+      s[2 * i + c] = static_cast<float>(dc_.sample(tone_.sample(x, c), c) * post_);
     }
   }
-  std::uint32_t latencyFrames() const noexcept override { return (driveEnabled_ ? 8u : 0u) + (ampEnabled_ ? 16u : 0u); }
-  double tailSeconds() const noexcept override { return (chorusEnabled_ ? .04 : 0) + (delayEnabled_ ? delay_.tailSeconds() : 0); }
+  void reset() noexcept override { shaper_.reset(); input_.reset(); tone_.reset(); dc_.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override {
+    if (auto* p = dynamic_cast<RigFuzz*>(&previous)) {
+      shaper_.takeStateFrom(p->shaper_); input_.takeHistoryFrom(p->input_); tone_.takeHistoryFrom(p->tone_); dc_.takeHistoryFrom(p->dc_);
+    }
+  }
+  std::uint32_t latencyFrames() const noexcept override { return enabled_ ? 8u : 0u; }
  private:
-  Compressor comp_; Saturator driveShaper_, ampShaper_, powerShaper_; Chorus chorus_; Delay delay_;
-  Biquad driveInput_, driveTone_, driveDc_, ampInput_, ampInterFilter_, ampDc_;
-  std::array<Biquad, 4> eq_; std::array<Biquad, 7> cab_;
-  double drivePre_ = 1, drivePost_ = 1, ampPre_ = 1, ampInter_ = 1, ampPost_ = 1;
-  bool compEnabled_, driveEnabled_, ampEnabled_, cabEnabled_, chorusEnabled_, delayEnabled_;
+  Saturator shaper_; Biquad input_, tone_, dc_; double pre_ = 1, post_ = 1; bool enabled_;
 };
+
+class RigPhaser final : public RigModule {
+ public:
+  RigPhaser(double sr, const RigParams& p) : RigModule(8, p.instance),
+      phaser_(sr, p("phaserRate"), p("phaserDepth"), p("phaserFeedback"), p.on("phaserEnabled")) {}
+  void process(float* s, std::uint32_t frames) noexcept override { phaser_.process(s, frames); }
+  void reset() noexcept override { phaser_.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override { if (auto* p = dynamic_cast<RigPhaser*>(&previous)) phaser_.takeStateFrom(p->phaser_); }
+ private:
+  Phaser phaser_;
+};
+
+class RigTremolo final : public RigModule {
+ public:
+  RigTremolo(double sr, const RigParams& p) : RigModule(9, p.instance),
+      tremolo_(sr, p("tremoloRate"), p("tremoloDepth"), p("tremoloShape"), p.on("tremoloEnabled")) {}
+  void process(float* s, std::uint32_t frames) noexcept override { tremolo_.process(s, frames); }
+  void reset() noexcept override { tremolo_.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override { if (auto* p = dynamic_cast<RigTremolo*>(&previous)) tremolo_.takeStateFrom(p->tremolo_); }
+ private:
+  Tremolo tremolo_;
+};
+
+// Plate-style reverb (src/devices/guitar-rig/reverb.ts): Decay blends the short and long IR. The
+// convolvers are built only when the reverb can be heard, so other rig edits stay cheap.
+class RigReverb final : public RigModule {
+ public:
+  RigReverb(double sr, const RigParams& p) : RigModule(10, p.instance) {
+    if (p.on("reverbEnabled")) {
+      auto small = impulse(sr, 1.7, 9183), large = impulse(sr, 4.2, 61427);
+      const auto decay = static_cast<float>(p("reverbDecay"));
+      for (unsigned c = 0; c < 2; ++c) {
+        for (std::size_t i = 0; i < large[c].size(); ++i) large[c][i] = large[c][i] * decay + (i < small[c].size() ? small[c][i] * (1 - decay) : 0);
+        reverb_[c] = std::make_unique<Convolver>(large[c]);
+      }
+      wet_ = p("reverbMix"); tail_ = (decay > .001 ? 4.2 : 1.7) + .25;
+    }
+    highpass_.configure(Filter::Highpass, sr, 180, .5);
+    tone_.configure(Filter::Lowpass, sr, 1500 * std::pow(8, p("reverbTone")), .5);
+  }
+  void process(float* s, std::uint32_t frames) noexcept override {
+    if (reverb_[0]) for (std::uint32_t i = 0; i < frames; ++i) for (unsigned c = 0; c < 2; ++c) {
+      const float wet = tone_.sample(highpass_.sample(reverb_[c]->sample(s[2 * i + c]), c), c);
+      s[2 * i + c] += static_cast<float>(wet_ * wet);
+    }
+  }
+  void reset() noexcept override { for (auto& r : reverb_) if (r) r->reset(); highpass_.reset(); tone_.reset(); }
+  void takeStateFrom(RigModule& previous) noexcept override {
+    if (auto* p = dynamic_cast<RigReverb*>(&previous)) {
+      for (std::size_t i = 0; i < reverb_.size(); ++i) if (reverb_[i] && p->reverb_[i]) reverb_[i]->takeStateFrom(*p->reverb_[i]);
+      highpass_.takeHistoryFrom(p->highpass_); tone_.takeHistoryFrom(p->tone_);
+    }
+  }
+  double tailSeconds() const noexcept override { return reverb_[0] && wet_ > 0 ? tail_ : 0; }
+ private:
+  std::array<std::unique_ptr<Convolver>, 2> reverb_; Biquad highpass_, tone_; double wet_ = 0, tail_ = 0;
+};
+
+class RigTuner final : public RigModule {
+ public:
+  explicit RigTuner(const RigParams& p) : RigModule(11, p.instance), enabled_(p.on("tunerEnabled")) {}
+  void process(float* s, std::uint32_t frames) noexcept override { if (enabled_) std::fill(s, s + 2 * static_cast<std::size_t>(frames), 0.f); }
+  void reset() noexcept override {}
+  void takeStateFrom(RigModule&) noexcept override {}
+ private:
+  bool enabled_;
+};
+
+std::unique_ptr<RigModule> makeRigModule(int code, double sr, const RigParams& p) {
+  switch (code) {
+    case 1: return std::make_unique<RigComp>(sr, p);
+    case 2: return std::make_unique<RigDrive>(sr, p);
+    case 3: return std::make_unique<RigAmp>(sr, p);
+    case 4: return std::make_unique<RigCabinet>(sr, p);
+    case 5: return std::make_unique<RigChorus>(sr, p);
+    case 6: return std::make_unique<RigDelay>(sr, p);
+    case 7: return std::make_unique<RigFuzz>(sr, p);
+    case 8: return std::make_unique<RigPhaser>(sr, p);
+    case 9: return std::make_unique<RigTremolo>(sr, p);
+    case 10: return std::make_unique<RigReverb>(sr, p);
+    case 11: return std::make_unique<RigTuner>(p);
+    default: return nullptr;
+  }
+}
+
+class GuitarRig final : public StereoProcessor {
+ public:
+  // Modules are built only for the slots in the rack and run in slot order. Empty, unknown, over-limit
+  // and repeated (code, instance) slots are skipped.
+  GuitarRig(double sr, const Reader& p) {
+    std::array<std::array<bool, kRigMaxInstances>, kRigModuleCodes> seen{};
+    for (int slot = 0; slot < kRigSlots; ++slot) {
+      const int value = static_cast<int>(std::round(p("rackSlot" + std::to_string(slot))));
+      if (value <= 0) continue;
+      const int code = value % kRigInstanceStride, instance = value / kRigInstanceStride;
+      if (code < 1 || code >= kRigModuleCodes || instance >= rigMaxInstances(code) || seen[code][instance]) continue;
+      seen[code][instance] = true;
+      modules_.push_back(makeRigModule(code, sr, RigParams{p, instance}));
+    }
+  }
+  void process(float* s, std::uint32_t frames) noexcept override { for (auto& m : modules_) m->process(s, frames); }
+  void reset() noexcept override { for (auto& m : modules_) m->reset(); }
+  // State follows each module by (code, instance), so moving or adding a module keeps the others ringing.
+  void takeStateFrom(StereoProcessor& previous) noexcept override {
+    if (auto* p = dynamic_cast<GuitarRig*>(&previous)) for (auto& m : modules_) for (auto& old : p->modules_)
+      if (old->code() == m->code() && old->instance() == m->instance()) { m->takeStateFrom(*old); break; }
+  }
+  std::uint32_t latencyFrames() const noexcept override {
+    std::uint32_t total = 0; for (const auto& m : modules_) total += m->latencyFrames(); return total;
+  }
+  double tailSeconds() const noexcept override {
+    double total = 0; for (const auto& m : modules_) total += m->tailSeconds(); return total;
+  }
+ private:
+  std::vector<std::unique_ptr<RigModule>> modules_;
+};
+
+#include "sigimsae_effects.inc"
 
 } // namespace
 
@@ -531,27 +878,22 @@ std::unique_ptr<StereoProcessor> makeEffect(std::string_view type,const Paramete
   if (type=="drive") {
     Reader p(params,{{"drive",9,0,36},{"tone",9000,500,20000},{"mix",1,0,1},{"output",0,-24,6}});return std::make_unique<Drive>(sr,p);
   }
-  if (type=="delay") {
-    Reader p(params,{{"amount",.3,0,1},{"time",.75,.25,2},{"feedback",.32,0,.95},{"tone",3800,500,16000}});
-    return std::make_unique<Delay>(sr,std::min(3.9,p("time")*60/bpm),p("amount")*.45,p("feedback"),p("tone"));
-  }
   if (type=="reverb") {
-    Reader p(params,{{"amount",.3,0,1},{"size",.35,0,1},{"tone",9000,1000,20000}});return std::make_unique<Reverb>(sr,p);
+    Reader p(params,{{"amount",.3,0,1},{"size",.35,0,1},{"tone",9000,1000,20000},{"type",0,0,3},{"predelay",0,0,250},{"lowcut",20,20,1000}});return std::make_unique<Reverb>(sr,p);
   }
+  if (auto effect=makeSigimsae(type,params,sr,bpm)) return effect;
   if (type=="guitar-rig") {
-    Reader p(params,{{"compSustain",.35,0,1},{"compAttack",10,.5,50},{"compLevel",0,-18,18},
-      {"driveGain",9,0,30},{"driveTone",.5,0,1},{"driveLevel",-3,-24,12},{"chorusRate",.8,.1,5},{"chorusDepth",.35,0,1},{"chorusMix",.25,0,.6},
-      {"delayTime",320,30,1200},{"delayFeedback",.3,0,.85},{"delayMix",.2,0,.6},{"ampGain",10,0,36},{"ampBass",0,-12,12},{"ampMid",0,-12,12},
-      {"ampTreble",0,-12,12},{"ampPresence",0,-9,9},{"ampLevel",-6,-36,6},{"compEnabled",1,0,1},{"driveEnabled",0,0,1},{"chorusEnabled",0,0,1},
-      {"delayEnabled",0,0,1},{"ampEnabled",1,0,1},{"cabinetEnabled",1,0,1},{"ampModel",0,0,2},{"cabinet",1,0,2},{"micType",0,0,2},
-      {"micPosition",.35,0,1},{"micDistance",.15,0,1}});return std::make_unique<GuitarRig>(sr,p);
+    Reader p(params,guitarRigDefs());return std::make_unique<GuitarRig>(sr,p);
   }
   throw std::invalid_argument("Unsupported native effect: "+std::string(type));
 }
 
 std::size_t estimateEffectMemory(std::string_view type,double sr) noexcept {
   if (type=="reverb") return static_cast<std::size_t>(sr*4.2*80)+1024*1024;
-  if (type=="delay"||type=="guitar-rig") return static_cast<std::size_t>(sr*4.2*24)+65536;
+  // The rig holds up to three delay lines and, for each heard reverb, a 4.2 s stereo convolver.
+  if (type=="guitar-rig") return static_cast<std::size_t>(sr*4.2*(24+80))*3+3*1024*1024+65536;
+  if (type=="delay") return static_cast<std::size_t>(sr*4.2*24)+65536;
+  if (type=="chorus"||type=="flanger") return static_cast<std::size_t>(sr*.06*16)+65536;
   return 4096;
 }
 

@@ -1,263 +1,85 @@
 <p align="center">
+  <strong>한국어</strong> · <a href="README.en.md">English</a> · <a href="README.ja.md">日本語</a>
+</p>
+
+<p align="center">
   <img src="docs/assets/readme/hero.svg" alt="가락이음 — 100% 국산 DAW. 작곡부터 피치 편집까지, 우리의 음악 작업실" width="1200">
 </p>
 
 <p align="center">
-  <a href="#development"><img src="https://img.shields.io/badge/version-0.1.2_Preview-DF5435?style=flat-square" alt="0.1.2 개발 프리뷰"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/code-GPL--3.0--only-3D7865?style=flat-square" alt="GPL-3.0-only 코드 라이선스"></a>
-  <a href="#pitch-editor"><img src="https://img.shields.io/badge/audio-Pitch_Editor-285973?style=flat-square" alt="오디오 피치 편집기"></a>
-  <a href="#ai"><img src="https://img.shields.io/badge/AI-MCP_Ready-783645?style=flat-square" alt="로컬 MCP 연결 지원"></a>
+  <a href="https://github.com/songchez/garak-ieum/releases"><img src="https://img.shields.io/badge/version-0.1.6_Preview-DF5435?style=flat-square" alt="0.1.6 개발 프리뷰"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-3D7865?style=flat-square" alt="GPL-3.0-only"></a>
+  <img src="https://img.shields.io/badge/platform-Windows_x64_·_macOS_Apple_Silicon-285973?style=flat-square" alt="Windows x64 · macOS Apple Silicon">
 </p>
 
 <h1 align="center">가락이음 · Garak Ieum</h1>
 
-**[0.1.2 개발 프리뷰 다운로드](https://github.com/songchez/garak-ieum/releases/tag/v0.1.2)** — [Windows x64 설치 파일](https://github.com/songchez/garak-ieum/releases/download/v0.1.2/Garak-Ieum-Setup-0.1.2-x64.exe) · [Apple Silicon Mac 설치 파일](https://github.com/songchez/garak-ieum/releases/download/v0.1.2/Garak-Ieum-Setup-0.1.2-arm64.dmg)
+**가락이음**은 한국에서 만드는 오픈소스 DAW입니다. MIDI 작곡과 피아노롤, 오디오 녹음과 단선율 피치 편집, 내장 악기·이펙트·기타 앰프, 믹싱과 WAV 출력을 하나의 작업실에서 다룹니다. 데스크톱 앱은 자체 C++20 오디오 엔진으로 Windows의 ASIO·WASAPI, macOS의 Core Audio에서 동작하며 VST3 플러그인을 불러올 수 있습니다. 현재는 **개발 프리뷰** 단계입니다.
 
-<p align="center">
-  <strong>우리의 소리와 색을 담은, 100% 국산 DAW.</strong><br>
-  MIDI 작곡부터 오디오 녹음, 피치 편집, 믹싱과 WAV 출력까지.<br>
-  한국에서 만드는 오픈소스 음악 작업실을 브라우저에서 만나세요.
-</p>
+<!-- TODO: 홈페이지 주소가 확정되면 아래 "홈페이지" 문구를 링크로 바꾸세요. 예: [홈페이지](https://...) -->
+기능 소개와 자세한 설치·사용 안내는 **홈페이지**에서 확인할 수 있습니다.
 
-<p align="center">
-  <a href="#features">주요 기능</a> ·
-  <a href="#pitch-editor">피치 편집</a> ·
-  <a href="#gugak">국악 프로젝트</a> ·
-  <a href="#themes">한국의 색</a> ·
-  <a href="#ai">AI 연결</a> ·
-  <a href="#quick-start"><strong>시작하기</strong></a>
-</p>
+## 다운로드와 설치
 
----
-왜 프로듀싱 강국 한국에서 정통 국산 DAW는 없을까? 왜 오픈소스 DAW는 기능이 다 별로일까? 왜 DAW는 비싸게 돈주고 사야만 할까?<br/>
-**답답해서 직접 만들었습니다!** 
+**[GitHub Releases에서 최신 버전 받기 →](https://github.com/songchez/garak-ieum/releases)**
 
-가야금 한 줄에서 시작한 아이디어를 드럼과 베이스에 얹고, 녹음한 멜로디의 음정을 다듬어 한 곡으로 완성하세요. **가락이음**은 음악을 만들고 고치는 과정을 하나의 작업실로 이어줍니다.
-
-| **15가지 내장 악기** | **6가지 이펙트** | **6가지 한국적 테마** | **3개의 국악 샘플 프로젝트** |
-| :---: | :---: | :---: | :---: |
-| 합성 악기 6 + 샘플 악기 9 | EQ부터 리버브까지 | 새벽 한옥부터 백자와 수묵까지 | 붐뱁 · 트랩 · 퓨전 국악 |
-
-**네이티브 악기: [IEUM WAVE · 이음 웨이브](docs/IEUM_WAVE.md)** — 세 개의 웨이브테이블과 사용자 파형·변조 편집기를 제공합니다. 데스크톱의 공통 네이티브 엔진에 연결되어 Windows WASAPI·ASIO와 macOS Core Audio에서 미리 듣기·타임라인 재생·WAV 출력을 처리합니다. 브라우저에서는 음색 편집·저장을 지원합니다.
-
-**[MIDI 파일 가져오기](docs/MIDI_IMPORT.md)** — `.mid`·`.midi` 파일을 선택하거나 타임라인에 놓아 편집 가능한 트랙·음표로 가져옵니다. Type 0/1 PPQ, 채널별 분리와 서스테인을 지원하며, 기존 악기 트랙에 단일 파트를 놓으면 그 음색을 유지합니다.
-
-<a id="pitch-editor"></a>
-
-## 녹음한 멜로디도, 음표처럼 편집하세요
-
-**오디오 피치 편집기를 기본으로 제공합니다.** 보컬과 독주 오디오를 음표와 피치 곡선으로 분석하고, 원하는 음을 골라 음높이를 다듬을 수 있습니다. MIDI를 고치듯 음표를 드래그하거나 센트 값을 입력하고, 음계와 보정 강도로 음정 중심을 조절하세요.
-
-<p align="center">
-  <img src="docs/assets/readme/pitch-workflow.svg" alt="피치 편집 개념도: 오디오의 음표와 곡선 분석, 음표별 음높이 편집, 적용 후 재생과 원본 보존" width="1200">
-</p>
-<p align="center"><sub>피치 편집의 작업 흐름을 설명하는 개념도입니다. 실제 앱 스크린샷이 아닙니다.</sub></p>
-
-| 할 수 있는 일 | 편집 방식 |
-| --- | --- |
-| **음표와 피치 곡선 분석** | 녹음하거나 가져온 오디오에서 음표 구간과 음높이 흐름을 확인합니다. |
-| **반음·센트 단위 이동** | 음표를 위아래로 드래그하거나 값을 입력합니다. 음표별 ±12반음까지 조절합니다. |
-| **다중 선택·분할·합치기** | 여러 음을 함께 다듬거나 분석된 음표의 구간을 나눕니다. |
-| **음계에 맞춘 보정** | 기준음, 반음계·장음계·자연 단음계, 보정 강도 0~100%를 선택합니다. |
-| **원본 보존과 되돌리기** | 편집 적용 후 재생·Undo/Redo·프로젝트 저장·WAV 출력으로 이어지며 원본을 복원할 수 있습니다. |
-| **실험적 포먼트 도구** | 피치 이동 시 포먼트 보존, 음표별 포먼트 이동으로 음색을 조절합니다. |
-
-**현재 대상:** 원본 파일 전체가 **60초 이하**인 단선율 보컬·독주, 모노/스테레오. 소리의 변화는 **편집 적용 후** 재생됩니다. 포먼트 보존·이동은 실험 기능이며, 보존은 기본으로 꺼져 있습니다.
-
-[피치 편집기 사용법 →](docs/PITCH_EDITOR.md) · [처음 적용해 보기 →](docs/GETTING_STARTED.md#3-오디오를-음표처럼-피치-편집하기)
-
-<a id="features"></a>
-
-## 아이디어부터 완성된 편곡까지
-
-| 작곡과 편곡 | 녹음과 오디오 |
-| --- | --- |
-| **피아노롤에서 만드는 멜로디와 리듬**<br>음표 추가·이동·길이·벨로시티 편집, 퀀타이즈와 스윙, 리전 조옮김을 지원합니다. | **마이크와 파일을 작업실로**<br>오디오 파일 가져오기와 드롭, 파형 표시, 마이크 녹음, 녹음 대기와 입력 모니터링을 제공합니다. |
-| **리전으로 다듬는 곡의 흐름**<br>다중 선택, 복사·복제, 좌우 트림, 분할·합치기, 반복·뮤트·루프, 사이클과 마커를 사용합니다. | **원본을 보존하는 편집**<br>오디오 리전의 게인·딜레이·페이드와 피치 편집을 적용하고, 프로젝트 편집 이력으로 되돌릴 수 있습니다. |
-| **익숙한 DAW 작업 방식**<br>스마트 스냅, 겹침/겹치지 않음, 왼쪽 인스펙터, 트랙 헤더 설정과 96색 팔레트를 제공합니다. | **작업 환경에 맞춘 설정**<br>입력 장치, 브라우저 지원 시 출력 장치, 지연 우선순위, 입력 레벨 테스트와 프로젝트 샘플레이트를 설정합니다. |
-
-### 가야금에서 808까지, 바로 꺼내 쓰는 악기
-
-**15가지 내장 악기**로 멜로디·리듬·베이스를 쌓아보세요. 라이브러리에서 악기를 미리듣고 트랙에 추가할 수 있습니다.
-
-| 악기군 | 구성 |
-| --- | --- |
-| **국악** | 가야금 · 해금 · 대금 · 사물놀이 — 꽹과리, 징, 장구, 북 |
-| **샘플 건반** | 그랜드 피아노 · Wurlitzer 전기 피아노 |
-| **샘플 드럼** | 어쿠스틱 · 808 · 로파이 드럼 키트 |
-| **합성 악기** | 벨벳 키 · 틴 전기 피아노 · 모노 베이스 · 포켓 드럼 · 클라우드 패드 · 글라스 플럭 |
-
-국악 음원은 **국립국악원** 출처의 샘플을 사용합니다. 악기별 원본 출처와 이용 조건은 [제3자 자산 안내](THIRD_PARTY_NOTICES.md)에서 확인할 수 있습니다.
-
-### 여섯 가지 이펙트로 완성하는 사운드
-
-**EQ · 필터 · 컴프레서 · 드라이브 · 딜레이 · 리버브**를 트랙별 디바이스 체인에 추가하고, 순서를 바꾸거나 바이패스하세요. 여섯 이펙트는 각각의 정의와 오디오 처리를 가진 모듈로 구성되어 있습니다.
-
-믹서에서는 트랙의 **볼륨·팬·뮤트·솔로·Solo Safe**, 마스터 볼륨과 실제 신호 미터를 다룹니다. 최종 편곡은 **스테레오 16-bit PCM WAV**로 내보낼 수 있습니다.
-
-### 기타를 연결하는 앰프 작업실
-
-**새 트랙 → 기타**를 선택하면 내장 기타 앰프가 연결된 오디오 트랙을 만듭니다. 전용 편집 화면에서 이미지 노브와 페달 스위치로 **컴프 · 오버드라이브 · 앰프 · 캐비닛/마이크 · 코러스 · 딜레이**를 조절하세요. 마이크 종류·중앙에서 가장자리까지의 위치·거리 성향도 음색에 반영됩니다. 설정은 프로젝트와 함께 저장되고, 입력 모니터링·리전 재생·WAV 출력에 같은 처리를 적용합니다.
-
-현재 앰프·캐비닛·마이크는 자체 알고리즘 모델입니다. 실측 IR이나 특정 실물 장비의 캡처를 포함하지 않습니다. [기타 앰프 사용법과 구현 범위 →](docs/GUITAR_RIG.md)
-
-<a id="gugak"></a>
-
-## 첫 곡은, 세 개의 국악 프로젝트에서
-
-빈 화면이 막막할 때는 준비된 편곡을 열어보세요. 세 곡 모두 **트랙·음표·리전·악기·이펙트를 직접 바꿀 수 있는 오리지널 MIDI 프로젝트**입니다. 열 때마다 독립된 새 작업을 만듭니다.
-
-| **마당의 결** | **검은 물결** | **달빛 행렬** |
+| 운영체제 | 설치 파일 | 설치 방법 |
 | --- | --- | --- |
-| **국악 붐뱁** | **국악 트랩** | **퓨전 국악** |
-| 92 BPM · 40마디 · 10트랙 | 144 BPM · 48마디 · 11트랙 | 118 BPM · 40마디 · 11트랙 |
-| 느슨한 스윙 위에 가야금이 말을 걸고 북과 장구가 대답합니다. | 짧게 뜯는 가야금과 묵직한 서브 베이스, 하프타임 클랩과 하이햇 롤을 엮었습니다. | 두 베이스의 엇박 위에서 대금과 해금, 사물 타악과 밴드가 주고받습니다. |
+| Windows 64비트 (x64) | `Garak-Ieum-Setup-<버전>-x64.exe` | 설치 파일을 실행하고 안내를 따릅니다. |
+| macOS Apple Silicon (M 시리즈) | `Garak-Ieum-Setup-<버전>-arm64.dmg` | DMG를 열고 `가락이음.app`을 응용 프로그램 폴더로 옮깁니다. |
 
-**프로젝트 선택 → 샘플 프로젝트 → 선택한 편곡 열기**로 시작하세요. 내 프로젝트와 샘플은 같은 타일·상세 정보·열기 방식으로 탐색할 수 있습니다.
+- Intel Mac과 Linux용 설치 파일은 제공하지 않습니다.
+- 설치한 앱을 실행할 때 Node.js나 pnpm은 필요하지 않습니다.
+- 프리뷰 빌드는 Windows 배포자 서명과 Apple Developer ID 서명·공증을 받지 않았습니다. 처음 실행할 때 SmartScreen 또는 Gatekeeper 안내가 나타날 수 있습니다.
+- 각 릴리스에는 설치 파일과 같은 커밋의 소스 ZIP(`Garak-Ieum-Source-…zip`)과 SHA-256 체크섬이 함께 있습니다. 소스 ZIP은 설치용이 아닙니다.
 
-참고곡의 녹음·멜로디·가사를 복제하지 않고 새로 작성했습니다. [곡별 섹션·악기 역할·참고 자료 →](docs/SAMPLE_PROJECTS.md)
+OS별 상세 안내: [Windows](docs/DESKTOP.md) · [macOS](docs/MACOS.md) · [AI 연결(MCP)](docs/MCP.md)
 
-<a id="themes"></a>
+## 소스에서 빌드하기
 
-## 한국의 색으로 꾸민 여섯 작업실
-
-한옥의 기와, 백자의 유백색, 고려청자의 비색, 한복의 천연염색에서 작업실의 색을 가져왔습니다. **헤더의 설정(톱니바퀴) → 화면 테마**에서 취향에 맞는 분위기를 선택하세요.
-
-<p align="center">
-  <img src="docs/assets/korean-theme-presets.png" alt="새벽 한옥, 단청, 백자와 수묵, 고려비색과 상감, 천연염색 한복, 돌담과 기와의 여섯 테마 색 배치 설계 자료" width="1000">
-</p>
-<p align="center"><sub>실제 테마 색상 토큰을 바탕으로 만든 색 배치 설계 자료입니다. 실제 앱 스크린샷이 아닙니다.</sub></p>
-
-| 테마 | 작업실의 분위기 |
-| --- | --- |
-| **새벽 한옥** | 먹빛 바탕에 한지와 청자빛을 더한 기본 테마 |
-| **단청** | 뇌록·석간주·장단·삼청·황단의 깊고 선명한 대비 |
-| **백자와 수묵** | 유백과 한지, 농묵과 청화로 정리한 밝은 작업실 |
-| **고려비색과 상감** | 청자의 옥빛과 흑백 상감에서 가져온 차분한 색 |
-| **천연염색 한복** | 쪽빛·홍화·치자·소목·옥색의 부드러운 조화 |
-| **돌담과 기와** | 기와·화강석·황토·솔잎의 따뜻한 중성색 |
-
-작은 삼태극 북 로고, 덕온공주체 워드마크, 기와 형태의 한 줄 헤더와 **Lucide 아이콘**이 가락이음의 모습을 만듭니다. 선택한 테마는 즉시 적용되고 이 브라우저에 저장됩니다.
-
-[테마와 색 배치 자세히 보기 →](docs/THEMES.md) · [브랜드 이야기 →](docs/BRAND.md)
-
-<a id="ai"></a>
-
-## AI에게 설명하고, 편집 가능한 음악으로 받으세요
-
-가락이음은 **로컬 MCP 연결**을 통해 AI가 현재 프로젝트를 읽고, 트랙·리전·믹싱을 편집할 수 있도록 만듭니다. 연결한 MCP 클라이언트에서 이런 작업을 요청할 수 있습니다.
-
-> “가야금 트랙을 만들고, 8마디짜리 MIDI 초안을 넣어 주세요.”
->
-> “선택한 트랙의 볼륨을 3dB 낮추고 팬을 왼쪽으로 조금 옮겨 주세요.”
->
-> “변경할 내용을 먼저 보여주고, 적용한 뒤 한 번에 되돌릴 수 있게 해 주세요.”
-
-현재 **7개 도구와 19개 편집 명령**을 제공합니다. 프로젝트·선택·악기 조회, MIDI 리전 생성, 트랙·리전·믹서·이펙트 편집, 변경 미리 보기, 일괄 적용과 Undo를 지원합니다. **AI 편집 허용**을 끄면 조회와 미리 보기만 사용할 수 있습니다.
-
-AI는 사용자가 연결한 **외부 로컬 MCP 클라이언트**에서 동작합니다. 현재는 편집 가능한 MIDI와 명령을 다루며, 음원을 듣고 평가하는 기능이나 내장 음악 생성 모델·작곡 코드 실행기는 포함하지 않습니다.
-
-[AI·MCP 연결하기 →](docs/MCP.md) · [작곡 언어 비교 실험 →](docs/COMPOSITION_LANGUAGE_POC.md)
-
-<a id="quick-start"></a>
-
-## 지금 시작하기
-
-**Node.js 24.x 권장 · pnpm 11.25.0 · 데스크톱 브라우저**를 준비하세요. Node.js 22.x를 사용한다면 22.12 이상이 필요합니다.
+**Node.js 24.x**, **pnpm 11.25.0**, **CMake 3.25 이상**이 필요합니다. Windows는 Visual Studio 2022(또는 Build Tools)의 C++ 데스크톱 개발 도구와 Windows SDK, macOS는 Apple Silicon Mac과 Xcode Command Line Tools를 준비합니다.
 
 ```bash
 git clone https://github.com/songchez/garak-ieum.git
 cd garak-ieum
 pnpm install --frozen-lockfile
-pnpm dev
+
+pnpm desktop:dev          # 네이티브 엔진·앱을 빌드하고 Electron 창 실행
+pnpm desktop:build        # Windows x64 설치 파일(.exe)
+pnpm desktop:build:mac    # macOS arm64 DMG
+pnpm dev                  # 브라우저 데모만 실행 (Web Audio)
 ```
 
-터미널에 표시된 **Local 주소**를 열고 **샘플 프로젝트**에서 한 곡을 고르세요. 편집기의 재생 버튼이나 **Space**로 음악을 시작할 수 있습니다.
+검사 명령과 서명·배포 절차는 [데스크톱 안내](docs/DESKTOP.md#4-소스에서-실행하고-빌드하기)와 [릴리스 절차](docs/RELEASING.md)를 참고하세요.
 
-<details>
-<summary><strong>Windows에서 pnpm을 찾지 못하거나 npm 설치 오류가 난다면</strong></summary>
+## 아키텍처
 
-프로젝트 폴더에서 아래 명령으로 고정된 pnpm 버전을 실행하세요.
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="가락이음 핵심 구조: React UI와 MCP 서버가 ProjectSession을 통해 프로젝트를 편집하고, 오디오 엔진 인터페이스가 브라우저에서는 WebAudioEngine, 데스크톱에서는 Electron IPC를 거쳐 C++ garak-audio-host를 사용합니다." width="900">
+</p>
 
-```powershell
-npx.cmd --yes pnpm@11.25.0 install --frozen-lockfile
-npx.cmd --yes pnpm@11.25.0 dev
-```
+- **하나의 프로젝트 모델** — 화면(React)과 AI(MCP) 편집 모두 `src/core`의 `ProjectSession`과 검증된 명령을 거칩니다. 프로젝트는 직렬화 가능한 데이터이며 Undo/Redo 이력을 공유합니다.
+- **로컬 저장** — 프로젝트와 원본 오디오는 IndexedDB에 자동 저장되고, `.garak` 파일로 내보내 다른 기기에서 이어서 편집할 수 있습니다. 계정·클라우드 백엔드는 없습니다.
+- **두 개의 오디오 백엔드** — `engineFactory`가 데스크톱에서는 `NativeAudioEngine`, 브라우저에서는 `WebAudioEngine`을 선택합니다. 데스크톱에서 네이티브 엔진을 쓸 수 없으면 오류를 표시하며 Web Audio로 조용히 대체하지 않습니다.
+- **별도 프로세스의 C++ 엔진** — `garak-audio-host`가 장치 callback, 악기·이펙트·기타 앰프·VST3, 지연 보상, 녹음과 WAV 출력을 맡습니다. 타임라인은 미리 샘플 프레임으로 변환되어 매 버퍼가 JavaScript나 IPC 응답을 기다리지 않습니다.
+- **오프라인 처리** — 피치 편집(Signalsmith WASM)과 오디오 워프는 Worker에서 새 PCM 자산을 렌더링하고, 원본은 그대로 보존합니다.
 
-이 저장소는 **pnpm과 pnpm-lock.yaml**로 의존성을 관리합니다. `npm i`의 `workspace:` 오류나 설치 중단 후 `lucide-react` 오류가 보이면 개발 서버를 멈추고 설치를 완료한 뒤 다시 실행하세요.
+자세한 설명: [아키텍처](docs/ARCHITECTURE.md) · [네이티브 오디오](docs/NATIVE_AUDIO.md)
 
-</details>
+## 문서
 
-[설치부터 첫 편곡까지 전체 가이드 →](docs/GETTING_STARTED.md)
-
-### 내 작업은 프로젝트로, 결과물은 WAV로
-
-프로젝트는 이 브라우저의 **IndexedDB에 자동 저장**됩니다. 기본 주소 `/`에서 작업을 고르고, `/projects/:id`로 해당 프로젝트를 다시 엽니다.
-
-- **계속 편집할 작업:** 원본 오디오를 포함한 `.garak` 프로젝트 파일로 내보내고 다시 가져옵니다.
-- **감상·공유할 결과:** 편곡 전체를 스테레오 WAV로 내보냅니다.
-- **다른 기기나 브라우저로 이동:** `.garak` 파일을 사용합니다. 프로젝트 URL은 현재 브라우저·사이트의 저장본을 가리킵니다.
-
-중요한 작업은 `.garak` 파일로도 보관해 주세요. 마이크 녹음과 피치 원본 확인에는 **HTTPS 또는 localhost** 환경이 필요합니다.
-
-<a id="docs"></a>
-
-## 더 깊이 알아보기
-
-| 만들고 싶은 것 | 안내 |
+| 주제 | 문서 |
 | --- | --- |
-| 첫 프로젝트와 편곡 | [시작하기](docs/GETTING_STARTED.md) |
-| 보컬·독주 음정 편집 | [피치 편집기](docs/PITCH_EDITOR.md) |
-| 기타 연결과 앰프·페달 | [내장 기타 앰프](docs/GUITAR_RIG.md) |
-| 국악 비트와 샘플 활용 | [샘플 프로젝트](docs/SAMPLE_PROJECTS.md) · [음원 규격](docs/SAMPLES.md) |
-| AI와 함께 편집 | [MCP 연결](docs/MCP.md) · [작곡 언어 실험](docs/COMPOSITION_LANGUAGE_POC.md) |
-| 빠른 키보드 작업 | [단축키](docs/SHORTCUTS.md) |
-| 녹음 장치와 샘플레이트 | [오디오 설정](docs/GETTING_STARTED.md#4-마이크와-오디오-인터페이스-설정하기) |
-| 테마와 디자인 | [여섯 테마](docs/THEMES.md) · [브랜드](docs/BRAND.md) |
-| 코드와 배포 | [아키텍처](docs/ARCHITECTURE.md) · [배포 안내](docs/DEPLOYMENT.md) |
-| Windows 앱 설치·빌드 | [데스크톱 안내](docs/DESKTOP.md) · [네이티브 오디오 계획](docs/NATIVE_AUDIO.md) |
-| macOS 앱 설치·빌드 | [Apple Silicon DMG 안내](docs/MACOS.md) |
-| 라이선스·대응 소스·재배포 | [GPL 배포 안내](docs/LICENSING.md) · [제3자 자산 안내](THIRD_PARTY_NOTICES.md) |
-| 현재 구현과 남은 작업 | [구현 상태](docs/IMPLEMENTATION_STATUS.md) · [상호작용 명세](docs/INTERACTION_SPEC.md) |
+| 시작하기와 기본 사용법 | [GETTING_STARTED](docs/GETTING_STARTED.md) · [단축키](docs/SHORTCUTS.md) |
+| 기능별 안내 | [피치 편집기](docs/PITCH_EDITOR.md) · [기타 앰프](docs/GUITAR_RIG.md) · [이음 웨이브](docs/IEUM_WAVE.md) · [MIDI 가져오기](docs/MIDI_IMPORT.md) |
+| AI 연결 | [MCP](docs/MCP.md) |
+| 구조와 구현 상태 | [아키텍처](docs/ARCHITECTURE.md) · [네이티브 오디오](docs/NATIVE_AUDIO.md) · [구현 상태](docs/IMPLEMENTATION_STATUS.md) · [로드맵](docs/ROADMAP.md) |
+| 배포와 라이선스 | [릴리스 절차](docs/RELEASING.md) · [GPL 배포 안내](docs/LICENSING.md) |
 
-<a id="development"></a>
+전체 문서는 [`docs/`](docs/) 폴더에 있습니다. 오류 제보와 의견은 [이슈](https://github.com/songchez/garak-ieum/issues)에 남겨 주세요.
 
-## 함께 완성하는 음악 작업실
+## 라이선스
 
-가락이음은 **0.1.2 개발 프리뷰**입니다. 실제로 재생·편집할 수 있는 웹 DAW를 만들고 있으며, **1.0은 웹 편집기와 오디오 엔진**, **2.0은 로컬 네이티브 호스트를 통한 플러그인 연결**을 목표로 합니다.
-
-<details>
-<summary><strong>현재 지원 범위와 앞으로의 방향</strong></summary>
-
-- **현재:** MIDI 파일 가져오기·피아노롤, 오디오 녹음·편집, 단선율 피치 편집, 이음웨이브 네이티브 재생, 내장 악기와 이펙트, 로컬 프로젝트 저장, 제한된 MCP 편집 명령을 제공합니다.
-- **다음 단계:** MIDI 파일 내보내기·외부 MIDI 장치, 메트로놈·카운트인, 오토메이션·템포 맵, 작곡 코드 실행과 MCP 범위 확대를 다듬습니다.
-- **장기 방향:** 네이티브 VST/AU/CLAP 연결을 위한 로컬 호스트를 연구합니다.
-- 다성음 분리, 타이밍·드리프트·비브라토 개별 보정, 실시간 피치 보정은 현재 제공하지 않습니다. 포먼트 도구는 실험 단계입니다.
-- 프로젝트 저장은 브라우저 로컬입니다. 클라우드 동기화·실시간 공동 편집·계정 기능은 현재 제공하지 않습니다.
-- 브라우저·장치별 오디오 동작과 청감 품질은 검증을 이어가고 있습니다. 정식 배포 수준의 안정성 검증 완료를 뜻하지 않습니다.
-
-정확한 범위와 검증 기록은 [구현 상태](docs/IMPLEMENTATION_STATUS.md)에서 확인할 수 있습니다.
-
-</details>
-
-오류 제보, 사용성 의견, 코드 기여를 환영합니다. [이슈](https://github.com/songchez/garak-ieum/issues)에 **사용한 브라우저·재현 순서·기대한 동작**을 남겨 주세요. 코드 변경에는 다음 명령을 사용합니다.
-
-```bash
-pnpm test
-pnpm build
-pnpm mcp:build
-```
-
-화면은 **React · TypeScript · Vite · Electron**, 데스크톱 오디오는 **자체 C++20 엔진**을 사용합니다. Windows의 ASIO/WASAPI와 Apple Silicon의 Core Audio에서 내장 악기·샘플·이펙트·기타 앰프·VST3·믹서·모니터링·녹음·WAV 출력을 같은 그래프로 처리합니다. Web Audio는 브라우저 데모와 압축 파일의 일회성 디코딩에 남으며, 피치의 오프라인 처리에는 Worker와 Signalsmith WASM을 사용합니다. [오디오 구조와 검증 범위](docs/NATIVE_AUDIO.md)
-
-## 라이선스와 크레딧
-
-앱 코드와 오리지널 MIDI 편곡 코드는 [GNU GPL v3.0 only (`GPL-3.0-only`)](LICENSE)로 제공합니다. ASIO SDK는 GPLv3 경로로 도입했으며, 설치물에 네이티브 호스트와 의존성 고지를 포함합니다. 같은 빌드의 대응 소스 ZIP에는 ASIO·VST3·miniaudio·JSON 라이브러리의 검증된 원본 소스도 함께 제공합니다. 실제 장치의 왕복 지연과 개별 플러그인 호환성은 [네이티브 오디오 검증 범위](docs/NATIVE_AUDIO.md)에서 구분합니다.
-
-이전에 MIT로 제공한 코드의 [저작권·허가 고지](public/licenses/garak-ieum-MIT-notice.txt)를 보존합니다. 이미 MIT 조건으로 받은 복사본의 권리는 소급해 취소하지 않습니다. 아이콘·글꼴·샘플 음원·외부 라이브러리는 각각의 원래 라이선스와 고지를 유지합니다.
-
-Windows 설치에는 **`.exe` 설치 파일**을 사용합니다. 같은 빌드의 `Garak-Ieum-Source-<버전>-<커밋 앞 12자리>.zip`은 코드 확인·수정·재빌드를 위한 **대응 소스**이며 앱 설치용 파일이 아닙니다. 실행 파일을 재배포할 때는 그 버전에 해당하는 소스와 빌드 스크립트, 라이선스 고지도 함께 제공할 수 있어야 합니다. [설치 파일 받기](docs/DESKTOP.md#1-설치-파일-받기) · [GPL 배포 안내](docs/LICENSING.md)
-
-국립국악원의 국악 음원, Lucide 아이콘, 덕온공주체 워드마크, Signalsmith DSP와 함께 가락이음을 만듭니다. 전체 출처와 사용 조건은 [제3자 자산 안내](THIRD_PARTY_NOTICES.md)에 정리했습니다.
+앱 코드는 [GNU GPL v3.0 only (`GPL-3.0-only`)](LICENSE)로 제공합니다. 이전에 MIT로 제공한 코드의 [고지](public/licenses/garak-ieum-MIT-notice.txt)를 보존합니다. 국립국악원 국악 음원, Lucide 아이콘, 덕온공주체 워드마크, Signalsmith DSP 등 제3자 자산은 각각의 원래 라이선스를 따르며 [제3자 자산 안내](THIRD_PARTY_NOTICES.md)에 정리했습니다. 설치 파일을 재배포할 때의 대응 소스 제공 방법은 [GPL 배포 안내](docs/LICENSING.md)를 확인하세요.
 
 <p align="center"><strong>우리의 가락을, 당신의 음악으로.</strong><br><sub>가락이음 · Garak Ieum</sub></p>

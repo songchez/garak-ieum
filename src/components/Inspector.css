@@ -168,3 +168,24 @@
 .input-remap-list{display:flex;flex-direction:column;gap:8px;max-height:50vh;overflow:auto}
 .input-remap-list .new-tracks-row>span:first-child{flex:0 0 150px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .input-remap-list small{display:block;color:var(--text-muted);font-size:9px}
+.insp-warp{display:flex;flex-direction:column;gap:3px;margin:3px 0;padding:4px 0;border-top:1px solid var(--border-subtle);border-bottom:1px solid var(--border-subtle)}
+.insp-warp-actions{gap:4px;padding-left:78px}
+.insp-warp-actions button,.insp-warp-adopt{height:20px;padding:0 7px;border:1px solid var(--border-default);border-radius:4px;background:var(--surface-raised);color:var(--text-secondary);font-size:10px;white-space:nowrap}
+.insp-warp-actions button:hover:not(:disabled),.insp-warp-adopt:hover:not(:disabled){color:var(--text-primary);border-color:var(--accent)}
+.insp-warp-actions button:disabled,.insp-warp-adopt:disabled{opacity:.45;cursor:default}
+.insp-warp-adopt{align-self:flex-start;margin-left:78px}
+.insp-warp-status{color:var(--text-muted);font-size:9px;line-height:1.35;padding-left:78px}
+/* Channel strip polish: buttons share the strip width, one clean fader cap, unity as a side tick. */
+.cstrip .cstrip-buttons{width:100%;min-width:0}
+.cstrip .track-buttons--strip{display:flex;width:100%;gap:2px;justify-content:center}
+.cstrip .track-buttons--strip>button{flex:1 1 0;min-width:0;max-width:22px;padding:0;overflow:hidden}
+.cstrip .volume-slider--vertical .volume-track{width:6px;border-radius:3px;background:var(--surface-sunken,#0003);box-shadow:inset 0 0 0 1px var(--border-subtle)}
+.cstrip .volume-slider--vertical .volume-meter{left:1px;width:4px;border-radius:2px}
+.cstrip .volume-slider--vertical .volume-unity{left:-9px;right:auto;width:5px;height:1px;background:var(--text-muted)}
+.cstrip .volume-slider--vertical .volume-thumb{left:50%;right:auto;width:24px;height:12px;margin:0 0 -6px -12px;border-radius:3px;background:linear-gradient(var(--ink-90,#e6e3d8),var(--ink-54,#8d8a7e));border:1px solid #0007;box-shadow:0 2px 4px #0008}
+.cstrip .volume-slider--vertical .volume-thumb::after{content:"";position:absolute;left:3px;right:3px;top:50%;height:1px;margin-top:-.5px;background:#0009}
+.cstrip .volume-slider--vertical:focus-visible .volume-thumb{outline:2px solid var(--accent);outline-offset:1px}
+/* Mixer in a short editor panel: the fader shrinks first so the name bar stays visible. */
+.mixer .cstrip{min-height:0;overflow:hidden}
+.mixer .cstrip.compact .cstrip-fader{flex:1 1 var(--fader-h,110px);min-height:28px}
+.mixer .cstrip .cstrip-name{flex-shrink:0}

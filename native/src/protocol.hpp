@@ -173,6 +173,8 @@ inline ProjectTimeline timeline(const Json& value) {
       w.gain = static_cast<float>(number(a, "gain", 0, 16, 1));
       w.fadeInFrames = integer(a, "fadeInFrames", 0, w.clipLengthFrames, 0);
       w.fadeOutFrames = integer(a, "fadeOutFrames", 0, w.clipLengthFrames, 0);
+      w.fadeInCurve = static_cast<std::int32_t>(integer(a, "fadeInCurve", 0, 4, 0));
+      w.fadeOutCurve = static_cast<std::int32_t>(integer(a, "fadeOutCurve", 0, 4, 0));
       t.audio.push_back(std::move(w));
     }
     p.tracks.push_back(std::move(t));

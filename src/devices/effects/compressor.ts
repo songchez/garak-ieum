@@ -3,7 +3,7 @@ import { clamp } from '../../audio/math.js'
 import { parameterReader, setParameter, dbToGain, noTail } from './shared.js'
 
 const definition: EffectDef = {
-  name: '컴프레서', short: '컴프',
+  name: 'Glue 76', short: '컴프', label: '컴프레서',
   params: [
     { id: 'threshold', label: '스레숄드', min: -60, max: 0, default: -18, unit: 'db' },
     { id: 'ratio', label: '비율', min: 1, max: 20, default: 4, unit: 'ratio', scale: 'log' },

@@ -80,7 +80,7 @@ export function formatParam(def: ParamDef, value: number): string {
   if (option) return option.label
   const sign = (n: number) => (n > 0 ? '+' : n < 0 ? '−' : '')
   switch (def.unit) {
-    case 'hz': return value >= 1000 ? `${(value / 1000).toFixed(value >= 10000 ? 1 : 2)} kHz` : `${Math.round(value)} Hz`
+    case 'hz': return value >= 1000 ? `${(value / 1000).toFixed(value >= 10000 ? 1 : 2)} kHz` : `${value < 10 ? value.toFixed(value < 1 ? 2 : 1) : Math.round(value)} Hz`
     case 'db': return `${sign(value)}${Math.abs(value).toFixed(1)} dB`
     case 's': return value < 1 ? `${Math.round(value * 1000)} ms` : `${value.toFixed(2)} s`
     case 'ms': return `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`
@@ -90,6 +90,7 @@ export function formatParam(def: ParamDef, value: number): string {
     case 'st': return `${sign(value)}${Math.abs(value).toFixed(1)} st`
     case 'x': return `×${value.toFixed(2)}`
     case 'ratio': return `${value.toFixed(1)}:1`
+    case 'bits': return `${value.toFixed(value >= 10 ? 0 : 1)} bit`
     case 'gain': return value <= 0.0001 ? '−∞ dB' : `${sign(20 * Math.log10(value))}${Math.abs(20 * Math.log10(value)).toFixed(1)} dB`
     case 'pan': return Math.abs(value) < 0.01 ? 'C' : `${Math.round(Math.abs(value) * 100)}${value < 0 ? 'L' : 'R'}`
     default: return value.toFixed(2)

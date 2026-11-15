@@ -5,6 +5,7 @@ import { quarterNotesPerBar, validateTimeSignature } from '../../core/meter'
 import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd, playbackNotes, type Occurrence } from '../../core/playback'
 import type { EffectType, MidiClip, Project, TimeSignature, Track } from '../../core/types'
 import { loopRange } from '../math'
+import { AUDIO_CLIP_GAIN_MAX, FADE_CURVE_CODES, fadeCurveOf, fadeLengths } from '../../core/clipEnvelope.js'
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
 import type { NativePluginInstance } from './contracts'
 
@@ -27,6 +28,13 @@ export class NativeTimelineError extends Error {
 }
 
 /** Metadata for an already decoded PCM asset. Its rate can differ from the project rate. */
+/** Same proportional fade limit as the Web Audio engine (core/clipEnvelope.ts fadeLengths). */
+function fadeFrames(clipLengthFrames: number, fadeIn: number, fadeOut: number): { fadeInFrames: number; fadeOutFrames: number } {
+  const [a, b] = fadeLengths(clipLengthFrames, fadeIn, fadeOut)
+  const fadeInFrames = Math.min(clipLengthFrames, Math.round(a))
+  return { fadeInFrames, fadeOutFrames: Math.min(clipLengthFrames - fadeInFrames, Math.round(b)) }
+}
+
 export interface NativePcmAsset {
   readonly id: string
   readonly sampleRate: number
@@ -88,6 +96,9 @@ export interface NativeAudioWindow {
   readonly gain: number
   readonly fadeInFrames: number
   readonly fadeOutFrames: number
+  /** FADE_CURVE_CODES: 0 linear, 1 equal power, 2 S-curve, 3 exponential, 4 logarithmic. */
+  readonly fadeInCurve: number
+  readonly fadeOutCurve: number
 }
 
 export interface NativeTrackInput {
@@ -282,7 +293,7 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
         }
       }
     }
-    for (const window of audioWindows(track, lengthBeats)) {
+    for (const window of audioWindows(track, lengthBeats, bpm)) {
       const originFrame = Math.round(number(window.start, -10_000_000, 20_000_000, 'audio onset') * framesPerBeat)
       const windowEnd = Math.min(lengthFrames, Math.round(number(window.end, -10_000_000, 20_000_000, 'audio end') * framesPerBeat))
       if (windowEnd <= 0 || originFrame >= lengthFrames) continue
@@ -297,9 +308,9 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
       if (endFrame <= startFrame) continue
       audio.push({ id: nextId++, clipId: clip.id, assetId: asset.id, startFrame, endFrame,
         sourceStartFrame: sourceBase + clipOffsetFrames * asset.sampleRate / sampleRate, sourceSampleRate: asset.sampleRate,
-        clipOffsetFrames, clipLengthFrames, gain: number(clip.gain, 0, 2, 'audio gain'),
-        fadeInFrames: Math.min(Math.round(number(clip.fadeIn, 0, 10_000_000, 'fade in') * sampleRate), Math.floor(clipLengthFrames / 2)),
-        fadeOutFrames: Math.min(Math.round(number(clip.fadeOut, 0, 10_000_000, 'fade out') * sampleRate), Math.floor(clipLengthFrames / 2)) })
+        clipOffsetFrames, clipLengthFrames, gain: number(clip.gain, 0, AUDIO_CLIP_GAIN_MAX, 'audio gain'),
+        ...fadeFrames(clipLengthFrames, number(clip.fadeIn, 0, 10_000_000, 'fade in') * sampleRate, number(clip.fadeOut, 0, 10_000_000, 'fade out') * sampleRate),
+        fadeInCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeInCurve)], fadeOutCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeOutCurve)] })
     }
     notes.sort((a, b) => a.onFrame - b.onFrame || a.offFrame - b.offFrame || a.id - b.id)
     audio.sort((a, b) => a.startFrame - b.startFrame || a.id - b.id)

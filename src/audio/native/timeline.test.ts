@@ -157,14 +157,14 @@ describe('native timeline preparation', () => {
     expect(result.assets.map(item => item.id)).toEqual(['a', 'b'])
     expect(result.tracks[0].audio).toMatchObject([
       { clipId: 'first', startFrame: 0, endFrame: 48000, sourceStartFrame: 22050, sourceSampleRate: 44100,
-        clipOffsetFrames: 0, clipLengthFrames: 120000, fadeInFrames: 24000, fadeOutFrames: 60000, gain: 0.8 },
+        clipOffsetFrames: 0, clipLengthFrames: 120000, fadeInFrames: 24000, fadeOutFrames: 96000, gain: 0.8 },
       { clipId: 'later', startFrame: 48000, endFrame: 96000, sourceStartFrame: 0, clipLengthFrames: 48000 },
     ])
     original.frames = 1
     expect(result.assets[0].frames).toBe(132300)
     const middle = planNativeSeek(result, 24000).tracks[0]
     expect(middle.chasedAudio).toMatchObject([{ startFrame: 24000, endFrame: 48000, sourceStartFrame: 44100,
-      clipOffsetFrames: 24000, fadeInFrames: 24000, fadeOutFrames: 60000 }])
+      clipOffsetFrames: 24000, fadeInFrames: 24000, fadeOutFrames: 96000 }])
     const boundary = planNativeSeek(result, 48000).tracks[0]
     expect(boundary.chasedAudio).toEqual([])
     expect(boundary.nextAudioIndex).toBe(1)

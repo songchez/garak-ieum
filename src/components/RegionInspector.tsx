@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AudioClip, Clip, MidiClip } from '../core/types'
-import { QUANTIZE_VALUES } from '../core/types'
+import { QUANTIZE_VALUES, type FadeCurve } from '../core/types'
+import { AUDIO_CLIP_GAIN_MAX_DB, FADE_CURVES, FADE_CURVE_LABELS, MIDI_CLIP_GAIN_MAX, clipGainMax, fadeCurveOf, withFadeCurve, type FadeEdge } from '../core/clipEnvelope'
+import { formatFadeSeconds } from './ClipEnvelope'
+import { attachWarpTempo, disableWarp, enableWarp, setWarpSourceBpm, WARP_BPM, warpRatioSupported } from '../devices/audio-warp/state'
 
 export interface ClipEntry { trackId: string; clip: Clip }
 
@@ -8,10 +11,12 @@ export const QUANTIZE_LABELS = ['끔', '1/1', '1/2', '1/4', '1/8', '1/16', '1/32
 export const quantizeIndex = (value: number) => QUANTIZE_VALUES.findIndex(q => Math.abs(q - value) < 1e-6)
 export const ticksToMs = (ticks: number, bpm: number) => (ticks / 960) * (60000 / bpm)
 export const gainToDb = (gain: number) => gain <= 0.001 ? -60 : Math.max(-60, 20 * Math.log10(gain))
-export const dbToGain = (db: number) => db <= -60 ? 0 : Math.min(2, Math.pow(10, db / 20))
+export const dbToGain = (db: number, max = MIDI_CLIP_GAIN_MAX) => db <= -60 ? 0 : Math.min(max, Math.pow(10, db / 20))
 export const signed = (v: number) => v > 0 ? `+${v}` : v < 0 ? `−${Math.abs(v)}` : '0'
 export const formatDb = (v: number) => v <= -60 ? '−∞ dB' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)} dB`
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
+/** "250 ms", "0.25 s" or a bare number of seconds. */
+const parseSeconds = (s: string) => { const n = parseNumber(s); return n === null ? null : /ms/i.test(s) ? n / 1000 : n }
 const parseNumber = (s: string) => { const n = Number(s.replace(/[−–]/g, '-').replace(/[^\d.\-]/g, '')); return Number.isFinite(n) ? n : null }
 
 export interface ValueFieldProps {
@@ -116,6 +121,48 @@ interface Props {
   beatsPerBar?: number
   /** Applies fn to every selected clip; key merges consecutive edits into one history step. */
   onClipsEdit: (fn: (clip: Clip) => Clip, key?: string) => void
+  warp?: WarpControls
+}
+
+export interface WarpControls {
+  analyzing: boolean
+  rendering: boolean
+  onAnalyze: (clipId: string) => void
+  /** Sets the project tempo to the clip's source tempo. */
+  onAdoptTempo: (clipId: string) => void
+}
+
+/** Warp toggle, source tempo (typed, ×2, ÷2), analysis and "프로젝트 템포로 설정". */
+function WarpSection({ clip, bpm, controls, onClipsEdit }: { clip: AudioClip; bpm: number; controls: WarpControls; onClipsEdit: Props['onClipsEdit'] }) {
+  const warp = clip.warp
+  const edit = (fn: (clip: AudioClip) => AudioClip, key?: string) => onClipsEdit(c => c.kind === 'audio' && c.id === clip.id ? fn(c) : c, key)
+  const setSource = (value: number, key?: string) => edit(c => c.warp ? setWarpSourceBpm(c, value) : attachWarpTempo(c, { bpm: value, confidence: 0, firstBeatSeconds: 0 }), key)
+  const locked = !!clip.pitch
+  const unsupported = !!warp && !warp.enabled && !warpRatioSupported(warp.sourceBpm, bpm)
+  const status = locked ? '피치 편집한 리전은 워프할 수 없습니다. 피치 편집을 초기화해 주세요.'
+    : controls.analyzing ? '템포 분석 중…'
+    : warp?.enabled && controls.rendering ? '프로젝트 템포에 맞추는 중…'
+    : !warp ? '템포를 분석하거나 원본 BPM을 입력하면 워프할 수 있습니다.'
+    : unsupported ? '프로젝트 템포와 차이가 너무 커서 워프할 수 없습니다.'
+    : warp.confidence > 0 ? `감지 신뢰도 ${Math.round(warp.confidence * 100)}%` : '직접 입력한 템포'
+  return <div className="insp-warp" role="group" aria-label="워프">
+    <label className="insp-row insp-check"><span className="insp-label">워프</span>
+      <input type="checkbox" checked={!!warp?.enabled} disabled={locked || !warp || unsupported} aria-label="워프" title="켜면 리전이 프로젝트 템포를 따라 늘어나거나 줄어듭니다. 끄면 원래 타이밍으로 돌아갑니다."
+        onChange={e => edit(c => e.target.checked ? enableWarp(c, bpm) : disableWarp(c, bpm))} />
+      {warp?.enabled && <small className="insp-unit">{`${warp.sourceBpm} → ${bpm} BPM`}</small>}
+    </label>
+    <div className="insp-row"><span className="insp-label">원본 템포</span>
+      <ValueField value={warp?.sourceBpm ?? bpm} mixed={!warp} min={WARP_BPM.min} max={WARP_BPM.max} step={.1} pxPerStep={2} format={v => `${+v.toFixed(2)} BPM`} ariaLabel="원본 템포" disabled={locked}
+        onChange={next => setSource(next, `region:warp-bpm:${clip.id}`)} />
+    </div>
+    <div className="insp-row insp-warp-actions">
+      <button type="button" disabled={locked || !warp || warp.sourceBpm * 2 > WARP_BPM.max} onClick={() => warp && setSource(warp.sourceBpm * 2)} title="원본 템포 두 배" aria-label="원본 템포 두 배">×2</button>
+      <button type="button" disabled={locked || !warp || warp.sourceBpm / 2 < WARP_BPM.min} onClick={() => warp && setSource(warp.sourceBpm / 2)} title="원본 템포 절반" aria-label="원본 템포 절반">÷2</button>
+      <button type="button" disabled={locked || controls.analyzing} onClick={() => controls.onAnalyze(clip.id)} title="오디오의 박을 분석해 원본 템포를 찾습니다">템포 분석</button>
+    </div>
+    <button type="button" className="insp-warp-adopt" disabled={!warp || locked || Math.abs(warp.sourceBpm - bpm) < 1e-6} onClick={() => controls.onAdoptTempo(clip.id)} title="프로젝트 템포를 이 리전의 원본 템포로 바꿉니다">프로젝트 템포로 설정</button>
+    <small className="insp-warp-status" aria-live="polite">{status}</small>
+  </div>
 }
 
 type NumField = { get: (c: Clip) => number; set: (c: Clip, v: number) => Clip; min: number; max: number }
@@ -125,25 +172,34 @@ const FIELDS = {
   velocity: { ...midiNum('velocity', 0), min: -99, max: 99 },
   swing: { ...midiNum('swing', 50), min: 0, max: 100 },
   delay: { get: (c: Clip) => c.delayTicks ?? 0, set: (c: Clip, v: number): Clip => ({ ...c, delayTicks: v }), min: -1920, max: 1920 },
-  gain: { get: (c: Clip) => gainToDb(c.gain), set: (c: Clip, v: number): Clip => ({ ...c, gain: dbToGain(v) }), min: -60, max: 6 },
-  fadeIn: { get: (c: Clip) => c.kind === 'audio' ? c.fadeIn : 0, set: (c: Clip, v: number): Clip => c.kind === 'audio' ? { ...c, fadeIn: v } : c, min: 0, max: 30 },
-  fadeOut: { get: (c: Clip) => c.kind === 'audio' ? c.fadeOut : 0, set: (c: Clip, v: number): Clip => c.kind === 'audio' ? { ...c, fadeOut: v } : c, min: 0, max: 30 },
+  gain: { get: (c: Clip) => gainToDb(c.gain), set: (c: Clip, v: number): Clip => ({ ...c, gain: dbToGain(v, clipGainMax(c)) }), min: -60, max: AUDIO_CLIP_GAIN_MAX_DB },
+  fadeIn: { get: (c: Clip) => c.kind === 'audio' ? c.fadeIn : 0, set: (c: Clip, v: number): Clip => c.kind === 'audio' ? { ...c, fadeIn: Math.max(0, v) } : c, min: 0, max: 30 },
+  fadeOut: { get: (c: Clip) => c.kind === 'audio' ? c.fadeOut : 0, set: (c: Clip, v: number): Clip => c.kind === 'audio' ? { ...c, fadeOut: Math.max(0, v) } : c, min: 0, max: 30 },
 } satisfies Record<string, NumField>
 
-export function RegionInspector({ selection, bpm, beatsPerBar = 4, onClipsEdit }: Props) {
+export function RegionInspector({ selection, bpm, beatsPerBar = 4, onClipsEdit, warp }: Props) {
   const [more, setMore] = useState(false)
   const clips = selection.map(e => e.clip)
   const anchor = clips[0]
   if (!anchor) return null
   const allMidi = clips.every((c): c is MidiClip => c.kind === 'midi'), allAudio = clips.every((c): c is AudioClip => c.kind === 'audio')
   const mixedOf = (get: (c: Clip) => unknown) => clips.some(c => get(c) !== get(anchor))
-  function num(name: keyof typeof FIELDS, label: string, opts: { step?: number; pxPerStep?: number; format?: (v: number) => string; disabled?: boolean; after?: React.ReactNode } = {}) {
+  function num(name: keyof typeof FIELDS, label: string, opts: { step?: number; pxPerStep?: number; format?: (v: number) => string; parse?: (s: string) => number | null; disabled?: boolean; after?: React.ReactNode } = {}) {
     const f: NumField = FIELDS[name]
     const value = f.get(anchor)
     return <div className="insp-row" key={name}><span className="insp-label">{label}</span>
-      <ValueField value={value} mixed={mixedOf(f.get)} min={f.min} max={f.max} step={opts.step} pxPerStep={opts.pxPerStep} format={opts.format} ariaLabel={`리전 ${label}`} disabled={opts.disabled}
+      <ValueField value={value} mixed={mixedOf(f.get)} min={f.min} max={f.max} step={opts.step} pxPerStep={opts.pxPerStep} format={opts.format} parse={opts.parse} ariaLabel={`리전 ${label}`} disabled={opts.disabled}
         onChange={(next, _final, absolute) => { const delta = next - value; onClipsEdit(c => f.set(c, absolute ? next : clamp(f.get(c) + delta, f.min, f.max)), `region:${name}`) }} />
       {opts.after}</div>
+  }
+  function curve(edge: FadeEdge, label: string) {
+    const get = (c: Clip) => c.kind === 'audio' ? fadeCurveOf(edge === 'in' ? c.fadeInCurve : c.fadeOutCurve) : 'linear'
+    const mixed = mixedOf(get)
+    return <div className="insp-row" key={`curve-${edge}`}><span className="insp-label">{label}</span>
+      <select className="insp-select" aria-label={`리전 페이드 ${edge === 'in' ? '인' : '아웃'} 곡선`} value={mixed ? '' : get(anchor)}
+        onChange={e => { const next = e.target.value as FadeCurve; if (next) onClipsEdit(c => c.kind === 'audio' ? withFadeCurve(c, edge, next) : c) }}>
+        {mixed && <option value="">*</option>}{FADE_CURVES.map(value => <option key={value} value={value}>{FADE_CURVE_LABELS[value]}</option>)}
+      </select></div>
   }
   const quantize = allMidi ? (anchor as MidiClip).quantize ?? 0 : 0
   const qIndex = quantizeIndex(quantize)
@@ -160,13 +216,18 @@ export function RegionInspector({ selection, bpm, beatsPerBar = 4, onClipsEdit }
       {num('velocity', '벨로시티', { format: signed })}
     </>}
     {allAudio && num('gain', '게인', { step: .1, pxPerStep: 2, format: formatDb })}
+    {allAudio && <>
+      {num('fadeIn', '페이드 인', { step: .001, pxPerStep: 1, format: formatFadeSeconds, parse: parseSeconds })}
+      {curve('in', '인 곡선')}
+      {num('fadeOut', '페이드 아웃', { step: .001, pxPerStep: 1, format: formatFadeSeconds, parse: parseSeconds })}
+      {curve('out', '아웃 곡선')}
+    </>}
+    {allAudio && warp && clips.length === 1 && <WarpSection clip={anchor as AudioClip} bpm={bpm} controls={warp} onClipsEdit={onClipsEdit} />}
     <button type="button" className={`insp-more ${more ? 'open' : ''}`} onClick={() => setMore(m => !m)} aria-expanded={more}>{more ? '▾' : '▸'} 더 보기</button>
     {more && <>
       {num('delay', '딜레이', { format: v => `${signed(v)} 틱`, after: ms })}
       {allMidi && num('gain', '게인', { step: .1, pxPerStep: 2, format: formatDb })}
       {allMidi && <div className="insp-row"><span className="insp-label">클립 길이</span><b className="insp-readonly">{(anchor.lengthBeats / beatsPerBar).toFixed(2)}{mixedOf(c => c.lengthBeats) ? '*' : ''} 마디</b></div>}
-      {allAudio && num('fadeIn', '페이드 인', { step: .01, pxPerStep: 1, format: v => `${v.toFixed(2)} s` })}
-      {allAudio && num('fadeOut', '페이드 아웃', { step: .01, pxPerStep: 1, format: v => `${v.toFixed(2)} s` })}
     </>}
   </div>
 }

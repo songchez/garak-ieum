@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import {
-  Activity, AudioLines, Check, ChevronDown, ChevronLeft, ChevronRight, CircleSmall,
+  Activity, AudioLines, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleSmall, GripVertical,
   ClipboardPaste, Combine, Copy, Download, Drum, EighthNotes, ExternalLink, Eye, EyeOff,
   FileHeadphone, FilePlus, FileText, Flag, Flame, FolderOpen, Funnel, Guitar, Headphones,
   Info, Keyboard, LayoutGrid, LibraryBig, ListMusic, LocateFixed, LockKeyhole, Magnet,
@@ -9,6 +9,7 @@ import {
   Save, Scissors, Search, Settings, Sparkles, SkipBack, SlidersHorizontal, SlidersVertical,
   Snowflake, Square, SquareDashed, SquareDashedMousePointer, TextCursorInput, Trash,
   Undo2, Upload, Volume2, VolumeX, WavesHorizontal, WavesVertical, Wind, X, Zap,
+  Waves, Orbit, Tornado, AudioWaveform, ArrowUpToLine, DoorClosed, CassetteTape, Binary, UnfoldHorizontal,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -17,7 +18,7 @@ import {
 const icons: Readonly<Record<string, LucideIcon>> = {
   play: Play, pause: Pause, stop: Square, back: SkipBack, loop: Repeat2,
   volume: Volume2, 'volume-off': VolumeX, headphones: Headphones, monitor: Headphones,
-  plus: Plus, minus: Minus, chevron: ChevronDown, right: ChevronRight, left: ChevronLeft,
+  plus: Plus, minus: Minus, chevron: ChevronDown, right: ChevronRight, left: ChevronLeft, up: ChevronUp, down: ChevronDown, grip: GripVertical,
   undo: Undo2, redo: Redo2, save: Save, download: Download, upload: Upload, import: Upload,
   folder: FolderOpen, search: Search, file: FileText, 'file-plus': FilePlus, library: LibraryBig,
   keys: Piano, piano: Piano, wave: AudioLines, drum: Drum, synth: Activity, note: EighthNotes,
@@ -35,6 +36,8 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   lock: LockKeyhole, snowflake: Snowflake, eye: Eye, 'eye-off': EyeOff, dot: CircleSmall,
   eq: SlidersVertical, filter: Funnel, compressor: Minimize2,
   drive: Flame, delay: Repeat2, reverb: WavesHorizontal, 'guitar-rig': Guitar,
+  chorus: Waves, phaser: Orbit, flanger: Tornado, tremolo: AudioWaveform, limiter: ArrowUpToLine, gate: DoorClosed,
+  tape: CassetteTape, bitcrusher: Binary, utility: UnfoldHorizontal,
 }
 
 export function Icon({ name, size = 18, className = '', style }: { name: string; size?: number; className?: string; style?: CSSProperties }) {

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AudioEngine, Device, EffectType, InstrumentId, Project, Track } from '../core/types'
 import { EFFECT_DEFS, EFFECT_TYPES } from '../core/devices'
+import { effectLabel } from '../devices/effects/registry'
+import { effectDeviceName } from '../core/sigimsaeDevices'
 import { INSTRUMENTS, INSTRUMENT_SECTIONS, instrumentDef } from '../core/instruments'
 import { contrastTextColor } from '../core/colors'
 import type { TrackButtonKind, TrackButtonMods } from '../core/trackActions'
@@ -12,7 +14,7 @@ import { PanKnob } from './PanKnob'
 import { trackIcon } from './TrackInspector'
 import { useHistoryGesture } from '../core/historyGesture'
 
-const deviceName = (device: Device) => device.type === 'vst3' ? device.name : EFFECT_DEFS[device.type].name
+const deviceName = (device: Device) => device.type === 'vst3' ? device.name : effectDeviceName(device)
 
 export const formatGainDb = (v: number) => v <= 0 ? '−∞' : `${v > 1 ? '+' : ''}${(20 * Math.log10(v)).toFixed(1)}`
 const BUTTONS: TrackButtonKind[] = ['mute', 'solo', 'arm', 'monitor']
@@ -48,7 +50,7 @@ export function ChannelStrip(props: ChannelStripProps) {
   const { track, project, engine, focused, compact, onSelect } = props
   const [menu, setMenu] = useState<Menu | null>(null)
   const dragFrom = useRef<{ id: string; index: number; pointerId: number } | null>(null)
-  const insertGesture = useHistoryGesture('디바이스 순서 변경')
+  const insertGesture = useHistoryGesture('시김새 순서 변경')
   const cancelInsertDrag = useRef<(() => void) | null>(null)
   useEffect(() => () => cancelInsertDrag.current?.(), [])
   const open = (kind: Menu['kind'], e: React.MouseEvent, deviceId?: string) => { const trigger = e.currentTarget as HTMLElement; const r = trigger.getBoundingClientRect(); setMenu(m => m?.trigger === trigger ? null : { kind, deviceId, x: r.left, y: r.bottom + 2, trigger }) }
@@ -70,7 +72,7 @@ export function ChannelStrip(props: ChannelStripProps) {
   const items = (): ContextMenuItem[] => {
     if (!menu) return []
     if (menu.kind === 'instrument') return INSTRUMENT_SECTIONS.map(section => ({ label: section.title, items: INSTRUMENTS.filter(i => section.categories.includes(i.category)).map(i => ({ label: `${i.name} · ${i.nameKo}`, checked: i.id === track.instrument, onSelect: () => props.onInstrumentChange?.(id, i.id) })) }))
-    if (menu.kind === 'add') return EFFECT_TYPES.map(type => ({ label: EFFECT_DEFS[type].name, onSelect: () => props.onAddDevice?.(id, type) }))
+    if (menu.kind === 'add') return EFFECT_TYPES.map(type => ({ label: `${EFFECT_DEFS[type].name} · ${effectLabel(type)}`, onSelect: () => props.onAddDevice?.(id, type) }))
     const index = track.devices.findIndex(d => d.id === menu.deviceId), device = track.devices[index]
     if (!device) return []
     return [
@@ -109,9 +111,9 @@ export function ChannelStrip(props: ChannelStripProps) {
     <div className="cstrip-inserts" role="list" aria-label="인서트">
       {track.devices.map((device, index) => <div key={device.id} role="listitem" data-insert-index={index} className={`cstrip-slot cstrip-insert ${device.enabled ? '' : 'bypassed'}`} onPointerDown={e => insertPointerDown(e, device.id, index)} onContextMenu={e => { e.preventDefault(); stop(e); setMenu({ kind: 'device', deviceId: device.id, x: e.clientX, y: e.clientY }) }}>
         <button type="button" className={`cstrip-power ${device.enabled ? 'on' : ''}`} aria-pressed={device.enabled} aria-label={`${deviceName(device)} 켜기/끄기`} title="켜기/끄기 (바이패스)" onClick={e => { stop(e); props.onToggleDevice?.(id, device.id) }} />
-        <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); props.onOpenDevices?.(id, device.id) }} title={`${deviceName(device)} 열기`}><span>{deviceName(device)}</span></button>
+        <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); props.onOpenDevices?.(id, device.id) }} title={`${deviceName(device)}${device.type === 'vst3' ? '' : ` · ${effectLabel(device.type)}`} 열기`}><span>{deviceName(device)}</span></button>
       </div>)}
-      <button type="button" className="cstrip-slot cstrip-insert-empty" onClick={e => { stop(e); open('add', e) }} aria-label="디바이스 추가" aria-haspopup="menu" aria-expanded={menu?.kind === 'add'} title="디바이스 추가"><Icon name="plus" size={10} /></button>
+      <button type="button" className="cstrip-slot cstrip-insert-empty" onClick={e => { stop(e); open('add', e) }} aria-label="시김새 추가" aria-haspopup="menu" aria-expanded={menu?.kind === 'add'} title="시김새 추가"><Icon name="plus" size={10} /></button>
     </div>
     <div className="cstrip-slot cstrip-output" title="출력">Stereo Out</div>
     <div className="cstrip-fill" />
@@ -121,6 +123,6 @@ export function ChannelStrip(props: ChannelStripProps) {
     <div className="cstrip-fader" onClick={stop}><VolumeSlider value={track.volume} orientation="vertical" meter={{ engine, trackId: id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={volume => props.onTrackChange(id, { volume }, `${id}:volume`)} /></div>
     <button type="button" className="cstrip-icon" onClick={e => { if (props.onIconMenu) { stop(e); props.onIconMenu(id, e) } }} aria-label="트랙 아이콘" title={props.onIconMenu ? '트랙 아이콘 변경' : undefined}><Icon name={trackIcon(track)} size={14} /></button>
     <div className="cstrip-name" title={track.name} onDoubleClick={e => { if (props.onOpenColorPalette) { stop(e); props.onOpenColorPalette(id, e) } }}><span>{track.name}</span></div>
-    {menu && <ContextMenu x={menu.x} y={menu.y} items={items()} onClose={() => setMenu(null)} trigger={menu.trigger} label={menu.kind === 'instrument' ? '악기 선택' : menu.kind === 'add' ? '디바이스 추가' : '디바이스'} />}
+    {menu && <ContextMenu x={menu.x} y={menu.y} items={items()} onClose={() => setMenu(null)} trigger={menu.trigger} label={menu.kind === 'instrument' ? '악기 선택' : menu.kind === 'add' ? '시김새 추가' : '시김새'} />}
   </div>
 }

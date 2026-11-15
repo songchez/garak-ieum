@@ -45,9 +45,9 @@ describe('zoom math', () => {
 
 describe('zoom state', () => {
   it('derives row height defaults from the viewport', () => {
-    expect(defaultZoom({ width: 1280, height: 900 }).timeline.rowHeight).toBe(70)
-    expect(defaultZoom({ width: 1800, height: 1000 }).timeline.rowHeight).toBe(80)
-    expect(defaultZoom({ width: 1800, height: 700 }).timeline.rowHeight).toBe(62)
+    expect(defaultZoom({ width: 1280, height: 900 }).timeline.rowHeight).toBe(96)
+    expect(defaultZoom({ width: 1800, height: 1000 }).timeline.rowHeight).toBe(104)
+    expect(defaultZoom({ width: 1800, height: 700 }).timeline.rowHeight).toBe(80)
     expect(defaultZoom().piano.ppb).toBeNull()
   })
 

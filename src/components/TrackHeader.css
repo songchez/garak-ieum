@@ -1,34 +1,62 @@
-/* Track header (Logic layout): [color bar][number][icon] name / buttons … [volume+meter] (pan). Selectors carry [data-track-id] to outrank the legacy .track-header rules in styles.css. */
-.track-header[data-track-id]{position:sticky;left:0;z-index:12;width:var(--header-width,208px);flex-shrink:0;display:flex;align-items:center;gap:6px;box-sizing:border-box;padding:0 8px 0 7px;background:var(--surface-panel);border-right:1px solid var(--border-default);cursor:default;-webkit-user-select:none;user-select:none;container-type:inline-size;overflow:hidden}
-.track-header[data-track-id].with-color-bar{padding-left:11px}
+/* Track header: [color bar][number][icon tile] name / buttons … pan / (input) / volume+meter. Selectors carry [data-track-id] to outrank the legacy .track-header rules in styles.css.
+   Tiers (TrackHeader.headerTier): 0 one line, 1 name over buttons, 2 + pan and volume, 3 roomier + audio input. */
+.track-header[data-track-id]{--th-tile:24px;--th-gap:4px;position:sticky;left:0;z-index:12;width:var(--header-width,208px);flex-shrink:0;display:flex;align-items:center;gap:8px;box-sizing:border-box;padding:0 10px 0 8px;background:var(--surface-panel);border-right:1px solid var(--border-default);cursor:default;-webkit-user-select:none;user-select:none;container-type:inline-size;overflow:hidden;transition:background-color .1s}
+.track-header[data-track-id].tier-0{--th-tile:18px;gap:6px}
+.track-header[data-track-id].tier-2{--th-tile:28px}
+.track-header[data-track-id].tier-3{--th-tile:32px;--th-gap:6px;gap:10px;padding-right:12px}
+.track-header[data-track-id].with-color-bar{padding-left:12px}
+.track-header[data-track-id]:hover{background:color-mix(in srgb,var(--surface-hover) 45%,var(--surface-panel))}
 .track-header[data-track-id].selected{background:var(--surface-selected)}
-.track-header[data-track-id].focused{background:var(--surface-selected);box-shadow:inset 0 0 0 1px var(--accent-border)}
+/* Focus = selection tint + an accent edge on the left (sits under the color bar when that is on). */
+.track-header[data-track-id].focused{background:var(--surface-selected);box-shadow:inset 2px 0 0 var(--accent),inset 0 0 0 1px color-mix(in srgb,var(--accent-border) 70%,transparent)}
 .track-header[data-track-id][data-kind]::before{content:none}
 .track-header[data-track-id] .track-color-bar{position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--track-color)}
-.track-header[data-track-id] .track-number{flex-shrink:0;min-width:14px;margin:0;align-self:center;font-family:Consolas,"SFMono-Regular",monospace;font-size:8px;line-height:1;text-align:right;color:var(--text-muted);cursor:grab;touch-action:none}
-.track-header[data-track-id] .track-number.focused{color:var(--text-primary)}
-.track-header[data-track-id] .track-icon{position:relative;flex-shrink:0;display:grid;place-items:center;width:18px;height:18px;color:var(--track-color);opacity:.85}
-.track-header[data-track-id] .track-icon .sample-dot{right:-4px;top:-3px}
-.track-header[data-track-id] .track-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.track-header[data-track-id] .track-number{flex-shrink:0;min-width:14px;margin:0 -2px 0 0;align-self:center;font-family:Consolas,"SFMono-Regular",monospace;font-size:9px;line-height:1;text-align:right;color:var(--text-muted);font-variant-numeric:tabular-nums;cursor:grab;touch-action:none}
+.track-header[data-track-id] .track-number.focused,.track-header[data-track-id].focused .track-number{color:var(--text-primary)}
+/* Icon tile tinted with the track color. */
+.track-header[data-track-id] .track-icon{position:relative;flex-shrink:0;display:grid;place-items:center;box-sizing:border-box;width:var(--th-tile);height:var(--th-tile);border-radius:calc(var(--th-tile) / 4.5);background:color-mix(in srgb,var(--track-color) 20%,var(--surface-raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--track-color) 38%,transparent);color:var(--track-color)}
+.track-header[data-track-id] .track-icon .sample-dot{right:-3px;top:-3px}
+.track-header[data-track-id] .track-main{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:var(--th-gap)}
 .track-header[data-track-id].tier-0 .track-main{flex-direction:row;align-items:center;gap:6px}
-.track-header[data-track-id] .track-name-row{display:flex;align-items:center;gap:4px;min-width:0;min-height:14px}
+.track-header[data-track-id] .track-name-row{display:flex;align-items:center;gap:5px;min-width:0;min-height:15px}
 .track-header[data-track-id].tier-0 .track-name-row{flex:1}
-.track-header[data-track-id] .track-name{flex:1;min-width:0;display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:10px;font-weight:500;letter-spacing:.1px;line-height:14px;color:var(--text-secondary)}
-.track-header[data-track-id].selected .track-name{color:var(--text-primary)}
-.track-header[data-track-id].focused .track-name{color:var(--text-primary)}
-.track-header[data-track-id].tier-3 .track-name{font-size:11px}
-.track-header[data-track-id] .track-name-input{height:16px;font-size:10px}
-.track-header[data-track-id] .track-hide-badge,.track-header[data-track-id] .track-off-badge{flex-shrink:0;display:inline-grid;place-items:center;height:11px;min-width:11px;padding:0 2px;border-radius:2px;font-size:7px;font-weight:700;line-height:1}
+.track-header[data-track-id] .track-name{flex:1;min-width:0;display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:11px;font-weight:500;letter-spacing:.1px;line-height:15px;color:var(--text-secondary)}
+.track-header[data-track-id]:is(.tier-2,.tier-3) .track-name{font-size:12px;font-weight:600;line-height:16px;color:var(--text-primary)}
+.track-header[data-track-id].tier-0 .track-name{font-size:10.5px}
+.track-header[data-track-id]:is(.selected,.focused) .track-name{color:var(--text-primary)}
+.track-header[data-track-id] .track-name-input{height:18px;font-size:11px}
+.track-header[data-track-id] .track-hide-badge,.track-header[data-track-id] .track-off-badge{flex-shrink:0;display:inline-grid;place-items:center;height:12px;min-width:12px;padding:0 2px;box-sizing:border-box;border-radius:3px;font-size:7.5px;font-weight:700;line-height:1}
 .track-header[data-track-id] .track-hide-badge{color:var(--track-hide);border:1px solid color-mix(in srgb,var(--track-hide) 60%,transparent)}
 .track-header[data-track-id] .track-off-badge{color:var(--ink-45);border:1px solid var(--border-default)}
-.track-header[data-track-id] .track-input-select{align-self:flex-start;max-width:100%;height:15px;padding:0 2px;border:1px solid var(--border-subtle);border-radius:3px;background:var(--surface-input);color:var(--text-muted);font-size:9px}
-.track-header[data-track-id] .track-side{flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:5px;width:78px}
-.track-header[data-track-id].tier-3 .track-side{gap:7px}
-/* Header narrower than 230px (content box = width − 19px padding) hides the slider and knob. */
-@container (width < 211px){.track-header[data-track-id] .track-side{display:none}}
+/* Buttons row; the pan knob rides at its right end. */
+.track-header[data-track-id] .track-controls{display:flex;align-items:center;gap:6px;min-width:0}
+.track-header[data-track-id].tier-0 .track-controls{flex-shrink:0}
+.track-header[data-track-id] .track-controls .pan-knob{margin-left:auto}
+/* Six buttons plus the knob can outgrow a default-width header: buttons give way before the knob is clipped. */
+.track-header[data-track-id] .track-controls .track-buttons{flex-shrink:1;min-width:0}
+.track-header[data-track-id] .track-controls .track-button{flex:0 1 auto;min-width:16px}
+.track-header[data-track-id] .track-input-select{align-self:flex-start;width:100%;max-width:220px;min-width:0;box-sizing:border-box;height:17px;padding:0 3px;border:1px solid var(--border-subtle);border-radius:4px;background:var(--surface-input);color:var(--text-secondary);font-size:9.5px}
+/* Volume row: fader over an integrated level meter, dB readout on the right. */
+.track-header[data-track-id] .track-volume{display:flex;align-items:center;min-width:0}
+.track-header[data-track-id] .volume-slider--horizontal{height:14px;gap:6px}
+.track-header[data-track-id] .track-volume .volume-slider--horizontal .volume-track{box-sizing:border-box;height:6px;border:0;border-radius:3px;background:var(--meter-empty);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text-primary) 8%,transparent)}
+.track-header[data-track-id] .volume-slider--horizontal .volume-meter{background:transparent}
+.track-header[data-track-id] .volume-slider--horizontal .volume-unity{top:-3px;bottom:-3px;width:1px;background:color-mix(in srgb,var(--text-muted) 70%,transparent)}
+.track-header[data-track-id] .volume-slider--horizontal .volume-thumb{top:50%;width:6px;height:14px;margin:-7px 0 0 -3px;border-radius:2px;background:var(--ink-90);box-shadow:0 0 0 1px color-mix(in srgb,var(--surface-base) 70%,transparent),0 1px 2px #0005}
+.track-header[data-track-id] .volume-slider--horizontal .volume-readout{width:30px;font-size:9px;color:var(--text-secondary)}
+.track-header[data-track-id] .volume-slider:hover .volume-readout,.track-header[data-track-id] .volume-slider:focus-visible .volume-readout{color:var(--text-primary)}
+/* Narrow headers (the header is its own container, so only descendants restyle) drop the knob first, then the number, and shrink the tile and buttons. */
+@container (width < 210px){.track-header[data-track-id] .track-controls .pan-knob{display:none}}
+@container (width < 180px){
+  .track-header[data-track-id]:not(.tier-0) .track-icon{--th-tile:20px}
+  .track-header[data-track-id] .track-number{display:none}
+  .track-header[data-track-id] .track-controls .track-buttons{gap:2px}
+  .track-header[data-track-id] .track-controls .track-button{min-width:15px}
+}
 
 /* Disabled (⏻ off) and hidden (H while hide view is on) */
 .track-header[data-track-id].track-off .track-name,.track-header[data-track-id].track-off .track-number,.track-header[data-track-id].track-off .track-icon{color:var(--ink-42);opacity:.8}
+.track-header[data-track-id].track-off .track-icon{background:var(--surface-panel-soft);box-shadow:inset 0 0 0 1px var(--border-subtle)}
 .track-header[data-track-id].track-hidden .track-name,.track-header[data-track-id].track-hidden .track-icon,.track-header[data-track-id].track-hidden .track-number{opacity:.5}
 
 /* Bottom-left resize hot zone (individual track zoom) */
@@ -38,8 +66,10 @@
 /* Track buttons (shared with ChannelStrip via size="strip") */
 .track-header[data-track-id],.track-buttons{--track-mute:#3d8fd6;--track-solo:#e0c24c;--track-arm:#e5533d;--track-monitor:#e8923a;--track-hide:#4fae7a}
 .track-buttons{display:flex;align-items:center;gap:3px;flex-shrink:0}
-.track-button{display:inline-grid;place-items:center;width:18px;height:16px;padding:0;border:1px solid var(--border-default);border-radius:3px;background:var(--ink-16);color:var(--text-muted);font-size:9px;font-weight:700;line-height:1;cursor:pointer;position:relative;touch-action:none;transition:background-color .08s,color .08s,border-color .08s}
+.track-button{display:inline-grid;place-items:center;width:20px;height:17px;padding:0;border:1px solid var(--border-default);border-radius:4px;background:var(--ink-16);color:var(--text-muted);font-size:9px;font-weight:700;line-height:1;cursor:pointer;position:relative;touch-action:none;transition:background-color .08s,color .08s,border-color .08s}
 .track-buttons--strip .track-button{width:22px;height:18px;font-size:10px;border-radius:4px}
+.track-header[data-track-id].tier-3 .track-buttons--header .track-button{width:22px;height:18px;font-size:9.5px}
+.track-header[data-track-id].tier-0 .track-buttons--header .track-button{width:18px;height:16px}
 .track-button:hover{border-color:var(--border-strong);color:var(--text-secondary)}
 .track-button:focus-visible{outline:1px solid var(--accent-hover);outline-offset:1px}
 .track-button--mute.on{--track-button-on-text:#fff;background:var(--track-mute);border-color:var(--track-mute);color:var(--track-button-on-text)}
@@ -103,6 +133,8 @@
 @keyframes track-implicit-mute-light{0%,100%{background:var(--surface-selected)}50%{background:var(--surface-raised)}}
 @keyframes track-arm-blink-light{0%,100%{background:var(--track-arm);color:var(--on-record)}50%{background:var(--surface-raised);color:var(--track-arm)}}
 :root[data-theme-mode="light"] .track-header[data-track-id]:not(.track-off):not(.track-hidden) .track-icon{color:color-mix(in srgb,var(--track-color) 25%,var(--text-primary));opacity:1}
+:root[data-theme-mode="light"] .track-header[data-track-id] .track-volume .volume-slider--horizontal .volume-track{box-shadow:inset 0 0 0 1px var(--control-border)}
+:root[data-theme-mode="light"] .track-header[data-track-id] .volume-slider--horizontal .volume-thumb{background:var(--surface-raised);box-shadow:0 0 0 1px var(--control-border),0 1px 2px color-mix(in srgb,var(--text-primary) 25%,transparent)}
 :root[data-theme-mode="light"] .pan-cap{fill:var(--surface-raised);stroke:var(--control-border)}
 :root[data-theme-mode="light"] .pan-track{stroke:var(--control-border);stroke-width:6}
 :root[data-theme-mode="light"] .pan-value{stroke:var(--accent)}

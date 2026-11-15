@@ -35,7 +35,7 @@ export type ProjectShortcut =
   | 'newTracksDialog' | 'newAudioTrack' | 'newInstrumentTrack' | 'duplicateTrack' | 'duplicateTrackContent' | 'deleteTrack' | 'renameTrack'
   | 'hideSelectedTracks' | 'unhideAllTracks' | 'toggleHideView' | 'colorPalette' | 'configureTrackHeader'
   | 'trackZoomIn' | 'trackZoomOut' | 'trackZoomToggle' | 'trackZoomReset' | 'zoomFocusedTrack'
-  | 'toggleInspector' | 'toggleLibrary' | 'toggleMixer' | 'toggleBrowser' | 'globalTracks' | 'createMarker'
+  | 'toggleInspector' | 'toggleMixer' | 'toggleBrowser' | 'globalTracks' | 'createMarker'
   | 'deleteNotes' | 'quantize' | 'transposeUp' | 'transposeDown' | 'transposeOctaveUp' | 'transposeOctaveDown'
 
 export function isShortcutSuppressed(event: ShortcutEvent, allowRepeat = false, platform: ShortcutPlatform = shortcutPlatform()): boolean {
@@ -164,7 +164,7 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('renameTrack', ENTER, 'shift', TW),
   bind('toggleHideView', letter('H'), '', TW), bind('colorPalette', letter('C'), 'alt', TW), bind('configureTrackHeader', letter('T'), 'alt', TW),
   bind('trackZoomIn', DOWN, 'modAlt', TW), bind('trackZoomOut', UP, 'modAlt', TW), bind('trackZoomToggle', letter('Z'), 'modAlt', TW), bind('trackZoomReset', BACK, 'modAlt', TW),
-  bind('toggleInspector', letter('I'), '', TW), bind('toggleLibrary', letter('Y'), '', TW), bind('toggleMixer', letter('X'), '', TW), bind('toggleBrowser', letter('F'), '', TW), bind('globalTracks', letter('G'), '', TW),
+  bind('toggleInspector', letter('I'), '', TW), bind('toggleMixer', letter('X'), '', TW), bind('toggleBrowser', letter('F'), '', TW), bind('globalTracks', letter('G'), '', TW),
   bind('createMarker', punct('Quote', "'"), 'alt', TW),
   bind('deleteNotes', DEL, '', P), bind('deleteNotes', BACK, '', P),
   bind('quantize', letter('Q'), '', P),
@@ -189,7 +189,7 @@ export function resolveProjectShortcut(event: ShortcutEvent, scope: ShortcutScop
   return SHORTCUT_BINDINGS.find(b => inScope(b, editScope) && onPlatform(b, platform) && MODS[b.mods](event) && keyMatches(event, b.key))?.command ?? null
 }
 
-const GLOBAL_ONLY_COMMANDS = new Set<ProjectShortcut>(['playback', 'playFromSelection', 'undo', 'redo', 'save', 'home', 'rewind', 'forward', 'help', 'openSettings', 'cycle', 'record', 'metronome', 'toggleInspector', 'toggleLibrary', 'toggleMixer', 'toggleBrowser'])
+const GLOBAL_ONLY_COMMANDS = new Set<ProjectShortcut>(['playback', 'playFromSelection', 'undo', 'redo', 'save', 'home', 'rewind', 'forward', 'help', 'openSettings', 'cycle', 'record', 'metronome', 'toggleInspector', 'toggleMixer', 'toggleBrowser'])
 export interface ShortcutVisibility { editors: readonly ShortcutEditScope[]; preferred?: ShortcutEditScope }
 
 /** Resolve app/editor keys without stealing typing, modal keys, or control navigation. */
@@ -287,9 +287,8 @@ const META: Record<ProjectShortcut, { label: string; logic: string }> = {
   trackZoomReset: { label: '트랙 확대 초기화', logic: '⌥⌘⌫' },
   zoomFocusedTrack: { label: '포커스 트랙만 확대 (macOS)', logic: '⌃Z' },
   toggleInspector: { label: '인스펙터 보기/가리기', logic: 'I' },
-  toggleLibrary: { label: '라이브러리 보기/가리기', logic: 'Y' },
   toggleMixer: { label: '믹서 보기/가리기', logic: 'X' },
-  toggleBrowser: { label: '브라우저 보기/가리기', logic: 'F' },
+  toggleBrowser: { label: '라이브러리 보기/가리기', logic: 'F' },
   globalTracks: { label: '글로벌 트랙 보기/가리기', logic: 'G' },
   createMarker: { label: '마커 생성', logic: "⌥'" },
   deleteNotes: { label: '선택 음표 삭제', logic: '⌫' },
@@ -302,7 +301,7 @@ const META: Record<ProjectShortcut, { label: string; logic: string }> = {
 
 export interface ShortcutRow { command: ProjectShortcut; label: string; mac: string; win: string; scopes: readonly ShortcutEditScope[]; logic: string }
 
-const SCOPE_LABELS: Record<ShortcutEditScope, string> = { timeline: '타임라인', piano: '피아노롤', mixer: '믹서', devices: '디바이스', workspace: '작업 공간' }
+const SCOPE_LABELS: Record<ShortcutEditScope, string> = { timeline: '타임라인', piano: '피아노롤', mixer: '믹서', devices: '시김새 체인', workspace: '작업 공간' }
 const formatAll = (command: ProjectShortcut, platform: ShortcutPlatform) => {
   const bindings = SHORTCUT_BINDINGS.filter(b => b.command === command && onPlatform(b, platform))
   const scopes = new Set(bindings.flatMap(binding => binding.scopes))

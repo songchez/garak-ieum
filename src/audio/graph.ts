@@ -3,12 +3,13 @@ import { instrumentDef } from '../core/instruments'
 import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../core/playback'
 import type { AudioWindow, PlaybackNote } from '../core/playback'
 import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track } from '../core/types'
-import { clamp, clipEnvelope, secondsPerBeat } from './math'
+import { clamp, secondsPerBeat } from './math'
+import { AUDIO_CLIP_GAIN_MAX, envelopeAt, envelopeBreakpoints, fadeLengths } from '../core/clipEnvelope.js'
 import { pickZone, type LoadedSet, type SampleLibrary } from './samples'
 import type { DeviceGraph } from '../devices/contracts'
 export type { DeviceGraph } from '../devices/contracts'
 import { EFFECT_MODULES } from '../devices/effects/registry'
-import { createGuitarRigMaster } from '../devices/guitar-rig'
+import { bindGuitarRigDevice, createGuitarRigMaster } from '../devices/guitar-rig'
 import { dbToGain, randomGenerator, setParameter } from '../devices/effects/shared'
 
 type SourceNode = AudioBufferSourceNode | OscillatorNode
@@ -158,6 +159,7 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
         if (!device.enabled || !effect || devices.has(device.id)) continue
         const node = effect.create(context, remember)
         resources.push(node)
+        if (device.type === 'guitar-rig') bindGuitarRigDevice(node, device.id, context)
         tail.connect(node.input)
         tail = node.output
         devices.set(device.id, node)
@@ -574,16 +576,16 @@ function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: Aud
   const source = context.createBufferSource()
   source.buffer = asset.buffer
   const envelope = context.createGain()
-  const gain = clamp(clip.gain, 0, 2)
-  const fadeIn = clamp(clip.fadeIn, 0, clipDuration / 2)
-  const fadeOut = clamp(clip.fadeOut, 0, clipDuration / 2)
-  const levelAt = (position: number): number => gain * clipEnvelope(position, clipDuration, fadeIn, fadeOut)
+  const gain = clamp(clip.gain, 0, AUDIO_CLIP_GAIN_MAX)
+  const [fadeIn, fadeOut] = fadeLengths(clipDuration, clip.fadeIn, clip.fadeOut)
+  const levelAt = (position: number): number => gain * envelopeAt(position, clipDuration, fadeIn, fadeOut, clip.fadeInCurve, clip.fadeOutCurve)
   const endLocal = localSeconds + duration
   const clickFade = Math.min(0.004, duration / 4)
   envelope.gain.setValueAtTime(0, when)
   envelope.gain.linearRampToValueAtTime(levelAt(localSeconds + clickFade), when + clickFade)
-  const points = [fadeIn, clipDuration - fadeOut].filter(point => point > localSeconds + clickFade && point < endLocal - clickFade)
-  for (const point of points.sort((a, b) => a - b)) {
+  // Curved fades become short linear segments, so overlapping automation events can never throw.
+  const points = envelopeBreakpoints(clipDuration, fadeIn, fadeOut, clip.fadeInCurve, clip.fadeOutCurve).filter(point => point > localSeconds + clickFade && point < endLocal - clickFade)
+  for (const point of points) {
     envelope.gain.linearRampToValueAtTime(levelAt(point), when + point - localSeconds)
   }
   envelope.gain.linearRampToValueAtTime(levelAt(endLocal - clickFade), when + duration - clickFade)
@@ -632,7 +634,7 @@ export function scheduleRange(
         continue
       }
     }
-    const events = trackEvents(track, project.lengthBeats)
+    const events = trackEvents(track, project.lengthBeats, project.bpm)
     for (const window of events.windows) {
       const windowEnd = Math.min(window.end, boundary, project.lengthBeats)
       if (windowEnd <= startBeat || window.start >= endBeat) continue
@@ -662,6 +664,7 @@ export function scheduleRange(
 
 interface TrackEvents {
   projectEnd: number
+  bpm: number
   notes: PlaybackNote[]
   windows: AudioWindow[]
 }
@@ -669,10 +672,10 @@ interface TrackEvents {
 // Track objects are immutable snapshots, so the expanded events can be reused across scheduler ticks.
 const eventCache = new WeakMap<Track, TrackEvents>()
 
-function trackEvents(track: Track, projectEnd: number): TrackEvents {
+function trackEvents(track: Track, projectEnd: number, bpm: number): TrackEvents {
   const cached = eventCache.get(track)
-  if (cached && cached.projectEnd === projectEnd) return cached
-  const events: TrackEvents = { projectEnd, notes: midiEvents(track, projectEnd), windows: audioWindows(track, projectEnd) }
+  if (cached && cached.projectEnd === projectEnd && cached.bpm === bpm) return cached
+  const events: TrackEvents = { projectEnd, bpm, notes: midiEvents(track, projectEnd), windows: audioWindows(track, projectEnd, bpm) }
   eventCache.set(track, events)
   return events
 }

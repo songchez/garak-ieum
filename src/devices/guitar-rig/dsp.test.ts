@@ -105,7 +105,7 @@ describe('original amp/cab voicings', () => {
   })
   it('each cabinet/mic axis changes stable filter settings within audible bounds', () => {
     const base = cabinetFilters(1, 0, 0.35, 0.15)
-    for (const changed of [cabinetFilters(0, 0, 0.35, 0.15), cabinetFilters(2, 0, 0.35, 0.15), cabinetFilters(1, 1, 0.35, 0.15), cabinetFilters(1, 2, 0.35, 0.15), cabinetFilters(1, 0, 1, 0.15), cabinetFilters(1, 0, 0.35, 1)]) {
+    for (const changed of [cabinetFilters(0, 0, 0.35, 0.15), cabinetFilters(2, 0, 0.35, 0.15), cabinetFilters(1, 1, 0.35, 0.15), cabinetFilters(1, 2, 0.35, 0.15), cabinetFilters(3, 0, 0.35, 0.15), cabinetFilters(4, 0, 0.35, 0.15), cabinetFilters(1, 3, 0.35, 0.15), cabinetFilters(1, 4, 0.35, 0.15), cabinetFilters(1, 0, 1, 0.15), cabinetFilters(1, 0, 0.35, 1)]) {
       expect(changed).not.toEqual(base)
       for (const setting of changed) {
         expect(setting.frequency).toBeGreaterThan(20)
@@ -117,6 +117,11 @@ describe('original amp/cab voicings', () => {
     }
     expect(ampVoicing(2).preGain).toBeGreaterThan(ampVoicing(1).preGain)
     expect(ampVoicing(1).preGain).toBeGreaterThan(ampVoicing(0).preGain)
+    // Every saved amp model is a distinct voicing; out-of-range values clamp instead of throwing.
+    const voicings = [0, 1, 2, 3, 4].map(model => JSON.stringify(ampVoicing(model)))
+    expect(new Set(voicings).size).toBe(5)
+    expect(ampVoicing(9)).toEqual(ampVoicing(4))
+    expect(ampVoicing(4).preGain).toBeLessThan(ampVoicing(0).preGain)
   })
 })
 

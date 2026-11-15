@@ -1,4 +1,4 @@
-import { memo, useId, useRef, useState } from 'react'
+import { memo, useId, useMemo, useRef, useState } from 'react'
 import type { AudioAsset, Clip, Track } from '../core/types'
 import { instrumentDef } from '../core/instruments'
 import { clipOccurrences, isTrackEnabled, loopEnd } from '../core/playback'
@@ -9,6 +9,7 @@ import { isShortcutSuppressed, isUnmodified } from '../core/input'
 import { contrastTextColor } from '../core/colors'
 import { Icon } from './Icon'
 import { Waveform } from './Waveform'
+import { ClipEnvelope, type EnvelopeActions } from './ClipEnvelope'
 import './TimelineClip.css'
 
 export type GestureMode = 'move'|'trimStart'|'trimEnd'
@@ -20,6 +21,10 @@ export type ClipActions = {
   open:(trackId:string,clipId:string)=>void
   renameDone:(clipId:string,name:string|null)=>void
   loopHandle:(e:React.PointerEvent<HTMLElement>,track:Track,clip:Clip)=>void
+  /** Region badge: warp on (fit the project tempo) / off (original timing). */
+  warp:(trackId:string,clipId:string,enabled:boolean)=>void
+  /** On-region gain line and fade handles; absent = drawn read-only. */
+  envelope?:EnvelopeActions
 }
 
 /** Fades are only drawn once a beat is wide enough for the waveform to read (V-08). */
@@ -34,6 +39,16 @@ export function InlineName({value,label,onDone}:{value:string;label:string;onDon
   const done=useRef(false)
   const finish=(name:string|null)=>{if(done.current)return;done.current=true;const trimmed=name?.trim();onDone(trimmed&&trimmed!==value?name!.slice(0,512):null)}
   return <input className="inline-name" aria-label={label} value={draft} autoFocus onFocus={e=>e.currentTarget.select()} onPointerDown={e=>e.stopPropagation()} onClick={e=>e.stopPropagation()} onDoubleClick={e=>e.stopPropagation()} onContextMenu={e=>e.stopPropagation()} onChange={e=>setDraft(e.target.value)} onBlur={()=>finish(draft)} onKeyDown={e=>{e.stopPropagation();if(e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();finish(draft)}else if(e.key==='Escape'){e.preventDefault();finish(null)}}}/>
+}
+
+/** Detected tempo on the region; a click switches warp like Ableton's Warp button. */
+function WarpBadge({on,sourceBpm,bpm,onToggle}:{on:boolean;sourceBpm:number;bpm:number;onToggle:()=>void}){
+  const tempo=`${+sourceBpm.toFixed(2)}`
+  const title=on?`워프 켬 · 원본 ${tempo} BPM → 프로젝트 ${bpm} BPM. 클릭하면 원래 박자로 돌아갑니다.`:`원본 ${tempo} BPM · 원래 박자로 재생 중. 클릭하면 프로젝트 템포에 맞춥니다.`
+  return <button type="button" className={`clip-warp${on?' on':''}`} aria-pressed={on} aria-label={on?`워프 끄기, 원본 ${tempo} BPM`:`워프 켜기, 원본 ${tempo} BPM`} title={title}
+    onPointerDown={e=>e.stopPropagation()} onDoubleClick={e=>e.stopPropagation()} onKeyDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onToggle()}}>
+    {on&&<b>W</b>}{tempo}
+  </button>
 }
 
 export interface TimelineClipProps {
@@ -58,16 +73,16 @@ export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,bpm,p
   const geometry=musicalSpan(start,length,ppb),widthPx=geometry.width
   const repeatEnd=displayClip.loop?loopEnd(occurrenceTrack,displayClip,projectEnd):start+length
   const hasRepeats=repeatEnd>start+length+1e-7
-  const fades=displayClip.kind==='audio'&&ppb>=FADE_MIN_PPB&&(displayClip.fadeIn>0||displayClip.fadeOut>0)?{inPx:Math.min(widthPx,displayClip.fadeIn*bpm/60*ppb),outPx:Math.min(widthPx,displayClip.fadeOut*bpm/60*ppb)}:null
+  const envelopeActions=useMemo(()=>({get current(){return actions.current.envelope??null}}),[actions])
   const cls=['timeline-clip',clip.kind]
   if(selected)cls.push('clip-selected');if(preview)cls.push('clip-moving');if(clip.mute)cls.push('clip-muted');if(displayClip.loop)cls.push('clip-looped')
   const label=regionDisplayName(displayClip)
   // Ancestor state changes also invalidate the canvas, whose color follows the same CSS as MIDI previews.
   const waveformAppearance=`${selected}:${!!clip.mute}:${silent}:${isTrackEnabled(track)}:${track.color}`
   const contents=(repeat=false)=><>
-    <div className="clip-title"><Icon name={clip.kind==='audio'?'wave':'note'} size={11}/>{clip.mute&&<i className="clip-mute-dot" aria-hidden="true"/>}{!repeat&&renaming?<InlineName value={clip.name} label="클립 이름" onDone={name=>actions.current.renameDone(clip.id,name)}/>:<span>{label}</span>}</div>
-    <div className="clip-preview">{displayClip.kind==='audio'&&asset?<Waveform peaks={asset.peaks} buffer={asset.buffer} color={repeat?'var(--loop-preview)':'var(--clip-preview-color)'} appearanceKey={waveformAppearance} sourceDuration={asset.buffer.duration} offsetSeconds={displayClip.offsetSeconds} durationSeconds={length*60/bpm}/>:<svg width="100%" height="100%" preserveAspectRatio="none" viewBox={`0 0 ${Math.max(.01,length)*20} 32`} aria-hidden="true">{repeat?<use href={`#${notePreviewId}`}/>:<g id={notePreviewId}>{notes.filter(n=>n.start<length).map(n=><rect key={n.id} x={n.start*20} y={3+(1-(n.pitch-min)/Math.max(12,max-min))*23} width={Math.max(.1,Math.min(n.duration,length-n.start)*20)} height={instrumentDef(track.instrument).isKit?4:2.5} rx=".5" fill="currentColor" opacity={.45+n.velocity*.5}/>)}</g>}</svg>}</div>
-    {fades&&<svg className="clip-fades" aria-hidden="true" width={widthPx} height="100%" viewBox={`0 0 ${widthPx} 100`} preserveAspectRatio="none">{fades.inPx>0&&<polygon points={`0,0 ${fades.inPx},0 0,100`}/>}{fades.outPx>0&&<polygon points={`${widthPx-fades.outPx},0 ${widthPx},0 ${widthPx},100`}/>}</svg>}
+    <div className="clip-title"><Icon name={clip.kind==='audio'?'wave':'note'} size={11}/>{clip.mute&&<i className="clip-mute-dot" aria-hidden="true"/>}{!repeat&&clip.kind==='audio'&&clip.warp&&!clip.pitch&&<WarpBadge on={clip.warp.enabled} sourceBpm={clip.warp.sourceBpm} bpm={bpm} onToggle={()=>actions.current.warp(track.id,clip.id,!clip.warp!.enabled)}/>}{!repeat&&renaming?<InlineName value={clip.name} label="클립 이름" onDone={name=>actions.current.renameDone(clip.id,name)}/>:<span>{label}</span>}</div>
+    <div className="clip-preview">{displayClip.kind==='audio'&&asset?<Waveform peaks={asset.peaks} buffer={asset.buffer} gain={displayClip.gain} fades={{fadeIn:displayClip.fadeIn,fadeOut:displayClip.fadeOut,inCurve:displayClip.fadeInCurve,outCurve:displayClip.fadeOutCurve}} color={repeat?'var(--loop-preview)':'var(--clip-preview-color)'} appearanceKey={waveformAppearance} sourceDuration={asset.buffer.duration} offsetSeconds={displayClip.offsetSeconds} durationSeconds={length*60/bpm}/>:<svg width="100%" height="100%" preserveAspectRatio="none" viewBox={`0 0 ${Math.max(.01,length)*20} 32`} aria-hidden="true">{repeat?<use href={`#${notePreviewId}`}/>:<g id={notePreviewId}>{notes.filter(n=>n.start<length).map(n=><rect key={n.id} x={n.start*20} y={3+(1-(n.pitch-min)/Math.max(12,max-min))*23} width={Math.max(.1,Math.min(n.duration,length-n.start)*20)} height={instrumentDef(track.instrument).isKit?4:2.5} rx=".5" fill="currentColor" opacity={.45+n.velocity*.5}/>)}</g>}</svg>}</div>
+    {displayClip.kind==='audio'&&<ClipEnvelope clip={displayClip} widthPx={widthPx} ppb={ppb} bpm={bpm} asset={asset} showFades={ppb>=FADE_MIN_PPB} readOnly={repeat||!!preview} actions={envelopeActions}/>}
   </>
   return <>
     <div ref={regionRef} className={cls.join(' ')} tabIndex={0} role="button" aria-pressed={selected} aria-label={`${label}, ${clip.startBeat/beatsPerBar+1} 마디${clip.mute?', 뮤트됨':''}${clip.loop?', 루프':''}`} onFocus={()=>{if(!focusFromPointer&&!selected)onSelect(track.id,clip.id)}} onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'move')} onDoubleClick={e=>{if(!(e.target as Element).closest('input,.clip-loop-handle'))actions.current.open(track.id,clip.id)}} onContextMenu={e=>actions.current.clipMenu(e,track,clip)} onKeyDown={e=>{if(e.key==='Enter'&&isUnmodified(e.nativeEvent)&&!isShortcutSuppressed(e.nativeEvent,true)){e.preventDefault();e.stopPropagation();if(!e.repeat)onSelect(track.id,clip.id)}}} style={{...geometry,transform:dy?`translateY(${dy}px)`:undefined,'--clip-color':track.color,'--clip-selected-text':contrastTextColor(track.color,.2)} as React.CSSProperties}>
