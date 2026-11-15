@@ -1086,6 +1086,11 @@ int effectParameterIndex(std::string_view type, std::string_view id) {
   for (std::size_t i = 0; i < defs.size(); ++i) if (id == defs[i].name) return static_cast<int>(i);
   return -1;
 }
+void validateEffectParameters(std::string_view type, const Parameters& params) {
+  auto defs = effectDefs(type);
+  if (defs.empty()) throw std::invalid_argument("Unsupported native effect: " + std::string(type));
+  (void)Reader(params, std::move(defs));
+}
 bool liveEffectParameter(std::string_view type, std::string_view id) {
   if (effectParameterIndex(type, id) < 0) return false;
   // Instance parameters of the rig read "<base>_<n>".

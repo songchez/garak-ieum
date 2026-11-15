@@ -107,6 +107,8 @@ class EffectControl {
 [[nodiscard]] std::size_t estimateEffectMemory(std::string_view type, double sampleRate) noexcept;
 // Index of a parameter in the effect's catalog (the EffectControl index), or -1.
 [[nodiscard]] int effectParameterIndex(std::string_view type, std::string_view id);
+// Throws like makeEffect() for unknown keys, out-of-range or non-finite values.
+void validateEffectParameters(std::string_view type, const Parameters& params);
 // True when EffectControl::set + apply (automate) fully applies a new value in place. False for values that
 // shape prepared buffers or the processor's structure (reverb size/type/pre-delay, rig rack layout, rig reverb
 // decay/switch, delay ping-pong): those need the insert rebuilt (docs/RENDER_DIFF_PROTOCOL.md).

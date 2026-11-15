@@ -428,6 +428,17 @@ class PreparedProject {
   friend class RenderEngine;
 };
 
+// What RenderEngine::update() did (docs/RENDER_DIFF_PROTOCOL.md).
+struct UpdateResult {
+  // None: nothing but the revision changed. Diff: only in-place diff commands (mix, sends, insert parameters,
+  // master gain). Tracks: one or more tracks were rebuilt and swapped into the running graph. Full: a new graph
+  // replaced the running one (its tracks still continue their predecessors by id).
+  enum class Kind : std::uint8_t { None, Diff, Tracks, Full };
+  Kind kind = Kind::None;
+  std::uint64_t ticket = 0; // The last queued command (awaitable through EngineSnapshot::lastAppliedCommand).
+  std::uint32_t replacedTracks = 0, commands = 0;
+};
+
 class RenderEngine {
  public:
   explicit RenderEngine(std::uint32_t sampleRate = 48000, std::uint32_t maxBlockFrames = 4096,
@@ -440,6 +451,14 @@ class RenderEngine {
   // Control-thread only; throws if the bounded graph queue is full. Ownership is
   // consumed on either outcome. Retired destruction happens in collectRetired.
   std::uint64_t submit(std::unique_ptr<PreparedProject> project);
+  // Control thread: bring the running graph to `project` with the least work (docs/RENDER_DIFF_PROTOCOL.md).
+  // Mix, send-level and live insert-parameter changes become lock-free diff commands applied in place; a track
+  // whose events, chain or source changed is rebuilt alone and swapped in at a block boundary, keeping its
+  // voices, effect tails and controllers; tempo/length/cycle, track order and routing changes submit a new
+  // graph whose tracks continue their predecessors by id. Notes equal to running ones keep their ids.
+  // Throws like prepare() on invalid input; the running graph is then unchanged.
+  UpdateResult update(const ProjectTimeline& project, const AssetStore& assets, const SampleSetStore& sets = {},
+                      const PluginResolver& resolver = {});
   void collectRetired();
   // countInFrames > 0 clicks a count-in first (monitor only) while the
   // transport holds its position; it then starts on the exact following frame.

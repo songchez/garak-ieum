@@ -11,7 +11,9 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <intrin.h>
@@ -47,6 +49,40 @@ template<class T, std::size_t N> class SpscQueue {
   std::array<T, N> data_{};
   alignas(64) std::atomic<std::size_t> write_{0};
   alignas(64) std::atomic<std::size_t> read_{0};
+};
+
+// Owning list of heap objects with reference iteration. Tracks live behind stable pointers so the callback
+// can swap one track of the running graph (RenderEngine::update) without moving a TrackRuntime: on MSVC a
+// moved std::map allocates its sentinel, so moving a track in the callback would allocate.
+template<class T> class PtrList {
+  using Items = std::vector<std::unique_ptr<T>>;
+ public:
+  template<class Base, class V> class Iter {
+   public:
+    explicit Iter(Base it) noexcept : it_(it) {}
+    V& operator*() const noexcept { return **it_; }
+    V* operator->() const noexcept { return it_->get(); }
+    Iter& operator++() noexcept { ++it_; return *this; }
+    bool operator==(const Iter& other) const noexcept { return it_ == other.it_; }
+    bool operator!=(const Iter& other) const noexcept { return it_ != other.it_; }
+   private:
+    Base it_;
+  };
+  using iterator = Iter<typename Items::iterator, T>;
+  using const_iterator = Iter<typename Items::const_iterator, const T>;
+  iterator begin() noexcept { return iterator(items_.begin()); }
+  iterator end() noexcept { return iterator(items_.end()); }
+  const_iterator begin() const noexcept { return const_iterator(items_.begin()); }
+  const_iterator end() const noexcept { return const_iterator(items_.end()); }
+  T& operator[](std::size_t i) noexcept { return *items_[i]; }
+  const T& operator[](std::size_t i) const noexcept { return *items_[i]; }
+  [[nodiscard]] std::size_t size() const noexcept { return items_.size(); }
+  [[nodiscard]] bool empty() const noexcept { return items_.empty(); }
+  void reserve(std::size_t n) { items_.reserve(n); }
+  void push_back(T&& value) { items_.push_back(std::make_unique<T>(std::move(value))); }
+  std::unique_ptr<T>& slot(std::size_t i) noexcept { return items_[i]; }
+ private:
+  Items items_;
 };
 
 inline void cpuRelax() noexcept {
@@ -343,7 +379,10 @@ struct InsertRuntime {
 
   std::unique_ptr<dsp::StereoProcessor> builtin;
   std::shared_ptr<PluginProcessor> plugin;
-  std::unique_ptr<dsp::EffectControl> control; // Only for automated built-in inserts.
+  // Live parameter control of a built-in insert: every built-in insert has one, so a parameter diff
+  // (RenderEngine::update) applies in place. `automated`: an automation lane drives it (chunked render).
+  std::unique_ptr<dsp::EffectControl> control;
+  bool automated=false;
   std::uint16_t source=0; // Index in TrackTimeline::inserts (disabled inserts are skipped here).
 };
 class CompensationDelay {
@@ -482,26 +521,66 @@ struct TrackRuntime {
     }
   }
 
-  void takeStateFrom(TrackRuntime& previous)noexcept {
-    meter=previous.meter;liveUntil=previous.liveUntil;
-    // The ring and its producer position belong with the voice/effect state.
-    if(ahead&&previous.ahead&&ahead->capacity==previous.ahead->capacity)ahead.swap(previous.ahead);
-    voices.swap(previous.voices);std::swap(samples,previous.samples);
-    livePedal=previous.livePedal;deferredOffs=previous.deferredOffs;deferredCount=previous.deferredCount;
-    nextNote=previous.nextNote;nextEvent=previous.nextEvent;nextControl=previous.nextControl;pendingCount=previous.pendingCount;
-    controllers=previous.controllers;bendCents=previous.bendCents;vibratoCents=previous.vibratoCents;controlGain=previous.controlGain;vibratoPhase=previous.vibratoPhase;
-    pendingEvents=previous.pendingEvents;pluginNotes=previous.pluginNotes;
-    releaseAudition=previous.releaseAudition;
-    if(wavetable)wavetable->takeStateFrom(*previous.wavetable);
-    else instrument.swap(previous.instrument);
-    for(std::size_t i=0;i<inserts.size();++i) {
-      if(inserts[i].builtin)inserts[i].builtin->takeStateFrom(*previous.inserts[i].builtin);
-      else inserts[i].plugin.swap(previous.inserts[i].plugin);
-    }
-    compensation.takeStateFrom(previous.compensation);peak=previous.peak;
+  // How this track continues from its predecessor (the same track id in the running graph), filled on the
+  // control thread (RenderEngine::submit/update) and consumed once by adopt() at the swap.
+  struct RemovedNote { std::int32_t id=0; std::int64_t onFrame=0,offFrame=0; std::uint8_t pitch=60; };
+  std::int32_t predecessor=-1;            // Index in the previous graph, or -1 (a new track).
+  bool identical=false;                   // Same events/source/enabled: cursors and a render-ahead ring carry over.
+  bool sameSource=false;                  // Same instrument identity: voices, samples and the instrument carry over.
+  bool reuseInstrument=false;             // The instrument was not built: take the predecessor's (update()).
+  bool aheadEligible=false;               // May take the predecessor's (idle) render-ahead ring (update()).
+  std::vector<std::int32_t> insertOrigin; // Per runtime insert: the predecessor's runtime insert (same id/type), or -1.
+  std::vector<RemovedNote> removedNotes;  // Predecessor notes absent here: released if sounding.
+
+  // Callback (or a quiesced graph swap): continue playing from `previous`, the same track before an edit.
+  // identical: events are unchanged, so cursors (and a moving ring) keep their position exactly like a
+  // structure-preserving swap always did. Otherwise `previous` is callback-owned at `frame` (its ring was
+  // drained) and cursors are recomputed there: voices, effect tails, controllers and live notes continue;
+  // only notes that were removed or edited are released (docs/RENDER_DIFF_PROTOCOL.md).
+  // routing: a single-track replacement keeps the graph, so the graph-derived routing/send state moves too.
+  void adopt(TrackRuntime& previous,std::int64_t frame,bool sameEvents,bool routing)noexcept {
+    meter=previous.meter;liveUntil=previous.liveUntil;peak=previous.peak;
     fader=previous.fader;panValue=previous.panValue;muteGain=previous.muteGain;
+    if(sameSource) {
+      voices.swap(previous.voices);std::swap(samples,previous.samples);
+      livePedal=previous.livePedal;deferredOffs=previous.deferredOffs;deferredCount=previous.deferredCount;
+      controllers=previous.controllers;bendCents=previous.bendCents;vibratoCents=previous.vibratoCents;controlGain=previous.controlGain;vibratoPhase=previous.vibratoPhase;
+      pendingEvents=previous.pendingEvents;pendingCount=previous.pendingCount;pluginNotes=previous.pluginNotes;
+      releaseAudition=previous.releaseAudition;
+      if(reuseInstrument){instrument.swap(previous.instrument);wavetable.swap(previous.wavetable);}
+      else if(wavetable&&previous.wavetable)wavetable->takeStateFrom(*previous.wavetable);
+      else if(instrument&&previous.instrument&&!wavetable&&!previous.wavetable)instrument.swap(previous.instrument);
+    } else if(instrument&&instrument==previous.instrument)instrument->requestReset();
+    for(std::size_t i=0;i<inserts.size()&&i<insertOrigin.size();++i) {
+      const auto from=insertOrigin[i];
+      if(from<0||static_cast<std::size_t>(from)>=previous.inserts.size())continue;
+      auto&old=previous.inserts[static_cast<std::size_t>(from)];
+      if(inserts[i].builtin&&old.builtin)inserts[i].builtin->takeStateFrom(*old.builtin);
+      else if(inserts[i].plugin&&old.plugin)inserts[i].plugin.swap(old.plugin);
+    }
+    compensation.takeStateFrom(previous.compensation);
     outputDelay.takeStateFrom(previous.outputDelay);
-    for(auto&f:feeds)for(const auto&o:previous.feeds)if(o.sender==f.sender&&o.pre==f.pre){f.gain=o.gain;break;}
+    if(routing) {
+      isReturn=previous.isReturn;routed=previous.routed;routeKind=previous.routeKind;routeTap=previous.routeTap;routeSource=previous.routeSource;
+      inMasterFeed=previous.inMasterFeed;routeLevel=previous.routeLevel;outputDelayFrames=previous.outputDelayFrames;
+      preTap.swap(previous.preTap);postTap.swap(previous.postTap);faderTap.swap(previous.faderTap);
+      routeInput.swap(previous.routeInput);returnInput.swap(previous.returnInput);feeds.swap(previous.feeds);
+    } else for(auto&f:feeds)for(const auto&o:previous.feeds)if(o.sender==f.sender&&o.pre==f.pre){f.gain=o.gain;break;}
+    if(sameEvents) {
+      // The ring and its producer position belong with the voice/effect state.
+      if(ahead&&previous.ahead&&ahead->capacity==previous.ahead->capacity)ahead.swap(previous.ahead);
+      nextNote=previous.nextNote;nextEvent=previous.nextEvent;nextControl=previous.nextControl;
+      return;
+    }
+    if(routing&&aheadEligible&&!ahead)ahead.swap(previous.ahead);
+    nextNote=static_cast<std::size_t>(std::lower_bound(timeline.notes.begin(),timeline.notes.end(),frame,[](const NotePair& n,std::int64_t f){return n.onFrame<f;})-timeline.notes.begin());
+    nextEvent=static_cast<std::size_t>(std::lower_bound(events.begin(),events.end(),frame,[](const TimedPluginEvent&e,std::int64_t f){return e.frame<f;})-events.begin());
+    nextControl=static_cast<std::size_t>(std::lower_bound(timeline.controls.begin(),timeline.controls.end(),frame,[](const ControlEvent& c,std::int64_t f){return c.frame<f;})-timeline.controls.begin());
+    for(const auto&r:removedNotes) {
+      if(instrument) {
+        if(r.onFrame<frame&&r.offFrame>frame&&pendingCount<pendingEvents.size())pendingEvents[pendingCount++]={PluginEvent::Type::NoteOff,0,r.id,r.pitch,0,0,0,false};
+      } else for(auto&v:voices)if(v.active&&!v.live&&v.id==r.id)releaseLive(v);
+    }
   }
 
   Voice& availableVoice(std::uint64_t& overflows)noexcept {
@@ -885,7 +964,7 @@ struct TrackRuntime {
         continue;
       }
       if(context.tempo)effect.builtin->setTempo(context.bpm);
-      if(!effect.control){effect.builtin->process(buffer.data(),frames);continue;}
+      if(!effect.automated){effect.builtin->process(buffer.data(),frames);continue;}
       // Built-in insert automation: parameters re-read every chunk; the processor glides to them.
       for(std::uint32_t offset=0;offset<frames;offset+=automationChunk){
         const auto count=std::min(automationChunk,frames-offset);
@@ -980,6 +1059,7 @@ void prepareAutomation(TrackRuntime& track,const TrackTimeline& t){
           if(!runtime->control)runtime->control=std::make_unique<dsp::EffectControl>(found->type,found->params);
           l.control=runtime->control->index(lane.param);
           if(l.control<0)continue;
+          runtime->automated=true;
         }
         break;
       }
@@ -1010,27 +1090,112 @@ ResolvedSet resolveSet(const SampleSet& set,const AssetStore& assets) {
   result.zones=convert(set.zones);result.releases=convert(set.releaseZones);return result;
 }
 
+// Control-thread record of the last submitted graph plus every diff applied to it since (RenderEngine::update):
+// the timeline as the running graph knows it (note ids as renumbered by update) and what each track resolved.
+// The callback never reads it; it receives a predecessor serial and per-track links, not a hash or JSON.
+struct ControlTrack {
+  std::uint32_t latency=0;
+  double tail=0,instrumentTail=0;
+  std::size_t memory=0,wavetableMemory=0;   // Per-instance estimate (inserts, IEUM WAVE).
+  bool routing=false,aheadEligible=false;   // Reads or feeds a tap in the same block / may render ahead.
+  std::vector<std::shared_ptr<const PcmAsset>> assets; // Windows, then sample zones, in resolution order.
+  std::optional<SampleSet> set;
+  std::vector<dsp::SharedResource> shared;
+};
 struct ControlRecipe {
   ProjectTimeline timeline;
-  std::vector<std::shared_ptr<const PcmAsset>> assets;
-  std::vector<SampleSet> sets;
+  std::vector<ControlTrack> tracks;
+  std::uint32_t senderLatency=0,returnLatency=0;
 };
-// This potentially large exact comparison happens only on the control thread.
-// The callback receives a predecessor serial, not a hash or JSON to compare.
-bool sameStructure(const ControlRecipe& a,const ControlRecipe& b) {
-  const auto&x=a.timeline;const auto&y=b.timeline;
-  if(x.projectId!=y.projectId||x.sampleRate!=y.sampleRate||x.bpm!=y.bpm||x.beatsPerBar!=y.beatsPerBar||x.timeSigNumerator!=y.timeSigNumerator||x.timeSigDenominator!=y.timeSigDenominator||x.lengthFrames!=y.lengthFrames||x.cycle!=y.cycle||x.tempoMap!=y.tempoMap||x.tracks.size()!=y.tracks.size()||a.assets!=b.assets||a.sets!=b.sets)return false;
-  for(std::size_t i=0;i<x.tracks.size();++i) {
-    const auto&tx=x.tracks[i];const auto&ty=y.tracks[i];
-    const auto samePlugin=[](const PluginSpec&a,const PluginSpec&b){return a.instanceId==b.instanceId&&a.path==b.path&&a.classId==b.classId&&a.state==b.state&&a.controllerState==b.controllerState&&a.isInstrument==b.isInstrument;};
-    const auto&sx=tx.source;const auto&sy=ty.source;
-    if(tx.id!=ty.id||tx.isReturn!=ty.isReturn||sx.kind!=sy.kind||sx.instrumentId!=sy.instrumentId||sx.sampleSetId!=sy.sampleSetId||sx.isKit!=sy.isKit||!samePlugin(sx.plugin,sy.plugin)||tx.enabled!=ty.enabled||tx.notes!=ty.notes||tx.controls!=ty.controls||tx.audio!=ty.audio||tx.automation!=ty.automation||tx.unmutedAudible!=ty.unmutedAudible||tx.inserts.size()!=ty.inserts.size())return false;
-    for(std::size_t j=0;j<tx.inserts.size();++j){const auto&ex=tx.inserts[j];const auto&ey=ty.inserts[j];
-      if(ex.id!=ey.id||ex.type!=ey.type||ex.enabled!=ey.enabled||(ex.type=="vst3"&&!samePlugin(ex.plugin,ey.plugin)))return false;
-    }
-  }
+ProjectTimeline headerOf(const ProjectTimeline& p) {
+  ProjectTimeline h;
+  h.version=p.version;h.projectId=p.projectId;h.revision=p.revision;h.sampleRate=p.sampleRate;h.bpm=p.bpm;h.beatsPerBar=p.beatsPerBar;h.tempoMap=p.tempoMap;
+  h.timeSigNumerator=p.timeSigNumerator;h.timeSigDenominator=p.timeSigDenominator;h.lengthFrames=p.lengthFrames;h.cycle=p.cycle;h.masterGain=p.masterGain;h.lowLatencyMonitoring=p.lowLatencyMonitoring;
+  return h;
+}
+// Header fields that every track's frames or the transport depend on: a change rebuilds the graph.
+bool sameTiming(const ProjectTimeline& x,const ProjectTimeline& y) {
+  return x.bpm==y.bpm&&x.beatsPerBar==y.beatsPerBar&&x.timeSigNumerator==y.timeSigNumerator&&x.timeSigDenominator==y.timeSigDenominator&&x.lengthFrames==y.lengthFrames&&x.cycle==y.cycle&&x.tempoMap==y.tempoMap;
+}
+bool samePlugin(const PluginSpec&a,const PluginSpec&b){return a.instanceId==b.instanceId&&a.path==b.path&&a.classId==b.classId&&a.state==b.state&&a.controllerState==b.controllerState&&a.isInstrument==b.isInstrument;}
+// Instrument identity: equal sources keep their voices and instrument across an edit (parameters may differ;
+// IEUM WAVE crossfades a changed patch, VST3 instances are resolved by instance id).
+bool sameSourceIdentity(const TrackSource& x,const TrackSource& y) {
+  return x.kind==y.kind&&x.instrumentId==y.instrumentId&&x.sampleSetId==y.sampleSetId&&x.isKit==y.isKit&&samePlugin(x.plugin,y.plugin);
+}
+// Notes compared without their ids (update() renumbers them against the running graph).
+bool sameNotes(const std::vector<NotePair>& x,const std::vector<NotePair>& y) {
+  if(x.size()!=y.size())return false;
+  for(std::size_t i=0;i<x.size();++i){const auto&a=x[i];const auto&b=y[i];if(a.onFrame!=b.onFrame||a.offFrame!=b.offFrame||a.limitFrame!=b.limitFrame||a.pitch!=b.pitch||a.velocity!=b.velocity)return false;}
   return true;
 }
+// Old notes not present (by value, ids included) in `next`: released at a swap when sounding.
+std::vector<TrackRuntime::RemovedNote> removedNotes(const std::vector<NotePair>& old,const std::vector<NotePair>& next) {
+  const auto key=[](const NotePair& n){return std::make_tuple(n.id,n.onFrame,n.offFrame,n.limitFrame,n.pitch,n.velocity);};
+  std::vector<const NotePair*> a,b;a.reserve(old.size());b.reserve(next.size());
+  for(const auto&n:old)a.push_back(&n);
+  for(const auto&n:next)b.push_back(&n);
+  const auto less=[&](const NotePair* x,const NotePair* y){return key(*x)<key(*y);};
+  std::sort(a.begin(),a.end(),less);std::sort(b.begin(),b.end(),less);
+  std::vector<TrackRuntime::RemovedNote> removed;
+  std::size_t j=0;
+  for(const auto* n:a) {
+    while(j<b.size()&&less(b[j],n))++j;
+    if(j<b.size()&&key(*b[j])==key(*n)){++j;continue;}
+    removed.push_back({n->id,n->onFrame,n->offFrame,static_cast<std::uint8_t>(n->pitch)});
+  }
+  return removed;
+}
+// Gives every note of `next` that equals a note of `old` (frames, pitch, velocity) that note's id and every
+// other note a fresh id above all old ids, so unchanged notes keep their running voices and plug-in note ids.
+// Returns the old notes without a match (removed or edited).
+std::vector<TrackRuntime::RemovedNote> renumberNotes(const std::vector<NotePair>& old,std::vector<NotePair>& next) {
+  const auto key=[](const NotePair& n){return std::make_tuple(n.onFrame,n.offFrame,n.limitFrame,n.pitch,n.velocity);};
+  std::vector<std::uint32_t> a(old.size()),b(next.size());
+  for(std::uint32_t i=0;i<a.size();++i)a[i]=i;
+  for(std::uint32_t i=0;i<b.size();++i)b[i]=i;
+  std::sort(a.begin(),a.end(),[&](std::uint32_t x,std::uint32_t y){return std::make_pair(key(old[x]),old[x].id)<std::make_pair(key(old[y]),old[y].id);});
+  std::sort(b.begin(),b.end(),[&](std::uint32_t x,std::uint32_t y){return std::make_pair(key(next[x]),x)<std::make_pair(key(next[y]),y);});
+  std::int64_t top=-1;for(const auto&n:old)top=std::max<std::int64_t>(top,n.id);
+  const bool compact=top+static_cast<std::int64_t>(next.size())+1>std::numeric_limits<std::int32_t>::max()/2;
+  std::vector<char> matched(next.size(),0),used(old.size(),0);
+  if(!compact)for(std::size_t i=0,j=0;i<a.size()&&j<b.size();) {
+    const auto ka=key(old[a[i]]),kb=key(next[b[j]]);
+    if(ka<kb)++i;else if(kb<ka)++j;
+    else{next[b[j]].id=old[a[i]].id;matched[b[j]]=1;used[a[i]]=1;++i;++j;}
+  }
+  std::int32_t fresh=compact?0:static_cast<std::int32_t>(top+1);
+  for(std::size_t j=0;j<next.size();++j)if(!matched[j])next[j].id=fresh++;
+  std::vector<TrackRuntime::RemovedNote> removed;
+  for(std::size_t i=0;i<old.size();++i)if(!used[i])removed.push_back({old[i].id,old[i].onFrame,old[i].offFrame,static_cast<std::uint8_t>(old[i].pitch)});
+  return removed;
+}
+// Runtime insert index (enabled inserts of an enabled track, in order) of each timeline insert, or -1.
+std::vector<std::int32_t> runtimeInserts(const TrackTimeline& t) {
+  std::vector<std::int32_t> result(t.inserts.size(),-1);std::int32_t next=0;
+  if(t.enabled)for(std::size_t i=0;i<t.inserts.size();++i)if(t.inserts[i].enabled)result[i]=next++;
+  return result;
+}
+// Per runtime insert of `next`: the runtime insert of `old` with the same id and type (same plug-in), or -1.
+std::vector<std::int32_t> insertOrigins(const TrackTimeline& old,const TrackTimeline& next) {
+  std::vector<std::int32_t> result;
+  const auto from=runtimeInserts(old);
+  if(!next.enabled)return result;
+  for(const auto&e:next.inserts) {
+    if(!e.enabled)continue;
+    std::int32_t origin=-1;
+    for(std::size_t j=0;j<old.inserts.size();++j){const auto&o=old.inserts[j];
+      if(o.id==e.id&&o.type==e.type&&from[j]>=0&&(e.type!="vst3"||samePlugin(o.plugin,e.plugin))){origin=from[j];break;}}
+    result.push_back(origin);
+  }
+  return result;
+}
+// Index of this track's send automation lane for a return (TrackRuntime::Feed::lane), or -1.
+std::int32_t sendLane(const TrackTimeline& t,const std::string& returnId) {
+  for(std::size_t l=0;l<t.automation.size();++l)if(t.automation[l].target==AutomationLane::Target::Send&&t.automation[l].returnId==returnId&&!t.automation[l].points.empty())return static_cast<std::int32_t>(l);
+  return -1;
+}
+
 
 // One recording's capture ring: allocated on the control thread, handed to the
 // callback by pointer in RecordStart and dropped by it in RecordStop. The
@@ -1141,27 +1306,35 @@ template<class Graph> void tempoContext(ProcessContext& context,const Graph& g)n
 }
 
 struct PreparedProject::Impl {
-  ProjectTimeline timeline;
+  ProjectTimeline timeline; // Header only: the tracks live in `tracks` (and in the control recipe).
   // Compiled once on the control thread; null-free for the callback (constant maps use timeline.bpm).
   TempoMap tempo;
-  std::vector<TrackRuntime> tracks;
+  PtrList<TrackRuntime> tracks;
   dsp::Master master;
   std::uint32_t latency=0,senderLatency=0;
   double tail=.85;
-  std::shared_ptr<const ControlRecipe> recipe;
+  std::unique_ptr<ControlRecipe> recipe; // Moved to the engine by submit().
   std::uint64_t serial=0,preserveFrom=0;
+  // Set by submit() when this graph continues the running one: tempo/length/cycle changed (every track
+  // continues from the playhead), and each previous track's index here (-1: removed).
+  bool headerChanged=false;
+  std::vector<std::int32_t> successor;
   std::size_t wavetableMemory=0,wavetableTableMemory=0;
   // Track-input routing: track indices grouped by processing level (sources first). One level = no
   // routes, the original single fork. `masterLevel` is the first level holding a master-resampling track.
   std::vector<std::uint32_t> levelOrder,levelStart;
   std::uint32_t masterLevel=std::numeric_limits<std::uint32_t>::max();
-  explicit Impl(const ProjectTimeline& p):timeline(p),tempo(p.bpm,p.tempoMap),master(p.sampleRate){}
+  explicit Impl(const ProjectTimeline& p):timeline(headerOf(p)),tempo(p.bpm,p.tempoMap),master(p.sampleRate){}
   void reset(std::int64_t frame,bool chase,bool effects,std::uint64_t& overflows)noexcept {
     for(auto&track:tracks) track.reset(frame,chase,effects,overflows);
     if(effects) master.reset();
   }
-  void takeStateFrom(Impl& previous)noexcept {
-    for(std::size_t i=0;i<tracks.size();++i)tracks[i].takeStateFrom(previous.tracks[i]);
+  // Each track continues its predecessor (same id); a new track starts at the playhead like after a seek.
+  void takeStateFrom(Impl& previous,std::int64_t frame,bool playing,std::uint64_t& overflows)noexcept {
+    for(auto&t:tracks) {
+      if(t.predecessor>=0&&static_cast<std::size_t>(t.predecessor)<previous.tracks.size())t.adopt(previous.tracks[static_cast<std::size_t>(t.predecessor)],frame,t.identical&&!headerChanged,false);
+      else t.reset(frame,playing,true,overflows);
+    }
     master.takeStateFrom(previous.master);
   }
   bool readyToPreserve()noexcept {
@@ -1179,16 +1352,26 @@ std::uint32_t PreparedProject::latencyFrames()const noexcept{return impl_->laten
 std::uint32_t PreparedProject::senderLatencyFrames()const noexcept{return impl_->senderLatency;}
 
 struct RenderEngine::Impl {
-  enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Control,Monitor,RecordStart,RecordStop,Master,Input,Layout,Metronome };
-  struct Command {Kind kind=Kind::Stop;std::uint64_t ticket=0;PreparedProject*graph=nullptr;Capture*capture=nullptr;std::uint32_t track=0;std::int64_t frame=0;int pitch=60;std::int32_t noteId=-1;float value=1;std::array<std::uint64_t,4>mask{};std::array<std::uint8_t,maxInputLayout>layout{};const MetronomeClicks*clicks=nullptr;};
+  // Diff commands (docs/RENDER_DIFF_PROTOCOL.md): Mix (track gain/pan/mute/solo flags), Send (a return's feed
+  // gain), Param (one built-in insert parameter, in place), Replace (one track swapped at a block boundary,
+  // keeping its voices and tails), Revision (the applied project revision).
+  enum class Kind { Graph,Play,Pause,Stop,Seek,Preview,NoteOn,NoteOff,AllNotesOff,Control,Monitor,RecordStart,RecordStop,Master,Input,Layout,Metronome,Mix,Send,Param,Replace,Revision };
+  enum MixFlag : std::uint32_t { MixAudible=1,MixUnmutedAudible=2,MixMute=4,MixSolo=8,MixSoloSafe=16 };
+  struct Command {Kind kind=Kind::Stop;std::uint64_t ticket=0;PreparedProject*graph=nullptr;Capture*capture=nullptr;std::uint32_t track=0;std::int64_t frame=0;int pitch=60;std::int32_t noteId=-1;float value=1;std::array<std::uint64_t,4>mask{};std::array<std::uint8_t,maxInputLayout>layout{};const MetronomeClicks*clicks=nullptr;
+    TrackRuntime*runtime=nullptr;double param=0;float pan=0;std::uint32_t flags=0,insert=0;};
   std::uint32_t rate,maxBlock;
   PreparedProject*active=nullptr;
   SpscQueue<Command,1024> commands;
   SpscQueue<PreparedProject*,4096>retired;
+  // Tracks replaced in the running graph, destroyed on the control thread (collectRetired). The control
+  // thread keeps at most retiredTrackCapacity replacements in flight, so the callback's push never fails.
+  static constexpr std::size_t retiredTrackCapacity=512;
+  SpscQueue<TrackRuntime*,retiredTrackCapacity>retiredTracks;
+  std::size_t replacementsInFlight=0;
   std::optional<Command> deferred;
   std::uint64_t nextTicket=1,lastTicket=0,voiceOverflows=0,invalidSamples=0;
   std::atomic<std::uint64_t>commandOverflows{0};
-  std::shared_ptr<const ControlRecipe>lastSubmittedRecipe;
+  std::unique_ptr<ControlRecipe>lastSubmittedRecipe;
   std::uint64_t lastSubmittedSerial=0;
   WavetableResources wavetableResources;
   std::size_t retainedWavetableMemory=0; // Control-thread graph ownership budget.
@@ -1292,7 +1475,15 @@ struct RenderEngine::Impl {
   Impl(std::uint32_t r,std::uint32_t b,std::uint32_t capacity):rate(r),maxBlock(b),inputScratch(static_cast<std::size_t>(b)*2),resampleScratch(static_cast<std::size_t>(b)*2),recordingCapacity(capacity){
     for(std::size_t i=0;i<maxInputLayout;++i){layout[i]=static_cast<std::uint8_t>(i);controlLayout[i]=layout[i];}
   }
-  ~Impl(){pool.reset();Command c;while(commands.pop(c))if(c.kind==Kind::Graph)delete c.graph;if(deferred&&deferred->kind==Kind::Graph)delete deferred->graph;PreparedProject*p=nullptr;while(retired.pop(p))delete p;delete active;}
+  ~Impl(){pool.reset();Command c;
+    const auto drop=[](Command& x){if(x.kind==Kind::Graph)delete x.graph;if(x.kind==Kind::Replace)delete x.runtime;};
+    while(commands.pop(c))drop(c);
+    if(deferred)drop(*deferred);
+    PreparedProject*p=nullptr;
+    while(retired.pop(p))delete p;
+    TrackRuntime*t=nullptr;
+    while(retiredTracks.pop(t))delete t;
+    delete active;}
   std::uint64_t enqueue(Command command) {
     command.ticket=nextTicket++;
     if(!commands.push(command)){commandOverflows.fetch_add(1,std::memory_order_relaxed);return 0;}return command.ticket;
@@ -1410,10 +1601,11 @@ struct RenderEngine::Impl {
   // Callback, preserving graph swap after quiesce: a track whose ring cannot
   // move into the new graph comes back first.
   void handOverAhead(PreparedProject::Impl&previous,PreparedProject::Impl&next)noexcept {
-    for(std::size_t i=0;i<previous.tracks.size()&&i<next.tracks.size();++i) {
+    for(std::size_t i=0;i<previous.tracks.size();++i) {
       auto&t=previous.tracks[i];
       if(!t.ahead||t.ahead->mode.load(std::memory_order_relaxed)==AheadState::Off)continue;
-      if(next.tracks[i].ahead&&next.tracks[i].ahead->capacity==t.ahead->capacity)continue;
+      const auto s=i<next.successor.size()?next.successor[i]:-1;
+      if(s>=0){const auto&n=next.tracks[static_cast<std::size_t>(s)];if(n.identical&&!next.headerChanged&&n.ahead&&n.ahead->capacity==t.ahead->capacity)continue;}
       auto&a=*t.ahead;
       const bool seamless=a.empty()&&catchUp(previous,t,position,voiceOverflows);
       a.mode.store(AheadState::Off,std::memory_order_relaxed);a.clear();
@@ -1609,9 +1801,15 @@ struct RenderEngine::Impl {
           // or retired (the next block's promote() lets them back in).
           quiesce();
           if(preserve&&!previous->impl_->readyToPreserve()){deferred=c;return;}
-          if(preserve)handOverAhead(*previous->impl_,*c.graph->impl_);
+          if(preserve) {
+            // A track whose events change continues from the playhead: its render-ahead ring drains first.
+            auto&next=*c.graph->impl_;bool wait=false;
+            for(auto&t:next.tracks)if(t.predecessor>=0&&(!t.identical||next.headerChanged)&&!own(previous->impl_->tracks[static_cast<std::size_t>(t.predecessor)]))wait=true;
+            if(wait){deferred=c;return;}
+            handOverAhead(*previous->impl_,next);
+          }
           active=c.graph;targetMasterGain=active->impl_->timeline.masterGain;
-          if(preserve)active->impl_->takeStateFrom(*previous->impl_);
+          if(preserve)active->impl_->takeStateFrom(*previous->impl_,position,playing,voiceOverflows);
           else {masterGain=targetMasterGain;aheadTracks=0;}
           if(projectChanged){position=0;playing=false;monitor={};countInRemaining=0;}
           normalize();if(!preserve)reset(playing,true);
@@ -1661,6 +1859,47 @@ struct RenderEngine::Impl {
           // Voices may still read the previous set, which the control thread frees once this is acknowledged.
           if(c.clicks!=clicks)clickPlayer.clear();
           clicks=c.clicks;metronomeOn=c.pitch!=0;metronomeGain=c.value;break;
+        case Kind::Mix: {
+          if(!active||c.track>=active->impl_->tracks.size())break;
+          auto&t=active->impl_->tracks[c.track];
+          if(!own(t)){deferred=c;return;}
+          // Keep the track in the callback while the fader moves: each tick then applies on the next block.
+          markLive(t);
+          t.timeline.gain=c.value;t.timeline.pan=c.pan;
+          t.timeline.audible=(c.flags&MixAudible)!=0;t.timeline.unmutedAudible=(c.flags&MixUnmutedAudible)!=0;
+          t.timeline.mute=(c.flags&MixMute)!=0;t.timeline.solo=(c.flags&MixSolo)!=0;t.timeline.soloSafe=(c.flags&MixSoloSafe)!=0;
+          break;
+        }
+        case Kind::Send: {
+          // Returns read their feeds in the callback only (they never render ahead).
+          if(!active||c.track>=active->impl_->tracks.size())break;
+          for(auto&f:active->impl_->tracks[c.track].feeds)if(f.sender==c.noteId&&f.pre==(c.pitch!=0)){f.target=c.value;break;}
+          break;
+        }
+        case Kind::Param: {
+          if(!active||c.track>=active->impl_->tracks.size())break;
+          auto&t=active->impl_->tracks[c.track];
+          if(c.insert>=t.inserts.size())break;
+          if(!own(t)){deferred=c;return;}
+          markLive(t);
+          auto&insert=t.inserts[c.insert];
+          if(insert.builtin&&insert.control){insert.control->set(c.pitch,c.param);insert.control->apply(*insert.builtin);}
+          break;
+        }
+        case Kind::Replace: {
+          auto*incoming=c.runtime;
+          if(!active||c.track>=active->impl_->tracks.size()){(void)retiredTracks.push(incoming);break;}
+          auto&g=*active->impl_;
+          // No worker may read the track list while one slot changes (the next promote() lets them back).
+          quiesce();
+          if(!own(g.tracks[c.track])){deferred=c;return;}
+          incoming->adopt(g.tracks[c.track],position,false,true);
+          std::unique_ptr<TrackRuntime> swapped(incoming);
+          g.tracks.slot(c.track).swap(swapped);
+          (void)retiredTracks.push(swapped.release());
+          break;
+        }
+        case Kind::Revision:if(active)active->impl_->timeline.revision=static_cast<std::uint64_t>(c.frame);break;
       }
       lastTicket=c.ticket;
     }
@@ -1729,7 +1968,7 @@ namespace {
 // Control thread (prepare): resolves each route to a graph index, turns loops and missing sources into
 // silence (Kind::None), marks the master feed, allocates tap/route buffers and orders tracks by level so
 // every source renders before the tracks that take it. Mirrors src/core/trackRouting.ts.
-void prepareRoutes(std::vector<TrackRuntime>& tracks,std::vector<std::uint32_t>& levelOrder,std::vector<std::uint32_t>& levelStart,std::uint32_t& masterLevel,std::uint32_t maxBlock) {
+void prepareRoutes(PtrList<TrackRuntime>& tracks,std::vector<std::uint32_t>& levelOrder,std::vector<std::uint32_t>& levelStart,std::uint32_t& masterLevel,std::uint32_t maxBlock) {
   const auto count=tracks.size();
   std::vector<std::int32_t> source(count,-1);
   for(std::size_t i=0;i<count;++i) {
@@ -1814,6 +2053,122 @@ void prepareRoutes(std::vector<TrackRuntime>& tracks,std::vector<std::uint32_t>&
 }
 } // namespace
 
+namespace {
+// Everything one track resolves on the control thread: its runtime and the facts update() needs later.
+struct TrackBuild {
+  TrackRuntime track;
+  ControlTrack info;
+  std::size_t wavetableTableMemory=0;
+};
+// The previous track's IEUM WAVE instrument is kept (identical source): update() swaps it in at the swap.
+struct ReusedInstrument { double tail=0; std::size_t memory=0; };
+TrackBuild buildTrack(const ProjectTimeline& p,const TrackTimeline& t,const AssetStore& assets,const SampleSetStore& sets,const PluginResolver& resolvePlugin,
+                      WavetableResources& wavetables,std::uint32_t maxBlock,std::set<const ieum::wave::PreparedWavetableSet*>& waveTables,const ReusedInstrument* reuse) {
+  TrackBuild build;auto& track=build.track;auto& info=build.info;
+  track.timeline=t;track.isReturn=t.isReturn;track.sampleRate=p.sampleRate;track.projectLength=p.lengthFrames;track.contextLowLatency=p.lowLatencyMonitoring;
+  require(!t.isReturn||(t.source.kind==TrackSource::Kind::Audio&&t.notes.empty()&&t.audio.empty()&&t.sends.empty()),"Return tracks are audio buses without events or sends");
+  require(t.sends.size()<=256,"Native track exceeds send limit");
+  for(const auto&send:t.sends)checked(send.gain,0,4,"Invalid native send gain");
+  track.fader=t.audible?t.gain:0;track.panValue=t.pan;
+  checked(t.gain,0,2,"Invalid native track gain");checked(t.pan,-1,1,"Invalid native pan");
+  track.buffer.resize(static_cast<std::size_t>(maxBlock)*2);
+  require(t.source.kind!=TrackSource::Kind::Audio||t.notes.empty(),"Audio tracks cannot contain instrument notes");
+  require(t.source.kind==TrackSource::Kind::Audio||t.audio.empty(),"Instrument tracks cannot contain audio windows");
+  if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)track.synth=compileSynth(t.source);
+  // An explicitly disabled source is retained in the immutable recipe but
+  // needs neither its sample library nor a loadable third-party plug-in.
+  if(!t.enabled)return build;
+  for(const auto&e:t.inserts)if(e.enabled)info.memory+=dsp::estimateEffectMemory(e.type,p.sampleRate);
+  double trackTail=0;
+  const bool wave=t.source.kind==TrackSource::Kind::NativeWavetable;
+  if(wave) {
+    require(p.sampleRate>=22050,"IEUM WAVE requires a sample rate of 22050..192000 Hz");
+    require(t.source.instrumentId=="wavetable"&&!t.source.isKit,"Invalid IEUM WAVE source");
+    if(reuse) {
+      track.reuseInstrument=true;track.stereoSource=true;trackTail=reuse->tail;
+      info.instrumentTail=reuse->tail;info.wavetableMemory=reuse->memory;
+    } else {
+      auto prepared=wavetables.prepare(t.source.patchData);
+      const auto tableBytes=waveTables.insert(prepared.tables.get()).second?prepared.tables->bytes():0;
+      const auto bytes=WavetableProcessor::instanceMemory(p.sampleRate,maxBlock)+tableBytes+t.source.patchData.size()*3;
+      info.wavetableMemory=bytes;build.wavetableTableMemory=tableBytes;
+      track.wavetable=std::make_shared<WavetableProcessor>(std::move(prepared),p.sampleRate,maxBlock);
+      track.instrument=track.wavetable;track.stereoSource=true;trackTail=track.wavetable->tailSeconds();info.instrumentTail=trackTail;
+    }
+    info.memory+=info.wavetableMemory;
+  }
+  if(t.source.kind==TrackSource::Kind::BuiltinSampled){const auto set=sets.find(t.source.sampleSetId);require(set!=sets.end(),"Required native sample set is not registered");require(set->second.isKit==t.source.isKit,"Sample kind differs from instrument");track.samples=resolveSet(set->second,assets);info.set=set->second;
+    for(const auto&z:track.samples.zones){info.assets.push_back(z.asset);track.stereoSource|=z.asset->channels>1;
+      if(t.source.isKit)trackTail=std::max(trackTail,(static_cast<double>(z.asset->frames())/z.asset->sampleRate-track.samples.startOffset)/std::pow(2,z.zone.tune/1200+track.synth.tune/12)*track.synth.decay+.014);
+    }
+    for(const auto&z:track.samples.releases){info.assets.push_back(z.asset);track.stereoSource|=z.asset->channels>1;
+      trackTail=std::max(trackTail,(static_cast<double>(z.asset->frames())/z.asset->sampleRate-track.samples.startOffset)/std::pow(2,(z.zone.lo-z.zone.root)/12.0+z.zone.tune/1200));
+    }
+  }
+  if(t.source.kind==TrackSource::Kind::Vst3){require(static_cast<bool>(resolvePlugin),"No native VST3 host is available");track.instrument=resolvePlugin(t.source.plugin,p.sampleRate,maxBlock);require(static_cast<bool>(track.instrument),"VST3 instrument could not be prepared");track.latency=track.instrument->latencyFrames();track.stereoSource=true;trackTail=checked(track.instrument->tailSeconds(),0,3600,"Invalid plugin tail time");require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");}
+  if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)trackTail=std::max(trackTail,t.source.isKit?(track.synth.kind==Synth::Kind::Drums?.62*track.synth.decay+.004:0):track.synth.release*1.5+.02);
+  // Plug-in instruments (VST3, IEUM WAVE) take notes and controllers as sample-accurate events.
+  const bool pluginSource=track.instrument!=nullptr||track.reuseInstrument;
+  std::set<std::int32_t>noteIds;
+  for(const auto&n:t.notes){require(noteIds.insert(n.id).second&&n.pitch>=0&&n.pitch<=127&&n.onFrame>=-p.lengthFrames&&n.offFrame>n.onFrame&&n.offFrame>0&&n.offFrame<=p.lengthFrames&&n.limitFrame>=n.offFrame&&n.limitFrame<=p.lengthFrames,"Invalid native note event");checked(n.velocity,0,2,"Invalid native note velocity");
+    if(pluginSource&&n.velocity>0){track.events.push_back({n.onFrame,{PluginEvent::Type::NoteOn,0,n.id,static_cast<std::uint8_t>(n.pitch),0,wave?n.velocity:std::min(1.f,n.velocity),0}});track.events.push_back({n.offFrame,{PluginEvent::Type::NoteOff,0,n.id,static_cast<std::uint8_t>(n.pitch),0,0,0}});}
+  }
+  std::stable_sort(track.timeline.notes.begin(),track.timeline.notes.end(),[](const NotePair&a,const NotePair&b){return a.onFrame<b.onFrame||(a.onFrame==b.onFrame&&a.id<b.id);});
+  for(std::size_t i=0;i<t.controls.size();++i){
+    const auto&c=t.controls[i];
+    require(c.frame>=0&&c.frame<=p.lengthFrames&&validControllerValue(c.controller,c.value)&&(!i||t.controls[i-1].frame<=c.frame),"Invalid native control event");
+    // Built-in voices read timeline.controls while rendering. The bend range is a built-in meta controller.
+    if(!pluginSource||c.controller==bendRangeController)continue;
+    PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=c.controller;e.value=normalizedControllerValue(c.controller,c.value);
+    track.events.push_back({c.frame,e});
+  }
+  std::stable_sort(track.events.begin(),track.events.end(),[](const TimedPluginEvent&a,const TimedPluginEvent&b){return a.frame<b.frame||(a.frame==b.frame&&eventOrder(a.event.type)<eventOrder(b.event.type));});
+  for(std::size_t begin=0,end=0;end<track.events.size();++end){
+    while(track.events[end].frame-track.events[begin].frame>=maxBlock)++begin;
+    // Leave room for all queued live notes and their auto-release events.
+    require(end-begin+1<=maxPluginEvents-maxVoices*2-1,"Instrument note density exceeds the bounded event buffer");
+  }
+  for(const auto&w:t.audio){require(w.startFrame>=0&&w.endFrame>w.startFrame&&w.endFrame<=p.lengthFrames&&w.clipLengthFrames>0&&w.clipOffsetFrames>=0&&w.fadeInFrames>=0&&w.fadeOutFrames>=0&&w.fadeInCurve>=0&&w.fadeInCurve<=4&&w.fadeOutCurve>=0&&w.fadeOutCurve<=4,"Invalid native audio window");
+    checked(w.gain,0,16,"Invalid audio window gain");checked(w.sourceStartFrame,0,1e15,"Invalid audio source offset");checked(w.sourceSampleRate,8000,192000,"Invalid source sample rate");
+    auto a=resolveAsset(assets,w.assetId);require(w.sourceSampleRate==a->sampleRate&&w.sourceStartFrame<a->frames(),"Audio window does not match registered PCM");
+    track.stereoSource|=a->channels>1;
+    info.assets.push_back(a);
+    track.windows.push_back({w,std::move(a)});
+  }
+  std::stable_sort(track.windows.begin(),track.windows.end(),[](const ResolvedWindow&a,const ResolvedWindow&b){return a.window.startFrame<b.window.startFrame;});
+  std::set<std::string>insertIds;
+  for(const auto&e:t.inserts){require(!e.id.empty()&&insertIds.insert(e.id).second,"Duplicate native insert ID");if(!e.enabled)continue;
+    InsertRuntime effect;effect.source=static_cast<std::uint16_t>(&e-t.inserts.data());
+    if(e.type=="vst3"){require(static_cast<bool>(resolvePlugin),"No native VST3 host is available");effect.plugin=resolvePlugin(e.plugin,p.sampleRate,maxBlock);require(static_cast<bool>(effect.plugin),"VST3 effect could not be prepared");const auto latency=effect.plugin->latencyFrames();require(latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.latency+=latency;trackTail+=checked(effect.plugin->tailSeconds(),0,3600,"Invalid plugin tail time");track.stereoEffects=true;}
+    else {
+      effect.builtin=dsp::makeEffect(e.type,e.params,p.sampleRate,p.bpm);track.latency+=effect.builtin->latencyFrames();trackTail+=effect.builtin->tailSeconds();
+      track.stereoEffects|=e.type=="reverb"||e.type=="guitar-rig"||(e.type=="delay"&&e.params.count("mode")&&e.params.at("mode")>=.5)||e.type=="chorus"||e.type=="phaser"||e.type=="flanger"||e.type=="tremolo"||e.type=="utility";
+      effect.builtin->sharedResources(info.shared);
+      effect.control=std::make_unique<dsp::EffectControl>(e.type,e.params);
+    }
+    require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.inserts.push_back(std::move(effect));
+  }
+  prepareAutomation(track,t);
+  info.tail=trackTail;info.latency=track.latency;
+  return build;
+}
+// Shared immutable data (reverb spectra) counted once per graph.
+std::size_t sharedMemory(const std::vector<const ControlTrack*>& tracks) {
+  std::set<const void*> seen;std::size_t total=0;
+  for(const auto*t:tracks)for(const auto&r:t->shared)if(seen.insert(r.key).second)total+=r.bytes;
+  return total;
+}
+bool aheadCandidate(const TrackRuntime& t) {
+  const bool vst3=(t.instrument&&!t.wavetable)||std::any_of(t.inserts.begin(),t.inserts.end(),[](const InsertRuntime&i){return i.plugin!=nullptr;});
+  return t.timeline.enabled&&!vst3;
+}
+bool routingTrack(const TrackRuntime& t) {
+  // Routed tracks read a source tap in the same block, and pre/post-FX taps are not in the ring.
+  // Sends and returns likewise read a tap in the same block.
+  return t.routed||!t.preTap.empty()||!t.postTap.empty()||!t.faderTap.empty()||t.isReturn;
+}
+} // namespace
+
 std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,const AssetStore& assets,const SampleSetStore& sets,const PluginResolver& resolvePlugin)const {
   require(p.version==1&&p.sampleRate==impl_->rate,"Native project/device sample rates must agree");
   require(p.tracks.size()<=256&&p.lengthFrames>0&&p.lengthFrames<=static_cast<std::int64_t>(p.sampleRate)*3600,"Native project exceeds track/duration limits");
@@ -1831,86 +2186,20 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
     for(const auto&e:t.inserts)if(e.type=="vst3")uniquePlugin(e.plugin);
     for(const auto&e:t.inserts)if(t.enabled&&e.enabled)estimated+=dsp::estimateEffectMemory(e.type,p.sampleRate);
   }
+  // Checked before any processor is built: a refused project costs no impulse responses.
   require(noteCount<=100000&&windowCount<=8192&&estimated<=memoryLimit,"Native project exceeds bounded memory/event limits");
   auto result=std::make_unique<PreparedProject::Impl>(p);result->tracks.reserve(p.tracks.size());
-  std::vector<double> tails;tails.reserve(p.tracks.size());
-  auto recipe=std::make_shared<ControlRecipe>();recipe->timeline=p;
+  auto recipe=std::make_unique<ControlRecipe>();recipe->timeline=headerOf(p);recipe->timeline.tracks.reserve(p.tracks.size());recipe->tracks.reserve(p.tracks.size());
   for(const auto&t:p.tracks) {
-    TrackRuntime track;track.timeline=t;track.isReturn=t.isReturn;track.sampleRate=p.sampleRate;track.projectLength=p.lengthFrames;track.contextLowLatency=p.lowLatencyMonitoring;
-    require(!t.isReturn||(t.source.kind==TrackSource::Kind::Audio&&t.notes.empty()&&t.audio.empty()&&t.sends.empty()),"Return tracks are audio buses without events or sends");
-    require(t.sends.size()<=256,"Native track exceeds send limit");
-    for(const auto&send:t.sends)checked(send.gain,0,4,"Invalid native send gain");
-    track.fader=t.audible?t.gain:0;track.panValue=t.pan;
-    checked(t.gain,0,2,"Invalid native track gain");checked(t.pan,-1,1,"Invalid native pan");
-    track.buffer.resize(static_cast<std::size_t>(impl_->maxBlock)*2);
-    require(t.source.kind!=TrackSource::Kind::Audio||t.notes.empty(),"Audio tracks cannot contain instrument notes");
-    require(t.source.kind==TrackSource::Kind::Audio||t.audio.empty(),"Instrument tracks cannot contain audio windows");
-    if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)track.synth=compileSynth(t.source);
-    // An explicitly disabled source is retained in the immutable recipe but
-    // needs neither its sample library nor a loadable third-party plug-in.
-    if(!t.enabled){result->tracks.push_back(std::move(track));tails.push_back(0);continue;}
-    double trackTail=0;
-    if(t.source.kind==TrackSource::Kind::NativeWavetable) {
-      require(p.sampleRate>=22050,"IEUM WAVE requires a sample rate of 22050..192000 Hz");
-      require(t.source.instrumentId=="wavetable"&&!t.source.isKit,"Invalid IEUM WAVE source");
-      auto prepared=impl_->wavetableResources.prepare(t.source.patchData);
-      const auto tableBytes=waveTables.insert(prepared.tables.get()).second?prepared.tables->bytes():0;
-      const auto bytes=WavetableProcessor::instanceMemory(p.sampleRate,impl_->maxBlock)
-        +tableBytes+t.source.patchData.size()*3;
-      estimated+=bytes;result->wavetableMemory+=bytes;result->wavetableTableMemory+=tableBytes;
-      require(estimated<=memoryLimit,"IEUM WAVE exceeds native memory budget");
-      track.wavetable=std::make_shared<WavetableProcessor>(std::move(prepared),p.sampleRate,impl_->maxBlock);
-      track.instrument=track.wavetable;track.stereoSource=true;trackTail=track.wavetable->tailSeconds();
-    }
-    if(t.source.kind==TrackSource::Kind::BuiltinSampled){const auto set=sets.find(t.source.sampleSetId);require(set!=sets.end(),"Required native sample set is not registered");require(set->second.isKit==t.source.isKit,"Sample kind differs from instrument");track.samples=resolveSet(set->second,assets);recipe->sets.push_back(set->second);
-      for(const auto&z:track.samples.zones){recipe->assets.push_back(z.asset);track.stereoSource|=z.asset->channels>1;
-        if(t.source.isKit)trackTail=std::max(trackTail,(static_cast<double>(z.asset->frames())/z.asset->sampleRate-track.samples.startOffset)/std::pow(2,z.zone.tune/1200+track.synth.tune/12)*track.synth.decay+.014);
-      }
-      for(const auto&z:track.samples.releases){recipe->assets.push_back(z.asset);track.stereoSource|=z.asset->channels>1;
-        trackTail=std::max(trackTail,(static_cast<double>(z.asset->frames())/z.asset->sampleRate-track.samples.startOffset)/std::pow(2,(z.zone.lo-z.zone.root)/12.0+z.zone.tune/1200));
-      }
-    }
-    if(t.source.kind==TrackSource::Kind::Vst3){require(static_cast<bool>(resolvePlugin),"No native VST3 host is available");track.instrument=resolvePlugin(t.source.plugin,p.sampleRate,impl_->maxBlock);require(static_cast<bool>(track.instrument),"VST3 instrument could not be prepared");track.latency=track.instrument->latencyFrames();track.stereoSource=true;trackTail=checked(track.instrument->tailSeconds(),0,3600,"Invalid plugin tail time");require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");}
-    if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)trackTail=std::max(trackTail,t.source.isKit?(track.synth.kind==Synth::Kind::Drums?.62*track.synth.decay+.004:0):track.synth.release*1.5+.02);
-    std::set<std::int32_t>noteIds;
-    for(const auto&n:t.notes){require(noteIds.insert(n.id).second&&n.pitch>=0&&n.pitch<=127&&n.onFrame>=-p.lengthFrames&&n.offFrame>n.onFrame&&n.offFrame>0&&n.offFrame<=p.lengthFrames&&n.limitFrame>=n.offFrame&&n.limitFrame<=p.lengthFrames,"Invalid native note event");checked(n.velocity,0,2,"Invalid native note velocity");
-      if(track.instrument&&n.velocity>0){track.events.push_back({n.onFrame,{PluginEvent::Type::NoteOn,0,n.id,static_cast<std::uint8_t>(n.pitch),0,track.wavetable?n.velocity:std::min(1.f,n.velocity),0}});track.events.push_back({n.offFrame,{PluginEvent::Type::NoteOff,0,n.id,static_cast<std::uint8_t>(n.pitch),0,0,0}});}
-    }
-    std::stable_sort(track.timeline.notes.begin(),track.timeline.notes.end(),[](const NotePair&a,const NotePair&b){return a.onFrame<b.onFrame||(a.onFrame==b.onFrame&&a.id<b.id);});
-    for(std::size_t i=0;i<t.controls.size();++i){
-      const auto&c=t.controls[i];
-      require(c.frame>=0&&c.frame<=p.lengthFrames&&validControllerValue(c.controller,c.value)&&(!i||t.controls[i-1].frame<=c.frame),"Invalid native control event");
-      // Plug-in instruments (VST3, IEUM WAVE) take controllers as sample-accurate events; built-in voices read
-      // timeline.controls while rendering. The bend range is a built-in meta controller.
-      if(!track.instrument||c.controller==bendRangeController)continue;
-      PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=c.controller;e.value=normalizedControllerValue(c.controller,c.value);
-      track.events.push_back({c.frame,e});
-    }
-    std::stable_sort(track.events.begin(),track.events.end(),[](const TimedPluginEvent&a,const TimedPluginEvent&b){return a.frame<b.frame||(a.frame==b.frame&&eventOrder(a.event.type)<eventOrder(b.event.type));});
-    for(std::size_t begin=0,end=0;end<track.events.size();++end){
-      while(track.events[end].frame-track.events[begin].frame>=impl_->maxBlock)++begin;
-      // Leave room for all queued live notes and their auto-release events.
-      require(end-begin+1<=maxPluginEvents-maxVoices*2-1,"Instrument note density exceeds the bounded event buffer");
-    }
-    for(const auto&w:t.audio){require(w.startFrame>=0&&w.endFrame>w.startFrame&&w.endFrame<=p.lengthFrames&&w.clipLengthFrames>0&&w.clipOffsetFrames>=0&&w.fadeInFrames>=0&&w.fadeOutFrames>=0&&w.fadeInCurve>=0&&w.fadeInCurve<=4&&w.fadeOutCurve>=0&&w.fadeOutCurve<=4,"Invalid native audio window");
-      checked(w.gain,0,16,"Invalid audio window gain");checked(w.sourceStartFrame,0,1e15,"Invalid audio source offset");checked(w.sourceSampleRate,8000,192000,"Invalid source sample rate");
-      auto a=resolveAsset(assets,w.assetId);require(w.sourceSampleRate==a->sampleRate&&w.sourceStartFrame<a->frames(),"Audio window does not match registered PCM");
-      track.stereoSource|=a->channels>1;
-      recipe->assets.push_back(a);
-      track.windows.push_back({w,std::move(a)});
-    }
-    std::stable_sort(track.windows.begin(),track.windows.end(),[](const ResolvedWindow&a,const ResolvedWindow&b){return a.window.startFrame<b.window.startFrame;});
-    std::set<std::string>insertIds;
-    for(const auto&e:t.inserts){require(!e.id.empty()&&insertIds.insert(e.id).second,"Duplicate native insert ID");if(!e.enabled)continue;
-      InsertRuntime effect;effect.source=static_cast<std::uint16_t>(&e-t.inserts.data());
-      if(e.type=="vst3"){require(static_cast<bool>(resolvePlugin),"No native VST3 host is available");effect.plugin=resolvePlugin(e.plugin,p.sampleRate,impl_->maxBlock);require(static_cast<bool>(effect.plugin),"VST3 effect could not be prepared");const auto latency=effect.plugin->latencyFrames();require(latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.latency+=latency;trackTail+=checked(effect.plugin->tailSeconds(),0,3600,"Invalid plugin tail time");track.stereoEffects=true;}
-      else {effect.builtin=dsp::makeEffect(e.type,e.params,p.sampleRate,p.bpm);track.latency+=effect.builtin->latencyFrames();trackTail+=effect.builtin->tailSeconds();track.stereoEffects|=e.type=="reverb"||e.type=="guitar-rig"||(e.type=="delay"&&e.params.count("mode")&&e.params.at("mode")>=.5)||e.type=="chorus"||e.type=="phaser"||e.type=="flanger"||e.type=="tremolo"||e.type=="utility";}
-      require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");track.inserts.push_back(std::move(effect));
-    }
-    prepareAutomation(track,t);
-    result->tail=std::max(result->tail,trackTail+.15);tails.push_back(trackTail);
-    result->tracks.push_back(std::move(track));
+    auto build=buildTrack(p,t,assets,sets,resolvePlugin,impl_->wavetableResources,impl_->maxBlock,waveTables,nullptr);
+    if(build.info.wavetableMemory){estimated+=build.info.wavetableMemory;require(estimated<=memoryLimit,"IEUM WAVE exceeds native memory budget");}
+    result->wavetableMemory+=build.info.wavetableMemory;result->wavetableTableMemory+=build.wavetableTableMemory;
+    recipe->tracks.push_back(std::move(build.info));recipe->timeline.tracks.push_back(t);
+    result->tracks.push_back(std::move(build.track));
   }
+  {std::vector<const ControlTrack*> all;for(const auto&t:recipe->tracks)all.push_back(&t);estimated+=sharedMemory(all);}
+  require(estimated<=memoryLimit,"Native project exceeds bounded memory/event limits");
+  for(std::size_t i=0;i<result->tracks.size();++i)result->tail=std::max(result->tail,recipe->tracks[i].tail+.15);
   // Send/return plug-in delay compensation (docs/SENDS_RETURNS.md). Senders align to the largest non-return
   // latency S (as before); a fed return R adds its own chain latency after that, so every return is padded
   // to the largest fed return latency L and every non-return track's output waits L after its taps. The
@@ -1923,12 +2212,13 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
     else if(fed.contains(t.timeline.id))returnLatency=std::max(returnLatency,t.latency);
   }
   result->senderLatency=senderLatency;result->latency=senderLatency+returnLatency;
+  recipe->senderLatency=senderLatency;recipe->returnLatency=returnLatency;
   // A return's tail continues from its senders' tails.
   for(std::size_t r=0;r<result->tracks.size();++r) {
     if(!result->tracks[r].isReturn||!result->tracks[r].timeline.enabled)continue;
     double senders=0;
-    for(std::size_t i=0;i<p.tracks.size();++i)if(!p.tracks[i].isReturn)for(const auto&send:p.tracks[i].sends)if(send.returnId==p.tracks[r].id)senders=std::max(senders,tails[i]);
-    result->tail=std::max(result->tail,tails[r]+senders+.15);
+    for(std::size_t i=0;i<p.tracks.size();++i)if(!p.tracks[i].isReturn)for(const auto&send:p.tracks[i].sends)if(send.returnId==p.tracks[r].id)senders=std::max(senders,recipe->tracks[i].tail);
+    result->tail=std::max(result->tail,recipe->tracks[r].tail+senders+.15);
   }
   estimated+=static_cast<std::size_t>(result->latency)*p.tracks.size()*16;
   require(estimated<=memoryLimit,"Plugin compensation exceeds native memory budget");
@@ -1937,18 +2227,16 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
     else {t.compensation=CompensationDelay(senderLatency-t.latency);t.outputDelayFrames=returnLatency;t.outputDelay=CompensationDelay(returnLatency);}
   }
   prepareRoutes(result->tracks,result->levelOrder,result->levelStart,result->masterLevel,impl_->maxBlock);
+  for(std::size_t i=0;i<result->tracks.size();++i){const auto&t=result->tracks[i];recipe->tracks[i].routing=routingTrack(t);recipe->tracks[i].aheadEligible=aheadCandidate(t)&&!recipe->tracks[i].routing;}
   if(impl_->aheadBlocks&&!impl_->offline) {
     // Rings hold the current device buffer plus the ahead window. VST3 tracks
     // stay in the callback: their editors feed parameters that must be heard now.
     const auto capacity=std::min<std::uint32_t>(65536,std::max<std::uint32_t>(64,impl_->aheadHint)*(1+impl_->aheadBlocks));
     const auto bytes=(static_cast<std::size_t>(capacity)+impl_->maxBlock)*2*sizeof(float);
     std::size_t budget=aheadMemoryBudget;
-    for(auto&t:result->tracks) {
-      const bool vst3=(t.instrument&&!t.wavetable)||std::any_of(t.inserts.begin(),t.inserts.end(),[](const InsertRuntime&i){return i.plugin!=nullptr;});
-      // Routed tracks read a source tap in the same block, and pre/post-FX taps are not in the ring.
-      // Sends and returns likewise read a tap in the same block.
-      const bool routing=t.routed||!t.preTap.empty()||!t.postTap.empty()||!t.faderTap.empty()||t.isReturn;
-      if(!t.timeline.enabled||vst3||routing)continue;
+    for(std::size_t i=0;i<result->tracks.size();++i) {
+      auto&t=result->tracks[i];
+      if(!recipe->tracks[i].aheadEligible)continue;
       if(bytes>budget)break;
       budget-=bytes;t.ahead=std::make_unique<AheadState>(capacity,impl_->maxBlock);
     }
@@ -1957,27 +2245,229 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
   return std::unique_ptr<PreparedProject>(new PreparedProject(std::move(result)));
 }
 
+namespace {
+// Control thread: link every track of \`next\` to the same track id of the running graph (\`last\`), so the swap
+// carries voices, tails, controllers and live notes over per track instead of by position.
+void linkGraph(PtrList<TrackRuntime>& tracks,bool& headerChanged,std::vector<std::int32_t>& successor,const ControlRecipe& recipe,const ControlRecipe& last) {
+  headerChanged=!sameTiming(recipe.timeline,last.timeline);
+  std::unordered_map<std::string_view,std::size_t> previous;
+  for(std::size_t i=0;i<last.timeline.tracks.size();++i)previous.emplace(last.timeline.tracks[i].id,i);
+  successor.assign(last.timeline.tracks.size(),-1);
+  for(std::size_t i=0;i<tracks.size();++i) {
+    auto&t=tracks[i];const auto&neu=recipe.timeline.tracks[i];
+    const auto found=previous.find(neu.id);
+    if(found==previous.end())continue;
+    const auto j=found->second;const auto&old=last.timeline.tracks[j];
+    const auto&oldInfo=last.tracks[j];const auto&newInfo=recipe.tracks[i];
+    t.predecessor=static_cast<std::int32_t>(j);successor[j]=static_cast<std::int32_t>(i);
+    t.sameSource=old.enabled&&neu.enabled&&sameSourceIdentity(old.source,neu.source)&&oldInfo.set==newInfo.set&&
+      (neu.source.kind!=TrackSource::Kind::BuiltinSampled||oldInfo.assets==newInfo.assets);
+    bool sameEvents=old.notes==neu.notes&&old.controls==neu.controls&&old.audio==neu.audio&&old.automation==neu.automation&&oldInfo.assets==newInfo.assets&&old.inserts.size()==neu.inserts.size();
+    // A moving render-ahead ring already holds this chain's output: the chain must be the same too.
+    for(std::size_t k=0;sameEvents&&k<neu.inserts.size();++k)sameEvents=old.inserts[k].id==neu.inserts[k].id&&old.inserts[k].type==neu.inserts[k].type&&old.inserts[k].enabled==neu.inserts[k].enabled;
+    t.identical=sameEvents&&old.enabled==neu.enabled&&(t.sameSource||!neu.enabled)&&old.isReturn==neu.isReturn;
+    t.insertOrigin=insertOrigins(old,neu);
+    if(!t.identical&&old.notes!=neu.notes)t.removedNotes=removedNotes(old.notes,neu.notes);
+  }
+}
+} // namespace
+
 std::uint64_t RenderEngine::submit(std::unique_ptr<PreparedProject> project) {
   require(project!=nullptr,"Cannot submit an empty native graph");collectRetired();
-  auto recipe=project->impl_->recipe;
-  project->impl_->serial=impl_->nextTicket;
-  project->impl_->preserveFrom=impl_->lastSubmittedRecipe&&sameStructure(*recipe,*impl_->lastSubmittedRecipe)?impl_->lastSubmittedSerial:0;
+  auto&graph=*project->impl_;
+  require(graph.recipe!=nullptr,"Native graph was already submitted");
+  auto recipe=std::move(graph.recipe);
+  graph.serial=impl_->nextTicket;
+  const auto*last=impl_->lastSubmittedRecipe.get();
+  // Any graph of the same project continues the running one: each track carries its state over by id.
+  const bool continues=last&&last->timeline.projectId==recipe->timeline.projectId&&last->timeline.sampleRate==recipe->timeline.sampleRate;
+  graph.preserveFrom=continues?impl_->lastSubmittedSerial:0;
+  if(continues)linkGraph(graph.tracks,graph.headerChanged,graph.successor,*recipe,*last);
   // A graph can keep its predecessor's table set through the 20 ms crossfade
   // after that predecessor is collected. Include those bytes until this graph
   // retires; shared tables are intentionally conservatively counted twice.
-  if(project->impl_->preserveFrom)project->impl_->wavetableMemory+=impl_->lastSubmittedWavetableTableMemory;
-  require(impl_->retainedWavetableMemory+project->impl_->wavetableMemory<=memoryLimit,
+  if(graph.preserveFrom)graph.wavetableMemory+=impl_->lastSubmittedWavetableTableMemory;
+  require(impl_->retainedWavetableMemory+graph.wavetableMemory<=memoryLimit,
     "Pending IEUM WAVE updates exceed native memory budget");
   Impl::Command c;c.kind=Impl::Kind::Graph;c.graph=project.get();
   const auto serial=impl_->enqueue(c);
   if(!serial)throw std::runtime_error("Native graph command queue is full");
   impl_->lastSubmittedRecipe=std::move(recipe);impl_->lastSubmittedSerial=serial;
-  impl_->lastSubmittedWavetableTableMemory=project->impl_->wavetableTableMemory;
-  impl_->retainedWavetableMemory+=project->impl_->wavetableMemory;
+  impl_->lastSubmittedWavetableTableMemory=graph.wavetableTableMemory;
+  impl_->retainedWavetableMemory+=graph.wavetableMemory;
   (void)project.release();
   return serial;
 }
+
+UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& assets,const SampleSetStore& sets,const PluginResolver& resolvePlugin) {
+  collectRetired();
+  auto&e=*impl_;
+  auto*last=e.lastSubmittedRecipe.get();
+  UpdateResult result;
+  // Full path: a new graph whose tracks continue the running ones by id. Unchanged notes keep their ids.
+  const auto full=[&]{
+    ProjectTimeline staged=p;
+    if(last&&last->timeline.projectId==p.projectId) {
+      std::unordered_map<std::string_view,std::size_t> previous;
+      for(std::size_t i=0;i<last->timeline.tracks.size();++i)previous.emplace(last->timeline.tracks[i].id,i);
+      for(auto&t:staged.tracks){const auto found=previous.find(t.id);if(found!=previous.end())(void)renumberNotes(last->timeline.tracks[found->second].notes,t.notes);}
+    }
+    result.ticket=submit(prepare(staged,assets,sets,resolvePlugin));result.kind=UpdateResult::Kind::Full;
+    return result;
+  };
+  if(!last||p.version!=last->timeline.version||p.projectId!=last->timeline.projectId||p.sampleRate!=last->timeline.sampleRate||!sameTiming(p,last->timeline)||
+     p.lowLatencyMonitoring!=last->timeline.lowLatencyMonitoring||p.tracks.size()!=last->timeline.tracks.size())return full();
+  for(std::size_t i=0;i<p.tracks.size();++i)if(p.tracks[i].id!=last->timeline.tracks[i].id)return full();
+  checked(p.masterGain,0,2,"Invalid native master gain");
+  // Classify every track against the running graph.
+  struct ParamEdit { std::uint32_t insert; int control; double value; std::size_t timelineInsert; std::string param; };
+  struct Plan { bool replace=false,mix=false; std::vector<std::size_t> sends; std::vector<ParamEdit> params; std::vector<const PluginSpec*> pluginParams; };
+  std::vector<Plan> plans(p.tracks.size());
+  std::size_t noteCount=0;
+  for(std::size_t i=0;i<p.tracks.size();++i) {
+    const auto&neu=p.tracks[i];const auto&old=last->timeline.tracks[i];const auto&info=last->tracks[i];auto&plan=plans[i];
+    noteCount+=neu.notes.size();
+    if(neu.isReturn!=old.isReturn||neu.route!=old.route||neu.sends.size()!=old.sends.size())return full();
+    for(std::size_t s=0;s<neu.sends.size();++s) {
+      if(neu.sends[s].returnId!=old.sends[s].returnId||neu.sends[s].pre!=old.sends[s].pre||sendLane(neu,neu.sends[s].returnId)!=sendLane(old,old.sends[s].returnId))return full();
+      if(neu.sends[s].gain!=old.sends[s].gain){checked(neu.sends[s].gain,0,4,"Invalid native send gain");plan.sends.push_back(s);}
+    }
+    plan.mix=neu.gain!=old.gain||neu.pan!=old.pan||neu.mute!=old.mute||neu.solo!=old.solo||neu.soloSafe!=old.soloSafe||neu.audible!=old.audible||neu.unmutedAudible!=old.unmutedAudible;
+    if(plan.mix){checked(neu.gain,0,2,"Invalid native track gain");checked(neu.pan,-1,1,"Invalid native pan");}
+    bool replace=neu.enabled!=old.enabled||neu.input!=old.input||!sameNotes(neu.notes,old.notes)||neu.controls!=old.controls||neu.audio!=old.audio||neu.automation!=old.automation;
+    if(!replace) {
+      if(!(neu.source==old.source)) {
+        // A VST3 instrument's parameter values reach the cached instance through the resolver, in place.
+        auto a=neu.source,b=old.source;a.plugin.parameters.clear();b.plugin.parameters.clear();
+        if(neu.source.kind==TrackSource::Kind::Vst3&&a==b)plan.pluginParams.push_back(&neu.source.plugin);else replace=true;
+      }
+    }
+    if(!replace&&neu.inserts.size()!=old.inserts.size())replace=true;
+    const auto runtime=runtimeInserts(neu);
+    for(std::size_t k=0;!replace&&k<neu.inserts.size();++k) {
+      const auto&a=neu.inserts[k];const auto&b=old.inserts[k];
+      if(a.id!=b.id||a.type!=b.type||a.enabled!=b.enabled){replace=true;break;}
+      if(a.type=="vst3"){
+        if(!samePlugin(a.plugin,b.plugin))replace=true;
+        else if(a.plugin.parameters!=b.plugin.parameters&&runtime[k]>=0)plan.pluginParams.push_back(&a.plugin);
+        continue;
+      }
+      if(a.params==b.params)continue;
+      if(runtime[k]<0){continue;} // Disabled insert: only the recipe changes.
+      dsp::validateEffectParameters(a.type,a.params);
+      std::set<std::string_view> names;for(const auto&[name,value]:a.params){(void)value;names.insert(name);}for(const auto&[name,value]:b.params){(void)value;names.insert(name);}
+      for(const auto name:names) {
+        const auto x=a.params.find(name),y=b.params.find(name);
+        if(x!=a.params.end()&&y!=b.params.end()&&x->second==y->second)continue;
+        if(x==a.params.end()||!dsp::liveEffectParameter(a.type,name)){replace=true;break;}
+        plan.params.push_back({static_cast<std::uint32_t>(runtime[k]),dsp::effectParameterIndex(a.type,name),x->second,k,std::string(name)});
+      }
+    }
+    // A re-registered PCM asset or sample set under the same id: the track resolves it again.
+    if(!replace&&neu.enabled) {
+      // Same order as buildTrack: sample zones (instrument tracks) or audio windows (audio tracks).
+      std::vector<std::shared_ptr<const PcmAsset>> resolved;
+      if(neu.source.kind==TrackSource::Kind::BuiltinSampled){
+        const auto set=sets.find(neu.source.sampleSetId);
+        if(set==sets.end()||!info.set||!(set->second==*info.set))replace=true;
+        else for(const auto*zones:{&set->second.zones,&set->second.releaseZones})for(const auto&z:*zones){const auto a=assets.find(z.assetId);resolved.push_back(a==assets.end()?nullptr:a->second);}
+      }
+      for(const auto&w:neu.audio){const auto a=assets.find(w.assetId);resolved.push_back(a==assets.end()?nullptr:a->second);}
+      if(!replace&&resolved!=info.assets)replace=true;
+    }
+    plan.replace=replace;
+    if(replace){plan.mix=false;plan.params.clear();plan.pluginParams.clear();}
+  }
+  require(noteCount<=100000,"Native project exceeds bounded memory/event limits");
+  // Build replacements (control thread); any that would change the graph's shape falls back to a full graph.
+  struct Replacement { std::size_t index; std::unique_ptr<TrackRuntime> runtime; ControlTrack info; TrackTimeline timeline; };
+  std::vector<Replacement> replacements;
+  std::set<const ieum::wave::PreparedWavetableSet*> waveTables;
+  for(std::size_t i=0;i<p.tracks.size();++i) {
+    if(!plans[i].replace)continue;
+    if(e.replacementsInFlight+replacements.size()+1>=Impl::retiredTrackCapacity)return full();
+    const auto&old=last->timeline.tracks[i];const auto&info=last->tracks[i];
+    TrackTimeline neu=p.tracks[i];
+    const bool wave=neu.source.kind==TrackSource::Kind::NativeWavetable||old.source.kind==TrackSource::Kind::NativeWavetable;
+    const bool sameWave=neu.source==old.source&&neu.enabled&&old.enabled;
+    if(wave&&!sameWave)return full(); // IEUM WAVE patch changes keep their table crossfade on the graph path.
+    auto removed=renumberNotes(old.notes,neu.notes);
+    ReusedInstrument reuse{info.instrumentTail,info.wavetableMemory};
+    auto build=buildTrack(p,neu,assets,sets,resolvePlugin,e.wavetableResources,e.maxBlock,waveTables,wave?&reuse:nullptr);
+    if(build.info.latency!=info.latency)return full(); // Plug-in delay compensation of the whole graph changes.
+    auto runtime=std::make_unique<TrackRuntime>(std::move(build.track));
+    auto&t=*runtime;
+    t.predecessor=static_cast<std::int32_t>(i);
+    // Sampled voices point into the predecessor's resolved set: its zones must be the same PCM objects.
+    t.sameSource=old.enabled&&neu.enabled&&sameSourceIdentity(old.source,neu.source)&&info.set==build.info.set&&
+      (neu.source.kind!=TrackSource::Kind::BuiltinSampled||info.assets==build.info.assets);
+    t.insertOrigin=insertOrigins(old,neu);
+    t.removedNotes=std::move(removed);
+    build.info.routing=info.routing;
+    build.info.aheadEligible=aheadCandidate(t)&&!info.routing;
+    t.aheadEligible=build.info.aheadEligible;
+    if(old.isReturn)t.compensation=CompensationDelay(t.latency<last->returnLatency?last->returnLatency-t.latency:0);
+    else {t.compensation=CompensationDelay(last->senderLatency-t.latency);t.outputDelay=CompensationDelay(last->returnLatency);}
+    replacements.push_back({i,std::move(runtime),std::move(build.info),std::move(neu)});
+  }
+  if(!replacements.empty()) {
+    // Memory budget of the graph with the replacements in place.
+    std::vector<const ControlTrack*> projected;projected.reserve(last->tracks.size());
+    std::size_t memory=0;
+    for(std::size_t i=0,r=0;i<last->tracks.size();++i) {
+      const auto&info=r<replacements.size()&&replacements[r].index==i?replacements[r++].info:last->tracks[i];
+      memory+=info.memory;projected.push_back(&info);
+    }
+    memory+=sharedMemory(projected)+static_cast<std::size_t>(last->senderLatency+last->returnLatency)*p.tracks.size()*16;
+    require(memory<=memoryLimit,"Native project exceeds bounded memory/event limits");
+  }
+  // Commands: per track its replacement, then mix, sends and parameters; then master gain and revision.
+  std::unordered_map<std::string_view,std::size_t> index;
+  for(std::size_t i=0;i<p.tracks.size();++i)index.emplace(p.tracks[i].id,i);
+  std::vector<Impl::Command> commands;
+  for(auto&r:replacements){Impl::Command c;c.kind=Impl::Kind::Replace;c.track=static_cast<std::uint32_t>(r.index);c.runtime=r.runtime.get();commands.push_back(c);}
+  for(std::size_t i=0;i<p.tracks.size();++i) {
+    const auto&neu=p.tracks[i];const auto&plan=plans[i];
+    if(plan.mix){Impl::Command c;c.kind=Impl::Kind::Mix;c.track=static_cast<std::uint32_t>(i);c.value=neu.gain;c.pan=neu.pan;
+      c.flags=(neu.audible?Impl::MixAudible:0u)|(neu.unmutedAudible?Impl::MixUnmutedAudible:0u)|(neu.mute?Impl::MixMute:0u)|(neu.solo?Impl::MixSolo:0u)|(neu.soloSafe?Impl::MixSoloSafe:0u);
+      commands.push_back(c);}
+    for(const auto s:plan.sends){
+      const auto r=index.find(neu.sends[s].returnId);
+      if(r==index.end()||!p.tracks[r->second].isReturn||r->second==i)continue; // Silent send (unknown or non-return id).
+      Impl::Command c;c.kind=Impl::Kind::Send;c.track=static_cast<std::uint32_t>(r->second);c.noteId=static_cast<std::int32_t>(i);c.pitch=neu.sends[s].pre?1:0;c.value=neu.sends[s].gain;commands.push_back(c);
+    }
+    for(const auto&edit:plan.params){Impl::Command c;c.kind=Impl::Kind::Param;c.track=static_cast<std::uint32_t>(i);c.insert=edit.insert;c.pitch=edit.control;c.param=edit.value;commands.push_back(c);}
+  }
+  if(p.masterGain!=last->timeline.masterGain){Impl::Command c;c.kind=Impl::Kind::Master;c.value=p.masterGain;commands.push_back(c);}
+  {Impl::Command c;c.kind=Impl::Kind::Revision;c.frame=static_cast<std::int64_t>(p.revision);commands.push_back(c);}
+  // VST3 parameter values: the host's resolver applies them to its cached instances.
+  for(std::size_t i=0;i<plans.size();++i)for(const auto*plugin:plans[i].pluginParams)if(resolvePlugin)(void)resolvePlugin(*plugin,p.sampleRate,e.maxBlock);
+  for(auto&c:commands) {
+    const auto ticket=e.enqueue(c);
+    if(!ticket) {
+      // The callback has stopped draining: forget the recipe so the next update rebuilds the whole graph.
+      // Replacements not yet queued are still owned here.
+      e.lastSubmittedRecipe.reset();
+      throw std::runtime_error("Native graph command queue is full");
+    }
+    if(c.kind==Impl::Kind::Replace){for(auto&r:replacements)if(r.runtime.get()==c.runtime)(void)r.runtime.release();++e.replacementsInFlight;++result.replacedTracks;}
+    result.ticket=ticket;++result.commands;
+  }
+  // The recipe follows the running graph.
+  for(auto&r:replacements){last->timeline.tracks[r.index]=std::move(r.timeline);last->tracks[r.index]=std::move(r.info);}
+  for(std::size_t i=0;i<p.tracks.size();++i) {
+    if(plans[i].replace)continue;
+    auto&old=last->timeline.tracks[i];const auto&neu=p.tracks[i];
+    old.gain=neu.gain;old.pan=neu.pan;old.mute=neu.mute;old.solo=neu.solo;old.soloSafe=neu.soloSafe;old.audible=neu.audible;old.unmutedAudible=neu.unmutedAudible;
+    old.sends=neu.sends;old.source=neu.source;old.inserts=neu.inserts;
+  }
+  last->timeline.masterGain=p.masterGain;last->timeline.revision=p.revision;
+  result.kind=result.replacedTracks?UpdateResult::Kind::Tracks:result.commands>1?UpdateResult::Kind::Diff:UpdateResult::Kind::None;
+  return result;
+}
+
 void RenderEngine::collectRetired(){PreparedProject*p=nullptr;while(impl_->retired.pop(p)){impl_->retainedWavetableMemory-=p->impl_->wavetableMemory;delete p;}
+  TrackRuntime*t=nullptr;while(impl_->retiredTracks.pop(t)){delete t;if(impl_->replacementsInFlight)--impl_->replacementsInFlight;}
   // Keep the newest applied click set (the callback's) and any still queued.
   auto&owned=impl_->ownedClicks;const auto applied=impl_->published.ticket.load(std::memory_order_acquire);std::size_t keep=0;
   for(std::size_t i=0;i<owned.size();++i)if(owned[i].first<=applied)keep=i;
