@@ -2,7 +2,7 @@
 //! `LimiterFx`, `GateFx` = kernels.ts `LimiterKernel`, `GateKernel`), with the dynamics meter tap
 //! (detector peak and lowest applied gain since the last read, both linear).
 
-use super::Kernel;
+use super::{Kernel, SettledFrame, process_interleaved_settled, process_planar_settled};
 use crate::gain::db_to_gain;
 use crate::math;
 use crate::params::{COMPRESSOR, GATE, LIMITER, ParamSet, index_of};
@@ -178,19 +178,15 @@ impl Kernel for Limiter {
 
     #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let c = self.ceiling;
-        let pre = self.pre.next(self.k);
-        let xl = f64::from(l) * pre;
-        let xr = f64::from(r) * pre;
-        let peak = std_max(xl.abs(), xr.abs());
-        let target = if peak > c { c / peak } else { 1.0 };
-        if target < self.gain {
-            self.gain = target;
-        } else {
-            self.gain += (target - self.gain) * self.release;
-        }
-        self.meter.add(peak / pre, self.gain);
-        (std_clamp(xl * self.gain, -c, c) as f32, std_clamp(xr * self.gain, -c, c) as f32)
+        self.frame_if::<false>(l, r)
+    }
+
+    fn process_interleaved(&mut self, s: &mut [f32]) {
+        process_interleaved_settled(self, s);
+    }
+
+    fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
+        process_planar_settled(self, left, right);
     }
 
     fn reset(&mut self) {
@@ -203,6 +199,29 @@ impl Kernel for Limiter {
 
     fn take_meter(&mut self) -> Option<(f32, f32)> {
         Some(self.meter.take())
+    }
+}
+
+impl SettledFrame for Limiter {
+    fn settled(&self) -> bool {
+        self.pre.settled()
+    }
+
+    #[inline(always)]
+    fn frame_if<const SETTLED: bool>(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let c = self.ceiling;
+        let pre = self.pre.next_if::<SETTLED>(self.k);
+        let xl = f64::from(l) * pre;
+        let xr = f64::from(r) * pre;
+        let peak = std_max(xl.abs(), xr.abs());
+        let target = if peak > c { c / peak } else { 1.0 };
+        if target < self.gain {
+            self.gain = target;
+        } else {
+            self.gain += (target - self.gain) * self.release;
+        }
+        self.meter.add(peak / pre, self.gain);
+        (std_clamp(xl * self.gain, -c, c) as f32, std_clamp(xr * self.gain, -c, c) as f32)
     }
 }
 

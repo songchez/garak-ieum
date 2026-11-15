@@ -1,7 +1,9 @@
 //! Chorus, flanger, phaser and tremolo / auto-pan: `ChorusFx`, `FlangerFx`, `PhaserFx`,
 //! `TremoloFx` in native/src/sigimsae_effects.inc (= kernels.ts `*Kernel`).
 
-use super::{Kernel, TAU, feedback_repeats};
+use super::{
+    Kernel, SettledFrame, TAU, feedback_repeats, process_interleaved_settled, process_planar_settled,
+};
 use crate::lines::{Carver, Ring};
 use crate::math;
 use crate::params::{CHORUS, FLANGER, PHASER, ParamSet, TREMOLO, index_of};
@@ -80,8 +82,37 @@ impl Kernel for Chorus<'_> {
 
     #[inline(always)]
     fn frame(&mut self, xl: f32, xr: f32) -> (f32, f32) {
-        let depth = self.depth.next(self.k);
-        let mix = self.mix.next(self.k);
+        self.frame_if::<false>(xl, xr)
+    }
+
+    fn process_interleaved(&mut self, s: &mut [f32]) {
+        process_interleaved_settled(self, s);
+    }
+
+    fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
+        process_planar_settled(self, left, right);
+    }
+
+    fn reset(&mut self) {
+        self.l.reset();
+        self.r.reset();
+        self.phase = 0.0;
+    }
+
+    fn tail_seconds(&self) -> f64 {
+        0.05
+    }
+}
+
+impl SettledFrame for Chorus<'_> {
+    fn settled(&self) -> bool {
+        self.depth.settled() && self.mix.settled()
+    }
+
+    #[inline(always)]
+    fn frame_if<const SETTLED: bool>(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        let depth = self.depth.next_if::<SETTLED>(self.k);
+        let mix = self.mix.next_if::<SETTLED>(self.k);
         self.l.push(xl);
         self.r.push(xr);
         let modulation = math::sin(self.phase) * depth * 0.005;
@@ -93,16 +124,6 @@ impl Kernel for Chorus<'_> {
         );
         advance(&mut self.phase, self.step);
         out
-    }
-
-    fn reset(&mut self) {
-        self.l.reset();
-        self.r.reset();
-        self.phase = 0.0;
-    }
-
-    fn tail_seconds(&self) -> f64 {
-        0.05
     }
 }
 
@@ -179,9 +200,38 @@ impl Kernel for Flanger<'_> {
 
     #[inline(always)]
     fn frame(&mut self, xl: f32, xr: f32) -> (f32, f32) {
-        let depth = self.depth.next(self.k);
-        let feedback = self.feedback.next(self.k);
-        let mix = self.mix.next(self.k);
+        self.frame_if::<false>(xl, xr)
+    }
+
+    fn process_interleaved(&mut self, s: &mut [f32]) {
+        process_interleaved_settled(self, s);
+    }
+
+    fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
+        process_planar_settled(self, left, right);
+    }
+
+    fn reset(&mut self) {
+        self.l.reset();
+        self.r.reset();
+        self.phase = 0.0;
+    }
+
+    fn tail_seconds(&self) -> f64 {
+        self.tail
+    }
+}
+
+impl SettledFrame for Flanger<'_> {
+    fn settled(&self) -> bool {
+        self.depth.settled() && self.feedback.settled() && self.mix.settled()
+    }
+
+    #[inline(always)]
+    fn frame_if<const SETTLED: bool>(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        let depth = self.depth.next_if::<SETTLED>(self.k);
+        let feedback = self.feedback.next_if::<SETTLED>(self.k);
+        let mix = self.mix.next_if::<SETTLED>(self.k);
         let sr = self.sample_rate;
         let yl = f64::from(self.l.read((0.0003 + depth * (0.5 + 0.5 * math::sin(self.phase)) * 0.006) * sr));
         let yr = f64::from(
@@ -196,16 +246,6 @@ impl Kernel for Flanger<'_> {
         );
         advance(&mut self.phase, self.step);
         out
-    }
-
-    fn reset(&mut self) {
-        self.l.reset();
-        self.r.reset();
-        self.phase = 0.0;
-    }
-
-    fn tail_seconds(&self) -> f64 {
-        self.tail
     }
 }
 

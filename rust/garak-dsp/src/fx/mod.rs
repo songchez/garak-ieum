@@ -71,6 +71,42 @@ pub trait Kernel {
     }
 }
 
+/// Kernels whose parameter glides are usually at rest: `frame_if::<true>` skips the glide
+/// updates, which is exact while every glide is [`crate::Smooth::settled`] (checked per block).
+/// Removes several loop-carried multiply-add chains per frame in the common static case.
+pub(crate) trait SettledFrame {
+    fn settled(&self) -> bool;
+    fn frame_if<const SETTLED: bool>(&mut self, l: f32, r: f32) -> (f32, f32);
+}
+
+#[inline(never)]
+fn settled_interleaved<K: SettledFrame, const SETTLED: bool>(k: &mut K, s: &mut [f32]) {
+    for [l, r] in s.as_chunks_mut::<2>().0 {
+        (*l, *r) = k.frame_if::<SETTLED>(*l, *r);
+    }
+}
+
+#[inline(never)]
+fn settled_planar<K: SettledFrame, const SETTLED: bool>(k: &mut K, left: &mut [f32], right: &mut [f32]) {
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        (*l, *r) = k.frame_if::<SETTLED>(*l, *r);
+    }
+}
+
+/// `Kernel::process_interleaved` for a [`SettledFrame`] kernel.
+pub(crate) fn process_interleaved_settled<K: SettledFrame>(k: &mut K, s: &mut [f32]) {
+    if k.settled() { settled_interleaved::<K, true>(k, s) } else { settled_interleaved::<K, false>(k, s) }
+}
+
+/// `Kernel::process_planar` for a [`SettledFrame`] kernel.
+pub(crate) fn process_planar_settled<K: SettledFrame>(k: &mut K, left: &mut [f32], right: &mut [f32]) {
+    if k.settled() {
+        settled_planar::<K, true>(k, left, right)
+    } else {
+        settled_planar::<K, false>(k, left, right)
+    }
+}
+
 #[derive(Debug)]
 enum Inner<'a> {
     Delay(StudioDelay<'a>),

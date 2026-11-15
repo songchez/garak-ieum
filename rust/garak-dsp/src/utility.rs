@@ -96,15 +96,17 @@ impl Utility {
     /// One frame. `SIDE` is the balance branch when it is known for the whole block (see
     /// [`Self::pan_side`]): `1` pan > 0, `-1` pan < 0, `2` pan == 0, `0` test every frame.
     /// Leaving out a factor that is exactly 1 changes no bits, so every `SIDE` gives the C++
-    /// result `(mid + side) * (pan > 0 ? 1 - pan : 1) * gain`.
+    /// result `(mid + side) * (pan > 0 ? 1 - pan : 1) * gain`. `SETTLED`: every glide is at its
+    /// target (see [`Self::settled`]), where `next` would return the unchanged value anyway.
     #[inline(always)]
-    fn frame_side<const SIDE: i8>(&mut self, a: f32, b: f32) -> (f32, f32) {
+    fn frame_side<const SIDE: i8, const SETTLED: bool>(&mut self, a: f32, b: f32) -> (f32, f32) {
         let k = self.k;
-        let gain = self.gain.next(k);
-        let pan = self.pan.next(k);
-        let width = self.width.next(k);
-        let a = f64::from(a) * self.sign_l.next(k);
-        let b = f64::from(b) * self.sign_r.next(k);
+        let next = |s: &mut Smooth| s.next_if::<SETTLED>(k);
+        let gain = next(&mut self.gain);
+        let pan = next(&mut self.pan);
+        let width = next(&mut self.width);
+        let a = f64::from(a) * next(&mut self.sign_l);
+        let b = f64::from(b) * next(&mut self.sign_r);
         let mid = 0.5 * (a + b);
         let side = 0.5 * (a - b) * width;
         let (l, r) = match SIDE {
@@ -121,7 +123,12 @@ impl Utility {
 
     #[inline(always)]
     fn frame(&mut self, a: f32, b: f32) -> (f32, f32) {
-        self.frame_side::<0>(a, b)
+        self.frame_side::<0, false>(a, b)
+    }
+
+    /// All five glides at their targets ([`Smooth::settled`]): the block can skip the updates.
+    fn settled(&self) -> bool {
+        [&self.gain, &self.pan, &self.width, &self.sign_l, &self.sign_r].iter().all(|s| s.settled())
     }
 
     /// The balance branch for a whole block, when the pan glide cannot cross zero during it: the
@@ -142,34 +149,40 @@ impl Utility {
     }
 
     #[inline(never)]
-    fn interleaved<const SIDE: i8>(&mut self, stereo: &mut [f32]) {
+    fn interleaved<const SIDE: i8, const SETTLED: bool>(&mut self, stereo: &mut [f32]) {
         for [l, r] in stereo.as_chunks_mut::<2>().0 {
-            (*l, *r) = self.frame_side::<SIDE>(*l, *r);
+            (*l, *r) = self.frame_side::<SIDE, SETTLED>(*l, *r);
         }
     }
 
     #[inline(never)]
-    fn planar<const SIDE: i8>(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn planar<const SIDE: i8, const SETTLED: bool>(&mut self, left: &mut [f32], right: &mut [f32]) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            (*l, *r) = self.frame_side::<SIDE>(*l, *r);
+            (*l, *r) = self.frame_side::<SIDE, SETTLED>(*l, *r);
         }
     }
 
     pub fn process_interleaved(&mut self, stereo: &mut [f32]) {
-        match self.pan_side() {
-            1 => self.interleaved::<1>(stereo),
-            -1 => self.interleaved::<-1>(stereo),
-            2 => self.interleaved::<2>(stereo),
-            _ => self.interleaved::<0>(stereo),
+        match (self.pan_side(), self.settled()) {
+            (1, true) => self.interleaved::<1, true>(stereo),
+            (-1, true) => self.interleaved::<-1, true>(stereo),
+            (2, true) => self.interleaved::<2, true>(stereo),
+            (1, false) => self.interleaved::<1, false>(stereo),
+            (-1, false) => self.interleaved::<-1, false>(stereo),
+            (2, false) => self.interleaved::<2, false>(stereo),
+            _ => self.interleaved::<0, false>(stereo),
         }
     }
 
     pub fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
-        match self.pan_side() {
-            1 => self.planar::<1>(left, right),
-            -1 => self.planar::<-1>(left, right),
-            2 => self.planar::<2>(left, right),
-            _ => self.planar::<0>(left, right),
+        match (self.pan_side(), self.settled()) {
+            (1, true) => self.planar::<1, true>(left, right),
+            (-1, true) => self.planar::<-1, true>(left, right),
+            (2, true) => self.planar::<2, true>(left, right),
+            (1, false) => self.planar::<1, false>(left, right),
+            (-1, false) => self.planar::<-1, false>(left, right),
+            (2, false) => self.planar::<2, false>(left, right),
+            _ => self.planar::<0, false>(left, right),
         }
     }
 

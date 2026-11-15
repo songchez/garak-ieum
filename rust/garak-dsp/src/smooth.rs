@@ -34,6 +34,20 @@ impl Smooth {
         self.value = previous.value;
     }
 
+    /// At its target, where [`Self::next`] returns `value` unchanged: `value + 0 * k` is exact
+    /// (except for -0.0, which one step turns into +0.0). Kernels check this once per block to
+    /// run a loop without the update; a per-frame check in `next` itself made LLVM's code slower.
+    #[inline]
+    pub fn settled(&self) -> bool {
+        self.value == self.target && !(self.value == 0.0 && self.value.is_sign_negative())
+    }
+
+    /// [`Self::next`], or just `value` in a block known to be [`Self::settled`].
+    #[inline(always)]
+    pub fn next_if<const SETTLED: bool>(&mut self, k: f64) -> f64 {
+        if SETTLED { self.value } else { self.next(k) }
+    }
+
     #[inline(always)]
     pub fn next(&mut self, k: f64) -> f64 {
         self.value += (self.target - self.value) * k;

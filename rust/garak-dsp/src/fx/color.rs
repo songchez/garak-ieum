@@ -1,7 +1,7 @@
 //! Saturation and lo-fi: tape and bitcrusher (sigimsae_effects.inc `TapeFx`, `BitcrusherFx` =
 //! kernels.ts) and the oversampled drive (native/src/dsp.cpp `Saturator`, `Drive`).
 
-use super::Kernel;
+use super::{Kernel, SettledFrame, process_interleaved_settled, process_planar_settled};
 use crate::biquad::{Biquad, FilterType};
 use crate::gain::db_to_gain;
 use crate::lines::{Carver, DelayLine};
@@ -110,6 +110,11 @@ const B_DOWNSAMPLE: usize = index_of(BITCRUSHER, "downsample");
 const B_MIX: usize = index_of(BITCRUSHER, "mix");
 
 /// Sample-and-hold downsampling followed by mid-tread quantisation to `bits`.
+///
+/// The quantised hold `q = floor(hold * levels + 0.5) / levels` only changes when a new sample is
+/// held or `bits` changes, so it is computed then instead of every frame (the C++ recomputes it
+/// per frame; same operations on the same values, so the same result, without two divisions and
+/// two floors per frame).
 #[derive(Clone, Debug)]
 pub struct Bitcrusher {
     k: f64,
@@ -118,6 +123,8 @@ pub struct Bitcrusher {
     countdown: f64,
     hold_l: f64,
     hold_r: f64,
+    q_l: f64,
+    q_r: f64,
     mix: Smooth,
 }
 
@@ -125,21 +132,33 @@ impl Bitcrusher {
     pub fn new(sample_rate: f64, p: &ParamSet) -> Self {
         let mut mix = Smooth::default();
         mix.set(p.get(B_MIX));
-        Self {
+        let mut s = Self {
             k: smoothing_coefficient(sample_rate),
             levels: math::pow(2.0, p.get(B_BITS) - 1.0),
             factor: p.get(B_DOWNSAMPLE),
             countdown: 0.0,
             hold_l: 0.0,
             hold_r: 0.0,
+            q_l: 0.0,
+            q_r: 0.0,
             mix,
-        }
+        };
+        s.quantise();
+        s
+    }
+
+    #[inline(always)]
+    fn quantise(&mut self) {
+        let levels = self.levels;
+        self.q_l = math::floor(self.hold_l * levels + 0.5) / levels;
+        self.q_r = math::floor(self.hold_r * levels + 0.5) / levels;
     }
 
     pub fn take_state_from(&mut self, p: &mut Self) -> bool {
         self.countdown = p.countdown;
         self.hold_l = p.hold_l;
         self.hold_r = p.hold_r;
+        self.quantise();
         self.mix.follow(&p.mix);
         false
     }
@@ -150,27 +169,47 @@ impl Kernel for Bitcrusher {
         self.levels = math::pow(2.0, p.get(B_BITS) - 1.0);
         self.factor = p.get(B_DOWNSAMPLE);
         self.mix.target = p.get(B_MIX);
+        self.quantise();
     }
 
     #[inline(always)]
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let mix = self.mix.next(self.k);
-        if self.countdown <= 0.0 {
-            self.hold_l = f64::from(l);
-            self.hold_r = f64::from(r);
-            self.countdown += self.factor;
-        }
-        self.countdown -= 1.0;
-        let levels = self.levels;
-        let ql = math::floor(self.hold_l * levels + 0.5) / levels;
-        let qr = math::floor(self.hold_r * levels + 0.5) / levels;
-        ((f64::from(l) * (1.0 - mix) + ql * mix) as f32, (f64::from(r) * (1.0 - mix) + qr * mix) as f32)
+        self.frame_if::<false>(l, r)
+    }
+
+    fn process_interleaved(&mut self, s: &mut [f32]) {
+        process_interleaved_settled(self, s);
+    }
+
+    fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
+        process_planar_settled(self, left, right);
     }
 
     fn reset(&mut self) {
         self.countdown = 0.0;
         self.hold_l = 0.0;
         self.hold_r = 0.0;
+        self.quantise();
+    }
+}
+
+impl SettledFrame for Bitcrusher {
+    fn settled(&self) -> bool {
+        self.mix.settled()
+    }
+
+    #[inline(always)]
+    fn frame_if<const SETTLED: bool>(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let mix = self.mix.next_if::<SETTLED>(self.k);
+        if self.countdown <= 0.0 {
+            self.hold_l = f64::from(l);
+            self.hold_r = f64::from(r);
+            self.countdown += self.factor;
+            self.quantise();
+        }
+        self.countdown -= 1.0;
+        let (ql, qr) = (self.q_l, self.q_r);
+        ((f64::from(l) * (1.0 - mix) + ql * mix) as f32, (f64::from(r) * (1.0 - mix) + qr * mix) as f32)
     }
 }
 
