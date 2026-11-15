@@ -7,7 +7,7 @@ import { quarterNotesPerBeat, setProjectTimeSignature } from './core/meter'
 import { TempoInput } from './components/TempoInput'
 import { TimeSignatureControl } from './components/TimeSignatureControl'
 import { MetronomeControl } from './components/MetronomeControl'
-import { getMetronomePrefs, metronomeEngineState, subscribeMetronomePrefs, updateMetronomePrefs } from './core/metronome'
+import { getMetronomePrefs, metronomeEngineState, subscribeMetronomePrefs, toggleCountIn, updateMetronomePrefs } from './core/metronome'
 import { bindRecordingToTransport, pausePlaybackWithRecording, stopPlaybackWithRecording, togglePlaybackWithRecording } from './audio/recordingTransport'
 import { inputConstraints, loadAudioSettings, normalizeAudioSettings, recordingOffsetMs, saveAudioSettings, type AudioSettings, type SampleRate } from './core/audioSettings'
 import { appendAudioRecordings, combineTakeCaptures, createTakeCapture, sessionCapture, recordingStartBeat, selectInputChannels, simultaneousTakeLimit, type MultiTakeEngine, type RecordingDraft, type TakeCallbacks, type TakeCapture, type TakeResult } from './core/recording'
@@ -973,6 +973,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       case 'record':void toggleRecord();break
       case 'musicalTyping':{const on=!midi.typing.enabled;midi.toggleTyping(on);notify(on?'컴퓨터 키보드 연주 켬 · A~K 건반, Z/X 옥타브, C/V 벨로시티':'컴퓨터 키보드 연주 끔');break}
       case 'captureMidi':midi.captureMidi();break
+      case 'countIn':{const bars=toggleCountIn().countInBars;notify(bars?`녹음 카운트인 ${bars}마디`:'녹음 카운트인 끔');break}
       case 'metronome':{const on=updateMetronomePrefs({enabled:!getMetronomePrefs().enabled}).enabled;notify(on?'메트로놈 켬':'메트로놈 끔');break}
       case 'snapToggle':setView(v=>({...v,snap:{...v.snap,on:!v.snap.on}}));break
       case 'zoomIn':case 'zoomOut':case 'zoomInV':case 'zoomOutV':case 'zoomToFit':zoomArea(command,ctx.scope);break

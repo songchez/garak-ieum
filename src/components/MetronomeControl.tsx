@@ -75,7 +75,7 @@ export function MetronomeControl({ timeSignature, shortcut }: Props) {
       <label className="metronome-row"><input type="checkbox" checked={prefs.accent} onChange={event => updateMetronomePrefs({ accent: event.target.checked })}/><span>첫 박 강세{compound ? ' (겹박자는 점4분음표 묶음도)' : ''}</span></label>
       <label className="metronome-row"><input type="checkbox" checked={prefs.recordOnly} onChange={event => updateMetronomePrefs({ recordOnly: event.target.checked })}/><span>녹음할 때만 소리 내기</span></label>
       <div className="metronome-row metronome-countin" role="radiogroup" aria-label="녹음 카운트인">
-        <span>녹음 카운트인</span>
+        <span title="⇧K로 켜기/끄기">녹음 카운트인</span>
         {([0, 1, 2] as CountInBars[]).map(bars => <button key={bars} type="button" role="radio" aria-checked={prefs.countInBars === bars} className={prefs.countInBars === bars ? 'selected' : ''} onClick={() => updateMetronomePrefs({ countInBars: bars })}>{bars ? `${bars}마디` : '끔'}</button>)}
       </div>
       <p className="popover-hint">클릭은 모니터 출력에만 나오며 녹음·내보내기에는 들어가지 않습니다.</p>
