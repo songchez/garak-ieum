@@ -292,9 +292,10 @@ struct Vst3Processor::Impl {
   std::size_t activeNoteCount = 0, syncParameterIndex = 0;
   bool syncingParameters = false;
   std::vector<PluginParameter> parameterInfo;
-  // MIDI CC -> parameter (VST3 has no CC events; IMidiMapping is the standard route, e.g. CC64 sustain).
+  // MIDI controller -> parameter (VST3 has no CC events; IMidiMapping is the standard route, e.g. CC64 sustain).
+  // 0..127 CC, 128 kAfterTouch (channel pressure), 129 kPitchBend, 130 kCtrlProgramChange (docs/MIDI_CONTROLLERS.md).
   // Channel 1 / event bus 0, resolved on the control thread. -1 = the plug-in does not map that controller.
-  std::array<std::int64_t, 128> controllerParameters{};
+  std::array<std::int64_t, 131> controllerParameters{};
   std::unique_ptr<NativePluginWindow> window;
   S::IPtr<S::IPlugView> view;
   std::string name;
@@ -417,7 +418,8 @@ struct Vst3Processor::Impl {
     if (!controller || !hasEventInput) return;
     const auto mapping = S::U::cast<V::IMidiMapping>(controller);
     if (!mapping) return;
-    for (int cc = 0; cc < 128; ++cc) {
+    static_assert(V::kAfterTouch == 128 && V::kPitchBend == 129 && V::kCtrlProgramChange == 130);
+    for (int cc = 0; cc < int(controllerParameters.size()); ++cc) {
       V::ParamID id = 0;
       if (mapping->getMidiControllerAssignment(0, 0, V::CtrlNumber(cc), id) == S::kResultTrue) controllerParameters[std::size_t(cc)] = id;
     }

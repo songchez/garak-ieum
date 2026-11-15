@@ -3,6 +3,7 @@ import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { midiEditorClip, midiSourceOffset } from './midiRegions'
 import { joinSustain } from './sustain'
+import { MAX_BEND_RANGE, controllerOrder, controllerSpec, isControllerKey, joinControllers, mapControllerBeats } from './controllers'
 import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
@@ -10,7 +11,7 @@ import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type TempoPoint, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type ControllerKey, type ControllerPoint, type TempoPoint, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
 import { MAX_TEMPO_POINTS, TEMPO_MAX, TEMPO_MIN, beatAfterSeconds, normalizeTempoPoints, spanSeconds, tempoMapOf, type Tempo } from './tempoMap'
 // sends.ts imports this module too: only use its exports inside functions (no top-level reads).
@@ -102,7 +103,7 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 15,
+    schemaVersion: 16,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
@@ -321,7 +322,8 @@ export function trimClipStart(clip: Clip, newStartBeat: number, tempo: Tempo): C
   return { ...source, startBeat: start, lengthBeats, ...loop,
     ...(offset > 0 ? { sourceOffsetBeats: offset } : {}),
     notes: offset < 0 ? clip.notes.map(value => ({ ...value, start: value.start - offset })) : clip.notes,
-    ...(offset < 0 && clip.sustain ? { sustain: clip.sustain.map(event => ({ ...event, beat: event.beat - offset })) } : {}) }
+    ...(offset < 0 && clip.sustain ? { sustain: clip.sustain.map(event => ({ ...event, beat: event.beat - offset })) } : {}),
+    ...(offset < 0 && clip.controllers ? { controllers: mapControllerBeats(clip, beat => beat - offset) } : {}) }
 }
 
 /** Moves the right edge. `maxLengthBeats` lets callers clamp audio to the source length. */
@@ -370,9 +372,10 @@ export function joinClips(clips: Clip[], tempo: Tempo): Clip | null {
   const endBeat = Math.max(...sorted.map(clip => clip.startBeat + clip.lengthBeats))
   if (first.kind === 'midi') {
     const notes = (sorted as MidiClip[]).flatMap(clip => cropNotesToClip(clip).notes.map(value => ({ ...value, start: value.start + clip.startBeat - startBeat })))
-    const { sourceOffsetBeats: _offset, sustain: _sustain, ...base } = first
+    const { sourceOffsetBeats: _offset, sustain: _sustain, controllers: _controllers, ...base } = first
     const sustain = joinSustain(sorted as MidiClip[], startBeat)
-    return { ...base, startBeat, lengthBeats: endBeat - startBeat, notes, ...(sustain.length ? { sustain } : {}),
+    const controllers = joinControllers(sorted as MidiClip[], startBeat)
+    return { ...base, startBeat, lengthBeats: endBeat - startBeat, notes, ...(sustain.length ? { sustain } : {}), ...(controllers ? { controllers } : {}),
       ...(first.loopLengthBeats === undefined ? {} : { loopLengthBeats: Math.max(endBeat - startBeat, first.loopLengthBeats) }) }
   }
   const audio = sorted as Extract<Clip, { kind: 'audio' }>[]
@@ -710,6 +713,30 @@ function sustainEvents(value: unknown, path: string, version: number): SustainEv
   })
 }
 
+/** Controller lanes (schema 16): known keys, each sorted with unique beats and integer values in the lane's range. */
+function controllerLanes(value: unknown, path: string, version: number): Partial<Record<ControllerKey, ControllerPoint[]>> {
+  if (version < 16) throw new Error(`${path} controller data requires project schema version 16 or later.`)
+  const source = object(value, `${path} controllers`)
+  const keys = Object.keys(source)
+  if (keys.length > 132) throw new Error(`${path} has too many controller lanes.`)
+  const result: Partial<Record<ControllerKey, ControllerPoint[]>> = {}
+  for (const key of keys.sort((a, b) => isControllerKey(a) && isControllerKey(b) ? controllerOrder(a, b) : 0)) {
+    if (!isControllerKey(key)) throw new Error(`${path} has an unknown controller lane: ${key.slice(0, 40)}.`)
+    const spec = controllerSpec(key)
+    let previous = -1
+    const points = list(source[key], `${path} ${key} lane`, 200_000).map((input, index): ControllerPoint => {
+      const pointPath = `${path}, ${key} event ${index + 1}`
+      const point = object(input, pointPath)
+      const beat = number(point.beat, `${pointPath} position`, 0, 10_000_000)
+      if (beat <= previous) throw new Error(`${pointPath} must come after the previous event.`)
+      previous = beat
+      return { beat, value: integer(point.value, `${pointPath} value`, spec.min, spec.max) }
+    })
+    if (points.length) result[key] = points
+  }
+  return result
+}
+
 function list(value: unknown, path: string, maxLength: number): unknown[] {
   if (!Array.isArray(value) || value.length > maxLength) {
     throw new Error(`${path} must be an array with at most ${maxLength} items.`)
@@ -770,7 +797,7 @@ function validateTempoMap(input: unknown, bpm: number): TempoPoint[] | undefined
 export function validateProject(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 15) throw new Error('This project version is not supported. Expected schema version 1 through 15.')
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 16) throw new Error('This project version is not supported. Expected schema version 1 through 16.')
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -924,6 +951,12 @@ export function validateProject(input: unknown): Project {
         ...(clip.transpose === undefined ? {} : { transpose: integer(clip.transpose, `${clipPath} transpose`, -96, 96) }),
         ...(clip.velocity === undefined ? {} : { velocity: integer(clip.velocity, `${clipPath} velocity`, -99, 99) }),
         ...(clip.sustain === undefined ? {} : { sustain: sustainEvents(clip.sustain, clipPath, version) }),
+        ...(() => {
+          if (clip.controllers === undefined) return {}
+          const controllers = controllerLanes(clip.controllers, clipPath, version)
+          return Object.keys(controllers).length ? { controllers } : {}
+        })(),
+        ...(clip.bendRange === undefined ? {} : version < 16 ? (() => { throw new Error(`${clipPath} pitch-bend range requires project schema version 16 or later.`) })() : { bendRange: integer(clip.bendRange, `${clipPath} pitch-bend range`, 0, MAX_BEND_RANGE) }),
         notes: list(clip.notes, `${clipPath} notes`, 100_000).map((noteInput, noteIndex): MidiNote => {
           noteCount += 1
           if (noteCount > 1_000_000) throw new Error('The project contains too many notes.')
@@ -989,7 +1022,7 @@ export function validateProject(input: unknown): Project {
   const bpm = number(source.bpm, 'Tempo', 30, 300)
   const tempoMap = version >= 14 ? validateTempoMap(source.tempoMap, bpm) : undefined
   return {
-    schemaVersion: 15,
+    schemaVersion: 16,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm,

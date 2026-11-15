@@ -205,13 +205,14 @@ inline ProjectTimeline timeline(const Json& value) {
     }
     if (item.contains("controls")) {
       const auto& controls = item.at("controls");
-      if (!controls.is_array() || controls.size() > 50000) throw std::runtime_error("Invalid track controls");
+      if (!controls.is_array() || controls.size() > 100000) throw std::runtime_error("Invalid track controls");
       std::int64_t previous = -1;
       for (const auto& c : controls) {
         ControlEvent event;
         event.frame = integer(c, "frame", 0, p.lengthFrames, 0);
-        event.controller = static_cast<std::uint8_t>(integer(c, "controller", 0, 127, sustainController));
-        event.value = static_cast<std::uint8_t>(integer(c, "value", 0, 127, 0));
+        event.controller = static_cast<std::uint16_t>(integer(c, "controller", 0, controllerCount - 1, sustainController));
+        event.value = static_cast<std::int32_t>(integer(c, "value", -8192, 8191, 0));
+        if (!validControllerValue(event.controller, event.value)) throw std::runtime_error("Invalid track control value");
         if (event.frame < previous) throw std::runtime_error("Track controls must be sorted by frame");
         previous = event.frame;
         t.controls.push_back(event);

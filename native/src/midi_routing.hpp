@@ -70,18 +70,23 @@ class NoteRouter {
     } else if (type == 0xB0 && (data1 == 120 || data1 == 123)) {
       for (auto& a : active_) if (a.used && a.source == source && a.channel == channel) off(a, offset, emit);
       for (auto& down : pedal_) down = false;
-    } else if (type == 0xB0 && table) {
-      // Controllers go to every track hearing this input (once per track). CC64 is the sustain pedal
-      // (docs/SUSTAIN_PEDAL.md): built-ins defer note-offs, VST3 receives every controller.
-      const auto controller = static_cast<std::uint8_t>(data1 & 0x7F), value = static_cast<std::uint8_t>(data2 & 0x7F);
+    } else if ((type == 0xB0 || type == 0xE0 || type == 0xD0 || type == 0xC0) && table) {
+      // Controllers, pitch bend, channel pressure and program change go to every track hearing this input
+      // (once per track). CC64 is the sustain pedal (docs/SUSTAIN_PEDAL.md): built-ins defer note-offs.
+      // Pitch bend/pressure/mod wheel drive built-in voices; VST3 receives everything (docs/MIDI_CONTROLLERS.md).
+      const auto d1 = static_cast<std::uint8_t>(data1 & 0x7F), d2 = static_cast<std::uint8_t>(data2 & 0x7F);
+      const auto out = static_cast<std::uint8_t>(type);
       for (std::size_t i = 0; i < table->routes.size(); ++i) {
         const auto& route = table->routes[i];
         if (!route.accepts(source, channel)) continue;
         bool seen = false;
         for (std::size_t j = 0; j < i && !seen; ++j) seen = table->routes[j].track == route.track && table->routes[j].accepts(source, channel);
         if (seen) continue;
-        if (controller == sustainCc && route.track < pedal_.size()) pedal_[route.track] = value >= 64;
-        emit(LiveMidiEvent{offset, route.track, 0xB0, controller, value, -1});
+        if (route.track < pedal_.size()) {
+          if (type == 0xB0 && d1 == sustainCc) pedal_[route.track] = d2 >= 64;
+          if (type == 0xE0) bent_[route.track] = !(d1 == 0 && d2 == 64);
+        }
+        emit(LiveMidiEvent{offset, route.track, out, d1, type == 0xD0 || type == 0xC0 ? std::uint8_t(0) : d2, -1});
       }
     }
   }
@@ -99,11 +104,18 @@ class NoteRouter {
       const bool kept = table && std::any_of(table->routes.begin(), table->routes.end(), [&](const MidiRoute& r) { return r.track == track; });
       if (!kept) { pedal_[track] = false; emit(LiveMidiEvent{offset, track, 0xB0, sustainCc, 0, -1}); }
     }
+    // ...and a pitch bend it was holding returns to centre.
+    for (std::uint32_t track = 0; track < bent_.size(); ++track) {
+      if (!bent_[track]) continue;
+      const bool kept = table && std::any_of(table->routes.begin(), table->routes.end(), [&](const MidiRoute& r) { return r.track == track; });
+      if (!kept) { bent_[track] = false; emit(LiveMidiEvent{offset, track, 0xE0, 0, 64, -1}); }
+    }
   }
   /** Releases every sounding note (panic, transport stop). */
   template<class Emit> void releaseAll(std::uint32_t offset, Emit&& emit) noexcept { for (auto& a : active_) if (a.used) off(a, offset, emit); }
-  void clear() noexcept { for (auto& a : active_) a.used = false; for (auto& down : pedal_) down = false; }
+  void clear() noexcept { for (auto& a : active_) a.used = false; for (auto& down : pedal_) down = false; for (auto& bent : bent_) bent = false; }
   [[nodiscard]] bool pedalDown(std::uint32_t track) const noexcept { return track < pedal_.size() && pedal_[track]; }
+  [[nodiscard]] bool bent(std::uint32_t track) const noexcept { return track < bent_.size() && bent_[track]; }
   [[nodiscard]] std::size_t sounding() const noexcept { return static_cast<std::size_t>(std::count_if(active_.begin(), active_.end(), [](const Active& a) { return a.used; })); }
   [[nodiscard]] std::uint64_t overflows() const noexcept { return overflows_; }
  private:
@@ -117,6 +129,7 @@ class NoteRouter {
   static constexpr std::uint8_t sustainCc = 64;
   std::array<Active, capacity> active_{};
   std::array<bool, 256> pedal_{};
+  std::array<bool, 256> bent_{};
   std::int32_t next_ = firstHostNoteId;
   std::uint64_t overflows_ = 0;
 };

@@ -109,15 +109,15 @@ describe('sends in the routing graph', () => {
 describe('schema 15 send/return validation', () => {
   const saved = (tracks: Track[], schemaVersion = 15) => JSON.parse(JSON.stringify({ ...project(tracks), schemaVersion }))
 
-  it('round-trips returns and sends, and accepts the tempo map schema 14 as well as 13', () => {
+  it('round-trips returns and sends, and loads schema 13 and 14 files (no sends) as the current schema', () => {
     const tracks = [track('audio', 'vox', { sends: [{ returnId: 'ret', level: 0.5, pre: true }] }), createReturnTrack('리버브')]
     tracks[0].sends![0].returnId = tracks[1].id
     const loaded = validateProject(saved(tracks))
-    expect(loaded.schemaVersion).toBe(15)
+    expect(loaded.schemaVersion).toBe(16)
     expect(loaded.tracks[0].sends).toEqual([{ returnId: tracks[1].id, level: 0.5, pre: true }])
     expect(loaded.tracks[1]).toMatchObject({ kind: 'return', soloSafe: true, volume: 1 })
     expect(validateProject(loaded)).toEqual(loaded)
-    for (const version of [13, 14]) expect(validateProject(saved([track('audio', 'a')], version)).schemaVersion).toBe(15)
+    for (const version of [13, 14]) expect(validateProject(saved([track('audio', 'a')], version)).schemaVersion).toBe(16)
   })
 
   it('requires schema 15 and rejects sends on returns, regions on returns and repeated returns', () => {

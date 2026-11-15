@@ -177,6 +177,7 @@ if(GARAK_BUILD_TESTS)
     # Live MIDI queue, routing, sample-accurate live events and transport stamps.
     add_executable(garak-midi-test tests/midi_test.cpp)
     target_link_libraries(garak-midi-test PRIVATE garak_core garak_midi)
+    target_include_directories(garak-midi-test SYSTEM PRIVATE "${GARAK_NLOHMANN_INCLUDE_DIR}")
     add_test(NAME native-midi COMMAND garak-midi-test)
   endif()
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/wavetable_host_test.cpp")

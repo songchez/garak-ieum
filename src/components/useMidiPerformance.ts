@@ -250,7 +250,7 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
     const performance = capturePerformance(capture.current.snapshot(), { bpm: tempoMapOf(current), playheadBeat: engine.getSnapshot().beat, accepts: (source, channel) => acceptsMidi(input, source, channel) })
     if (!performance) { notify('캡처할 최근 연주가 없습니다. 악기 트랙에서 연주한 뒤 다시 시도하세요.'); return }
     const span = takeSpan({ startBeat: performance.startBeat, endBeat: performance.endBeat, cycle: null }, performance.notes, current.beatsPerBar)
-    const result: MidiTakeResult = { startBeat: span.start, endBeat: span.end, cycle: null, tracks: [{ trackId: track.id, notes: performance.notes, controllers: [], sustain: performance.sustain }] }
+    const result: MidiTakeResult = { startBeat: span.start, endBeat: span.end, cycle: null, tracks: [{ trackId: track.id, notes: performance.notes, controllers: performance.controllers, sustain: performance.sustain }] }
     const committed = commitMidiTake(current, result, { mode: modeRef.current, beatsPerBar: current.beatsPerBar, name: 'MIDI 캡처' })
     if (!committed.clipIds.length) { notify('캡처할 음표가 없습니다.'); return }
     capture.current.clear()

@@ -17,6 +17,8 @@ export type ParsedMidi =
   | { type: 'noteOff'; channel: number; pitch: number; velocity: number }
   | { type: 'controller'; channel: number; controller: number; value: number }
   | { type: 'pitchBend'; channel: number; value: number }
+  | { type: 'aftertouch'; channel: number; value: number }
+  | { type: 'program'; channel: number; program: number }
   | { type: 'other' }
 
 /** channel is 1…16. A note-on with velocity 0 is a note-off (running-status keyboards send that). */
@@ -29,6 +31,8 @@ export function parseMidi(data: ArrayLike<number>): ParsedMidi {
   if (kind === 0x80) return { type: 'noteOff', channel, pitch: a, velocity: b }
   if (kind === 0xB0) return { type: 'controller', channel, controller: a, value: b }
   if (kind === 0xE0) return { type: 'pitchBend', channel, value: (b << 7 | a) - 8192 }
+  if (kind === 0xD0) return { type: 'aftertouch', channel, value: a }
+  if (kind === 0xC0) return { type: 'program', channel, program: a }
   return { type: 'other' }
 }
 

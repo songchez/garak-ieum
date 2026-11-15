@@ -5,6 +5,7 @@
 #include "midi_input.hpp"
 #include "midi_queue.hpp"
 #include "midi_routing.hpp"
+#include "protocol.hpp"
 
 #include <atomic>
 #include <cmath>
@@ -108,10 +109,21 @@ void routingAndActiveNotes() {
   check(events.size() == 1 && events[0].track == 4 && events[0].status == 0xB0 && events[0].data1 == 64 && events[0].data2 == 127 && router.pedalDown(4), "CC64 not routed to the track");
   events.clear(); router.retarget(nullptr, 0, Collect{&events});
   check(events.size() == 1 && events[0].status == 0xB0 && events[0].data2 == 0 && !router.pedalDown(4), "Track switch left the pedal down");
+  // Pitch bend, channel pressure and program change reach each routed track once (docs/MIDI_CONTROLLERS.md).
+  MidiRouteTable twice; MidiRoute a; a.track = 2; MidiRoute b = a; b.channel = 1; twice.routes = {a, b};
+  events.clear(); router.handle(1, 0xE0, 0x7F, 0x7F, &twice, 5, Collect{&events});
+  check(events.size() == 1 && events[0].track == 2 && events[0].status == 0xE0 && events[0].data1 == 0x7F && events[0].data2 == 0x7F && events[0].offset == 5 && router.bent(2), "Pitch bend not routed once per track");
+  events.clear(); router.handle(1, 0xD1, 90, 0, &twice, 0, Collect{&events}); router.handle(1, 0xC0, 7, 0, &twice, 0, Collect{&events});
+  check(events.size() == 2 && events[0].status == 0xD0 && events[0].data1 == 90 && events[1].status == 0xC0 && events[1].data1 == 7, "Channel pressure/program change not routed");
+  events.clear(); router.handle(1, 0xE0, 0, 64, &twice, 0, Collect{&events}); check(events.size() == 1 && !router.bent(2), "Centred bend still marked bent");
+  router.handle(1, 0xE0, 0, 0, &twice, 0, Collect{&events});
+  // Losing the route re-centres a held bend on that track.
+  events.clear(); router.retarget(&switched, 0, Collect{&events});
+  check(events.size() == 1 && events[0].track == 2 && events[0].status == 0xE0 && events[0].data1 == 0 && events[0].data2 == 64 && !router.bent(2), "Track switch left the pitch bend held");
   // Allocation-free.
   std::array<LiveMidiEvent, 16> fixed{}; std::size_t n = 0;
   auto emit = [&](const LiveMidiEvent& e) { if (n < fixed.size()) fixed[n++] = e; };
-  noHeap([&] { router.handle(0, 0x90, 40, 100, &table, 0, emit); router.handle(0, 0x80, 40, 0, &table, 0, emit); router.retarget(&switched, 0, emit); router.releaseAll(0, emit); }, "Routing allocated");
+  noHeap([&] { router.handle(0, 0x90, 40, 100, &table, 0, emit); router.handle(0, 0xE0, 3, 90, &table, 0, emit); router.handle(0, 0xD0, 40, 0, &table, 0, emit); router.handle(0, 0x80, 40, 0, &table, 0, emit); router.retarget(&switched, 0, emit); router.releaseAll(0, emit); }, "Routing allocated");
   const auto ids = MidiInputManager::stableIds({"Keys", "Pads", "Keys", "Keys"});
   check(ids[0] == "Keys" && ids[2] == "Keys #2" && ids[3] == "Keys #3" && ids[1] == "Pads", "Device ids are not stable/unique");
 }
@@ -190,9 +202,30 @@ void transportStamps() {
 }
 } // namespace
 
+// Timeline JSON controller ranges (docs/MIDI_CONTROLLERS.md): 0..127 CC, 128 pressure, 129 bend (signed),
+// 130 program, 131 bend range (0..48); sorted by frame.
+void timelineControlProtocol() {
+  using garak::protocol::Json;
+  const auto parse = [](Json controls) {
+    Json track = {{"id", "keys"}, {"source", {{"kind", "builtin-synth"}, {"instrumentId", "keys"}}}, {"inserts", Json::array()}, {"notes", Json::array()}, {"audio", Json::array()}, {"controls", std::move(controls)}};
+    return garak::protocol::timeline(Json{{"version", 1}, {"projectId", "p"}, {"sampleRate", 48000}, {"lengthFrames", 48000}, {"tracks", Json::array({track})}});
+  };
+  const auto parsed = parse(Json::array({{{"frame", 0}, {"controller", 129}, {"value", -8192}}, {{"frame", 0}, {"controller", 131}, {"value", 24}},
+    {{"frame", 10}, {"controller", 1}, {"value", 127}}, {{"frame", 10}, {"controller", 128}, {"value", 5}}, {{"frame", 20}, {"controller", 130}, {"value", 3}}}));
+  const auto& c = parsed.tracks.at(0).controls;
+  check(c.size() == 5 && c[0] == ControlEvent{0, 129, -8192} && c[1] == ControlEvent{0, 131, 24} && c[3] == ControlEvent{10, 128, 5} && c[4] == ControlEvent{20, 130, 3}, "Timeline controls were not parsed in order");
+  const auto rejected = [&](Json controls) { try { (void)parse(std::move(controls)); } catch (const std::exception&) { return true; } return false; };
+  check(rejected(Json::array({{{"frame", 0}, {"controller", 129}, {"value", 8192}}})), "Out-of-range pitch bend accepted");
+  check(rejected(Json::array({{{"frame", 0}, {"controller", 7}, {"value", -1}}})), "Negative CC accepted");
+  check(rejected(Json::array({{{"frame", 0}, {"controller", 131}, {"value", 49}}})), "Bend range above 48 accepted");
+  check(rejected(Json::array({{{"frame", 0}, {"controller", 132}, {"value", 0}}})), "Unknown controller number accepted");
+  check(rejected(Json::array({{{"frame", 5}, {"controller", 1}, {"value", 0}}, {{"frame", 4}, {"controller", 1}, {"value", 0}}})), "Unsorted controls accepted");
+}
+
 int main() {
   const std::pair<const char*, void (*)()> tests[]{{"MPSC/SPSC queues are lock-free and allocation-free", mpscQueueMultiProducer},
-    {"routing, limits and sounding-note table", routingAndActiveNotes}, {"sample-accurate live events", sampleAccurateLiveEvents}, {"transport stamps for recording", transportStamps}};
+    {"routing, limits and sounding-note table", routingAndActiveNotes}, {"sample-accurate live events", sampleAccurateLiveEvents}, {"transport stamps for recording", transportStamps},
+    {"timeline controller protocol ranges", timelineControlProtocol}};
   unsigned failed = 0;
   for (const auto& [name, test] : tests) {
     try { test(); std::cout << "PASS " << name << '\n'; }

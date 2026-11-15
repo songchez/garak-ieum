@@ -99,7 +99,9 @@ describe('standard MIDI file import', () => {
     ]]))
     expect(result.tracks[0].program).toBe(12)
     expect(result.tracks[0].notes[0]).toMatchObject({ pitch: 60, duration: 1 })
-    expect(result.warnings.filter(value => value.includes('애프터터치'))).toHaveLength(1)
+    // Channel aftertouch is a controller lane now (last value per tick wins).
+    expect(result.tracks[0].controllers).toEqual({ aftertouch: [{ beat: 0, value: 30 }] })
+    expect(result.warnings).toEqual([])
   })
 
   it('with the bake option, extends released notes to sustain pedal-up and respects the 64 threshold', () => {
@@ -188,7 +190,8 @@ describe('standard MIDI file import', () => {
     expect(result.tempoMap).toEqual([{ beat: 0, bpm: 120, curve: 'step' }, { beat: 1, bpm: 100, curve: 'step' }])
     expect(result.warnings.join(' ')).not.toMatch(/템포/)
     expect(result.warnings.join(' ')).toMatch(/박자표 변경/)
-    expect(result.warnings.join(' ')).toMatch(/Program Change/)
+    // The program at the first note picks the instrument; a later change becomes the program lane.
+    expect(result.tracks[0].controllers?.program).toEqual([{ beat: 0, value: 0 }, { beat: 1, value: 40 }])
   })
 
   it('uses SMF defaults before a late first tempo/meter instead of moving the first bar', () => {
@@ -202,16 +205,38 @@ describe('standard MIDI file import', () => {
     expect(result.warnings).toHaveLength(1)
   })
 
-  it('reports ignored expressive messages once without corrupting following notes', () => {
+  it('keeps CCs, pitch bend and channel aftertouch as controller lanes without corrupting following notes', () => {
     const result = parseMidiFile(smf([[
       ...event(0, 0xb0, 7, 90), ...event(0, 10, 20), ...event(0, 1, 40),
       ...event(0, 0xe0, 0, 70), ...event(0, 0xa0, 60, 40), ...event(0, 0xd0, 70), ...oneNote(),
     ]]))
     expect(result.tracks[0].notes[0]).toMatchObject({ pitch: 60, duration: 1, velocity: 100 / 127 })
-    expect(result.warnings).toHaveLength(3)
-    expect(result.warnings.join(' ')).toMatch(/MIDI CC/)
-    expect(result.warnings.join(' ')).toMatch(/피치 벤드/)
-    expect(result.warnings.join(' ')).toMatch(/애프터터치/)
+    expect(result.tracks[0].controllers).toEqual({
+      cc7: [{ beat: 0, value: 90 }], cc10: [{ beat: 0, value: 20 }], cc1: [{ beat: 0, value: 40 }],
+      pitchBend: [{ beat: 0, value: 70 * 128 - 8192 }], aftertouch: [{ beat: 0, value: 70 }],
+    })
+    // Only polyphonic (per-key) pressure is still dropped.
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings[0]).toMatch(/Poly Pressure/)
+  })
+
+  it('reads controller curves, RPN 0 bend range, reset-all-controllers and omits default-only reset lanes', () => {
+    const result = parseMidiFile(smf([[
+      ...event(0, 0xb0, 101, 0), ...event(0, 100, 0), ...event(0, 6, 12), ...event(0, 38, 0), ...event(0, 101, 127), ...event(0, 100, 127),
+      ...event(0, 0xe0, 0, 64), // center only at first
+      ...event(0, 0x90, 60, 100),
+      ...event(240, 0xe0, 0, 96), ...event(240, 0, 127), ...event(0, 0xb0, 11, 100),
+      ...event(0, 0x80, 60, 0), ...end(),
+    ]]))
+    const track = result.tracks[0]
+    expect(track.bendRange).toBe(12)
+    expect(track.controllers?.pitchBend).toEqual([{ beat: 0, value: 0 }, { beat: .5, value: 4096 }, { beat: 1, value: 8064 }])
+    expect(track.controllers?.cc11).toEqual([{ beat: 1, value: 100 }])
+    // CC121 resets the reset lanes to their defaults at the same tick (last value per tick wins).
+    expect(parseMidiFile(smf([[...event(0, 0xb0, 1, 90), ...event(0, 0x90, 60, 100), ...event(480, 0xb0, 121, 0), ...event(0, 0x80, 60, 0), ...end()]])).tracks[0].controllers)
+      .toEqual({ cc1: [{ beat: 0, value: 90 }, { beat: 1, value: 0 }] })
+    expect(parseMidiFile(smf([[...event(0, 0xe0, 0, 64), ...oneNote()]])).tracks[0].controllers).toBeUndefined()
+    expect(result.warnings).toEqual([])
   })
 
   it('skips bounded SysEx packets, unknown chunks and long unknown meta payloads', () => {

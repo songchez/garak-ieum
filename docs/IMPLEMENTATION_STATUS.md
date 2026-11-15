@@ -62,7 +62,7 @@ Ableton Live의 Warp처럼 오디오 리전을 프로젝트 템포에 맞추고,
 | 피치 편집 | 단선율 음표/곡선 분석, 드래그·센트 이동·분할/합치기, 선택 음표의 음계·강도 보정, 실험적 포먼트 보존·이동, Worker 재합성, 원본 복원, 재생·Undo·저장·WAV 출력. `devices/pitch-editor/`. 원본 60초·1~2채널·±12반음. |
 | 전역 재생 키 | 편집기 일반 화면의 드롭다운·버튼·메뉴·팝오버·노브·숫자 입력에 포커스가 있어도 Space 재생/일시 정지. 텍스트·IME·모달은 입력 우선. 프로젝트 선택 화면에는 적용하지 않습니다. 반복 및 소유한 keyup 소비. `core/transportShortcuts.ts`. |
 | 디바이스 모듈 | 여섯 효과의 정의·DSP·잔향을 `devices/effects/`로 분리하고 registry를 공유합니다. 합성 악기와 범용 커스텀 UI 등록은 아직 별도 작업입니다. |
-| 녹음·입력 모니터링 | 한 입력 스트림을 오디오 녹음과 I 모니터링에 공유합니다. 시작 시 임시 리전과 실제 경과 시간을 표시하고, Space·정지·R 재클릭·재생 끝에서 최종 오디오 리전으로 확정합니다. 수동 ms 정렬을 지원하며, 가장 위의 녹음 대기 오디오 트랙 또는 포커스 오디오 트랙을 사용합니다. MIDI 입력·녹음·캡처·컴퓨터 키보드 연주는 [MIDI_RECORDING.md](MIDI_RECORDING.md)를 따릅니다(실기기 확인 항목은 그 문서 끝). |
+| 녹음·입력 모니터링 | 한 입력 스트림을 오디오 녹음과 I 모니터링에 공유합니다. 시작 시 임시 리전과 실제 경과 시간을 표시하고, Space·정지·R 재클릭·재생 끝에서 최종 오디오 리전으로 확정합니다. 수동 ms 정렬을 지원하며, 가장 위의 녹음 대기 오디오 트랙 또는 포커스 오디오 트랙을 사용합니다. MIDI 입력·녹음·캡처·컴퓨터 키보드 연주는 [MIDI_RECORDING.md](MIDI_RECORDING.md)를 따릅니다(실기기 확인 항목은 그 문서 끝). 피치 벤드·CC·애프터터치·프로그램 체인지 레인(편집·녹음·두 엔진 재생·SMF 왕복)은 [MIDI_CONTROLLERS.md](MIDI_CONTROLLERS.md)를 따릅니다. |
 | 오디오 설정 | 로고 메뉴·하단 오디오 버튼·⌘,/Ctrl+, 진입. 장치, 녹음·모니터링, 프로젝트 오디오, 상태·진단의 네 분류입니다. `AudioSettingsDialog`, `useAudioDevices`, `core/audioSettings.ts`. |
 | 장치·진단 | 입력 장치 고정, 조건부 출력 선택·렌더 블록 요청, 지연 우선순위, 채널 수·AEC/NS/AGC 요청, 실제 입력 설정·엔진/출력 상태, 입력 레벨·출력 테스트. 브라우저는 `AudioDeviceProbe`/`InputCapture`/`WebAudioEngine`, 데스크톱은 native 장치·상태·테스트 API와 `NativeAudioSettingsDialog`를 사용합니다. |
 | 프로젝트 레이트 | 44.1/48/88.2/96/176.4/192kHz를 `Project.sampleRate`에 저장하며 실시간 엔진·WAV·Undo/Redo에 연결합니다. 새 프로젝트와 필드가 없는 이전 파일은 48kHz입니다. |

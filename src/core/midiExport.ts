@@ -1,18 +1,33 @@
 import { instrumentDef, isInstrumentId } from './instruments'
-import { clipOccurrences, isTrackEnabled, playbackNotes, playbackSustain } from './playback'
+import { clipOccurrences, isTrackEnabled, playbackControllers, playbackNotes, playbackSustain, type PlaybackController } from './playback'
+import { DEFAULT_BEND_RANGE, bendRangeOf, controllerNumber } from './controllers'
 import type { Project, Track } from './types'
 import { tempoMapOf, tempoStepsForExport } from './tempoMap'
 
 /**
  * Standard MIDI File (Type 1, 960 PPQ) of every MIDI region as it plays: loops expanded, region quantize,
  * transpose, velocity and delay applied, the sustain pedal kept as CC64 controller events (never baked into
- * note lengths). One MTrk per instrument track with MIDI; kits use channel 10. docs/SUSTAIN_PEDAL.md.
+ * note lengths), controller lanes as CC / pitch bend / channel pressure / program change events with the chase at
+ * each region start and the reset at each region end (docs/MIDI_CONTROLLERS.md), and a region's pitch-bend range as
+ * RPN 0. One MTrk per instrument track with MIDI; kits use channel 10. docs/SUSTAIN_PEDAL.md.
  */
 export const MIDI_EXPORT_PPQ = 960
 
 const MELODIC_CHANNELS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15]
 
 interface TimedEvent { tick: number; order: number; bytes: number[] }
+
+/** Wire bytes of one controller event on `channel`. */
+export function controllerBytes(event: Pick<PlaybackController, 'key' | 'value'>, channel: number): number[] {
+  if (event.key === 'pitchBend') { const raw = Math.max(0, Math.min(16383, event.value + 8192)); return [0xe0 | channel, raw & 0x7f, raw >> 7] }
+  if (event.key === 'aftertouch') return [0xd0 | channel, event.value & 0x7f]
+  if (event.key === 'program') return [0xc0 | channel, event.value & 0x7f]
+  return [0xb0 | channel, controllerNumber(event.key), event.value & 0x7f]
+}
+
+/** RPN 0 (pitch-bend sensitivity) data entry, closed with the null RPN. */
+export const bendRangeBytes = (channel: number, semitones: number): number[][] =>
+  [[0xb0 | channel, 101, 0], [0xb0 | channel, 100, 0], [0xb0 | channel, 6, semitones], [0xb0 | channel, 38, 0], [0xb0 | channel, 101, 127], [0xb0 | channel, 100, 127]]
 
 function variable(value: number): number[] {
   const bytes = [value & 0x7f]
@@ -23,7 +38,8 @@ const text = (value: string): number[] => Array.from(new TextEncoder().encode(va
 const chunk = (id: string, body: number[]): number[] => [...Array.from(id, c => c.charCodeAt(0)), (body.length >>> 24) & 255, (body.length >>> 16) & 255, (body.length >>> 8) & 255, body.length & 255, ...body]
 
 function trackChunk(events: TimedEvent[]): number[] {
-  // Same tick: pedal changes first (a pedal-down catches a note-off at that tick, like playback), then offs, then ons.
+  // Same tick: region-end resets, the bend range, program, controllers and pedal (a pedal-down catches a note-off at
+  // that tick, like playback), then offs, then ons.
   events.sort((a, b) => a.tick - b.tick || a.order - b.order)
   const body: number[] = []
   let last = 0
@@ -54,6 +70,11 @@ export function writeMidiFile(project: Project, tracks: readonly Track[] = proje
       if (clip.kind !== 'midi' || clip.mute) continue
       for (const occurrence of clipOccurrences(track, clip, project.lengthBeats)) {
         for (const event of playbackSustain(track, clip, occurrence)) events.push({ tick: tick(event.beat), order: 1, bytes: [0xb0 | channel, 64, event.value] })
+        const controllers = playbackControllers(track, clip, occurrence)
+        if (clip.bendRange !== undefined && bendRangeOf(clip) !== DEFAULT_BEND_RANGE && controllers.some(event => event.key === 'pitchBend')) {
+          for (const bytes of bendRangeBytes(channel, bendRangeOf(clip))) events.push({ tick: tick(occurrence.start + (clip.delayTicks ?? 0) / MIDI_EXPORT_PPQ + (track.delayTicks ?? 0) / MIDI_EXPORT_PPQ), order: 0.3, bytes })
+        }
+        for (const event of controllers) events.push({ tick: tick(event.beat), order: event.reset ? 0.1 : event.key === 'program' ? 0.5 : 1, bytes: controllerBytes(event, channel) })
         for (const note of playbackNotes(track, { ...clip, gain: 1 }, occurrence, false)) {
           const velocity = Math.max(1, Math.min(127, Math.round(note.velocity * 127)))
           const on = tick(note.start), off = Math.max(on + 1, tick(note.end))

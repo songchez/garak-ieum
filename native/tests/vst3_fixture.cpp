@@ -27,7 +27,15 @@ constexpr std::size_t kParameterCount = 260;
 using Values = std::array<float, kParameterCount>;
 // Parameter 1 is the sustain pedal, mapped from MIDI CC64 through IMidiMapping (starts up).
 constexpr ParamID kSustainParameter = 1;
-Values initialValues() { Values v{}; v.fill(1.f); v[0] = .5f; v[kSustainParameter] = 0.f; return v; }
+// Parameters 2..4 follow pitch bend (kPitchBend, starts centred), channel pressure (kAfterTouch) and the
+// mod wheel (CC1). With parameter 5 on, the instrument's right channel reveals them as bend + 2 x pressure
+// + 4 x mod, so a host test can see the exact sample where each controller arrives.
+constexpr ParamID kBendParameter = 2, kPressureParameter = 3, kModParameter = 4, kRevealParameter = 5;
+Values initialValues() {
+  Values v{}; v.fill(1.f); v[0] = .5f; v[kSustainParameter] = 0.f;
+  v[kBendParameter] = .5f; v[kPressureParameter] = 0.f; v[kModParameter] = 0.f; v[kRevealParameter] = 0.f;
+  return v;
+}
 tresult readState(IBStream* stream, Values& values) {
   if (!stream) return kInvalidArgument;
   IBStreamer io(stream, kLittleEndian);
@@ -49,9 +57,14 @@ tresult writeState(IBStream* stream, const Values& values) {
 class TestController final : public EditController, public IMidiMapping {
  public:
   tresult PLUGIN_API getMidiControllerAssignment(int32 busIndex, int16, CtrlNumber number, ParamID& id) override {
-    if (busIndex != 0 || number != kCtrlSustainOnOff) return kResultFalse;
-    id = kSustainParameter;
-    return kResultTrue;
+    if (busIndex != 0) return kResultFalse;
+    switch (number) {
+      case kCtrlSustainOnOff: id = kSustainParameter; return kResultTrue;
+      case kPitchBend: id = kBendParameter; return kResultTrue;
+      case kAfterTouch: id = kPressureParameter; return kResultTrue;
+      case kCtrlModWheel: id = kModParameter; return kResultTrue;
+      default: return kResultFalse;
+    }
   }
   OBJ_METHODS(TestController, EditController)
   DEFINE_INTERFACES
@@ -151,6 +164,8 @@ class TestProcessor final : public AudioEffect {
             ? data.inputs[0].channelBuffers32[channel][frame] : 0.f;
         data.outputs[0].channelBuffers32[channel][frame] = source * values_[0] * values_.back();
       }
+      if (instrument_ && values_[kRevealParameter] >= .5f && data.numOutputs && data.outputs[0].numChannels > 1)
+        data.outputs[0].channelBuffers32[1][frame] = values_[kBendParameter] + 2 * values_[kPressureParameter] + 4 * values_[kModParameter];
     }
     if (data.numOutputs) data.outputs[0].silenceFlags = 0;
     return kResultOk;
