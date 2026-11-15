@@ -17,7 +17,15 @@ use core::cell::UnsafeCell;
 
 use garak_dsp::{Biquad, Coefficients, FilterType, Utility, UtilityParams};
 
-pub const ABI_VERSION: u32 = 1;
+mod arena;
+/// Built-in effects (`garak_fx_*`).
+pub mod fx;
+
+/// Host unit tests share the static pools; they serialise through this lock.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub const ABI_VERSION: u32 = 2;
 /// Frames per process call (a Web Audio render quantum is 128; larger blocks serve offline use).
 pub const MAX_FRAMES: usize = 4096;
 pub const MAX_SLOTS: usize = 32;
@@ -232,9 +240,6 @@ pub extern "C" fn garak_utility_process(slot_index: i32, frame_count: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn slots_are_bounded_and_reusable() {

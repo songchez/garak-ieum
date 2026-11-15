@@ -1,5 +1,15 @@
 #include "garak/dsp.hpp"
 
+// 1 when CMake links the Rust DSP core (-DGARAK_RUST=ON, native/cmake/GarakRust.cmake).
+#ifndef GARAK_RUST
+#define GARAK_RUST 0
+#endif
+#if GARAK_RUST
+#include "garak_rust.h"
+#include <cstdlib>
+#include <new>
+#endif
+
 #include <algorithm>
 #include <complex>
 #include <deque>
@@ -854,6 +864,9 @@ class GuitarRig final : public StereoProcessor {
 
 #include "sigimsae_effects.inc"
 #include "eq_effects.inc"
+#if GARAK_RUST
+#include "rust_effects.inc"
+#endif
 
 } // namespace
 
@@ -928,8 +941,45 @@ std::vector<Def> effectDefs(std::string_view type) {
 }
 } // namespace
 
+bool rustEffectsAvailable() noexcept { return GARAK_RUST != 0; }
+bool rustEffectSupported(std::string_view type) noexcept {
+#if GARAK_RUST
+  return rustKind(type) >= 0;
+#else
+  (void)type; return false;
+#endif
+}
+void setEffectBackend(std::string_view type, EffectBackend backend) noexcept {
+#if GARAK_RUST
+  auto& selected = rustSelection();
+  if (type == "all") { for (auto& v : selected) v.store(backend == EffectBackend::Rust); return; }
+  if (const int kind = rustKind(type); kind >= 0) selected[static_cast<std::size_t>(kind)].store(backend == EffectBackend::Rust);
+#else
+  (void)type; (void)backend;
+#endif
+}
+EffectBackend effectBackend(std::string_view type) noexcept {
+#if GARAK_RUST
+  if (const int kind = rustKind(type); kind >= 0 && rustSelection()[static_cast<std::size_t>(kind)].load()) return EffectBackend::Rust;
+#else
+  (void)type;
+#endif
+  return EffectBackend::Cpp;
+}
+
 std::unique_ptr<StereoProcessor> makeEffect(std::string_view type,const Parameters& params,double sr,double bpm) {
+  return makeEffect(type,params,sr,bpm,effectBackend(type));
+}
+
+std::unique_ptr<StereoProcessor> makeEffect(std::string_view type,const Parameters& params,double sr,double bpm,EffectBackend backend) {
   if (!std::isfinite(sr)||sr<8000||sr>192000||!std::isfinite(bpm)||bpm<20||bpm>400) throw std::invalid_argument("Invalid DSP rate or tempo");
+  if (backend==EffectBackend::Rust) {
+#if GARAK_RUST
+    return std::make_unique<RustEffect>(type,params,sr,bpm);
+#else
+    throw std::invalid_argument("This build has no Rust DSP core (configure with -DGARAK_RUST=ON)");
+#endif
+  }
   if (type=="eq") return makeParametricEq(params,sr);
   if (type=="filter") return makeSweepFilter(params,sr);
   if (type=="compressor") {

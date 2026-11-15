@@ -17,8 +17,11 @@ use core::ptr;
 
 use garak_dsp::{Biquad, Coefficients, FilterType, Utility, UtilityParams};
 
+/// Built-in effects (`garak_rs_fx_*`, `garak_rs_reverb_*`).
+pub mod fx;
+
 /// Bumped on any incompatible change to `garak_rust.h`.
-pub const GARAK_RS_ABI_VERSION: u32 = 1;
+pub const GARAK_RS_ABI_VERSION: u32 = 2;
 
 /// Opaque, caller-allocated storage for a `garak_dsp::Biquad`.
 #[repr(C, align(8))]
@@ -258,10 +261,12 @@ mod tests {
 
     const HEADER: &str = include_str!("../include/garak_rust.h");
     const SOURCE: &str = include_str!("lib.rs");
+    const FX_SOURCE: &str = include_str!("fx.rs");
 
     fn exported() -> Vec<String> {
         SOURCE
             .lines()
+            .chain(FX_SOURCE.lines())
             .filter_map(|l| l.split("extern \"C\" fn ").nth(1))
             .filter_map(|rest| rest.split('(').next())
             .filter(|name| name.starts_with("garak_rs_"))
@@ -272,12 +277,16 @@ mod tests {
     #[test]
     fn header_declares_every_export() {
         let names = exported();
-        assert!(names.len() >= 12, "{names:?}");
+        assert!(names.len() >= 38, "{names:?}");
         for name in names {
             assert!(HEADER.contains(&std::format!("{name}(")), "garak_rust.h is missing {name}");
         }
         assert!(HEADER.contains(&std::format!("GARAK_RS_ABI_VERSION {GARAK_RS_ABI_VERSION}")));
         assert!(HEADER.contains("uint64_t opaque[16]"));
+        for k in garak_dsp::EffectKind::ALL {
+            let line = std::format!("GARAK_RS_FX_{} = {}", k.id().to_uppercase(), k as u32);
+            assert!(HEADER.contains(&line), "garak_rust.h is missing {line}");
+        }
     }
 
     #[test]

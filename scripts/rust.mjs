@@ -3,8 +3,9 @@
 // Runs cargo inside rust/, where rust-toolchain.toml pins the toolchain. Web-only work never
 // needs this script; the app runs without the Rust artifact.
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'
+import { gzipSync } from 'node:zlib'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -13,8 +14,10 @@ const workspace = path.join(root, 'rust')
 const wasmTarget = 'wasm32-unknown-unknown'
 const wasmBuilt = path.join(workspace, 'target', wasmTarget, 'wasm', 'garak_wasm.wasm')
 export const wasmOutput = path.join(root, 'public', 'wasm', 'garak-dsp.wasm')
-// Generous budget for the worklet module; CI fails above it (today ~25 KiB).
-const WASM_BUDGET_BYTES = 96 * 1024
+// Budgets for the worklet module; CI fails above them (docs/RUST.md: stage 1 is ~101 KiB raw /
+// ~36 KiB gzip with every built-in effect; the architecture review allows 80 KB gzip).
+const WASM_BUDGET_BYTES = 128 * 1024
+const WASM_GZIP_BUDGET_BYTES = 80 * 1000
 
 function cargoBinary() {
   const exe = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
@@ -43,8 +46,9 @@ function wasm() {
   mkdirSync(path.dirname(wasmOutput), { recursive: true })
   copyFileSync(wasmBuilt, wasmOutput)
   const size = statSync(wasmOutput).size
-  console.log(`garak-dsp.wasm: ${size} bytes (${(size / 1024).toFixed(1)} KiB, budget ${WASM_BUDGET_BYTES / 1024} KiB) -> ${path.relative(root, wasmOutput)}`)
-  if (size > WASM_BUDGET_BYTES) {
+  const gzip = gzipSync(readFileSync(wasmOutput), { level: 9 }).length
+  console.log(`garak-dsp.wasm: ${size} bytes (${(size / 1024).toFixed(1)} KiB, budget ${WASM_BUDGET_BYTES / 1024} KiB), gzip ${gzip} bytes (budget ${WASM_GZIP_BUDGET_BYTES}) -> ${path.relative(root, wasmOutput)}`)
+  if (size > WASM_BUDGET_BYTES || gzip > WASM_GZIP_BUDGET_BYTES) {
     console.error('The WASM module exceeds its size budget (docs/RUST.md).')
     process.exit(1)
   }

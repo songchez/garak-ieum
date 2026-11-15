@@ -27,6 +27,12 @@ impl Smooth {
         self.target = target;
     }
 
+    /// `Smooth::follow`: continue from another glide's current value (state hand-over).
+    #[inline]
+    pub fn follow(&mut self, previous: &Smooth) {
+        self.value = previous.value;
+    }
+
     #[inline]
     pub fn next(&mut self, k: f64) -> f64 {
         self.value += (self.target - self.value) * k;

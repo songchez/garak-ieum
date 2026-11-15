@@ -2,16 +2,19 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sectionCoefficients, type BiquadSection } from '../../devices/effects/eqModel'
-import { Biquad, UtilityKernel, type BiquadType } from '../../devices/effects/kernels'
+import { Biquad, createKernel, kernelTailSeconds, UtilityKernel, type BiquadType } from '../../devices/effects/kernels'
+import { KERNEL_DEFS, type KernelType } from '../../devices/effects/sigimsaeDefs'
+import { createRustKernel } from './sigimsaeRust'
 import { rustDspRequested, RUST_DSP_STORAGE_KEY } from './flag'
-import { instantiateGarakWasm, loadGarakWasmModule, RUST_FILTER, type GarakWasm, type RustFilterType } from './garakWasm'
+import { instantiateGarakWasm, loadGarakWasmModule, RUST_EFFECT, RUST_FILTER, type GarakWasm, type RustEffectType, type RustFilterType } from './garakWasm'
 
 // Behavioural parity between the Rust kernels (rust/garak-dsp via WASM) and the existing TS kernels
 // on identical input. The artifact comes from `pnpm rust:wasm`; without it the parity suite is
 // skipped so web-only contributors never need Rust (CI's rust.yml always builds and runs it).
 const artifact = fileURLToPath(new URL('../../../public/wasm/garak-dsp.wasm', import.meta.url))
 const built = existsSync(artifact)
-const dsp: GarakWasm | null = built ? instantiateGarakWasm(readFileSync(artifact)) : null
+const wasmModule: WebAssembly.Module | null = built ? new WebAssembly.Module(readFileSync(artifact)) : null
+const dsp: GarakWasm | null = wasmModule ? instantiateGarakWasm(wasmModule) : null
 
 const SR = 48_000
 function noise(frames: number, seed: number): Float32Array {
@@ -86,6 +89,96 @@ describe.skipIf(!built)('Rust DSP parity (WASM vs TypeScript kernels)', () => {
       expect(maxDiff(tsL, rsL)).toBeLessThan(1e-6)
       expect(maxDiff(tsR, rsR)).toBeLessThan(1e-6)
     }
+  })
+
+  // Every kernels.ts kernel against the Rust effect behind the worklet adapter (sigimsaeRust.ts):
+  // random parameter sets, configure() changes with tempo changes mid-stream (incl. the delay's
+  // mode switch), resets, odd block sizes. Gate: residual <= -90 dBFS, identical meters and tails.
+  const KERNEL_LIST: KernelType[] = ['delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'limiter', 'gate', 'tape', 'bitcrusher', 'utility']
+  const report: Record<string, number> = {}
+  function programme(frames: number, seed: number): [Float32Array, Float32Array] {
+    const l = noise(frames, seed), r = noise(frames, seed + 1)
+    for (let i = 0; i < frames; i += 1) {
+      const t = i / SR, cycle = t % 0.5
+      const env = cycle < 0.2 ? Math.min(1, cycle / 0.004) : cycle < 0.3 ? Math.exp(-(cycle - 0.2) * 30) : 0
+      const gain = t > 0.6 && t < 0.8 ? 1.7 : 0.6
+      const tone = 0.3 * Math.sin(2 * Math.PI * (100 + 2000 * t) * t)
+      l[i] = env * gain * (0.6 * l[i] + tone) + (i % 7919 === 0 ? 0.9 : 0)
+      r[i] = env * gain * (0.6 * r[i] - tone)
+    }
+    return [l, r]
+  }
+  function randomParams(type: KernelType, rng: () => number): Record<string, number> {
+    const out: Record<string, number> = {}
+    for (const def of KERNEL_DEFS[type].params) if (rng() < 0.75) out[def.id] = def.min + (def.max - def.min) * rng()
+    return out
+  }
+
+  it.each(KERNEL_LIST)('%s: WASM effect matches the TS kernel (configure, tempo, reset, meter, tail)', type => {
+    let worst = 0
+    for (let seed = 1; seed <= 4; seed += 1) {
+      let s = seed * 104729
+      const rng = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 2 ** 32 }
+      const frames = 48_000
+      const [inL, inR] = programme(frames, seed)
+      const tsL = inL.slice(), tsR = inR.slice(), rsL = inL.slice(), rsR = inR.slice()
+      let params = seed === 1 ? {} : randomParams(type, rng)
+      let bpm = 80 + 100 * rng()
+      const ts = createKernel(type, SR, params, bpm)
+      // One instance per kernel, as one per worklet node (slots are per instance).
+      const rust = createRustKernel(wasmModule!, type, SR, params, bpm)!
+      expect(rust).not.toBeNull()
+      if (seed === 1) {
+        // Tail at construction equals kernelTailSeconds (the export tail allowance).
+        const probe = dsp!.createEffect(type, SR, params, bpm)!
+        expect(Math.abs(probe.tailSeconds() - kernelTailSeconds(type, params, bpm))).toBeLessThan(1e-9)
+        probe.free()
+      }
+      const meterTs = new Float32Array(2), meterRs = new Float32Array(2)
+      for (let offset = 0, block = 0; offset < frames; block += 1) {
+        const n = Math.min(frames - offset, block % 5 === 0 ? 1 + Math.floor(rng() * 300) : 128)
+        if (block % 23 === 11) {
+          params = rng() < 0.3 ? {} : { ...params, ...randomParams(type, rng) }
+          if (rng() < 0.5) bpm = 60 + 140 * rng()
+          ts.configure(params, bpm); rust.configure(params, bpm)
+        }
+        if (block === 200) { ts.reset(); rust.reset() }
+        ts.process(tsL.subarray(offset, offset + n), tsR.subarray(offset, offset + n), n)
+        rust.process(rsL.subarray(offset, offset + n), rsR.subarray(offset, offset + n), n)
+        if (ts.meter) {
+          ts.meter(meterTs); rust.meter!(meterRs)
+          expect(Math.abs(meterTs[0] - meterRs[0]) + Math.abs(meterTs[1] - meterRs[1]), `${type} meter`).toBeLessThan(1e-5)
+        }
+        offset += n
+      }
+      worst = Math.max(worst, maxDiff(tsL, rsL), maxDiff(tsR, rsR))
+      expect(rsL.every(Number.isFinite) && rsR.every(Number.isFinite)).toBe(true)
+    }
+    report[type] = worst > 0 ? 20 * Math.log10(worst) : -Infinity
+    expect(worst, `${type} residual ${report[type].toFixed(1)} dBFS`).toBeLessThan(10 ** (-90 / 20))
+  })
+
+  it('reports the per-kernel residuals', () => {
+    // Printed for docs/RUST.md; `it.each` above enforces the gate.
+    console.info(Object.entries(report).map(([k, v]) => `${k}: ${Number.isFinite(v) ? v.toFixed(1) : '-inf'} dBFS`).join('\n'))
+    expect(Object.keys(report).length).toBe(KERNEL_LIST.length)
+  })
+
+  it('builds every native effect (EQ, filter, compressor, drive, reverb too) and grows memory only on create', () => {
+    const before = dsp!.heapBytes().used
+    for (const type of Object.keys(RUST_EFFECT) as RustEffectType[]) {
+      const fx = dsp!.createEffect(type, SR, {}, 120)!
+      expect(fx, type).not.toBeNull()
+      expect(fx.params.length).toBeGreaterThan(0)
+      const l = noise(1024, 9), r = noise(1024, 10)
+      fx.process(l, r)
+      fx.configure({ [fx.params[0].id]: fx.params[0].max }, 140)
+      fx.process(l, r)
+      expect(l.every(Number.isFinite) && r.every(Number.isFinite), type).toBe(true)
+      expect(fx.latencyFrames()).toBe(type === 'drive' ? 8 : 0)
+      fx.free()
+    }
+    expect(dsp!.heapBytes().used).toBe(before)
   })
 
   it('bounds kernel slots per instance instead of allocating', () => {

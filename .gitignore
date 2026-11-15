@@ -8,6 +8,7 @@ build/native/
 build/native-audio/
 build/native-work/
 build/native-deps/
+build/native-rust/
 .sites-runtime/
 .openai/
 .wrangler/

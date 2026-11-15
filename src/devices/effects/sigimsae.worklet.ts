@@ -1,4 +1,5 @@
 import { createKernel, type SigimsaeKernel } from './kernels.js'
+import { createRustKernel } from '../../audio/rust/sigimsaeRust.js'
 import { KERNEL_TYPES, type KernelType } from './sigimsaeDefs.js'
 
 declare const sampleRate: number
@@ -9,7 +10,7 @@ declare abstract class AudioWorkletProcessor {
 }
 declare function registerProcessor(name: string, constructor: typeof AudioWorkletProcessor): void
 
-interface Options { processorOptions?: { type?: string; params?: Record<string, number>; bpm?: number } }
+interface Options { processorOptions?: { type?: string; params?: Record<string, number>; bpm?: number; garakWasm?: unknown } }
 
 /** One processor for every kernel-backed 시김새; the kernel type and first parameters arrive with construction. */
 class SigimsaeProcessor extends AudioWorkletProcessor {
@@ -30,7 +31,10 @@ class SigimsaeProcessor extends AudioWorkletProcessor {
     super(options)
     const init = (options as Options | undefined)?.processorOptions ?? {}
     const type = KERNEL_TYPES.includes(init.type as KernelType) ? init.type as KernelType : 'utility'
-    this.kernel = createKernel(type, sampleRate, init.params, init.bpm)
+    // Rust/WASM kernel when the main thread opted in (docs/RUST.md; off by default), else TypeScript.
+    const rust = typeof WebAssembly !== 'undefined' && init.garakWasm instanceof WebAssembly.Module
+      ? createRustKernel(init.garakWasm, type, sampleRate, init.params, init.bpm) : null
+    this.kernel = rust ?? createKernel(type, sampleRate, init.params, init.bpm)
     this.port.onmessage = event => {
       const data = event.data as { type?: string; params?: Record<string, number>; bpm?: number } | undefined
       if (data?.type === 'dispose') this.disposed = true

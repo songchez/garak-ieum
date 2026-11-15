@@ -15,9 +15,16 @@ on:
       - 'native/include/garak/dsp.hpp'
       - 'native/src/dsp.cpp'
       - 'native/src/sigimsae_effects.inc'
+      - 'native/src/eq_effects.inc'
+      - 'native/src/rust_effects.inc'
+      - 'native/tests/rust_bench.cpp'
+      - 'native/tests/engine_test.cpp'
       - 'native/tests/rust_parity_test.cpp'
       - 'src/audio/rust/**'
       - 'src/devices/effects/kernels.ts'
+      - 'src/devices/effects/sigimsae.ts'
+      - 'src/devices/effects/sigimsae.worklet.ts'
+      - 'src/devices/effects/sigimsaeDefs.ts'
       - 'src/devices/effects/eqModel.ts'
       - 'scripts/rust.mjs'
       - 'scripts/setup-rust.*'
@@ -80,7 +87,8 @@ jobs:
         run: |
           node scripts/rust.mjs wasm
           size=$(stat -c %s public/wasm/garak-dsp.wasm)
-          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB)" >> "$GITHUB_STEP_SUMMARY"
+          gzip=$(gzip -9 -c public/wasm/garak-dsp.wasm | wc -c)
+          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 128 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the WASM module
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -151,8 +159,31 @@ jobs:
           -DGARAK_RUST=ON -DGARAK_ENABLE_DEVICES=OFF -DGARAK_ENABLE_ASIO=OFF -DGARAK_ENABLE_VST3=OFF
           ${{ matrix.cmake_args }}
 
-      - name: Build garak-ffi and the parity test
-        run: cmake --build build/native-rust --config Release --target garak-rust-parity-test --parallel 4
+      - name: Build garak-ffi, the parity test, the benchmark and the engine test
+        run: >
+          cmake --build build/native-rust --config Release --parallel 4
+          --target garak-rust-parity-test garak-rust-bench garak-engine-test
 
+      # Every ported effect through C++ and Rust (param sweeps, automation, tempo, resets,
+      # hand-overs, other sample rates): residual <= -90 dBFS, identical latency / tail / meters.
       - name: Run the Rust vs C++ parity test
         run: ctest --test-dir build/native-rust -C Release -R native-rust-parity --output-on-failure
+
+      # The whole engine regression suite with every built-in effect switched to Rust.
+      - name: Engine tests with the Rust effects (GARAK_RUST_EFFECTS=all)
+        env:
+          GARAK_RUST_EFFECTS: all
+        run: ctest --test-dir build/native-rust -C Release -R native-engine --output-on-failure
+
+      - name: Parity table and CPU baseline (C++ vs Rust)
+        shell: bash
+        run: |
+          dir=build/native-rust
+          [ -d "$dir/Release" ] && dir="$dir/Release"
+          {
+            echo "### Rust vs C++ parity (${{ matrix.name }})"
+            "$dir/garak-rust-parity-test" | grep '^|'
+            echo
+            echo "### CPU baseline (${{ matrix.name }})"
+            "$dir/garak-rust-bench" 3
+          } | tee -a "$GITHUB_STEP_SUMMARY"

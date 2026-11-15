@@ -4,7 +4,9 @@
 
 use crate::{
     clamp,
+    fx::Kernel,
     gain::db_to_gain,
+    params::{ParamSet, UTILITY, index_of},
     smooth::{Smooth, smoothing_coefficient},
 };
 
@@ -118,6 +120,48 @@ impl Utility {
     }
 
     pub fn reset(&mut self) {}
+
+    /// Configured from a catalog-order parameter set (the `Fx` path).
+    pub fn with_params(sample_rate: f64, p: &ParamSet) -> Self {
+        let mut u = Self::new(sample_rate);
+        u.configure(UtilityParams::from_set(p));
+        u
+    }
+
+    /// `UtilityFx::takeStateFrom`: continue the glides from the previous processor.
+    pub fn take_state_from(&mut self, p: &mut Self) -> bool {
+        self.gain.follow(&p.gain);
+        self.pan.follow(&p.pan);
+        self.width.follow(&p.width);
+        self.sign_l.follow(&p.sign_l);
+        self.sign_r.follow(&p.sign_r);
+        false
+    }
+}
+
+impl UtilityParams {
+    pub fn from_set(p: &ParamSet) -> Self {
+        Self {
+            gain_db: p.get(index_of(UTILITY, "gain")),
+            pan: p.get(index_of(UTILITY, "pan")),
+            width: p.get(index_of(UTILITY, "width")),
+            mono: p.get(index_of(UTILITY, "mono")),
+            phase: p.get(index_of(UTILITY, "phase")),
+        }
+    }
+}
+
+impl Kernel for Utility {
+    fn automate(&mut self, p: &ParamSet) {
+        self.configure(UtilityParams::from_set(p));
+    }
+
+    #[inline]
+    fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
+        Utility::frame(self, l, r)
+    }
+
+    fn reset(&mut self) {}
 }
 
 #[cfg(test)]

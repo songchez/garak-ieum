@@ -7,13 +7,14 @@
 #ifndef GARAK_RUST_H
 #define GARAK_RUST_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define GARAK_RS_ABI_VERSION 1
+#define GARAK_RS_ABI_VERSION 2
 
 /* Same order as garak::dsp::Filter. */
 enum GarakRsFilter {
@@ -63,6 +64,89 @@ void garak_rs_utility_init(GarakRsUtility* utility, double sample_rate);
 /* First call applies immediately, later calls glide. */
 void garak_rs_utility_configure(GarakRsUtility* utility, const GarakRsUtilityParams* params);
 void garak_rs_utility_process_interleaved(GarakRsUtility* utility, float* stereo, uint32_t frames);
+
+/* ---- Built-in effects (rust/garak-ffi/src/fx.rs) ------------------------------------------------
+ * Every native makeEffect() type except the guitar rig. Parameters are doubles in the catalog order
+ * of native/src/dsp.cpp effectDefs() (garak_rs_fx_param_id lists them). Lifecycle:
+ *   1. allocate garak_rs_fx_size() bytes aligned to garak_rs_fx_align() (opaque state) and
+ *      garak_rs_fx_storage_len() floats of state storage (delay lines; 0 for most kinds);
+ *      reverb: also an impulse response (garak_rs_reverb_generate_ir or a cached one) FFT'd into
+ *      garak_rs_reverb_kernel_len() floats with garak_rs_reverb_prepare_kernels (control thread);
+ *   2. garak_rs_fx_init (control thread);
+ *   3. process / automate / set_param + commit / set_tempo / reset / meter (audio thread, real-time
+ *      safe); latency and tail at any time;
+ *   4. free the buffers (no Rust destructor runs). Buffers must outlive the effect and not move. */
+enum GarakRsEffect {
+  GARAK_RS_FX_DELAY = 0,
+  GARAK_RS_FX_CHORUS = 1,
+  GARAK_RS_FX_PHASER = 2,
+  GARAK_RS_FX_FLANGER = 3,
+  GARAK_RS_FX_TREMOLO = 4,
+  GARAK_RS_FX_LIMITER = 5,
+  GARAK_RS_FX_GATE = 6,
+  GARAK_RS_FX_TAPE = 7,
+  GARAK_RS_FX_BITCRUSHER = 8,
+  GARAK_RS_FX_UTILITY = 9,
+  GARAK_RS_FX_EQ = 10,
+  GARAK_RS_FX_FILTER = 11,
+  GARAK_RS_FX_COMPRESSOR = 12,
+  GARAK_RS_FX_DRIVE = 13,
+  GARAK_RS_FX_REVERB = 14
+};
+#define GARAK_RS_FX_COUNT 15
+
+/* garak_rs_fx_init results. */
+#define GARAK_RS_OK 0
+#define GARAK_RS_ERR_ARGUMENT (-1) /* null or misaligned state */
+#define GARAK_RS_ERR_KIND (-2)
+#define GARAK_RS_ERR_RATE (-3)     /* sample rate outside 8-192 kHz or tempo outside 20-400 BPM */
+#define GARAK_RS_ERR_STORAGE (-4)  /* storage shorter than garak_rs_fx_storage_len */
+#define GARAK_RS_ERR_KERNELS (-5)  /* reverb kernels missing or short */
+
+typedef struct GarakRsFx GarakRsFx; /* opaque */
+
+size_t garak_rs_fx_size(void);
+size_t garak_rs_fx_align(void);
+/* Kind of a project effect type id ("chorus"), or -1. */
+int32_t garak_rs_fx_kind(const char* id, size_t len);
+uint32_t garak_rs_fx_param_count(uint32_t kind);
+/* Copies the id (no terminator) into out and returns its full length; 0 when out of range. */
+size_t garak_rs_fx_param_id(uint32_t kind, uint32_t index, char* out, size_t capacity);
+int32_t garak_rs_fx_param_range(uint32_t kind, uint32_t index, double* out_default, double* out_min, double* out_max);
+/* State storage in floats; ir_len is the reverb impulse length (ignored by other kinds). */
+size_t garak_rs_fx_storage_len(uint32_t kind, double sample_rate, size_t ir_len);
+
+size_t garak_rs_reverb_ir_len(double sample_rate, double type_param);
+size_t garak_rs_reverb_scratch_len(double sample_rate, double type_param);
+/* Same impulse as dsp.cpp impulse() + the size cross-fade. Returns 1 on success. */
+int32_t garak_rs_reverb_generate_ir(double sample_rate, double type_param, double size, float* left, float* right,
+                                    size_t ir_len, float* scratch, size_t scratch_len);
+size_t garak_rs_reverb_kernel_len(size_t ir_len);
+/* FFTs any impulse response of ir_len frames (generated or cached). Returns 1 on success. */
+int32_t garak_rs_reverb_prepare_kernels(const float* left, const float* right, size_t ir_len, float* kernels,
+                                        size_t kernels_len);
+
+int32_t garak_rs_fx_init(GarakRsFx* fx, uint32_t kind, double sample_rate, double bpm, const double* params,
+                         uint32_t count, float* storage, size_t storage_len, const float* kernels, size_t kernels_len,
+                         size_t ir_len);
+/* Interleaved / planar stereo in place. */
+void garak_rs_fx_process(GarakRsFx* fx, float* stereo, uint32_t frames);
+void garak_rs_fx_process_planar(GarakRsFx* fx, float* left, float* right, uint32_t frames);
+/* All parameters at once, then automate in place (C++ StereoProcessor::automate). */
+void garak_rs_fx_automate(GarakRsFx* fx, const double* params, uint32_t count);
+/* Stage one parameter (clamped, non-finite ignored); commit applies staged changes if any. */
+void garak_rs_fx_set_param(GarakRsFx* fx, uint32_t index, double value);
+void garak_rs_fx_commit(GarakRsFx* fx);
+double garak_rs_fx_param(const GarakRsFx* fx, uint32_t index);
+void garak_rs_fx_set_tempo(GarakRsFx* fx, double bpm);
+void garak_rs_fx_reset(GarakRsFx* fx);
+uint32_t garak_rs_fx_latency(const GarakRsFx* fx);
+double garak_rs_fx_tail(const GarakRsFx* fx);
+/* Compressor, limiter, gate: detector peak and lowest gain since the last call; returns 1, else 0. */
+int32_t garak_rs_fx_meter(GarakRsFx* fx, float* out_peak, float* out_gain);
+/* C++ takeStateFrom. Returns 1 when the two effects exchanged their whole state storage: the caller
+ * must then swap the two storage buffers as well. */
+int32_t garak_rs_fx_take_state(GarakRsFx* fx, GarakRsFx* previous);
 
 #ifdef __cplusplus
 } /* extern "C" */

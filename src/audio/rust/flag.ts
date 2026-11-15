@@ -9,6 +9,8 @@
 export const RUST_DSP_STORAGE_KEY = 'garak.rustDsp'
 
 export function rustDspRequested(): boolean {
-  if (import.meta.env?.VITE_GARAK_RUST_DSP === '1') return true
+  // Typed loosely so Node-only builds (the MCP server reaches this through the effect registry)
+  // compile without Vite's client types; Vite still substitutes `import.meta.env` in the app.
+  if ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_GARAK_RUST_DSP === '1') return true
   try { return globalThis.localStorage?.getItem(RUST_DSP_STORAGE_KEY) === '1' } catch { return false }
 }

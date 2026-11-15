@@ -75,14 +75,31 @@ set_target_properties(garak_rust PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${GARAK_RUST_ROOT}/garak-ffi/include")
 add_dependencies(garak_rust garak_rust_build)
 
+# The Rust effects behind the StereoProcessor interface (native/src/rust_effects.inc). makeEffect()
+# still uses C++ unless a type is listed here, in the GARAK_RUST_EFFECTS environment variable, or
+# switched with garak::dsp::setEffectBackend().
+target_link_libraries(garak_core PUBLIC garak_rust)
+target_compile_definitions(garak_core PRIVATE GARAK_RUST=1)
+set(GARAK_RUST_EFFECTS "" CACHE STRING
+  "Effect types makeEffect() runs in Rust by default (list of type ids, or 'all'); empty keeps C++")
+if(GARAK_RUST_EFFECTS)
+  string(REPLACE ";" "," garak_rust_effects_list "${GARAK_RUST_EFFECTS}")
+  target_compile_definitions(garak_core PRIVATE "GARAK_RUST_EFFECTS_DEFAULT=\"${garak_rust_effects_list}\"")
+  message(STATUS "Rust effects by default: ${garak_rust_effects_list}")
+endif()
+
 if(GARAK_BUILD_TESTS)
   # Rust kernels vs the existing C++ kernels on identical input (tolerance-based).
   add_executable(garak-rust-parity-test tests/rust_parity_test.cpp)
-  target_link_libraries(garak-rust-parity-test PRIVATE garak_core garak_rust)
-  if(MSVC)
-    target_compile_options(garak-rust-parity-test PRIVATE /W4 /utf-8)
-  else()
-    target_compile_options(garak-rust-parity-test PRIVATE -Wall -Wextra -Wpedantic)
-  endif()
+  # CPU baseline (frames/s per effect, C++ vs Rust); prints a table, not part of ctest.
+  add_executable(garak-rust-bench tests/rust_bench.cpp)
+  foreach(target garak-rust-parity-test garak-rust-bench)
+    target_link_libraries(${target} PRIVATE garak_core garak_rust)
+    if(MSVC)
+      target_compile_options(${target} PRIVATE /W4 /utf-8)
+    else()
+      target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+  endforeach()
   add_test(NAME native-rust-parity COMMAND garak-rust-parity-test)
 endif()
