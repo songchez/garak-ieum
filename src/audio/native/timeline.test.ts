@@ -3,6 +3,7 @@ import { createDevice, createEmptyProject, createTrack } from '../../core/projec
 import type { AudioClip, MidiClip, MidiNote, PluginDevice, Project, Track } from '../../core/types'
 import { compileNativeTimeline, NATIVE_TIMELINE_LIMITS, planNativeSeek, type NativePcmAsset } from './timeline'
 import type { NativePluginInstance } from './contracts'
+import { BEND_RANGE_NUMBER, PITCH_BEND_NUMBER } from '../../core/controllers'
 
 let noteSequence = 0
 const note = (start: number, duration = 1, pitch = 60, velocity = 1): MidiNote => ({ id: `note-${noteSequence++}`, start, duration, pitch, velocity })
@@ -321,6 +322,36 @@ describe('native timeline through a tempo map', () => {
     expect(compiled.tracks[0].notes.map(item => [item.onFrame, item.offFrame])).toEqual(frames.slice(0, 12).map((frame, beat) => [frame, frames[beat + 1]]))
     // Audio plays at 1x: it starts on beat 2's frame and lasts the region's real duration through the ramp.
     expect(compiled.tracks[1].audio[0]).toMatchObject({ startFrame: frames[2], endFrame: frames[6], clipLengthFrames: frames[6] - frames[2], sourceStartFrame: 0 })
+  })
+
+  it('puts pitch-bend and CC events across a ramp on tempo-map frames, with the region-end reset', () => {
+    const controllers = {
+      pitchBend: [1, 3, 5, 7, 9].map(beat => ({ beat, value: beat * 100 })),
+      cc11: [{ beat: 2, value: 40 }, { beat: 10, value: 90 }],
+    }
+    const compiled = compileNativeTimeline(project([
+      track('keys', { clips: [midi('m', { lengthBeats: 11, bendRange: 7, controllers, notes: [note(0, 11)] })] }),
+    ], { bpm: 90, tempoMap, lengthBeats: 12 }))
+    const controls = compiled.tracks[0].controls
+    const bends = controls.filter(item => item.controller === PITCH_BEND_NUMBER)
+    // Every visible event on its beat's frame through the ramp, then the reset at the region end (beat 11).
+    expect(bends.map(item => [item.frame, item.value])).toEqual([...[1, 3, 5, 7, 9].map(beat => [frames[beat], beat * 100]), [frames[11], 0]])
+    expect(controls.filter(item => item.controller === 11).map(item => [item.frame, item.value])).toEqual([[frames[2], 40], [frames[10], 90], [frames[11], 127]])
+    // Built-in instruments get the region's bend range with its first bend event.
+    expect(controls.find(item => item.controller === BEND_RANGE_NUMBER)).toEqual({ frame: frames[1], controller: BEND_RANGE_NUMBER, value: 7 })
+    expect(controls.map(item => item.frame)).toEqual([...controls.map(item => item.frame)].sort((a, b) => a - b))
+  })
+
+  it('carries returns and sends next to the tempo map and synced return delays', () => {
+    const compiled = compileNativeTimeline(project([
+      track('keys', { sends: [{ returnId: 'echo', level: 0.8 }], clips: [midi('m', { lengthBeats: 12, notes: [note(8, 1)] })] }),
+      track('echo', { kind: 'return', devices: [createDevice('delay', { sync: 1, time: 0.5, dry: 0 })] }),
+    ], { bpm: 90, tempoMap, lengthBeats: 12 }))
+    expect(compiled.tempoMap).toEqual(tempoMap)
+    expect(compiled.tracks[0].sends).toEqual([{ returnId: 'echo', gain: 0.8, pre: false }])
+    expect(compiled.tracks[0].notes[0]).toMatchObject({ onFrame: frames[8], offFrame: frames[9] })
+    expect(compiled.tracks[1]).toMatchObject({ return: true, notes: [], controls: [] })
+    expect(compiled.tracks[1].inserts[0]).toMatchObject({ type: 'delay', params: expect.objectContaining({ sync: 1, time: 0.5 }) })
   })
 
   it('omits the map for a constant tempo', () => {

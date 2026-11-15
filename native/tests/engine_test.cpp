@@ -1160,11 +1160,39 @@ void midiControllers(){
   {auto p=base;p.tracks[0].controls={{0,129,9000}};RenderEngine e;rejects([&]{(void)e.prepare(p,{});},"Out-of-range timeline pitch bend accepted");
    p.tracks[0].controls={{10,1,5},{5,1,6}};rejects([&]{(void)e.prepare(p,{});},"Unsorted timeline controls accepted");}
 }
+void tempoSendsControllers(){
+  // A synced delay on a return follows the tempo map: 120 BPM, then a step to 60 BPM at beat 4 (frame 96000).
+  // An impulse at beat 6 (frame 192000) sent pre-fader (dry path silent) echoes one 60 BPM beat later, not 24000.
+  {const std::int64_t length=252000;std::vector<float> pcm(static_cast<std::size_t>(length)*2,0.f);pcm[192000*2]=pcm[192000*2+1]=1;
+   AssetStore assets{{"imp",asset("imp",48000,pcm,2)}};
+   for(const std::uint32_t threads:{0u,2u}) {
+     auto p=project(48000,length);p.bpm=120;p.tempoMap={{0,120,false},{4,60,false}};
+     auto a=regionTrack("a","imp",0.f,length);a.sends={{"ret",1.f,true}};
+     auto ret=returnTrack("ret");BuiltinInsert delay;delay.id="echo";delay.type="delay";
+     delay.params={{"sync",1},{"time",1},{"amount",1},{"dry",0},{"feedback",0},{"tone",16000},{"lowcut",20},{"mode",0},{"age",0}};ret.inserts.push_back(delay);
+     p.tracks={ret,a};
+     RenderEngine e(48000,256);e.setProcessing(processing(threads));e.submit(e.prepare(p,assets));check(e.play(),"Play failed");
+     const auto out=render(e,static_cast<std::uint32_t>(length),256);
+     std::size_t peak=192000;for(std::size_t i=192000;i<static_cast<std::size_t>(length);++i)if(std::abs(out[2*i])>std::abs(out[2*peak]))peak=i;
+     check(std::abs(out[2*peak])>.05f,"The return's synced delay produced no echo");
+     check(peak>=240000-10&&peak<=240000+10,"A return's synced delay did not follow the tempo map (echo not one 60 BPM beat late)");
+     for(std::size_t i=192000;i<230000;++i)check(std::abs(out[2*i])<1e-4f,"The return leaked dry signal or echoed at the beat-0 tempo");
+   }}
+  // Controller events are frames already placed through the tempo map: a bend at beat 6 of a 90→150 ramp
+  // (frame 155699, the TypeScript/garak tempo.hpp list) bends exactly there, not at 6 beats of 90 BPM (192000).
+  {const TempoMap map(90,{{0,90,true},{8,150,false}});near(map.frameAt(6,48000),155699,1,"Ramp frame for beat 6");
+   auto p=project(48000,240000);p.bpm=90;p.tempoMap={{0,90,true},{8,150,false}};
+   TrackTimeline t;t.id="keys";t.source.kind=TrackSource::Kind::BuiltinSynth;t.source.instrumentId="keys";
+   t.source.params={{"bell",0},{"sustain",1},{"release",.05}};t.notes={{1,0,240000,240000,69,.5f}};t.controls={{155699,129,8191}};p.tracks.push_back(t);
+   RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");const auto out=render(e,200000,256);
+   const double f0=frequencyOf(out,130000,155000);near(f0,440,.5,"Pitch before the bend under a tempo map");
+   near(frequencyOf(out,160500,190000)/f0,std::pow(2,2/12.0),.001,"Pitch bend under a tempo ramp did not land on its tempo-map frame");}
+}
 
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }
