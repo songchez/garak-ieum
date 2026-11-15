@@ -18,11 +18,12 @@ rust/
   rust-toolchain.toml    고정 툴체인(1.100.0, minimal + rustfmt/clippy + wasm32)
   Cargo.toml             워크스페이스, 린트, 빌드 프로필
   .cargo/config.toml     wasm32 플래그(simd128 등, 스택 64 KiB)
-  garak-dsp/             커널 본체. #![no_std], alloc 없음, 의존성은 libm 하나
+  garak-dsp/             커널 본체. #![no_std], alloc 없음, 의존성은 libm 하나(wasm32용)
+    src/math.rs          초월 함수의 출처: 네이티브는 플랫폼 C libm(`platform-math`), wasm32는 libm 크레이트
     src/biquad.rs        dsp.cpp Biquad::configure/sample, eqModel.ts sectionCoefficients
     src/gain.rs          dbToGain, 등전력 모노 팬·스테레오 밸런스(engine.cpp 트랙 믹스 루프), ChannelStrip
     src/utility.rs       sigimsae_effects.inc UtilityFx = kernels.ts UtilityKernel
-    src/smooth.rs        12 ms 파라미터 글라이드
+    src/smooth.rs        12 ms 파라미터 글라이드(settled: 목표에 닿은 글라이드는 블록 단위로 건너뜀)
     src/params.rs        이펙트 종류(EffectKind)와 파라미터 카탈로그(dsp.cpp effectDefs와 같은 id·순서·범위)
     src/lines.rs         호출자 저장 공간 위의 Ring / DelayLine(O(1) reset) / Carver
     src/fx/mod.rs        Kernel 트레이트, Fx(모든 이펙트를 하나로 감싼 타입)
@@ -45,6 +46,7 @@ src/audio/rust/garakWasm.ts       워크릿에서도 쓸 수 있는 WASM 로더(
 src/audio/rust/sigimsaeRust.ts    워크릿 어댑터: Rust 이펙트를 SigimsaeKernel로
 src/audio/rust/flag.ts            기능 플래그(기본 꺼짐)
 src/audio/rust/parity.test.ts     Rust(WASM) ↔ 기존 TS 커널 비교
+src/audio/rust/bench.test.ts      워크릿 CPU 기준선(TS 커널 vs Rust WASM, 기본 건너뜀)
 scripts/setup-rust.ps1 / .sh      한 번에 설치
 scripts/rust.mjs                  pnpm rust:* 명령
 .github/workflows/rust.yml        CI
@@ -80,7 +82,8 @@ sh scripts/setup-rust.sh
 | `pnpm rust:build` | 네이티브 `garak-ffi` 정적 라이브러리(release) |
 | `pnpm exec vitest run src/audio/rust` | WASM ↔ TS 패리티 |
 | CMake `-DGARAK_RUST=ON` 후 `ctest -R native-rust-parity` | Rust ↔ C++ 패리티(표 출력). 인자로 이펙트 하나만: `garak-rust-parity-test delay` |
-| `garak-rust-bench [초]` | 이펙트별 CPU 기준선(Markdown 표) |
+| `garak-rust-bench [초] [이펙트…]` | 이펙트별 CPU 기준선(Markdown 표). C++/Rust를 번갈아 5라운드 돌려 최고값, "automated" 열은 매 블록 파라미터 자동화 |
+| `GARAK_WASM_BENCH=1 pnpm exec vitest run src/audio/rust/bench.test.ts` | 워크릿 CPU 기준선(TS 커널 vs Rust WASM, `pnpm rust:wasm` 후) |
 | `GARAK_RUST_EFFECTS=all ctest -R native-engine` | 엔진 회귀 테스트 전체를 Rust 이펙트로 |
 
 `cargo`를 직접 쓰려면 `rust/`에서 실행하세요. 추가 인자는 그대로 넘어갑니다: `pnpm rust:test -- biquad`.
@@ -116,7 +119,7 @@ ctest --test-dir build/native-rust -C Release -R native-rust-parity --output-on-
 
 CMake(`GarakRust.cmake`)는 컴파일러로 타깃을 고릅니다: MSVC → `*-pc-windows-msvc`, MinGW → `*-pc-windows-gnu`, Apple → `CMAKE_OSX_ARCHITECTURES`에 맞는 `*-apple-darwin`. `-DGARAK_RUST_TARGET=`으로 덮어쓸 수 있습니다. C++ ABI(MSVC ↔ GNU)가 섞이면 링크가 안 되므로 이 짝이 중요합니다.
 
-`garak-ffi`는 `#![no_std]`라서 Rust 표준 라이브러리 런타임(`ws2_32`, `userenv`, `msvcrt` 등)을 끌고 오지 않습니다. 그래서 msvcrt 기반 Rust GNU 타깃을 UCRT MinGW C++과 문제없이 섞을 수 있고, CMake에 플랫폼별 시스템 라이브러리 목록이 필요 없습니다. 쓰는 libc 심볼은 패닉 처리기의 `abort` 하나뿐입니다.
+`garak-ffi`는 `#![no_std]`라서 Rust 표준 라이브러리 런타임(`ws2_32`, `userenv`, `msvcrt` 등)을 끌고 오지 않습니다. 그래서 msvcrt 기반 Rust GNU 타깃을 UCRT MinGW C++과 문제없이 섞을 수 있고, CMake에 플랫폼별 시스템 라이브러리 목록이 필요 없습니다. 쓰는 libc 심볼은 패닉 처리기의 `abort`와 C 수학 함수(`exp`·`pow`·`sin`·`tanh` 등, 아래 [결정성](#실시간-규칙))뿐이고, 둘 다 C++ 호스트가 이미 링크하는 CRT(UCRT·MinGW CRT·libSystem)에서 풀립니다.
 
 ## 실시간 규칙
 
@@ -125,7 +128,7 @@ CMake(`GarakRust.cmake`)는 컴파일러로 타깃을 고릅니다: MSVC → `*-
 - **할당 금지.** `garak-dsp`는 `#![no_std]`이고 `alloc` 크레이트를 쓰지 않으므로 할당이 *구조적으로* 불가능합니다. 딜레이 라인·리버브 상태처럼 크기가 샘플레이트에 따라 정해지는 버퍼는 생성 시(제어 스레드) 호출자가 넘긴 `&mut [f32]`를 빌려 씁니다(`Fx::storage_len`으로 크기 조회). FFI는 호출자가 저장 공간을 소유하고(C++ 어댑터의 `std::vector`), WASM은 고정 슬롯 풀과 정적 버퍼, 그리고 이펙트 버퍼용 영역 할당기(`arena.rs`)를 씁니다. WASM 메모리는 **이펙트를 만들 때만** 자라고(`process`에서는 절대 안 자람), 로더가 그 뒤 뷰를 다시 만듭니다.
 - **락·I/O 금지.** `no_std`에는 둘 다 없습니다.
 - **패닉 금지.** 워크스페이스 린트로 `clippy::{unwrap_used, expect_used, panic, todo, unimplemented, unreachable, indexing_slicing}`을 `deny`합니다(테스트 코드는 `clippy.toml`로 허용). 범위를 벗어난 입력은 거절하지 않고 잘라 냅니다(NaN 포함). 모든 프로필이 `panic = "abort"`이고, 그래도 버그로 패닉이 나면 staticlib은 `abort()`, WASM은 `unreachable` 트랩으로 끝납니다(풀린 스택이 C++ 프레임을 넘지 않음).
-- **결정성.** 삼각·지수 함수는 순수 Rust `libm`을 써서 네이티브와 wasm32의 결과가 비트 단위로 같습니다.
+- **결정성.** 삼각·지수 함수는 `garak-dsp/src/math.rs` 한 곳을 거칩니다. 네이티브(`garak-ffi`가 켜는 `platform-math` 기능)는 플랫폼 C 라이브러리의 `exp`/`log`/`pow`/`sin`/`tanh`…를 `extern "C"`로 직접 부릅니다. C++ 커널이 `std::exp` 등으로 같은 바이너리 안에서 부르는 바로 그 함수라 Rust와 C++의 결과가 같고(아래 표: 세 플랫폼 모두 대부분 비트 동일), 플랫폼에 최적화된 구현을 씁니다. `no_std`는 그대로입니다(함수는 직접 선언, 링크는 호스트의 CRT). C 라이브러리가 없는 wasm32는 순수 Rust `libm`을 쓰고, `floor`/`ceil`/`sqrt`만 wasm 명령으로 바꿨습니다(어느 쪽이든 정확한 연산). 그래서 네이티브와 웹의 결과는 비트 단위로 같지 않을 수 있지만 둘 다 각자의 기준(C++, TS)과 -90 dBFS 안에서 묶입니다.
 - `unsafe`는 FFI/WASM 경계에만 있고 모두 `// SAFETY:` 주석이 있습니다(`unsafe_op_in_unsafe_fn = deny`).
 
 ## 1단계: 내장 이펙트 커널
@@ -208,12 +211,12 @@ pub trait Kernel {                      // fx/mod.rs
 
 ### Rust ↔ C++ (`garak-rust-parity-test`)
 
-이펙트별 최대 잔차(모든 렌더 중 최악). -400은 비트 단위로 같다는 뜻입니다. 지연·꼬리는 모든 렌더에서 같은 값, 다이내믹스 미터도 일치했습니다.
+이펙트별 최대 잔차(모든 렌더 중 최악). -400은 비트 단위로 같다는 뜻입니다. 지연·꼬리는 모든 렌더에서 같은 값, 다이내믹스 미터도 일치했습니다. 괄호는 CPU 작업(플랫폼 libm) 전 값입니다.
 
 | 이펙트 | 렌더 수 | Windows MinGW (로컬) | Windows MSVC (CI) | macOS arm64 (CI) |
 |---|---:|---:|---:|---:|
 | chorus | 18 | -400 (비트 동일) | -400 | -400 |
-| flanger | 21 | -400 | -400 | -144.5 |
+| flanger | 21 | -400 | -400 | -400 (-144.5) |
 | phaser | 21 | -400 | -400 | -400 |
 | tremolo | 24 | -400 | -400 | -400 |
 | limiter | 18 | -400 | -400 | -400 |
@@ -221,14 +224,14 @@ pub trait Kernel {                      // fx/mod.rs
 | tape | 21 | -400 | -400 | -150.5 |
 | bitcrusher | 18 | -400 | -400 | -400 |
 | utility | 24 | -400 | -400 | -400 |
-| delay | 39 | -400 | -400 | -162.6 |
-| eq | 156 | -210.7 | -210.7 | -132.5 |
+| delay | 39 | -400 | -400 | -400 (-162.6) |
+| eq | 156 | -400 (-210.7) | -400 (-210.7) | -132.5 |
 | filter | 21 | -400 | -400 | -373.3 |
 | compressor | 24 | -400 | -400 | -222.8 |
 | drive | 21 | -400 | -400 | -400 |
-| reverb | 24 | -138.5 | -138.5 | -138.5 |
+| reverb | 24 | -400 (-138.5) | -400 (-138.5) | -138.5 |
 
-MinGW에서 대부분 비트 동일인 것은 같은 식·같은 순서에 `libm`(musl 계열)과 MinGW 수학 함수가 대부분의 입력에서 같은 값을 주기 때문입니다. 리버브는 FFT 회전 인자(`cosf`/`sinf`)와 복소 곱셈 순서 차이로 float 반올림 수준(-138 dBFS) 차이가 납니다. MSVC도 MinGW와 같은 결과였습니다. macOS arm64는 AppleClang의 FMA 축약(`-ffp-contract=on`)과 Apple libm 때문에 몇 이펙트가 float 반올림 수준(최악 EQ -132.5 dBFS)으로 달라지지만 게이트(-90 dBFS)에 한참 못 미칩니다.
+Windows는 두 툴체인 모두 15종 전부 비트 동일입니다. Rust가 C++과 **같은 바이너리 안의 같은 C 수학 함수**(`exp`, `pow`, `tanh`, 리버브 FFT의 `cosf`/`sinf`…)를 부르게 되면서(`platform-math`) 남아 있던 EQ·리버브 차이도 사라졌습니다. macOS arm64에서 남은 차이는 AppleClang의 FMA 축약(`-ffp-contract=on`) 때문입니다. C++ 소스에서 `a * b + c` 꼴인 곳 중 핫 루프에 있는 것(글라이드 `Smooth::next`, 링 버퍼 보간, dry/wet 믹스, 플랜저 피드백·스윕, 리미터 릴리스)은 Rust도 `math::mul_add`로 같은 fused 연산을 써서(Apple arm64에서만, 아래) flanger·delay가 비트 동일이 됐습니다. 바이쿼드와 테이프 자체 식은 fused 형태(인라인 asm `fmadd`)가 더 느려서 일부러 두 번 반올림을 유지합니다. 차이는 모두 float 반올림 수준이고 게이트(-90 dBFS)에 한참 못 미칩니다.
 
 ### Rust(WASM) ↔ TypeScript (`parity.test.ts`, Node 24)
 
@@ -240,42 +243,73 @@ MinGW에서 대부분 비트 동일인 것은 같은 식·같은 순서에 `libm
 | tape | -138.5 dBFS |
 | phaser, tremolo, limiter, gate, bitcrusher, utility | 비트 동일 |
 
-TS 커널은 바이쿼드 출력을 float로 반올림하지 않고 f64로 다음 단에 넘기므로(C++·Rust는 float) 필터가 있는 커널에서 float 한 비트 정도 차이가 납니다.
+TS 커널은 바이쿼드 출력을 float로 반올림하지 않고 f64로 다음 단에 넘기므로(C++·Rust는 float) 필터가 있는 커널에서 float 한 비트 정도 차이가 납니다. wasm32는 계속 `libm` 크레이트를 쓰므로(CPU 작업 전과 같은 수학) 이 표는 바뀌지 않았습니다.
 
 ### CPU 기준선 (`garak-rust-bench 5`)
 
-48 kHz 스테레오, 128프레임 블록, 바쁜 파라미터 세트(EQ 8밴드 모두 켬, 딜레이 핑퐁+에이지+로우컷 등). 2026-11-16, Windows 11 노트북, MinGW-w64 GCC 16.2 `-O3` vs Rust 1.100.0 `opt-level=3`, thin LTO, 둘 다 기본 x86-64(SSE2):
+48 kHz 스테레오, 128프레임 블록, 바쁜 파라미터 세트(EQ 8밴드 모두 켬, 딜레이 핑퐁+에이지+로우컷 등). 이펙트마다 C++과 Rust를 번갈아 5라운드 돌려 각자 최고값을 씁니다(공유 CI 러너의 클럭 변동 상쇄). **automated** 열은 글라이드가 있는 이펙트에서 파라미터 하나를 매 블록 `EffectControl`로 바꿔 글라이드가 멈추지 않게 한 경우입니다(Rust는 멈춘 글라이드를 블록 단위로 건너뛰므로, 정지 파라미터 수치만 보면 과대평가됩니다). 비율은 Rust 처리량 / C++ 처리량이고 **게이트는 0.87 이상(Rust 시간 ≤ C++의 1.15배)** 입니다.
 
-| 이펙트 | C++ (Mframes/s) | Rust (Mframes/s) | Rust / C++ | C++ 실시간 배수 |
+2026-11-16, Windows 11 노트북, MinGW-w64 GCC 16.2 `-O3` vs Rust 1.100.0 `opt-level=3`, thin LTO, 둘 다 기본 x86-64(SSE2). MSVC·macOS는 같은 커밋의 CI 러너(각 3초, best of 5):
+
+| 이펙트 | MinGW C++ (Mframes/s) | MinGW Rust | MinGW 비율 | MinGW automated | MSVC 비율 | MSVC automated | macOS arm64 비율 | macOS automated | 이전 비율 (MinGW / MSVC / macOS) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| chorus | 81.29 | 77.73 | 0.96 | 0.88 | 1.13 | 1.09 | 1.04 | 0.99 | 0.72 / 0.90 / 0.73 |
+| flanger | 47.34 | 48.17 | 1.02 | 0.95 | 1.10 | 1.05 | 1.09 | 0.96 | 0.80 / 0.89 / 0.65 |
+| phaser | 12.52 | 17.26 | 1.38 | 1.39 | 1.11 | 1.11 | 1.17 | 1.15 | 0.58 / 0.60 / 0.47 |
+| tremolo | 39.43 | 51.01 | 1.29 | 1.28 | 1.31 | 1.32 | 1.16 | 1.15 | 0.82 / 0.75 / 0.53 |
+| limiter | 214.86 | 236.92 | 1.10 | 0.95 | 1.39 | 1.16 | **0.82** | **0.77** | 0.74 / 0.93 / 0.72 |
+| gate | 495.36 | 486.32 | 0.98 | — | 1.85 | — | 0.90 | — | 1.05 / 1.85 / 0.97 |
+| tape | 25.05 | 28.57 | 1.14 | 1.14 | 1.14 | 1.15 | 0.97 | 0.95 | 0.48 / 0.49 / 0.38 |
+| bitcrusher | 258.48 | 620.96 | 2.40 | 1.67 | 2.71 | 1.66 | 1.88 | 0.93 | 1.29 / 1.25 / 0.76 |
+| utility | 390.88 | 1256.54 | 3.21 | 1.01 | 5.61 | 1.52 | 3.56 | 1.00 | 0.85 / 1.28 / 0.78 |
+| delay | 23.33 | 22.86 | 0.98 | 0.98 | 1.06 | 1.08 | 0.89 | 0.86 | 0.76 / 0.82 / 1.00 |
+| eq | 24.33 | 27.67 | 1.14 | — | 1.19 | — | 1.09 | — | 1.13 / 1.29 / 1.21 |
+| filter | 67.51 | 74.86 | 1.11 | — | 1.19 | — | 0.91 | — | 1.10 / 1.29 / 1.02 |
+| compressor | 52.92 | 54.73 | 1.03 | — | 1.00 | — | 0.90 | — | 0.43 / 0.40 / 0.19 |
+| drive | 6.09 | 7.12 | 1.17 | — | 1.61 | — | 0.95 | — | 1.06 / 1.29 / 0.77 |
+| reverb | 1.01 | 2.84 | 2.80 | — | 1.24 | — | 1.33 | — | 2.40 / 1.43 / 1.40 |
+
+무엇을 고쳤나(모두 정확한 변환: 모든 float 반올림 지점에서 같은 값, 패리티 표가 증명):
+
+- **플랫폼 libm (`platform-math`).** 원인이던 순수 Rust `libm`(musl 이식)을 네이티브에서 빼고 C 라이브러리 함수를 직접 선언해 부릅니다(`garak-dsp/src/math.rs`, `garak-ffi`가 켬). tape·compressor·phaser가 0.2~0.6배에서 1배 이상이 됐고, 패리티는 오히려 좋아졌습니다(위 표).
+- **커널마다 블록 루프 하나.** `Kernel::process_*` 기본 구현이 `Fx`의 15갈래 `match` 안에 인라인되면서 LLVM이 `frame`을 인라인하지 않아 프레임마다 호출 + 상태 재적재가 있었습니다. 블록 루프를 `#[inline(never)]`(C++의 가상 `process`와 같은 모양), `frame`·`Ring::read/push`·`Smooth::next`를 `#[inline(always)]`로.
+- **분기 없는 clamp.** `std_clamp`를 x86 `maxsd`/`minsd`가 정확히 구현하는 두 select로 다시 써서(GCC가 `std::clamp`에 내는 코드) 리미터의 데이터 의존 분기 예측 실패를 없앴습니다.
+- **딜레이 라인 읽기 위치를 `i64`로 변환.** `usize` ↔ `f64`는 x86-64에서 여러 명령이라 매 읽기의 임계 경로에 있었습니다(값은 같은 범위에서 동일).
+- **멈춘 글라이드 건너뛰기.** `Smooth::settled`(값 == 목표, -0.0 제외)이면 `value + 0 * k == value`이므로 chorus·flanger·limiter·bitcrusher·utility가 블록마다 한 번 확인하고 갱신 없는 루프를 돕니다. 리미터는 그 블록의 미터를 `max(peak) / pre` 한 번으로 계산합니다(양수 상수 나눗셈은 반올림 아래에서도 단조라 프레임별 `max(peak / pre)`와 같음). utility는 밸런스 분기도 블록 단위로 고정합니다. `Smooth::next` 안에서 프레임마다 확인하는 방식은 LLVM 코드가 오히려 느려져 쓰지 않았습니다.
+- **값이 바뀔 때만 계산.** bitcrusher의 `floor(hold * levels + 0.5) / levels`는 새 샘플을 잡거나 `bits`가 바뀔 때만, tremolo의 `tanh(k)` 정규화는 `shape`가 움직일 때만 계산합니다.
+- **Apple arm64의 FMA.** 위 패리티 절의 `math::mul_add`. 글라이드의 루프 전달 의존 사슬이 `fsub+fmul+fadd`에서 `fsub+fmadd`로 짧아져 macOS의 automated bitcrusher 0.73 → 0.93, utility 0.76 → 1.00. 안정 Rust의 `no_std`에는 `f64::mul_add`가 없어 `libm::fma`(`arch` 기능 → 인라인 `fmadd`)를 쓰는데, 불투명한 asm이라 바이쿼드·테이프에서는 오히려 느려져 거기는 빼고, 리미터에서는 asm이 분기 안으로 가라앉지 않게 `core::hint::select_unpredictable`로 고정했습니다.
+
+**게이트 결과.** Windows MinGW와 MSVC는 15종 모두 정지·automated 둘 다 0.87 이상입니다(최저 MinGW chorus automated 0.88, MSVC compressor 1.00). macOS arm64는 chorus·flanger·phaser·tremolo·tape·bitcrusher·utility·eq·gate·filter·compressor·drive·reverb가 통과하고, 남은 것은:
+
+- **limiter 0.82 (automated 0.77).** Rust 루프는 이미 분기 없는 스칼라 코드(`fcsel`·`fmadd`, 정지 블록은 프레임당 나눗셈 1회)인데도 AppleClang C++보다 느립니다. C++ 쪽은 정지 블록에서도 프레임당 나눗셈이 2회라, 차이는 나눗셈이 아니라 AppleClang이 좌우 채널 연산(입력 게인, 절댓값, clamp)을 NEON 2레인으로 묶는 것으로 추정합니다. 확인하려면 Apple 하드웨어에서 C++ 쪽 어셈블리를 봐야 하고, Rust에서 같은 묶음을 강제하려면 `core::arch::aarch64` 인트린식(`unsafe`)이 필요해 이번 범위에서 뺐습니다. 절대값으로는 Rust도 실시간의 4,400배입니다.
+- **delay automated 0.86, 정지 0.89.** 이전 실행들에서 0.88~0.97 사이로 흔들려 경계값입니다(같은 실행 안에서도 정지 < automated인 경우가 있을 만큼 러너 잡음이 큼). 커널 자체는 Windows에서 0.98~1.08입니다.
+
+CI 러너 수치는 공유 머신이라 실행마다 ±10% 정도 움직입니다. 매 실행의 Step Summary에 전체 표가 남습니다.
+
+### 워크릿 CPU: TS 커널 vs Rust WASM (`bench.test.ts`)
+
+브라우저 워크릿이 부르는 방식 그대로(평면 128프레임 블록, 48 kHz, 위와 같은 바쁜 설정) TS 커널과 `garak-dsp.wasm`의 같은 이펙트를 번갈아 5라운드. Node 24.21(V8), 같은 노트북, 각 20초:
+
+| 커널 | TS (Mframes/s) | Rust WASM (Mframes/s) | WASM / TS | CPU 작업 전 WASM / TS |
 |---|---:|---:|---:|---:|
-| chorus | 75.82 | 54.24 | 0.72 | 1580 |
-| flanger | 46.00 | 36.66 | 0.80 | 958 |
-| phaser | 12.31 | 7.16 | 0.58 | 256 |
-| tremolo | 38.49 | 31.48 | 0.82 | 802 |
-| limiter | 259.46 | 191.08 | 0.74 | 5405 |
-| gate | 448.85 | 470.31 | 1.05 | 9351 |
-| tape | 24.21 | 11.66 | 0.48 | 504 |
-| bitcrusher | 247.22 | 318.34 | 1.29 | 5150 |
-| utility | 369.00 | 311.93 | 0.85 | 7688 |
-| delay | 21.95 | 16.69 | 0.76 | 457 |
-| eq | 22.57 | 25.48 | 1.13 | 470 |
-| filter | 62.32 | 68.81 | 1.10 | 1298 |
-| compressor | 52.95 | 22.79 | 0.43 | 1103 |
-| drive | 5.60 | 5.94 | 1.06 | 117 |
-| reverb | 0.74 | 1.77 | 2.40 | 15 |
+| delay | 9.40 | 14.06 | 1.50 | 1.40 |
+| chorus | 47.30 | 51.95 | 1.10 | 0.73 |
+| phaser | 8.96 | 6.69 | **0.75** | 0.70 |
+| flanger | 28.72 | 32.03 | 1.12 | 0.96 |
+| tremolo | 25.10 | 31.61 | 1.26 | 0.88 |
+| limiter | 85.34 | 97.53 | 1.14 | 1.04 |
+| gate | 100.61 | 123.26 | 1.23 | 1.22 |
+| tape | 9.58 | 12.27 | 1.28 | 1.30 |
+| bitcrusher | 224.35 | 332.70 | 1.48 | 0.49 |
+| utility | 191.85 | 368.88 | 1.92 | 1.13 |
 
-해석:
-
-- **초월 함수가 많은 커널(tape의 `tanh`, compressor의 `log10`+`pow`, phaser의 `sin`+`pow`+`tan`)이 0.4~0.6배**입니다. 순수 Rust `libm`(musl 이식)이 플랫폼 수학 라이브러리보다 느리기 때문입니다. 대신 네이티브·wasm32 결과가 비트 단위로 같습니다. 아키텍처 검토의 1단계 게이트(ns/샘플 1.15배 이하)는 아직 못 넘었고, 경로 전환 전에 해결합니다: 후보는 (a) 핫 루프의 `libm` 함수를 더 빠른 구현으로 교체(패리티 허용 오차 안), (b) 블록 단위 계산(LFO 등)으로 호출 수 줄이기.
-- **reverb는 2.4배 빠릅니다.** C++의 `std::complex<float>` 곱셈은 NaN 처리 경로(`__mulsc3`) 때문에 느리고, Rust는 단순 곱셈입니다.
-- 절대값으로는 가장 무거운 reverb도 C++ 기준 실시간의 15배(Rust 37배)라, 지금 수치로도 트랙당 부하는 작습니다.
-- CI 러너(3초 실행, 공유 머신이라 참고용) Rust/C++ 비율: Windows MSVC — chorus 0.90, flanger 0.89, phaser 0.60, tremolo 0.75, limiter 0.93, gate 1.85, tape 0.49, bitcrusher 1.25, utility 1.28, delay 0.82, eq 1.29, filter 1.29, compressor 0.40, drive 1.29, reverb 1.43. macOS arm64 — chorus 0.73, flanger 0.65, phaser 0.47, tremolo 0.53, limiter 0.72, gate 0.97, tape 0.38, bitcrusher 0.76, utility 0.78, delay 1.00, eq 1.21, filter 1.02, compressor 0.19, drive 0.77, reverb 1.40 (Apple libm이 특히 빨라 초월 함수 커널 격차가 큼). 매 실행의 Step Summary에 전체 표가 남습니다.
+WASM 쪽 개선은 위의 구조 변경(블록 루프, settled, 캐시) 덕분이고, 추가로 `floor`/`ceil`/`sqrt`를 `libm`의 정수 비트 조작 대신 wasm 명령으로 바꿨습니다(`libm`은 nightly 전용 스위치 뒤에서만 씀). 남은 phaser는 프레임·채널마다 `sin`·`pow`·`tan`을 부르는데, TS의 `Math.*`는 V8 안의 네이티브 C++(fdlibm) 코드이고 WASM은 같은 계열 알고리즘(musl)을 wasm 코드로 돌리기 때문입니다. 줄이려면 `Math.sin` 등을 wasm import로 받아야 하는데(로더·ABI 변경), 이번 범위 밖입니다.
 
 ### 크기
 
 | 산출물 | 크기 | 예산 |
 |---|---|---|
-| `garak-dsp.wasm` (opt-level 3, fat LTO) | **103,835 바이트 (101.4 KiB)**, gzip 37,159 바이트 | 128 KiB / gzip 80 KB (아키텍처 검토의 1단계 예산) |
+| `garak-dsp.wasm` (opt-level 3, fat LTO) | **112,429 바이트 (109.8 KiB)**, gzip 40,343 바이트 (CPU 작업 전 103,835 / 37,159: 커널별 블록 루프와 settled 루프 특수화로 +8.4 KiB) | 128 KiB / gzip 80 KB (아키텍처 검토의 1단계 예산) |
 | 같은 모듈 opt-level `"s"` | 83,820 바이트, gzip 30,346 바이트 | (참고: 워크릿은 CPU가 병목이라 3 유지) |
 
 예산을 96 KiB에서 128 KiB로 올리고 gzip 80 KB 검사를 추가했습니다(`scripts/rust.mjs`, CI가 둘 다 확인). 코드 85 KB 중 대부분은 15종 커널과 `libm` 함수입니다.
@@ -307,7 +341,7 @@ Windows 11, Rust 1.100.0 (`x86_64-pc-windows-gnu`), 로컬 노트북. 기반 단
 | `garak-ffi` release 깨끗한 빌드 / 수정 후 | 3.9초 / 0.8초 | 13.8초 / 1.8초 |
 | `garak-wasm` (wasm 프로필) 깨끗한 빌드 | 4.5초 | 14.3초 |
 | `garak-rust-parity-test` 실행 (15종, 471렌더) | — | 약 5초 |
-| `garak-dsp.wasm` 크기 | 24,556 바이트 (24.0 KiB) | **103,835 바이트 (101.4 KiB)**, gzip 37,159 |
+| `garak-dsp.wasm` 크기 | 24,556 바이트 (24.0 KiB) | **112,429 바이트 (109.8 KiB)**, gzip 40,343 |
 | 디스크: 고정 툴체인(gnu, minimal) | 약 1.0 GB (대부분 rustc/LLVM DLL) | (같음) |
 
 ## 단계별 이전 계획
@@ -315,7 +349,7 @@ Windows 11, Rust 1.100.0 (`x86_64-pc-windows-gnu`), 로컬 노트북. 기반 단
 전체 아키텍처 검토는 [ARCHITECTURE_REVIEW](ARCHITECTURE_REVIEW.md)(작성되는 대로)와 [AUDIO_CORE_PLAN](AUDIO_CORE_PLAN.md), [NATIVE_AUDIO](NATIVE_AUDIO.md)를 함께 봅니다.
 
 1. **기반 (완료).** 워크스페이스, 설치 스크립트, CI, 패리티 테스트. 작은 커널 세트: 바이쿼드, 게인·팬, Utility.
-2. **내장 이펙트 커널 (완료, 이 문서의 1단계).** 시김새 10종, EQ·필터, 컴프레서, 드라이브, 리버브(IR 생성은 제어 스레드 API로 분리, 캐시된 IR 수용). C++ 어댑터 + 이펙트별 스위치(`GARAK_RUST=ON`, 기본 C++), WASM 슬롯 + 워크릿 어댑터(플래그, 기본 꺼짐), 패리티 하네스(C++·TS 모두 ≤ -90 dBFS)와 CPU 기준선. 남은 것: 초월 함수가 많은 커널의 CPU(위 표).
+2. **내장 이펙트 커널 (완료, 이 문서의 1단계).** 시김새 10종, EQ·필터, 컴프레서, 드라이브, 리버브(IR 생성은 제어 스레드 API로 분리, 캐시된 IR 수용). C++ 어댑터 + 이펙트별 스위치(`GARAK_RUST=ON`, 기본 C++), WASM 슬롯 + 워크릿 어댑터(플래그, 기본 꺼짐), 패리티 하네스(C++·TS 모두 ≤ -90 dBFS)와 CPU 기준선. CPU 게이트(이펙트마다 Rust 시간 ≤ C++의 1.15배)는 [CPU 기준선](#cpu-기준선-garak-rust-bench-5)을 봅니다.
 3. **경로 전환.** 청취 확인과 CPU 게이트가 끝난 커널부터 웹 기본 경로를 Rust WASM으로 바꾸고(`rustDspRequested()` 기본값 한 줄 + 배포 빌드에 `pnpm rust:wasm`), 네이티브는 데스크톱 빌드에서 `GARAK_RUST=ON` + `GARAK_RUST_EFFECTS=all`. 같은 PR에서 `kernels.ts`와 `sigimsae_effects.inc`(그리고 EQ·컴프·드라이브·리버브의 C++ 구현)를 지워 "두 벌 유지"를 끝냅니다. 웹의 EQ·필터·컴프·드라이브·리버브는 지금 내장 노드라 이 전환에서 처음으로 웹과 데스크톱 소리가 같아집니다.
 4. **상태 많은 처리.** 기타 랙, 그 다음 트랙 믹스 루프(ChannelStrip)와 그래프.
 5. **정리.** `GARAK_RUST`를 기본 ON, 플래그 제거, release 워크플로에 Rust 빌드 추가.
