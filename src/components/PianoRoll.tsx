@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, RefObject } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, RefObject } from 'react'
 import type { ControllerKey, InstrumentId, MidiClip, MidiNote } from '../core/types'
 import { crossedDragThreshold, dragModifiers, isShortcutSuppressed, isUnmodified, shortcutPlatform, snapDragDelta, type ProjectShortcut } from '../core/input'
 import { GM_KIT_NAMES, instrumentDef } from '../core/instruments'
@@ -24,6 +24,37 @@ import './PianoRoll.css'
 
 type PianoZoom = ZoomState['piano']
 
+/** A transport clock store (useSyncExternalStore contract): `getBeat` returns the absolute project beat. */
+export interface PlayheadSource {
+  subscribe: (callback: () => void) => () => void
+  getBeat: () => number
+}
+const noSubscription = () => () => {}
+
+/** The clip-local playhead beat, or null when outside the clip / no transport. Re-renders only its caller. */
+function useLocalPlayhead(source: PlayheadSource | undefined, beat: number | undefined, clipStart: number, clipLength: number): number | null {
+  const absolute = useSyncExternalStore(source?.subscribe ?? noSubscription, () => source ? source.getBeat() : beat ?? null)
+  if (absolute === null || absolute === undefined) return null
+  const local = absolute - clipStart
+  return local >= 0 && local <= clipLength ? local : null
+}
+
+interface PlayheadProps { source?: PlayheadSource; beat?: number; clipStart: number; clipLength: number }
+
+/** One playhead mark; the only part of the piano roll that follows the transport clock. */
+function PlayheadMark({ source, beat, clipStart, clipLength, beatWidth, className, hidden = true }: PlayheadProps & { beatWidth: number; className: string; hidden?: boolean }) {
+  const local = useLocalPlayhead(source, beat, clipStart, clipLength)
+  if (local === null) return null
+  return className === 'piano-ruler-playhead'
+    ? <span className={className} style={{ left: local * beatWidth }} aria-hidden="true" />
+    : <div className={className} style={{ left: local * beatWidth }} aria-hidden={hidden || undefined} />
+}
+
+/** Lanes read the value at the playhead (controller readout), so they take the clock through a render prop. */
+function WithPlayhead({ children, ...props }: PlayheadProps & { children: (local: number | null) => ReactNode }) {
+  return <>{children(useLocalPlayhead(props.source, props.beat, props.clipStart, props.clipLength))}</>
+}
+
 interface PianoRollProps {
   clip: MidiClip
   color: string
@@ -32,6 +63,11 @@ interface PianoRollProps {
   onPreview: (pitch: number) => void
   /** Absolute project beat of the transport. The playhead is hidden when undefined. */
   playheadBeat?: number
+  /**
+   * The transport clock as a store. Preferred over `playheadBeat` during playback: only the playhead marks subscribe,
+   * so a transport tick never re-renders the note grid (docs/ARCHITECTURE_REVIEW.md, bottleneck 5).
+   */
+  playhead?: PlayheadSource
   /** Meter durations in the project's quarter-note beat coordinates. */
   beatsPerBar?: number
   beatUnit?: number
@@ -80,7 +116,7 @@ const byTime = (a: MidiNote, b: MidiNote) => a.start - b.start || a.pitch - b.pi
 const sameNote = (a: MidiNote, b: MidiNote) => a.start === b.start && a.pitch === b.pitch && a.duration === b.duration && a.velocity === b.velocity
 const newId = () => `note-${typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
 
-export default function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, playheadBeat, beatsPerBar = 4, beatUnit = 1, snap: snapProp, onSnapChange, zoom: zoomProp, onZoomChange, zoomRef, commandRef }: PianoRollProps) {
+function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, playheadBeat, playhead, beatsPerBar = 4, beatUnit = 1, snap: snapProp, onSnapChange, zoom: zoomProp, onZoomChange, zoomRef, commandRef }: PianoRollProps) {
   const clip = useMemo(() => midiEditorClip(sourceClip), [sourceClip])
   const scrollRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -161,8 +197,14 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   const draggingPitches = draft ? new Set(selectedNotes.map(note => note.pitch)) : null
   const velocity = sliderDraft ?? selectedNotes[0]?.velocity ?? lastRef.current.velocity
   const velocityValue = Math.round(clamp(velocity, MIN_VELOCITY, 1) * 127)
-  const localPlayhead = playheadBeat === undefined ? null : playheadBeat - clip.startBeat
-  const showPlayhead = localPlayhead !== null && localPlayhead >= 0 && localPlayhead <= clip.lengthBeats
+  const playheadProps: PlayheadProps = { source: playhead, beat: playheadBeat, clipStart: clip.startBeat, clipLength: clip.lengthBeats }
+  /** Read at the moment of a command (paste), never subscribed by the grid. */
+  const currentPlayhead = (): number | null => {
+    const absolute = playhead ? playhead.getBeat() : playheadBeat
+    if (absolute === undefined) return null
+    const local = absolute - clip.startBeat
+    return local >= 0 && local <= clip.lengthBeats ? local : null
+  }
   const mac = shortcutPlatform() === 'mac'
   const modLabel = mac ? '⌘' : 'Ctrl+'
   const altLabel = mac ? '⌥' : 'Alt+'
@@ -625,7 +667,8 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
   function paste(at?: number) {
     if (!noteClipboard.length) return
     const selected = selectedFromClip()
-    const position = at ?? (showPlayhead && localPlayhead! < clip.lengthBeats ? localPlayhead! : selected.length ? Math.min(...selected.map(note => note.start)) : 0)
+    const local = currentPlayhead()
+    const position = at ?? (local !== null && local < clip.lengthBeats ? local : selected.length ? Math.min(...selected.map(note => note.start)) : 0)
     insertNotes(noteClipboard, clamp(position, 0, clip.lengthBeats))
   }
 
@@ -887,7 +930,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
             <div className="piano-ruler-corner" style={{ width: KEY_WIDTH }}>NOTE</div>
             <div className="piano-ruler-beats" style={{ width: gridWidth }}>
               {rulerMarks.map(mark => <span key={mark.beat} className={`piano-ruler-mark piano-ruler-mark--${mark.kind}`} style={{ left: mark.beat * beatWidth }} aria-hidden="true">{mark.label && <span>{mark.label}</span>}</span>)}
-              {showPlayhead && <span className="piano-ruler-playhead" style={{ left: localPlayhead! * beatWidth }} aria-hidden="true" />}
+              <PlayheadMark {...playheadProps} beatWidth={beatWidth} className="piano-ruler-playhead" />
             </div>
           </div>
 
@@ -956,7 +999,7 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
               })}
               {marquee && <div className="piano-marquee" style={marquee} aria-hidden="true" />}
               {alignmentBeat !== null && <div className="piano-alignment-guide" style={{ left: alignmentBeat * beatWidth }} aria-hidden="true" />}
-              {showPlayhead && <div className="piano-playhead" style={{ left: localPlayhead! * beatWidth }} aria-hidden="true" />}
+              <PlayheadMark {...playheadProps} beatWidth={beatWidth} className="piano-playhead" />
             </div>
           </div>
 
@@ -974,15 +1017,15 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
                   title={`${labelForPitch(note.pitch)} · 세기 ${Math.round(noteVelocity * 127)} · 위아래로 드래그 (Shift: 선택한 음표를 같은 값으로)`}
                 />
               })}
-              {showPlayhead && <div className="piano-playhead" style={{ left: localPlayhead! * beatWidth }} />}
+              <PlayheadMark {...playheadProps} beatWidth={beatWidth} className="piano-playhead" hidden={false} />
             </div>
           </div>}
           {lanes.map((lane, index) => <div key={lane} className="piano-lane-slot" style={{ height: laneHeight(lane), bottom: lanes.slice(index + 1).reduce((total, below) => total + laneHeight(below), 0) }}>
-            {lane === 'sustain'
+            <WithPlayhead {...playheadProps}>{local => lane === 'sustain'
               ? <SustainLane clip={sourceClip} beatWidth={beatWidth} gridWidth={gridWidth} gridStyle={gridStyle} keyWidth={KEY_WIDTH} height={SUSTAIN_HEIGHT}
-                snap={snap} beatsPerBar={beatsPerBar} playhead={showPlayhead ? localPlayhead : null} onChange={onChange} />
+                snap={snap} beatsPerBar={beatsPerBar} playhead={local} onChange={onChange} />
               : <ControllerLane clip={sourceClip} laneKey={lane} tool={laneTool} beatWidth={beatWidth} gridWidth={gridWidth} gridStyle={gridStyle} keyWidth={KEY_WIDTH} height={controllerHeight}
-                snap={snap} playhead={showPlayhead ? localPlayhead : null} onChange={onChange} onRemove={() => hideLane(lane)} />}
+                snap={snap} playhead={local} onChange={onChange} onRemove={() => hideLane(lane)} />}</WithPlayhead>
           </div>)}
         </div>
       </div>
@@ -1009,3 +1052,6 @@ export default function PianoRoll({ clip: sourceClip, color, instrument, onChang
     </section>
   )
 }
+
+/** Memoized: a parent render with equal props (e.g. App state unrelated to this clip) skips the whole note grid. */
+export default memo(PianoRoll)
