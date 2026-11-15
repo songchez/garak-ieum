@@ -118,6 +118,8 @@ describe('arrangement diff (identity over immutable snapshots)', () => {
     const t0 = performance.now()
     for (let i = 0; i < 50; i++) diffArrangement(large, edited)
     const ms = (performance.now() - t0) / 50
+    const key = performance.now(); JSON.stringify([large.bpm, large.tempoMap, large.lengthBeats, large.loop, large.timeSignature, edited.tracks.map(t => [t.id, t.kind, t.instrument, t.enabled, t.transpose, t.velocityOffset, t.keyLimit, t.velocityLimit, t.delayTicks, t.clips])])
+    console.info(`arrangement change detection, 66k notes: identity diff ${ms.toFixed(4)} ms vs former JSON key ${(performance.now() - key).toFixed(1)} ms`)
     expect(ms).toBeLessThan(3)
     expect([...diffArrangement(large, edited).tracks]).toEqual([[target.id, 'soft']])
   })
