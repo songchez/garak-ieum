@@ -287,7 +287,7 @@ class StudioDelay final : public KernelBase {
       glide_(1 - std::exp(-1 / (.08 * sr))), lowcut_(p("lowcut") > 20.5), pingPong_(p("mode") >= .5) {
     const double seconds = std::min(3.9, p("sync") >= .5 ? p("time") * 60 / bpm : p("ms") * .001);
     syncBeats_ = p("sync") >= .5 ? p("time") : 0; bpm_ = bpm;
-    wet_.set(p("amount") * .45); feedback_.set(p("feedback")); age_.set(p("age")); time_.set(seconds * sr);
+    wet_.set(p("amount") * .45); dry_.set(p("dry")); feedback_.set(p("feedback")); age_.set(p("age")); time_.set(seconds * sr);
     low_.configure(Filter::Lowpass, sr, p("tone"), 1); high_.configure(Filter::Highpass, sr, p("lowcut"), .5);
     const double fb = p("feedback"), repeats = fb > .01 ? std::ceil(std::log(.001) / std::log(fb)) : 1;
     tail_ = p("amount") > 0 ? std::min(30.0, (seconds + p("age") * .0026) * (repeats + 1) + .85) : 0;
@@ -295,7 +295,7 @@ class StudioDelay final : public KernelBase {
   void process(float* s, std::uint32_t frames) noexcept override {
     const double wowStep = 2 * pi * .7 / sampleRate_, flutterStep = 2 * pi * 7.3 / sampleRate_;
     for (std::uint32_t i = 0; i < frames; ++i) {
-      const double wet = wet_.next(k_), feedback = feedback_.next(k_), age = age_.next(k_), time = time_.next(glide_);
+      const double wet = wet_.next(k_), dry = dry_.next(k_), feedback = feedback_.next(k_), age = age_.next(k_), time = time_.next(glide_);
       const double wobble = age * sampleRate_ * (.0014 + .0012 * std::sin(wow_) + .00015 * std::sin(flutter_));
       const double read = std::max(0.0, time + wobble - 1), drive = 1 + 2 * age;
       double fl = low_.sample(l_.read(read), 0), fr = low_.sample(r_.read(read), 1);
@@ -304,7 +304,7 @@ class StudioDelay final : public KernelBase {
       const double xl = s[2 * i], xr = s[2 * i + 1];
       if (pingPong_) { l_.push(static_cast<float>(.5 * (xl + xr) + feedback * fr)); r_.push(static_cast<float>(feedback * fl)); }
       else { l_.push(static_cast<float>(xl + feedback * fl)); r_.push(static_cast<float>(xr + feedback * fr)); }
-      s[2 * i] = static_cast<float>(xl + wet * fl); s[2 * i + 1] = static_cast<float>(xr + wet * fr);
+      s[2 * i] = static_cast<float>(dry * xl + wet * fl); s[2 * i + 1] = static_cast<float>(dry * xr + wet * fr);
       wow_ += wowStep; if (wow_ >= 2 * pi) wow_ -= 2 * pi;
       flutter_ += flutterStep; if (flutter_ >= 2 * pi) flutter_ -= 2 * pi;
     }
@@ -313,7 +313,7 @@ class StudioDelay final : public KernelBase {
   void takeStateFrom(StereoProcessor& previous) noexcept override {
     if (auto* p = dynamic_cast<StudioDelay*>(&previous)) {
       l_.takeStateFrom(p->l_); r_.takeStateFrom(p->r_); low_.takeHistoryFrom(p->low_); high_.takeHistoryFrom(p->high_);
-      wet_.follow(p->wet_); feedback_.follow(p->feedback_); age_.follow(p->age_); time_.follow(p->time_); wow_ = p->wow_; flutter_ = p->flutter_;
+      wet_.follow(p->wet_); dry_.follow(p->dry_); feedback_.follow(p->feedback_); age_.follow(p->age_); time_.follow(p->time_); wow_ = p->wow_; flutter_ = p->flutter_;
     }
   }
   double tailSeconds() const noexcept override { return tail_; }
@@ -323,14 +323,14 @@ class StudioDelay final : public KernelBase {
     bpm_ = bpm; time_.target = std::min(3.9, syncBeats_ * 60 / bpm) * sampleRate_;
   }
  private:
-  Ring l_, r_; Biquad low_, high_; Smooth wet_, feedback_, age_, time_;
+  Ring l_, r_; Biquad low_, high_; Smooth wet_, dry_, feedback_, age_, time_;
   double glide_, tail_ = 0, wow_ = 0, flutter_ = 0, syncBeats_ = 0, bpm_ = 120; bool lowcut_, pingPong_;
 };
 
 std::unique_ptr<StereoProcessor> makeSigimsae(std::string_view type, const Parameters& params, double sr, double bpm) {
   if (type == "delay") {
     Reader p(params, {{"amount",.3,0,1},{"time",.75,1.0/6,4},{"feedback",.32,0,.95},{"tone",3800,500,16000},{"lowcut",20,20,2000},
-      {"age",0,0,1},{"sync",1,0,1},{"ms",375,1,2000},{"mode",0,0,1}});
+      {"age",0,0,1},{"sync",1,0,1},{"ms",375,1,2000},{"mode",0,0,1},{"dry",1,0,1}});
     return std::make_unique<StudioDelay>(sr, p, bpm);
   }
   if (type == "chorus") { Reader p(params, {{"rate",.8,.05,5},{"depth",.5,0,1},{"mix",.5,0,1}}); return std::make_unique<ChorusFx>(sr, p); }

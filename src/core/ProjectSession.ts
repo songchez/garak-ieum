@@ -3,6 +3,7 @@ import { sigimsaeVariant } from './sigimsaeVariants'
 import { deviceFromVariant } from './sigimsaeDevices'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { copyTrackInput, createDevice, createTrack, fitProjectLength, validateProject } from './project'
+import { detachDeletedSends } from './sends'
 import type { Clip, Device, EffectType, MidiClip, Project, Track } from './types'
 import { sameTrackInput } from './trackInputs'
 import {
@@ -161,7 +162,8 @@ function planCommands(project: Project, request: CommandRequest): PlannedCommand
           result.targetId = track.id; result.trackId = track.id
           if (command.type === 'track.delete') {
             changes.deleted.tracks += 1; changes.deleted.clips += track.clips.length; changes.deleted.notes += noteCount(track.clips); changes.deleted.devices += track.devices.length
-            next = { ...next, tracks: next.tracks.filter(item => item.id !== track.id) }
+            // Sends that fed a deleted return disappear with it (docs/SENDS_RETURNS.md).
+            next = detachDeletedSends({ ...next, tracks: next.tracks.filter(item => item.id !== track.id) })
             result.before = { name: track.name, clipCount: track.clips.length, deviceCount: track.devices.length }
           } else if (command.type === 'track.rename') {
             result.before = { name: track.name }; result.after = { name: command.name }

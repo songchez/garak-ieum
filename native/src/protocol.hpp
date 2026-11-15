@@ -171,6 +171,19 @@ inline ProjectTimeline timeline(const Json& value) {
       else throw std::runtime_error("Invalid track route");
       t.route = std::move(route);
     }
+    // Send/return (docs/SENDS_RETURNS.md): `return` marks an aux track; `sends` feed returns by id.
+    t.isReturn = item.value("return", false);
+    if (item.contains("sends") && !item.at("sends").is_null()) {
+      const auto& sends = item.at("sends");
+      if (!sends.is_array() || sends.size() > 256) throw std::runtime_error("Invalid track sends");
+      if (t.isReturn && !sends.empty()) throw std::runtime_error("A return track cannot have sends");
+      for (const auto& value : sends) {
+        TrackSend send; send.returnId = string(value, "returnId");
+        send.gain = static_cast<float>(number(value, "gain", 0, 4, 0)); send.pre = value.value("pre", false);
+        for (const auto& other : t.sends) if (other.returnId == send.returnId) throw std::runtime_error("Duplicate track send");
+        t.sends.push_back(std::move(send));
+      }
+    }
     if (!item.at("inserts").is_array() || item.at("inserts").size() > 64) throw std::runtime_error("Too many inserts");
     for (const auto& insert : item.at("inserts")) {
       BuiltinInsert b; b.id = string(insert, "id"); b.type = string(insert, "type"); b.enabled = insert.value("enabled", true);

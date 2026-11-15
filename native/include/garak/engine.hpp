@@ -177,8 +177,21 @@ struct TrackRoute {
   Tap tap = Tap::PostFx;
   bool operator==(const TrackRoute&) const = default;
 };
+// One aux send (docs/SENDS_RETURNS.md): this track's signal into a return track at a linear gain. Post-fader
+// (default) taps after pan, fader, mute and solo; pre-fader taps after the inserts and plug-in delay
+// compensation, before pan/fader, and is still silenced while the track is not audible (mute/solo).
+struct TrackSend {
+  std::string returnId;
+  float gain = 0;
+  bool pre = false;
+  bool operator==(const TrackSend&) const = default;
+};
 struct TrackTimeline {
   std::string id;
+  // A return (aux) track: an Audio source without windows or inputs, fed by other tracks' sends, rendered
+  // after all of them; its output joins the master. Returns never send and are never route sources.
+  bool isReturn = false;
+  std::vector<TrackSend> sends; // Ignored on returns; sends to unknown or non-return ids are silent.
   TrackSource source;
   std::optional<TrackInput> input;
   std::optional<TrackRoute> route; // When set, replaces `input` for monitoring and recording.
@@ -229,6 +242,9 @@ struct EngineSnapshot {
   std::uint64_t revision = 0, lastAppliedCommand = 0;
   std::int64_t frame = 0;
   std::uint32_t sampleRate = 48000, trackCount = 0, latencyFrames = 0;
+  // Plug-in delay of the track taps (post-FX, post-fader, sends): latencyFrames minus the extra delay the
+  // dry paths wait for the latent return tracks. Equal to latencyFrames when no return adds latency.
+  std::uint32_t senderLatencyFrames = 0;
   bool ready = false, playing = false;
   float masterPeak = 0;
   std::array<float, 256> trackPeaks{};
@@ -299,6 +315,10 @@ struct RecordingTake {
   // delay (latencyFrames), a PreFx route none: the host subtracts that, never converter latency.
   bool routed = false;
   bool routeDelayed = false;
+  // A delayed route's delay: the master feed carries the whole graph latency (latencyFrames); a track's
+  // post-FX/post-fader tap carries only the sender alignment (senderLatencyFrames), which is smaller when a
+  // return track's inserts add latency (returns are compensated after the taps).
+  bool routeMasterFeed = false;
 };
 constexpr std::size_t maxRecordingTakes = 64;
 
@@ -343,6 +363,7 @@ class PreparedProject {
   [[nodiscard]] std::size_t trackCount() const noexcept;
   [[nodiscard]] double tailSeconds() const noexcept;
   [[nodiscard]] std::uint32_t latencyFrames() const noexcept;
+  [[nodiscard]] std::uint32_t senderLatencyFrames() const noexcept;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

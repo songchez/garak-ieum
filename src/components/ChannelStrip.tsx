@@ -13,11 +13,14 @@ import { VolumeSlider } from './VolumeSlider'
 import { PanKnob } from './PanKnob'
 import { trackIcon } from './TrackInspector'
 import { useHistoryGesture } from '../core/historyGesture'
+import { canSend, returnLetter, returnTracks, sendTo, sendersOf, type SendPatch } from '../core/sends'
+import { SendKnob, formatSendDb } from './SendKnob'
 
 const deviceName = (device: Device) => device.type === 'vst3' ? device.name : effectDeviceName(device)
 
 export const formatGainDb = (v: number) => v <= 0 ? '−∞' : `${v > 1 ? '+' : ''}${(20 * Math.log10(v)).toFixed(1)}`
 const BUTTONS: TrackButtonKind[] = ['mute', 'solo', 'arm', 'monitor']
+const RETURN_BUTTONS: TrackButtonKind[] = ['mute', 'solo']
 
 export interface ChannelStripProps {
   /** undefined = the Stereo Out (master) strip. */
@@ -41,6 +44,8 @@ export interface ChannelStripProps {
   onSelect?: () => void
   onOpenColorPalette?: (trackId: string, e: React.MouseEvent) => void
   onIconMenu?: (trackId: string, e: React.MouseEvent) => void
+  /** Aux send edits (docs/SENDS_RETURNS.md); without it the 센드 section is read-only. */
+  onSendChange?: (trackId: string, returnId: string, patch: SendPatch, key?: string) => void
   compact?: boolean
 }
 
@@ -103,7 +108,7 @@ export function ChannelStrip(props: ChannelStripProps) {
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up); window.addEventListener('blur', finish)
   }
   return <div className={`cstrip ${focused ? 'focused' : ''} ${compact ? 'compact' : ''} ${track.enabled ? '' : 'off'}`} style={{ '--track-color': track.color, '--track-label-color': contrastTextColor(track.color) } as React.CSSProperties} aria-label={`${track.name} 채널 스트립`} onClick={onSelect}>
-    <div className="cstrip-slot cstrip-kind">{track.kind === 'audio' ? '오디오' : '악기'}</div>
+    <div className="cstrip-slot cstrip-kind">{track.kind === 'audio' ? '오디오' : track.kind === 'return' ? '리턴' : '악기'}</div>
     {track.kind === 'instrument' && <div className="cstrip-slot cstrip-instrument" title={track.pluginInstrument ? `${track.pluginInstrument.name} · VST3` : `${def.name} · ${def.nameKo}`}>
       <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); if (props.onOpenDevices) props.onOpenDevices(id); else open('instrument', e) }} aria-label={`악기 ${track.pluginInstrument?.name ?? def.name}`}><Icon name={track.pluginInstrument ? 'plug' : def.icon} size={11} /><span>{track.pluginInstrument?.name ?? def.name}</span></button>
       <button type="button" className="cstrip-slot-caret" onClick={e => { stop(e); open('instrument', e) }} aria-label="악기 선택" aria-haspopup="menu" aria-expanded={menu?.kind === 'instrument'}><Icon name="chevron" size={10} /></button>
@@ -115,14 +120,41 @@ export function ChannelStrip(props: ChannelStripProps) {
       </div>)}
       <button type="button" className="cstrip-slot cstrip-insert-empty" onClick={e => { stop(e); open('add', e) }} aria-label="시김새 추가" aria-haspopup="menu" aria-expanded={menu?.kind === 'add'} title="시김새 추가"><Icon name="plus" size={10} /></button>
     </div>
+    <Sends track={track} project={project} compact={compact} onSendChange={props.onSendChange} />
     <div className="cstrip-slot cstrip-output" title="출력">Stereo Out</div>
     <div className="cstrip-fill" />
     <div className="cstrip-pan" onClick={stop}><PanKnob value={track.pan} size={compact ? 26 : 30} ariaLabel={`${track.name} 팬`} onChange={pan => props.onTrackChange(id, { pan }, `${id}:pan`)} /></div>
-    <div className="cstrip-buttons" onClick={stop}><TrackButtons track={track} kinds={BUTTONS} arm={props.arm} recording={props.recording} implicitMute={props.implicitMute} onPress={props.onTrackButton} onSweep={props.onTrackSweep} size="strip" /></div>
+    <div className="cstrip-buttons" onClick={stop}><TrackButtons track={track} kinds={track.kind === 'return' ? RETURN_BUTTONS : BUTTONS} arm={props.arm} recording={props.recording} implicitMute={props.implicitMute} onPress={props.onTrackButton} onSweep={props.onTrackSweep} size="strip" /></div>
     <div className="cstrip-db">{formatGainDb(track.volume)}</div>
     <div className="cstrip-fader" onClick={stop}><VolumeSlider value={track.volume} orientation="vertical" meter={{ engine, trackId: id }} ariaLabel={`${track.name} 볼륨`} disabled={!track.enabled} onChange={volume => props.onTrackChange(id, { volume }, `${id}:volume`)} /></div>
     <button type="button" className="cstrip-icon" onClick={e => { if (props.onIconMenu) { stop(e); props.onIconMenu(id, e) } }} aria-label="트랙 아이콘" title={props.onIconMenu ? '트랙 아이콘 변경' : undefined}><Icon name={trackIcon(track)} size={14} /></button>
     <div className="cstrip-name" title={track.name} onDoubleClick={e => { if (props.onOpenColorPalette) { stop(e); props.onOpenColorPalette(id, e) } }}><span>{track.name}</span></div>
     {menu && <ContextMenu x={menu.x} y={menu.y} items={items()} onClose={() => setMenu(null)} trigger={menu.trigger} label={menu.kind === 'instrument' ? '악기 선택' : menu.kind === 'add' ? '시김새 추가' : '시김새'} />}
+  </div>
+}
+
+/** The 센드 section: one small knob per return track (letter A, B, …) with a pre/post-fader toggle. A return
+ * strip lists how many tracks feed it instead (returns do not send). */
+function Sends({ track, project, compact, onSendChange }: { track: Track; project: Project; compact?: boolean; onSendChange?: ChannelStripProps['onSendChange'] }) {
+  const returns = returnTracks(project.tracks)
+  if (!returns.length) return null
+  if (!canSend(track)) {
+    const feeding = sendersOf(project.tracks, track.id).length
+    const letter = returnLetter(returns.findIndex(item => item.id === track.id))
+    return <div className="cstrip-sends cstrip-sends-return" title={`리턴 ${letter} · 센드를 받는 트랙 ${feeding}개`}><span className="cstrip-sends-title">센드 받음</span><span className="cstrip-sends-count">{feeding}</span></div>
+  }
+  return <div className="cstrip-sends" role="group" aria-label="센드" onClick={e => e.stopPropagation()}>
+    {!compact && <span className="cstrip-sends-title">센드</span>}
+    {returns.map((item, index) => {
+      const send = sendTo(track, item.id), letter = returnLetter(index), level = send?.level ?? 0, pre = !!send?.pre
+      return <div className={`cstrip-send${pre ? ' pre' : ''}`} key={item.id}>
+        <SendKnob value={level} label={letter} color={item.color} size={compact ? 20 : 22} ariaLabel={`${item.name}(${letter})로 보내는 센드`} disabled={!onSendChange || !track.enabled}
+          onChange={value => onSendChange?.(track.id, item.id, { level: value }, `${track.id}:send:${item.id}`)} />
+        <button type="button" className={`cstrip-send-mode${pre ? ' pre' : ''}`} aria-pressed={pre} disabled={!onSendChange}
+          title={`${item.name}: ${pre ? '프리 페이더 (팬·페이더 전)' : '포스트 페이더 (팬·페이더 후)'} · ${formatSendDb(level)} · 클릭: 전환`}
+          aria-label={`${item.name} 센드 ${pre ? '프리 페이더' : '포스트 페이더'}`}
+          onClick={e => { e.stopPropagation(); onSendChange?.(track.id, item.id, { pre: !pre }) }}>{pre ? 'Pre' : 'Post'}</button>
+      </div>
+    })}
   </div>
 }

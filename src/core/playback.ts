@@ -44,11 +44,21 @@ const range = (value: [number, number] | undefined, fallback: [number, number]):
 
 export const isTrackEnabled = (track: Track): boolean => track.enabled !== false
 
-/** enabled && !mute && (!anySolo || solo || soloSafe); anySolo counts enabled tracks only. */
+/**
+ * enabled && !mute && (!anySolo || solo || soloSafe || implied); anySolo counts enabled tracks only.
+ * Send/return solo follows Logic (docs/SENDS_RETURNS.md): a return is implied by a soloed track that sends
+ * to it (returns are also solo-safe by default, like Ableton's solo-in-place), and soloing a return implies
+ * the tracks that send to it. Only sends with a level above 0 imply anything.
+ */
 export function audibleTrackIds(tracks: readonly Track[]): Set<string> {
   const enabled = tracks.filter(isTrackEnabled)
   const anySolo = enabled.some(track => track.solo)
-  return new Set(enabled.filter(track => !track.mute && (!anySolo || track.solo || track.soloSafe)).map(track => track.id))
+  if (!anySolo) return new Set(enabled.filter(track => !track.mute).map(track => track.id))
+  const feeds = (track: Track): readonly string[] => track.kind === 'return' ? [] : (track.sends ?? []).filter(send => send.level > 0).map(send => send.returnId)
+  const soloedReturns = new Set(enabled.filter(track => track.kind === 'return' && track.solo).map(track => track.id))
+  const impliedReturns = new Set(enabled.filter(track => track.kind !== 'return' && track.solo).flatMap(feeds))
+  return new Set(enabled.filter(track => !track.mute && (track.solo || track.soloSafe
+    || (track.kind === 'return' ? impliedReturns.has(track.id) : feeds(track).some(id => soloedReturns.has(id))))).map(track => track.id))
 }
 
 const trackDelay = (track: Track, clip: Clip): number => (num(clip.delayTicks) + num(track.delayTicks)) / PPQ

@@ -22,6 +22,21 @@ const assets = (...items: NativePcmAsset[]) => new Map(items.map(item => [item.i
 const pcm = (id: string, seconds = 10, sampleRate = 48000): NativePcmAsset => ({ id, sampleRate, frames: seconds * sampleRate, channels: 2 })
 
 describe('native timeline preparation', () => {
+  it('marks return tracks and carries reconciled sends (docs/SENDS_RETURNS.md)', () => {
+    const tracks = [
+      track('vox', { kind: 'audio', sends: [{ returnId: 'verb', level: 0.5, pre: true }, { returnId: 'gone', level: 1 }] }),
+      track('keys', { sends: [{ returnId: 'verb', level: 0.25 }] }),
+      track('verb', { kind: 'return', devices: [createDevice('reverb', { amount: 1, dry: 0 })] }),
+    ]
+    const compiled = compileNativeTimeline(project(tracks)).tracks
+    expect(compiled.map(item => item.return ?? false)).toEqual([false, false, true])
+    expect(compiled[0].sends).toEqual([{ returnId: 'verb', gain: 0.5, pre: true }])
+    expect(compiled[1].sends).toEqual([{ returnId: 'verb', gain: 0.25, pre: false }])
+    expect(compiled[2]).toMatchObject({ source: { kind: 'audio' }, notes: [], audio: [] })
+    expect(compiled[2].sends).toBeUndefined()
+    expect(compiled[2].inserts[0]).toMatchObject({ type: 'reverb', params: expect.objectContaining({ amount: 1, dry: 0 }) })
+  })
+
   it('carries each track input as physical channels and leaves the default to the host', () => {
     const tracks = [track('mono', { kind: 'audio', input: { channels: [5], label: 'Guitar DI' } }), track('pair', { kind: 'audio', input: { channels: [2, 3] } }), track('default', { kind: 'audio' })]
     const compiled = compileNativeTimeline(project(tracks)).tracks

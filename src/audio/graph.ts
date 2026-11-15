@@ -4,6 +4,7 @@ import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../co
 import type { AudioWindow, PlaybackNote } from '../core/playback'
 import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
 import { masterFeedExcluded, reconcileTrackRoutes, routeOf } from '../core/trackRouting'
+import { isReturnTrack, sendLayoutKey, sendsOf } from '../core/sends'
 import { clamp } from './math'
 import { tempoMapOf, type TempoMap } from '../core/tempoMap'
 import { AUDIO_CLIP_GAIN_MAX, envelopeAt, envelopeBreakpoints, fadeLengths } from '../core/clipEnvelope.js'
@@ -38,6 +39,13 @@ export interface TrackGraph {
   meter: AnalyserNode
   meterData: Float32Array<ArrayBuffer>
   chokes: ChokeMap
+  /** Aux sends by return track ID (docs/SENDS_RETURNS.md): a gain from postFx (pre) or the fader (post) into the return's input. */
+  sends: Map<string, SendGraph>
+}
+
+export interface SendGraph {
+  gain: GainNode
+  pre: boolean
 }
 
 export interface EngineGraph {
@@ -105,6 +113,11 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true,
     if (!channel) continue
     setParameter(channel.fader.gain, audible.has(track.id) ? clamp(track.volume, 0, 2) : 0, now, smooth)
     setParameter(channel.panner.pan, clamp(track.pan, -1, 1), now, smooth)
+    for (const send of sendsOf(track)) {
+      const node = channel.sends.get(send.returnId)
+      // A post-fader send already follows the fader (mute/solo included); a pre-fader one is still silenced by mute/solo.
+      if (node) setParameter(node.gain.gain, node.pre && !audible.has(track.id) ? 0 : clamp(send.level, 0, 2), now, smooth)
+    }
     for (const device of track.devices) {
       if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, bpm, now, smooth)
     }
@@ -112,11 +125,12 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true,
 }
 
 export function renderTailSeconds(project: Project): number {
-  let tail = 0.85
+  const tails = new Map<string, number>()
   // Synced delays ring longest at the slowest tempo of the map.
   const slowest = Math.min(...tempoMapOf(project).points.map(point => point.bpm))
   for (const track of project.tracks) {
     if (!isTrackEnabled(track)) continue
+    let tail = 0
     const def = instrumentDef(track.instrument)
     if (track.kind === 'instrument' && !def.isKit) {
       tail = Math.max(tail, clamp(paramValue(def.params, track.instrumentParams, 'release'), 0, 30) + 0.2)
@@ -125,8 +139,17 @@ export function renderTailSeconds(project: Project): number {
       if (!device.enabled || !isEffectDevice(device)) continue
       tail = Math.max(tail, EFFECT_MODULES[device.type].tailSeconds(device.params, slowest))
     }
+    tails.set(track.id, tail)
   }
-  return tail
+  let result = 0.85
+  for (const track of project.tracks) {
+    const own = tails.get(track.id)
+    if (own === undefined) continue
+    // A return keeps ringing after its senders' own tails: its effect tail continues from theirs.
+    const senders = isReturnTrack(track) ? project.tracks.filter(item => sendsOf(item).some(send => send.returnId === track.id)).map(item => tails.get(item.id) ?? 0) : []
+    result = Math.max(result, isReturnTrack(track) ? own + Math.max(0, ...senders) : own)
+  }
+  return result
 }
 
 function usesGuitarRigMaster(tracks: readonly Track[]): boolean {
@@ -194,9 +217,10 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
 
       tracks.set(track.id, {
         input, postFx, devices, panner, fader, meter: trackMeter,
-        meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(),
+        meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(), sends: new Map(),
       })
     }
+    connectSends(context, project, tracks, remember)
     const { routes, resampleVolume } = connectRoutes(context, project, tracks, remember)
     const graph: EngineGraph = {
       context, tracks, routes, ...(resampleVolume ? { resampleVolume } : {}), voices: new Set(), previewInput, masterVolume, gate, meter,
@@ -208,6 +232,26 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     // A partially constructed effect must not leave a connected/dry path behind.
     releaseResources(resources, nodes)
     throw error
+  }
+}
+
+/**
+ * Wires every send into its return track's input (docs/SENDS_RETURNS.md). Returns never send and are never
+ * route sources, so these connections cannot form a cycle. Levels are set by updateGraph.
+ */
+export function connectSends(context: BaseAudioContext, project: Project, tracks: ReadonlyMap<string, TrackGraph>, remember: <T extends AudioNode>(node: T) => T): void {
+  for (const track of project.tracks) {
+    const channel = tracks.get(track.id)
+    if (!channel) continue
+    for (const send of sendsOf(track)) {
+      const target = project.tracks.find(item => item.id === send.returnId)
+      const destination = target && isReturnTrack(target) ? tracks.get(target.id) : undefined
+      if (!destination || channel.sends.has(send.returnId)) continue
+      const gain = remember(context.createGain())
+      gain.gain.value = 0
+      ;(send.pre ? channel.postFx : channel.fader).connect(gain).connect(destination.input)
+      channel.sends.set(send.returnId, { gain, pre: !!send.pre })
+    }
   }
 }
 
@@ -799,6 +843,6 @@ export function trackLayoutKey(tracks: readonly Track[]): string {
     const route = routeOf(track)
     // Internal inputs are graph connections: a route or tap change rebuilds the graph.
     const routed = route ? '<' + (route.kind === 'track' ? `${route.trackId}@${route.tap}` : route.kind) : ''
-    return track.id + routed + '[' + track.devices.filter(device => device.enabled).map(device => device.type + ':' + device.id).join(',') + ']'
+    return track.id + routed + sendLayoutKey(track) + '[' + track.devices.filter(device => device.enabled).map(device => device.type + ':' + device.id).join(',') + ']'
   }).join('|')
 }

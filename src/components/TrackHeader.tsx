@@ -10,6 +10,7 @@ import { VolumeSlider } from './VolumeSlider'
 import { PanKnob } from './PanKnob'
 import { InputSelect } from './InputSelect'
 import { routeText } from '../core/trackRouting'
+import { returnLetterOf } from '../core/sends'
 import './TrackHeader.css'
 
 const MAC = shortcutPlatform() === 'mac'
@@ -17,7 +18,7 @@ const MOD = MAC ? '⌘' : 'Ctrl+'
 
 /** Rows that fit: 0 = name + M/S on one line, 1 = name over buttons, 2 = + volume row and pan beside the buttons, 3 = roomier, + audio input chooser. */
 export const headerTier = (height: number) => height < 44 ? 0 : height < 68 ? 1 : height < 92 ? 2 : 3
-export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : instrumentDef(track.instrument).icon)
+export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : track.kind === 'return' ? 'return' : instrumentDef(track.instrument).icon)
 const CONTROL = 'button,input,select,[role="slider"],.track-resize-corner'
 
 export interface TrackHeaderProps {
@@ -60,7 +61,7 @@ export function TrackHeader(props: TrackHeaderProps) {
     if (config.hide && ui.hideView) kinds.push('hidden')
     if (config.mute) kinds.push('mute')
     if (config.solo) kinds.push('solo')
-    if (config.record) kinds.push('arm')
+    if (config.record && track.kind !== 'return') kinds.push('arm')
     if (config.monitor && track.kind === 'audio') kinds.push('monitor')
   }
   const showVolume = tier >= 2 && config.volume, showPan = tier >= 2 && config.pan
@@ -102,6 +103,7 @@ export function TrackHeader(props: TrackHeaderProps) {
     <div className="track-main">
       <div className="track-name-row">
         {editing ? <InlineName value={track.name} label="트랙 이름" onDone={renameDone}/> : <span className="track-name" title={`${track.name} · 더블 클릭: 이름 바꾸기`}>{track.name}</span>}
+        {track.kind === 'return' && <b className="track-return-badge" title="리턴 트랙 · 다른 트랙의 센드로 소리를 받습니다">{returnLetterOf(props.routeTracks ?? [track], track.id) || 'R'}</b>}
         {hiddenNow && <b className="track-hide-badge" title="가려진 트랙">H</b>}
         {!track.enabled && <b className="track-off-badge" title="꺼진 트랙"><Icon name="power" size={9}/></b>}
       </div>

@@ -5,6 +5,7 @@ import { SIGIMSAE_VARIANTS } from '../core/sigimsaeVariants'
 import { GM_KIT_NAMES, INSTRUMENTS } from '../core/instruments'
 import type { Project, Track, TransportSnapshot } from '../core/types'
 import { monitorModeOf } from '../core/trackActions'
+import { sendsOf } from '../core/sends'
 import { BRIDGE_PROTOCOL_VERSION, type BridgeParams, type DawMethod } from './protocol'
 
 export interface DawSelection {
@@ -37,11 +38,12 @@ const units = {
   pan: '-1=left, 0=center, 1=right',
   delayTicks: '960 ticks per quarter note; notes themselves are stored in beats',
   trackInput: 'input.channels are zero-based physical device channels (one = mono, two = stereo); label is the channel name used to re-find it on other hardware; null = engine default input. monitorMode in/auto/off is read-only here (live state set by the user). inputRoute (read-only) replaces input when set: { kind: track, trackId, tap: preFx|postFx|postFader } records another track, { kind: master } resamples the master mix, { kind: none } is a deleted source.',
+  sends: "kind 'return' is an aux (return) track: no regions or inputs, its own effect chain, output to the master. sends (read-only) lists an audio/instrument track's aux sends: returnId, level (linear gain 0..2 like volume, 0 = off), levelDb (null = silence), pre (true = pre-fader, false = post-fader). Returns have no sends.",
 }
 const unsupported = [
   'audio capture and device changes', 'transport control', 'audio asset transfer',
   'effective playback-note queries', 'piano-roll note selection', 'automation', 'tempo maps',
-  'time-signature changes through MCP', 'send/return and sidechain', 'external VST/AU/CLAP',
+  'time-signature changes through MCP', 'editing sends/returns through MCP (read-only) and sidechain', 'external VST/AU/CLAP',
   'audio analysis and audition/render jobs', 'composition-language execution',
   'selective undo of a non-latest transaction',
 ]
@@ -70,6 +72,7 @@ function trackSummary(track: Track) {
     input: track.input ? { channels: [...track.input.channels], ...(track.input.label === undefined ? {} : { label: track.input.label }) } : null,
     inputRoute: track.kind === 'audio' && track.inputRoute ? { ...track.inputRoute } : null,
     clipCount: track.clips.length, effectCount: track.devices.length,
+    sends: sendsOf(track).map(send => ({ returnId: send.returnId, level: send.level, levelDb: send.level === 0 ? null : 20 * Math.log10(send.level), pre: !!send.pre })),
   }
 }
 /** Describe editable synth state without returning megabytes of raw frame samples in MCP reads. */

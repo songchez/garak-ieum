@@ -5,6 +5,7 @@ import { quarterNotesPerBar, validateTimeSignature } from '../../core/meter'
 import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd, playbackNotes, playbackSustain, type Occurrence } from '../../core/playback'
 import type { EffectType, MidiClip, Project, TimeSignature, Track, TrackInputRoute, TrackInputTap } from '../../core/types'
 import { reconcileTrackRoutes, routeOf } from '../../core/trackRouting'
+import { reconcileSends, sendsOf } from '../../core/sends'
 import { loopRange } from '../math'
 import { tempoMapOf } from '../../core/tempoMap'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVE_CODES, fadeCurveOf, fadeLengths } from '../../core/clipEnvelope.js'
@@ -122,8 +123,19 @@ export type NativeTrackRoute =
   | { readonly kind: 'master' }
   | { readonly kind: 'none' }
 
+/** One aux send (docs/SENDS_RETURNS.md): linear gain into a return track, after (default) or before the fader. */
+export interface NativeTrackSend {
+  readonly returnId: string
+  readonly gain: number
+  readonly pre: boolean
+}
+
 export interface NativeTrackTimeline {
   readonly id: string
+  /** A return (aux) track: an audio source with no windows, fed by other tracks' sends; it never sends. */
+  readonly return?: boolean
+  /** Only on audio/instrument tracks, only to existing return tracks (already reconciled here). */
+  readonly sends?: readonly NativeTrackSend[]
   readonly source: NativeTrackSource
   readonly gain: number
   readonly pan: number
@@ -185,7 +197,7 @@ function parameters(defs: readonly ParamDef[], values: Readonly<Record<string, n
   return Object.fromEntries(defs.map(def => [def.id, number(values[def.id] ?? def.default, def.min, def.max, `parameter ${def.id}`)]))
 }
 function source(track: Track): NativeTrackSource {
-  if (track.kind === 'audio') return { kind: 'audio' }
+  if (track.kind === 'audio' || track.kind === 'return') return { kind: 'audio' }
   if (track.pluginInstrument) return { kind: 'vst3', plugin: { ...track.pluginInstrument, parameters: { ...track.pluginInstrument.parameters }, ...(track.pluginInstrument.state ? { state: { ...track.pluginInstrument.state } } : {}) }, isKit: false }
   if (track.kind !== 'instrument' || !isInstrumentId(track.instrument)) {
     throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Only existing builtin instruments and audio tracks can be compiled.')
@@ -312,7 +324,9 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
   }
   let nextId = 0
   const routed = new Map(reconcileTrackRoutes(project.tracks).map(track => [track.id, routeOf(track)]))
+  const sent = new Map(reconcileSends(project.tracks).map(track => [track.id, sendsOf(track)]))
   const tracks = project.tracks.map((track): NativeTrackTimeline => {
+    const sends = sent.get(track.id) ?? []
     const notes: NativeNotePair[] = []
     const controls: NativeControlEvent[] = []
     const audio: NativeAudioWindow[] = []
@@ -362,7 +376,9 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
     // Stable: equal frames keep occurrence order, so a release at a region end precedes the next region's chase.
     controls.sort((a, b) => a.frame - b.frame)
     audio.sort((a, b) => a.startFrame - b.startFrame || a.id - b.id)
-    return { id: track.id, source: source(track), gain: number(track.volume, 0, 2, 'track gain'), pan: number(track.pan, -1, 1, 'track pan'),
+    return { id: track.id, ...(track.kind === 'return' ? { return: true } : {}),
+      ...(sends.length ? { sends: sends.map(send => ({ returnId: send.returnId, gain: number(send.level, 0, 2, 'send level'), pre: !!send.pre })) } : {}),
+      source: source(track), gain: number(track.volume, 0, 2, 'track gain'), pan: number(track.pan, -1, 1, 'track pan'),
       enabled: isTrackEnabled(track) && track.pluginInstrument?.enabled !== false, mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, audible: audible.has(track.id) && track.pluginInstrument?.enabled !== false,
       input: trackInput(track),
       ...nativeRoute(routed.get(track.id)),

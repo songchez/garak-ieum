@@ -9,7 +9,7 @@ import { Icon } from './Icon'
 import { InstrumentOptions } from './InstrumentOptions'
 import { ValueField, signed, ticksToMs } from './RegionInspector'
 
-export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : instrumentDef(track.instrument).icon)
+export const trackIcon = (track: Track) => track.icon ?? (track.kind === 'audio' ? 'wave' : track.kind === 'return' ? 'return' : instrumentDef(track.instrument).icon)
 
 function TextField({ value, onCommit, ariaLabel }: { value: string; onCommit: (name: string) => void; ariaLabel: string }) {
   const [draft, setDraft] = useState<string | null>(null)
@@ -80,6 +80,7 @@ export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, 
       {limit('키 제한', 'keyLimit', 0, 127, pitchName, parsePitchName)}
       {limit('벨로시티 제한', 'velocityLimit', 1, 127)}
     </>}
-    <div className="insp-row"><span className="insp-label">딜레이</span><ValueField value={track.delayTicks} min={-1920} max={1920} format={v => `${signed(v)} 틱`} ariaLabel="트랙 딜레이" onChange={delayTicks => patch({ delayTicks }, 'delayTicks')} /><small className="insp-unit">{`${delayMs < 0 ? '−' : ''}${Math.abs(delayMs).toFixed(1)} ms`}</small></div>
+    {track.kind === 'return' && <div className="insp-row"><span className="insp-label">리턴</span><span className="insp-note insp-note-info" role="note">다른 트랙의 센드로 받은 소리에 시김새를 걸어 마스터로 보냅니다. 센드는 믹서나 각 트랙 채널의 ‘센드’ 노브로 조절합니다.</span></div>}
+    {track.kind !== 'return' && <div className="insp-row"><span className="insp-label">딜레이</span><ValueField value={track.delayTicks} min={-1920} max={1920} format={v => `${signed(v)} 틱`} ariaLabel="트랙 딜레이" onChange={delayTicks => patch({ delayTicks }, 'delayTicks')} /><small className="insp-unit">{`${delayMs < 0 ? '−' : ''}${Math.abs(delayMs).toFixed(1)} ms`}</small></div>}
   </div>
 }

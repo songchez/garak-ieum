@@ -437,7 +437,7 @@ class Host {
     // only the graph's plug-in delay when the tap sits after the inserts (post-FX, post-fader, master).
     for(std::size_t i=0;i<plan.size();++i) {
       auto& take=r.mutableTakes()[i];
-      if(take.routed){take.compensation=plan[i].routeDelayed?s.latencyFrames:0;take.compensationKnown=true;}
+      if(take.routed){take.compensation=!plan[i].routeDelayed?0:plan[i].routeMasterFeed?s.latencyFrames:s.senderLatencyFrames;take.compensationKnown=true;}
       else {take.compensation=r.compensation;take.compensationKnown=r.compensationKnown;}
     }
     Json list=Json::array();

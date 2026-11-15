@@ -1,3 +1,4 @@
+import type { SendPatch } from '../core/sends'
 import { useState } from 'react'
 import { tempoMapOf } from '../core/tempoMap'
 import type { AudioEngine, Clip, EffectType, InputChoice, InstrumentId, Project, Track, TrackInput, TrackInputRoute } from '../core/types'
@@ -34,6 +35,7 @@ export interface InspectorProps {
   onMasterChange: (v: number) => void
   onOpenColorPalette: (trackId: string, e: React.MouseEvent) => void
   onIconMenu: (trackId: string, e: React.MouseEvent) => void
+  onSendChange?: (trackId: string, returnId: string, patch: SendPatch, key?: string) => void
   inputChoices?: readonly InputChoice[]
   onTrackInput?: (trackId: string, input: TrackInput | null) => void
   onTrackRoute?: (trackId: string, route: TrackInputRoute | null, input?: TrackInput | null) => void
@@ -70,7 +72,7 @@ export function Inspector(props: InspectorProps) {
         {focusedTrack ? <ChannelStrip track={focusedTrack} project={project} engine={props.engine} recording={props.recording} arm={props.arm} implicitMute={props.implicitMute} focused
           onTrackChange={props.onTrackChange} onTrackButton={props.onTrackButton} onTrackSweep={props.onTrackSweep} onInstrumentChange={props.onInstrumentChange}
           onAddDevice={props.onAddDevice} onToggleDevice={props.onToggleDevice} onMoveDevice={props.onMoveDevice} onRemoveDevice={props.onRemoveDevice} onOpenDevices={props.onOpenDevices}
-          onOpenColorPalette={props.onOpenColorPalette} onIconMenu={props.onIconMenu} /> : <div className="cstrip cstrip-placeholder"><span>트랙 없음</span></div>}
+          onOpenColorPalette={props.onOpenColorPalette} onIconMenu={props.onIconMenu} onSendChange={props.onSendChange} /> : <div className="cstrip cstrip-placeholder"><span>트랙 없음</span></div>}
         <ChannelStrip track={undefined} project={project} engine={props.engine} recording={props.recording} arm="off" implicitMute={false} onTrackChange={props.onTrackChange} onTrackButton={props.onTrackButton} onTrackSweep={props.onTrackSweep} onMasterChange={props.onMasterChange} />
       </div>
     </Section>

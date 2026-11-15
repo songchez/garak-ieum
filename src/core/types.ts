@@ -28,7 +28,7 @@ export interface MidiNote {
 /** One MIDI CC64 (sustain pedal) event. Stored in source beats like MidiNote.start; see core/sustain.ts. */
 export interface SustainEvent {
   beat: number
-  /** 0…127; 64 or more is pedal down. */
+  /** 0??27; 64 or more is pedal down. */
   value: number
 }
 export interface ClipBase {
@@ -44,7 +44,7 @@ export interface ClipBase {
   /** Total span from startBeat to a manual repeat endpoint; at least lengthBeats. Absent = continuous loop.
    * Relative to the clip so moving/copying it carries its endpoint. Ignored while loop is false. */
   loopLengthBeats?: number
-  /** Playback offset in ticks at 960 PPQ (−1920…1920). Absent = 0. */
+  /** Playback offset in ticks at 960 PPQ (??920??920). Absent = 0. */
   delayTicks?: number
 }
 export interface MidiClip extends ClipBase {
@@ -57,13 +57,13 @@ export interface MidiClip extends ClipBase {
   sustain?: SustainEvent[]
   /** Non-destructive playback quantize grid in beats; one of QUANTIZE_VALUES. Absent/0 = off. */
   quantize?: number
-  /** Swing 0…100 (50 = straight); only used when quantize is on. Absent = 50. */
+  /** Swing 0??00 (50 = straight); only used when quantize is on. Absent = 50. */
   swing?: number
-  /** Semitones −96…96. Absent = 0. */
+  /** Semitones ??6??6. Absent = 0. */
   transpose?: number
-  /** Velocity offset −99…99 (MIDI units). Absent = 0. */
+  /** Velocity offset ??9??9 (MIDI units). Absent = 0. */
   velocity?: number
-  /** Q-강도 0…100: how far quantize moves each note toward its grid line. Absent = 100. */
+  /** Q-媛뺣룄 0??00: how far quantize moves each note toward its grid line. Absent = 100. */
   qStrength?: number
 }
 export interface AudioClip extends ClipBase {
@@ -83,7 +83,7 @@ export interface AudioClip extends ClipBase {
   /** Region pitch (schema 12; docs/REGION_PITCH.md). Absent = 0 / keep tempo. Never combined with pitch. */
   regionPitch?: AudioTranspose
 }
-/** 템포 유지 (pitch shift, same length) or 자연스럽게 (varispeed: pitch and speed together). */
+/** ?쒗룷 ?좎? (pitch shift, same length) or ?먯뿰?ㅻ읇寃?(varispeed: pitch and speed together). */
 export type TransposeMode = 'keep' | 'varispeed'
 /** What an installed pitch render carries: total cents, mode and formant preservation. */
 export interface AudioTransposeRender { cents: number; mode: TransposeMode; formant: boolean }
@@ -92,9 +92,9 @@ export interface AudioTransposeRender { cents: number; mode: TransposeMode; form
  * renderer installed it; offsetSeconds is in that asset's seconds (like warp).
  */
 export interface AudioTranspose {
-  /** −24…24 */
+  /** ??4??4 */
   semitones: number
-  /** −50…50 */
+  /** ??0??0 */
   cents: number
   mode: TransposeMode
   /** Keep-tempo only: preserve formants. Absent = false. */
@@ -115,7 +115,7 @@ export interface AudioWarp {
   sourceBpm: number
   /** First detected beat in original-file seconds (informational alignment hint). */
   firstBeatSeconds: number
-  /** 0–1. 0 means typed by hand. */
+  /** 0??. 0 means typed by hand. */
   confidence: number
   originalAssetId: string
   /** Project tempo the current assetId was rendered for. */
@@ -175,27 +175,42 @@ export interface TrackMidiInput {
   deviceId?: string
   /** Device name when chosen, shown while the device is unplugged. */
   deviceName?: string
-  /** 1…16; absent = every channel. */
+  /** 1??6; absent = every channel. */
   channel?: number
 }
+
+/**
+ * One aux send (schema 15; docs/SENDS_RETURNS.md): this track's signal into a return track at `level`
+ * (linear gain like Track.volume, 0 = off, 1 = 0 dB, max 2 = +6 dB). Post-fader by default (after pan, fader,
+ * mute and solo); `pre` taps after the ?쒓???chain, before pan and fader (still silenced by mute/solo).
+ */
+export interface TrackSend {
+  returnId: string
+  level: number
+  /** Absent = post-fader. */
+  pre?: boolean
+}
+
+/** `return` (由ы꽩/aux, schema 15): no regions or inputs; fed by other tracks' sends, own ?쒓???chain, out to the master. */
+export type TrackKind = 'instrument' | 'audio' | 'return'
 
 export interface Track {
   id: string
   name: string
-  kind: 'instrument' | 'audio'
+  kind: TrackKind
   instrument: InstrumentId
   color: string
   volume: number
   pan: number
   mute: boolean
   solo: boolean
-  /** Heard even when other tracks are soloed (Logic: ⌃-click S). */
+  /** Heard even when other tracks are soloed (Logic: ??click S). */
   soloSafe: boolean
-  /** Off = not scheduled, no fader, no preview (Logic: track on/off, ⌥M). */
+  /** Off = not scheduled, no fader, no preview (Logic: track on/off, ?쩗). */
   enabled: boolean
   /** Record-enabled. Live state: never enters undo history. */
   armed: boolean
-  /** The I button: true exactly when monitorMode is `in`. Kept for schema ≤7 files and older readers.
+  /** The I button: true exactly when monitorMode is `in`. Kept for schema ?? files and older readers.
    * Live state: never enters undo history. */
   monitor: boolean
   /** Hidden in the Tracks area while hide view is off; still plays. */
@@ -205,7 +220,7 @@ export interface Track {
   velocityOffset: number
   keyLimit: [number, number]
   velocityLimit: [number, number]
-  /** Ticks at 960 PPQ, −1920…1920. */
+  /** Ticks at 960 PPQ, ??920??920. */
   delayTicks: number
   /** Icon name from components/Icon.tsx. Absent = category default. */
   icon?: string
@@ -228,6 +243,8 @@ export interface Track {
   inputRoute?: TrackInputRoute
   /** Instrument tracks only. Absent = every MIDI input, every channel. Undoable. */
   midiInput?: TrackMidiInput
+  /** Audio and instrument tracks only: at most one send per return track (schema 15). Absent = none. */
+  sends?: TrackSend[]
 }
 export interface Marker {
   id: string
@@ -248,14 +265,14 @@ export interface TempoPoint {
   curve: TempoCurve
 }
 export interface Project {
-  /** 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 14
+  /** 15: send/return tracks (Track.kind 'return', Track.sends). 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 15
   id: string
   name: string
   /** Tempo at beat 0. With a tempo map this mirrors tempoMap[0].bpm. */
   bpm: number
   /** Tempo changes (schema 14; docs/TEMPO_MAP.md). Sorted by beat, first point at beat 0 with Project.bpm.
-   * Absent (or fewer than two points) = constant Project.bpm. Convert beats↔time only through core/tempoMap.ts. */
+   * Absent (or fewer than two points) = constant Project.bpm. Convert beats?봳ime only through core/tempoMap.ts. */
   tempoMap?: TempoPoint[]
   /** Project rendering rate; device preferences are stored separately in this browser. */
   sampleRate: SampleRate

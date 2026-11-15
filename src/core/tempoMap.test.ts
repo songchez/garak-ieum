@@ -131,7 +131,7 @@ describe('schema 14 tempo map persistence', () => {
   it('round-trips a tempo map and loads schema ≤ 13 files with a constant tempo', () => {
     const project = withTempoPoints({ ...createEmptyProject(), bpm: 90 }, ramp(90, 150, 8))
     const loaded = validateProject(JSON.parse(JSON.stringify(project)))
-    expect(loaded.schemaVersion).toBe(14)
+    expect(loaded.schemaVersion).toBe(createEmptyProject().schemaVersion)
     expect(loaded.tempoMap).toEqual(ramp(90, 150, 8))
     const legacy = validateProject({ ...JSON.parse(JSON.stringify(project)), schemaVersion: 13 })
     expect(legacy.tempoMap).toBeUndefined()
@@ -145,7 +145,7 @@ describe('schema 14 tempo map persistence', () => {
     expect(() => validateProject({ ...project, tempoMap: [{ beat: 0, bpm: 90, curve: 'step' }, { beat: 0, bpm: 100, curve: 'step' }] })).toThrow(/sorted/)
     expect(() => validateProject({ ...project, tempoMap: [{ beat: 0, bpm: 90, curve: 'linear' }] })).toThrow(/curve/)
     expect(() => validateProject({ ...project, tempoMap: [{ beat: 0, bpm: 90, curve: 'step' }, { beat: 4, bpm: 400, curve: 'step' }] })).toThrow(/tempo/)
-    expect(() => validateProject({ ...project, schemaVersion: 15 })).toThrow(/version/)
+    expect(() => validateProject({ ...project, schemaVersion: createEmptyProject().schemaVersion + 1 })).toThrow(/version/)
   })
 })
 

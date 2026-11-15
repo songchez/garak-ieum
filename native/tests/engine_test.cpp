@@ -585,6 +585,101 @@ void trackInputRoutes(){
   }
 }
 
+
+// Send/return (docs/SENDS_RETURNS.md). Stereo audio regions keep the pan law out of the arithmetic.
+class CountingPlugin final:public PluginProcessor {
+ public:
+  void process(float*,std::uint32_t frames,std::span<const PluginEvent>,const ProcessContext&)noexcept override{processed+=frames;}
+  std::uint32_t latencyFrames()const noexcept override{return 0;}
+  void requestReset()noexcept override{}
+  std::uint64_t processed=0;
+};
+TrackTimeline regionTrack(const char*id,const char*assetId,float gain,std::int64_t frames){TrackTimeline t;t.id=id;t.gain=gain;t.audio={{1,assetId,0,frames,0,48000,0,frames,1.f,0,0}};return t;}
+TrackTimeline returnTrack(const char*id){TrackTimeline t;t.id=id;t.isReturn=true;return t;}
+void sendReturns(){
+  const std::int64_t length=4000;
+  AssetStore assets{{"dc",asset("dc",48000,std::vector<float>(static_cast<std::size_t>(length)*2,.1f),2)}};
+  {
+    // Exact send gains: post-fader follows the fader, pre-fader does not; both stop when the sender is muted.
+    // Two senders feed one return whose counting insert must see every frame exactly once.
+    for(const std::uint32_t threads:{0u,2u})for(const bool pre:{false,true})for(const bool muted:{false,true}) {
+      auto p=project(48000,length);auto a=regionTrack("a","dc",.5f,length),b=regionTrack("b","dc",.2f,length);
+      a.sends={{"ret",.25f,pre}};b.sends={{"ret",.5f,false}};a.audible=!muted;
+      auto ret=returnTrack("ret");BuiltinInsert count;count.id="count";count.type="vst3";count.plugin.instanceId="count";ret.inserts.push_back(count);
+      p.tracks={ret,a,b}; // The return is listed first: the engine must still render its senders before it.
+      auto counter=std::make_shared<CountingPlugin>();
+      RenderEngine e(48000,64);e.setProcessing(processing(threads));e.submit(e.prepare(p,assets,{},[&](const PluginSpec&,double,unsigned){return counter;}));check(e.play(),"Play failed");
+      const auto out=render(e,1000,64);
+      check(counter->processed==1000,"A return chain was not processed exactly once per frame");
+      const double dryA=muted?0:.05,dryB=.02,sendA=muted?0:pre?.1*.25:.05*.25,sendB=.02*.5;
+      for(std::size_t f=400;f<1000;++f)for(int c=0;c<2;++c)near(out[2*f+c],dryA+dryB+sendA+sendB,1e-6,"Send gain, pre/post tap or mute gating is not exact");
+      check(e.snapshot().latencyFrames==0&&e.snapshot().senderLatencyFrames==0,"A send without plug-in latency reported delay");
+    }
+    // A fader at 0 silences only the post-fader send.
+    auto p=project(48000,length);auto a=regionTrack("a","dc",0.f,length);a.sends={{"pre",1.f,true},{"post",1.f,false}};p.tracks={a,returnTrack("pre"),returnTrack("post")};
+    RenderEngine e(48000,64);e.submit(e.prepare(p,assets));check(e.play(),"Play failed");const auto out=render(e,800,64);
+    for(std::size_t f=400;f<800;++f)near(out[2*f],.1,1e-6,"Pre-fader send followed the fader");
+  }
+  {
+    // PDC across a latent return path: senders align to the largest sender latency (5), the return adds 13,
+    // and every dry path waits 13 more, so the master hears each impulse once, dry and wet together, at +18.
+    std::vector<float> impulses(static_cast<std::size_t>(length)*2,0.f);impulses[500*2]=impulses[500*2+1]=.4f;
+    std::vector<float> later(static_cast<std::size_t>(length)*2,0.f);later[700*2]=later[700*2+1]=.4f;
+    AssetStore pulses{{"i",asset("i",48000,impulses,2)},{"j",asset("j",48000,later,2)}};
+    auto p=project(48000,length);
+    auto a=regionTrack("a","i",.5f,length),b=regionTrack("b","j",.5f,length);
+    BuiltinInsert five;five.id="five";five.type="vst3";five.plugin.instanceId="five";b.inserts.push_back(five);
+    a.sends={{"ret",1.f,false}};b.sends={{"ret",.5f,true}};
+    auto ret=returnTrack("ret");BuiltinInsert slow;slow.id="slow";slow.type="vst3";slow.plugin.instanceId="slow";ret.inserts.push_back(slow);ret.gain=.5f;
+    TrackTimeline rec;rec.id="rec";TrackRoute route;route.kind=TrackRoute::Kind::Track;route.trackId="a";route.tap=TrackRoute::Tap::PostFader;rec.route=route;rec.audible=false;
+    TrackTimeline loop=returnTrack("bad");loop.sends={{"bad",1.f,false}};
+    p.tracks={rec,ret,a,b};
+    const PluginResolver plugins=[](const PluginSpec&spec,double,unsigned){return std::make_shared<TestPlugin>(spec.instanceId=="slow"?13:5);};
+    std::vector<float> reference;
+    for(const std::uint32_t threads:{0u,2u}) {
+      RenderEngine e(48000,64,8192);e.setProcessing(processing(threads));auto prepared=e.prepare(p,pulses,{},plugins);
+      check(prepared->latencyFrames()==18&&prepared->senderLatencyFrames()==5,"Return-path latency was not added after the sender alignment");
+      e.submit(std::move(prepared));
+      const std::array<std::uint32_t,1>takes{0};const auto plan=e.planRecording(takes);
+      check(plan.size()==1&&plan[0].routed&&plan[0].routeDelayed&&!plan[0].routeMasterFeed,"A post-fader route was not planned as a delayed track tap");
+      check(e.startRecording(plan)&&e.play(),"Recording or play failed");
+      const auto out=render(e,1200,64);
+      check(e.snapshot().latencyFrames==18&&e.snapshot().senderLatencyFrames==5,"Snapshot latencies differ from the prepared graph");
+      for(std::size_t f=0;f<1200;++f){
+        // a: dry .2 + return (.2 * 1 send) * .5 return fader = .3 at 518. b (pre send): dry .2 + (.4 * .5) * .5 = .3 at 718.
+        const double expected=f==518||f==718?.3:0;
+        near(out[2*f],expected,1e-6,"Dry and return paths are not aligned by delay compensation");
+      }
+      if(threads)bitIdentical(reference,out,"Worker threads changed a send/return mix");else reference=out;
+      const auto stop=e.stopRecording();(void)render(e,64,64);check(e.snapshot().lastAppliedCommand>=stop,"Stop was not acknowledged");
+      std::vector<float> frames(1400*2);const auto got=e.drainRecording(frames.data(),1400);check(got>=1200,"Routed take lost frames");
+      for(std::size_t f=0;f<1200;++f)near(frames[2*f],f==505?.2:0,1e-6,"A post-fader route tap did not carry exactly the sender alignment");
+    }
+    auto invalid=p;invalid.tracks.push_back(loop);
+    rejects([&]{RenderEngine e(48000,64);(void)e.prepare(invalid,pulses,{},plugins);},"A return track with sends (a possible loop) was accepted");
+    // A route naming a return records silence (returns are never route sources), and a send to a missing return is silent.
+    auto orphan=project(48000,length);auto s=regionTrack("s","dc",.5f,length);s.sends={{"gone",1.f,false}};
+    TrackTimeline r2;r2.id="r2";TrackRoute toReturn;toReturn.kind=TrackRoute::Kind::Track;toReturn.trackId="ret";toReturn.tap=TrackRoute::Tap::PostFader;r2.route=toReturn;
+    orphan.tracks={s,returnTrack("ret"),r2};
+    RenderEngine e(48000,64,4096);e.submit(e.prepare(orphan,assets));const std::array<std::uint32_t,1>monitored{2};check(e.setMonitoring(monitored)&&e.play(),"Play failed");
+    const auto out=render(e,800,64);for(std::size_t f=400;f<800;++f)near(out[2*f],.05,1e-6,"A missing return or a route to a return produced sound");
+  }
+  {
+    // Tails: a 100% wet echo return keeps sounding after its sender stopped, and an offline export lasts that long.
+    auto p=project(48000,48000);p.bpm=120;
+    std::vector<float> burst(9600*2,.1f);AssetStore shortAssets{{"b",asset("b",48000,burst,2)}};
+    auto a=regionTrack("a","b",1.f,4800);a.sends={{"echo",1.f,false}};
+    auto echo=returnTrack("echo");echo.inserts.push_back({"delay","delay",true,{{"amount",1},{"dry",0},{"time",.25},{"feedback",0},{"sync",1},{"tone",16000}},{}});
+    p.tracks={a,echo};
+    RenderEngine e(48000,256);auto prepared=e.prepare(p,shortAssets);check(prepared->tailSeconds()>.85+.125,"The return's echo tail was not part of the render tail");
+    e.submit(std::move(prepared));check(e.play(),"Play failed");const auto out=render(e,16000,256);
+    double during=0,after=0;for(std::size_t f=1000;f<4000;++f)during=std::max(during,double(std::abs(out[2*f])));
+    for(std::size_t f=7000;f<10000;++f)after=std::max(after,double(std::abs(out[2*f])));
+    near(during,.1,1e-4,"A 100% wet return passed its dry input (dry = 0)");
+    check(after>.02,"The return's echo did not continue after the sender stopped");
+  }
+}
+
 PluginResolver testInstruments(){return [](const PluginSpec&,double,std::uint32_t){auto p=std::make_shared<TestPlugin>();p->instrument=true;return p;};}
 std::unique_ptr<RenderEngine> busyEngine(const Busy&b,const ProcessingOptions&options,bool offline=false,std::uint32_t maxBlock=512){
   auto e=std::make_unique<RenderEngine>(48000,maxBlock);if(offline)e->setOffline(true);e->setProcessing(options);
@@ -985,7 +1080,7 @@ void sustainPedal(){
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }
