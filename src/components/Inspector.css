@@ -189,5 +189,12 @@
 .mixer .cstrip{min-height:0;overflow:hidden}
 .mixer .cstrip.compact .cstrip-fader{flex:1 1 var(--fader-h,110px);min-height:28px}
 .mixer .cstrip .cstrip-name{flex-shrink:0}
+/* …then the insert list scrolls (at least one slot stays visible) instead of pushing the name bar out. */
+.mixer .cstrip-inserts{flex:0 1 auto;min-height:var(--slot-h);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.mixer .cstrip-inserts>*{flex-shrink:0}
+.mixer .cstrip-inserts .cstrip-insert-empty{position:sticky;bottom:0;z-index:1;background:var(--surface-canvas-alt)}
+/* A very short panel (1280×720 with the default split) drops the decorative rows so fader and name still fit. */
+.mixer{container:mixer/size}
+@container mixer (max-height:250px){.mixer .cstrip-kind,.mixer .cstrip-icon{display:none}}
 .insp-note{flex:1;min-width:0;font-size:10px;line-height:1.35;color:var(--text-warning,#d9a03f)}
 .insp-select--narrow{flex:0 0 64px}

@@ -107,6 +107,16 @@
 .loop-length label { display: flex; align-items: center; gap: 6px; }
 .loop-length select { font-size: 10px; background: transparent; border: 0; padding: 0; width: 70px; height: 28px; letter-spacing: 0; }
 
+/* 1280–1400 px (e.g. 1280×720): the browser menus + library toggle need their column, so the
+   right side gives up the export label and the loop box its LOOP caption (the select keeps its aria-label). */
+@media (max-width: 1400px) {
+  .export-button > span { display: none; }
+  .export-button { width: 28px; padding: 0; }
+  .loop-length { padding-left: 6px; }
+  .loop-length label { font-size: 0; gap: 0; }
+  .loop-length select { width: 58px; }
+}
+
 @media (max-width: 1250px) {
   .loop-length { display: none; }
   .export-button > span { display: none; }
