@@ -3,6 +3,9 @@
  * Controller reference: https://midi.org/midi-1-0-control-change-messages
  * Parsing never starts audio, creates IDs, or changes the current project.
  */
+import { controllerSpec, normalizeController, pruneController, ccKey, MAX_BEND_RANGE, DEFAULT_BEND_RANGE } from './controllers'
+import type { ControllerKey } from './types'
+
 export const MAX_MIDI_FILE_BYTES = 16 * 1024 * 1024
 const MAX_TRACKS = 256
 const MAX_EVENTS = 500_000
@@ -23,6 +26,13 @@ export interface MidiImportTrack {
   channel: number
   /** Zero-based program at this track/channel's first note, when specified. */
   program?: number
+  /**
+   * Controller lanes of this part's port/channel in beats (docs/MIDI_CONTROLLERS.md): CCs other than the pedal,
+   * channel-mode and RPN/NRPN messages, pitch bend, channel aftertouch, and program changes after the first note.
+   */
+  controllers?: Partial<Record<ControllerKey, { beat: number; value: number }[]>>
+  /** Pitch-bend range in semitones from RPN 0 (absent = the default 2). */
+  bendRange?: number
   notes: MidiImportNote[]
 }
 export interface MidiImportResult {
@@ -99,6 +109,14 @@ interface ChannelState {
   sustain: boolean
   /** Kept CC64 events (tick, value) when the pedal is not baked into note lengths. */
   pedal: { tick: number; value: number }[]
+  /** Controller lane events (tick, value) by key. */
+  lanes: Map<ControllerKey, { tick: number; value: number }[]>
+  /** Selected RPN (MSB*128+LSB; 0x3fff = none) and NRPN flag, for CC6 data entry. */
+  rpn: number
+  nrpn: boolean
+  bendRange?: number
+  /** Program changes in order (the first chooses the instrument, later ones become the program lane). */
+  programs: { tick: number; value: number }[]
   held: Map<number, NoteQueue>
   sustained: Set<ActiveNote>
 }
@@ -118,6 +136,21 @@ function pedalEvents(events: readonly { tick: number; value: number }[], divisio
     if (next === down) continue
     result.push({ beat: event.tick / division, value: event.value })
     down = next
+  }
+  return result
+}
+
+/** Lane events in beats: last value per tick, repeats dropped, reset lanes holding only their default omitted.
+ * Program changes up to the first note pick the instrument (MidiImportTrack.program); later ones form the lane. */
+function laneEvents(state: ChannelState, division: number, firstNoteTick: number): NonNullable<MidiImportTrack['controllers']> {
+  const result: NonNullable<MidiImportTrack['controllers']> = {}
+  const lanes = new Map(state.lanes)
+  const laterPrograms = state.programs.filter(event => event.tick > firstNoteTick)
+  if (laterPrograms.length) lanes.set('program', [...state.programs.filter(event => event.tick <= firstNoteTick).slice(-1), ...laterPrograms])
+  for (const [key, events] of lanes) {
+    const points = pruneController(normalizeController(key, events.map(event => ({ beat: event.tick / division, value: event.value }))))
+    const spec = controllerSpec(key)
+    if (points.length && (!spec.reset || points.some(point => point.value !== spec.default))) result[key] = points
   }
   return result
 }
@@ -165,7 +198,6 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
   const tempos: TempoEvent[] = [], meters: MeterEvent[] = []
   let eventCount = 0, noteCount = 0, endTick = 0
   const maximumTick = MAX_LENGTH_BEATS * division
-  const expressiveWarning = '서스테인(CC64)과 노트 종료용 컨트롤을 제외한 MIDI CC(볼륨·팬·표현 등)는 가져오지 않았습니다.'
 
   while (file.remaining) {
     const id = file.id(), length = file.dword()
@@ -201,12 +233,9 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
         const first = firstData ?? reader.dataByte()
         const second = type === 0xc0 || type === 0xd0 ? 0 : reader.dataByte()
         if (type === 0x90 && second > 0 && ++noteCount > MAX_NOTES) invalid('노트가 100,000개를 초과합니다. MIDI 파일을 나누어 가져와 주세요.')
-        if (type === 0x80 || type === 0x90 || type === 0xc0 || (type === 0xb0 && (first === 64 || first === 120 || first === 121 || first >= 123))) {
-          events.push({ tick, order, track, port, channel, type, first, second })
-          if (type === 0xb0 && first >= 124) warn('MIDI 채널 모드 변경은 노트 종료만 반영하고, 모든 노트를 개별 편집 노트로 가져왔습니다.')
-        } else if (type === 0xb0) warn(expressiveWarning)
-        else if (type === 0xe0) warn('피치 벤드 데이터는 가져오지 않았습니다. 원본의 음 높이 변화는 수동으로 편집해 주세요.')
-        else warn('애프터터치(키·채널 압력) 데이터는 가져오지 않았습니다.')
+        if (type === 0xa0) { warn('키별 애프터터치(Poly Pressure)는 가져오지 않았습니다. 채널 애프터터치는 가져왔습니다.'); continue }
+        events.push({ tick, order, track, port, channel, type, first, second })
+        if (type === 0xb0 && first >= 124) warn('MIDI 채널 모드 변경은 노트 종료만 반영하고, 모든 노트를 개별 편집 노트로 가져왔습니다.')
         continue
       }
 
@@ -258,7 +287,7 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
   const channelState = (port: number, channel: number): ChannelState => {
     const key = port * 16 + channel
     let state = channels.get(key)
-    if (!state) { state = { sustain: false, pedal: [], held: new Map(), sustained: new Set() }; channels.set(key, state) }
+    if (!state) { state = { sustain: false, pedal: [], lanes: new Map(), rpn: 0x3fff, nrpn: false, programs: [], held: new Map(), sustained: new Set() }; channels.set(key, state) }
     return state
   }
   const finish = (note: ActiveNote, tick: number): void => {
@@ -278,8 +307,35 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
   }
   for (const event of events) {
     const state = channelState(event.port, event.channel)
-    if (event.type === 0xc0) { state.program = event.first; continue }
+    const lane = (key: ControllerKey, value: number): void => {
+      const list = state.lanes.get(key)
+      if (list) list.push({ tick: event.tick, value })
+      else state.lanes.set(key, [{ tick: event.tick, value }])
+    }
+    if (event.type === 0xc0) { state.program = event.first; state.programs.push({ tick: event.tick, value: event.first }); continue }
+    if (event.type === 0xe0) { lane('pitchBend', event.second * 128 + event.first - 8192); continue }
+    if (event.type === 0xd0) { lane('aftertouch', event.first); continue }
+    if (event.type === 0xb0 && event.first < 120 && event.first !== 64) {
+      // RPN/NRPN selection and data entry configure the instrument; only RPN 0 (pitch-bend range) is kept.
+      if (event.first === 101 || event.first === 100) {
+        state.nrpn = false
+        state.rpn = event.first === 101 ? event.second * 128 + (state.rpn % 128) : state.rpn - (state.rpn % 128) + event.second
+        continue
+      }
+      if (event.first === 99 || event.first === 98) { state.nrpn = true; warn('NRPN 장치 설정은 가져오지 않았습니다.'); continue }
+      if (event.first === 6 || event.first === 38 || event.first === 96 || event.first === 97) {
+        if (!state.nrpn && state.rpn === 0 && event.first === 6) state.bendRange = Math.min(MAX_BEND_RANGE, event.second)
+        else if (!state.nrpn && state.rpn !== 0 && state.rpn !== 0x3fff) warn('피치 벤드 범위를 제외한 RPN 설정(미세 조율 등)은 가져오지 않았습니다.')
+        continue
+      }
+      lane(ccKey(event.first), event.second)
+      continue
+    }
     if (event.type === 0xb0) {
+      if (event.first === 121) {
+        // Reset All Controllers: every reset lane returns to its default.
+        for (const key of state.lanes.keys()) if (controllerSpec(key).reset) lane(key, controllerSpec(key).default)
+      }
       if (event.first === 64) {
         if (!bakeSustain) { state.pedal.push({ tick: event.tick, value: event.second }); continue }
         state.sustain = event.second >= 64
@@ -307,8 +363,6 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
         if (outputs.size >= MAX_TRACKS) invalid('채널별로 나눈 노트 트랙이 256개를 초과합니다. 파일을 나누어 가져와 주세요.')
         track = { name: '', source: event.track, port: event.port, channel: event.channel, notes: [], ...(state.program === undefined ? {} : { program: state.program }) }
         outputs.set(key, track)
-      } else if ((track.program ?? 0) !== (state.program ?? 0)) {
-        warn('한 트랙·채널 안의 악기 변경(Program Change)은 첫 노트의 악기로 가져왔습니다.')
       }
       let queue = state.held.get(event.first)
       if (!queue) { queue = { notes: [], next: 0 }; state.held.set(event.first, queue) }
@@ -357,11 +411,16 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
     ports.get(track.source)!.add(track.port)
   }
   const tracks: MidiImportTrack[] = sorted.map(({ source, port, channel, program, notes }) => {
-    const sustain = pedalEvents(channels.get(port * 16 + channel)?.pedal ?? [], division)
+    const state = channels.get(port * 16 + channel)
+    const sustain = pedalEvents(state?.pedal ?? [], division)
+    const firstNoteTick = notes.reduce((first, note) => Math.min(first, Math.round(note.start * division)), Infinity)
+    const lanes = state ? laneEvents(state, division, Number.isFinite(firstNoteTick) ? firstNoteTick : 0) : {}
+    const bendRange = state?.bendRange !== undefined && state.bendRange !== DEFAULT_BEND_RANGE ? state.bendRange : undefined
     const base = sourceTracks[source].name || `MIDI 트랙 ${source + 1}`
     const name = `${base}${ports.get(source)!.size > 1 ? ` · Port ${port + 1}` : ''}${counts.get(source)! > 1 ? ` · Ch ${channel + 1}` : ''}`
     notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch || a.duration - b.duration)
-    return { name, channel, notes, ...(program === undefined ? {} : { program }), ...(sustain.length ? { sustain } : {}) }
+    return { name, channel, notes, ...(program === undefined ? {} : { program }), ...(sustain.length ? { sustain } : {}),
+      ...(Object.keys(lanes).length ? { controllers: lanes } : {}), ...(bendRange === undefined ? {} : { bendRange }) }
   })
   return { tracks, lengthBeats: endTick / division, bpm: 60_000_000 / initialMicroseconds, timeSignature: initialMeter, warnings: [...warnings] }
 }

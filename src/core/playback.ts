@@ -3,6 +3,8 @@ import { midiSourceOffset } from './midiRegions'
 import { fadeLengths } from './clipEnvelope.js'
 import { sustainSpans, sustainedEnds, visibleSustain } from './sustain'
 import { quantizePosition } from './quantize'
+import { bendRangeOf, occurrenceControllers } from './controllers'
+import type { ControllerKey } from './types'
 
 /** Ticks per beat for Track.delayTicks and ClipBase.delayTicks. */
 export const PPQ = 960
@@ -153,6 +155,40 @@ export function playbackSustain(track: Track, clip: MidiClip, occ: Occurrence): 
   }
   if (value >= 64) events.push({ beat: origin + window, value: 0 })
   return events
+}
+
+/** One controller event in absolute project beats (docs/MIDI_CONTROLLERS.md). */
+export interface PlaybackController {
+  beat: number
+  key: ControllerKey
+  value: number
+  /** Pitch bend only: the region's bend range in semitones (built-in instruments). */
+  range?: number
+  /** A reset at the occurrence end: sorts before other events at the same beat. */
+  reset?: true
+}
+
+/**
+ * Controller events of one occurrence with track/clip delay applied: per lane the chased value at the occurrence
+ * start, the visible events, and a reset to the default at the occurrence end for reset controllers.
+ */
+export function playbackControllers(track: Track, clip: MidiClip, occ: Occurrence): PlaybackController[] {
+  if (!clip.controllers) return []
+  const window = occ.end - occ.start
+  const origin = occ.start + trackDelay(track, clip)
+  const range = bendRangeOf(clip)
+  return occurrenceControllers(clip, window).map(event => ({ beat: origin + event.beat, key: event.key, value: event.value,
+    ...(event.key === 'pitchBend' ? { range } : {}), ...(event.beat >= window ? { reset: true as const } : {}) }))
+}
+
+/** Every controller event of a track, sorted by beat (stable: a region-end reset precedes the next region's chase). */
+export function midiControllerEvents(track: Track, projectEnd: number): PlaybackController[] {
+  const events: PlaybackController[] = []
+  for (const clip of track.clips) {
+    if (clip.kind !== 'midi' || clip.mute || !clip.controllers) continue
+    for (const occ of clipOccurrences(track, clip, projectEnd)) for (const event of playbackControllers(track, clip, occ)) events.push(event)
+  }
+  return events.sort((a, b) => a.beat - b.beat || (a.reset ? 0 : 1) - (b.reset ? 0 : 1))
 }
 
 /**

@@ -353,12 +353,28 @@ struct TrackRuntime {
   std::array<DeferredOff,maxVoices> deferredOffs{};
   std::size_t deferredCount=0;
   [[nodiscard]] bool vst3()const noexcept{return instrument&&!wavetable;}
-  [[nodiscard]] std::uint8_t controlValueBefore(std::int64_t frame,int controller)const noexcept{
-    std::uint8_t value=0;
-    for(const auto&c:timeline.controls){if(c.frame>=frame)break;if(c.controller==controller)value=c.value;}
-    return value;
+  // Built-in voices' MIDI controller state (docs/MIDI_CONTROLLERS.md): the latest values from the timeline
+  // or live input, and the smoothed pitch offset, vibrato depth (cents) and level they lead to.
+  struct Controllers { int bend=0,range=2,mod=0,pressure=0,volume=100,expression=127; };
+  Controllers controllers;
+  double bendCents=0,vibratoCents=0,controlGain=1,vibratoPhase=0;
+  void applyController(int controller,int value)noexcept {
+    switch(controller){
+      case pitchBendController:controllers.bend=value;break;
+      case bendRangeController:controllers.range=value;break;
+      case modWheelController:controllers.mod=value;break;
+      case channelPressureController:controllers.pressure=value;break;
+      case volumeController:controllers.volume=value;break;
+      case expressionController:controllers.expression=value;break;
+      default:break; // CC64 is applied to note-offs; program change and other controllers have no built-in meaning.
+    }
   }
-  std::size_t nextNote=0,nextEvent=0;
+  [[nodiscard]] double bendTarget()const noexcept{return (controllers.bend>0?controllers.bend/8191.0:controllers.bend/8192.0)*controllers.range*100;}
+  [[nodiscard]] double vibratoTarget()const noexcept{return std::max(controllers.mod,controllers.pressure)/127.0*vibratoDepthCents;}
+  [[nodiscard]] double gainTarget()const noexcept{const double v=controllers.volume/100.0,e=controllers.expression/127.0;return v*v*e*e;}
+  void snapControllers()noexcept{bendCents=bendTarget();vibratoCents=vibratoTarget();controlGain=gainTarget();}
+  static constexpr double vibratoDepthCents=50,vibratoRate=5.5,controllerSmoothingSeconds=.005;
+  std::size_t nextNote=0,nextEvent=0,nextControl=0;
   std::uint32_t latency=0;
   CompensationDelay compensation;
   std::vector<float> buffer;
@@ -391,7 +407,8 @@ struct TrackRuntime {
     if(ahead&&previous.ahead&&ahead->capacity==previous.ahead->capacity)ahead.swap(previous.ahead);
     voices.swap(previous.voices);std::swap(samples,previous.samples);
     livePedal=previous.livePedal;deferredOffs=previous.deferredOffs;deferredCount=previous.deferredCount;
-    nextNote=previous.nextNote;nextEvent=previous.nextEvent;pendingCount=previous.pendingCount;
+    nextNote=previous.nextNote;nextEvent=previous.nextEvent;nextControl=previous.nextControl;pendingCount=previous.pendingCount;
+    controllers=previous.controllers;bendCents=previous.bendCents;vibratoCents=previous.vibratoCents;controlGain=previous.controlGain;vibratoPhase=previous.vibratoPhase;
     pendingEvents=previous.pendingEvents;pluginNotes=previous.pluginNotes;
     releaseAudition=previous.releaseAudition;
     if(wavetable)wavetable->takeStateFrom(*previous.wavetable);
@@ -506,15 +523,17 @@ struct TrackRuntime {
     if(v.sampled&&v.age>=v.naturalFrames)v.releaseZone=nullptr;
     if (!timeline.source.isKit) v.endFrames=std::min(v.endFrames,v.age+static_cast<std::int64_t>((v.synth.release*1.5+.02)*sampleRate));
   }
-  // Live MIDI control change. Only CC64 has a built-in meaning; VST3 instruments receive every controller.
+  // Live MIDI controller (docs/MIDI_CONTROLLERS.md). VST3 instruments receive every controller and IEUM WAVE
+  // every one but the pedal; built-in voices follow bend/mod/pressure/CC7/CC11. CC64 defers live note-offs.
   void controlChange(int controller,int value,std::uint64_t& overflows)noexcept {
-    if(vst3()){
-      if(pendingCount<pendingEvents.size()){PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=static_cast<std::uint32_t>(controller);e.value=static_cast<float>(value)/127.f;e.audition=true;pendingEvents[pendingCount++]=e;}
+    if(instrument&&(vst3()||controller!=sustainController)){
+      if(controller==bendRangeController)return; // Meta controller of the built-in voices only.
+      if(pendingCount<pendingEvents.size()){PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=static_cast<std::uint32_t>(controller);e.value=normalizedControllerValue(controller,value);e.audition=true;pendingEvents[pendingCount++]=e;}
       else ++overflows;
       if(controller==sustainController)livePedal=pedalDown(value);
       return;
     }
-    if(controller!=sustainController)return;
+    if(controller!=sustainController){applyController(controller,value);return;}
     const bool down=pedalDown(value);
     if(down==livePedal)return;
     livePedal=down;
@@ -570,6 +589,9 @@ struct TrackRuntime {
     } else {
       for(auto&v:voices)if(v.active&&v.live)noteOff(v.pitch,v.id,overflows,true);
     }
+    // ...and returns the bend and the modulation to rest.
+    if(instrument){controlChange(pitchBendController,0,overflows);controlChange(modWheelController,0,overflows);}
+    else{controllers.bend=0;controllers.mod=0;controllers.pressure=0;}
   }
   double envelope(const Voice& v)const noexcept {
     const auto&synth=v.synth;
@@ -613,12 +635,24 @@ struct TrackRuntime {
     return sustain*std::pow(epsilon/sustain,(t-duration)/synth.release);
   }
   void voicesInto(float* out,std::uint32_t frames,std::uint64_t& overflows)noexcept {
+    const double smoothing=1-std::exp(-1/(sampleRate*controllerSmoothingSeconds));
+    const double bendGoal=bendTarget(),vibratoGoal=vibratoTarget(),gainGoal=gainTarget();
+    const bool pitched=!timeline.source.isKit;
+    const auto glide=[smoothing](double& value,double goal,double snap){value+=(goal-value)*smoothing;if(std::abs(goal-value)<snap)value=goal;};
     for(std::uint32_t i=0;i<frames;++i) {
+      glide(bendCents,bendGoal,1e-4);glide(vibratoCents,vibratoGoal,1e-4);glide(controlGain,gainGoal,1e-7);
+      double cents=bendCents;
+      if(vibratoCents>0)cents+=vibratoCents*std::sin(2*dsp::pi*vibratoPhase);
+      vibratoPhase+=vibratoRate/sampleRate;if(vibratoPhase>=1)vibratoPhase-=1;
+      // Pitch bend and vibrato scale every pitched voice's frequency (samples: playback rate). Kits ignore them.
+      const double ratio=pitched&&cents!=0?std::exp2(cents/1200):1;
+      const double level=controlGain;
       for(auto& v:voices) if(v.active&&v.releaseZone&&!v.releaseSpawned&&v.age>=v.noteFrames) spawnRelease(v,overflows);
       for(auto& v:voices) {
       if(!v.active)continue;
       if(v.age>=v.endFrames){v.active=false;continue;}
       const auto&synth=v.synth;
+      const double frequency=v.frequency*ratio;
       double l=0,r=0;
       if(v.sampled) {
         const auto& a=*v.zone->asset;
@@ -627,37 +661,38 @@ struct TrackRuntime {
           if(v.samplePosition>=end)v.samplePosition=start+std::fmod(v.samplePosition-start,end-start);
         }
         if(v.samplePosition>=a.frames()){v.active=false;continue;}
-        l=pcmSample(a,v.samplePosition,0);r=pcmSample(a,v.samplePosition,1);v.samplePosition+=v.sampleStep;
+        l=pcmSample(a,v.samplePosition,0);r=pcmSample(a,v.samplePosition,1);v.samplePosition+=v.sampleStep*ratio;
         if(!v.releaseSample){l=v.tone.sample(static_cast<float>(l),0);r=v.tone.sample(static_cast<float>(r),1);}
       } else {
         const double t=static_cast<double>(v.age)/sampleRate;
         if(synth.kind==Synth::Kind::Drums) {
           if(v.drumSweep>0){const double freq=v.drumStart*std::pow(v.drumEnd/v.drumStart,std::min(1.0,t/v.drumSweep));l=oscillator(v.phases[0],freq,sampleRate);}
           else {v.noise=v.noise*1664525u+1013904223u;l=v.noiseFilter.sample(static_cast<float>(static_cast<double>(v.noise)/4294967295.0*2-1));
-            if(v.pitch==38||v.pitch==40||v.pitch==39)l+=.25*oscillator(v.phases[0],v.frequency,sampleRate,2);}
-        } else if(synth.kind==Synth::Kind::Bass)l=.45*oscillator(v.phases[0],v.frequency,sampleRate,1)+synth.sub*oscillator(v.phases[1],v.frequency,sampleRate);
-        else if(synth.kind==Synth::Kind::Pad)l=.27*oscillator(v.phases[0],v.frequency*std::pow(2,-synth.detune/1200),sampleRate,1)+.27*oscillator(v.phases[1],v.frequency*std::pow(2,synth.detune/1200),sampleRate,1)+.2*oscillator(v.phases[2],v.frequency*2,sampleRate,2);
+            if(v.pitch==38||v.pitch==40||v.pitch==39)l+=.25*oscillator(v.phases[0],frequency,sampleRate,2);}
+        } else if(synth.kind==Synth::Kind::Bass)l=.45*oscillator(v.phases[0],frequency,sampleRate,1)+synth.sub*oscillator(v.phases[1],frequency,sampleRate);
+        else if(synth.kind==Synth::Kind::Pad)l=.27*oscillator(v.phases[0],frequency*std::pow(2,-synth.detune/1200),sampleRate,1)+.27*oscillator(v.phases[1],frequency*std::pow(2,synth.detune/1200),sampleRate,1)+.2*oscillator(v.phases[2],frequency*2,sampleRate,2);
         else if(synth.kind==Synth::Kind::Pluck){
           const double sweep=std::max(.03,std::min(static_cast<double>(v.noteFrames)/sampleRate,synth.sweep));
           if((v.age&15)==0)v.tone.configure(dsp::Filter::Lowpass,sampleRate,4800*std::pow(900.0/4800,std::min(1.0,t/sweep))*std::pow(2,synth.tone*2),.7);
-          l=.85*oscillator(v.phases[0],v.frequency,sampleRate,2)+.2*oscillator(v.phases[1],v.frequency*2,sampleRate);
+          l=.85*oscillator(v.phases[0],frequency,sampleRate,2)+.2*oscillator(v.phases[1],frequency*2,sampleRate);
         } else if(synth.kind==Synth::Kind::Rhodes) {
           const double hit=std::min(1.f,v.velocity),index=(.3+2.4*synth.bark)*(.35+.65*hit)*std::pow(2,synth.tone*1.2);
-          const double depth=v.frequency*index*(t<.012?1:.1+.9*std::exp(-(t-.012)/.13));
-          const double mod=oscillator(v.phases[1],v.frequency,sampleRate)*depth;
+          const double depth=frequency*index*(t<.012?1:.1+.9*std::exp(-(t-.012)/.13));
+          const double mod=oscillator(v.phases[1],frequency,sampleRate)*depth;
           // Frequency modulation can cross zero; reversing phase is part of the
           // tine's original 1:1 FM sound, not a frequency clamp at zero.
           l=.75*std::sin(2*dsp::pi*v.phases[0]);
-          v.phases[0]+=std::clamp((v.frequency+mod)/sampleRate,-.45,.45);
+          v.phases[0]+=std::clamp((frequency+mod)/sampleRate,-.45,.45);
           v.phases[0]-=std::floor(v.phases[0]);
-          l+=.12*hit*(.3+synth.bark)*(t<.006?1:std::exp(-(t-.006)/.03))*oscillator(v.phases[2],v.frequency*7,sampleRate);
+          l+=.12*hit*(.3+synth.bark)*(t<.006?1:std::exp(-(t-.006)/.03))*oscillator(v.phases[2],frequency*7,sampleRate);
           l=std::tanh(1.2*l+.25*l*l)/std::tanh(1.45);
-        } else l=.8*oscillator(v.phases[0],v.frequency,sampleRate)+synth.bell*oscillator(v.phases[1],v.frequency*2,sampleRate,2)+synth.bell*.4*oscillator(v.phases[2],v.frequency*3,sampleRate);
+        } else l=.8*oscillator(v.phases[0],frequency,sampleRate)+synth.bell*oscillator(v.phases[1],frequency*2,sampleRate,2)+synth.bell*.4*oscillator(v.phases[2],frequency*3,sampleRate);
         if(synth.kind!=Synth::Kind::Drums) l=v.tone.sample(static_cast<float>(l));
         r=l;
       }
       double gain=envelope(v);
       if(v.choking){v.chokeGain*=std::exp(-1/(.003*sampleRate));gain*=v.chokeGain;if(v.chokeGain<.006)v.active=false;}
+      if(level!=1)gain*=level;
       out[2*i]+=static_cast<float>(l*gain);out[2*i+1]+=static_cast<float>(r*gain);++v.age;
       }
     }
@@ -668,11 +703,26 @@ struct TrackRuntime {
     pendingCount=0;deferredCount=0;
     releaseAudition=false;
     if(instrument)instrument->requestReset();
-    // Timeline pedal (VST3 only): chase the value in effect at the new position, or lift it when stopping.
-    if(vst3()&&!timeline.controls.empty()){
-      PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=sustainController;
-      e.value=chase&&timeline.enabled?static_cast<float>(controlValueBefore(frame,sustainController))/127.f:0.f;
-      pendingEvents[pendingCount++]=e;
+    // Timeline controllers (docs/MIDI_CONTROLLERS.md): chase the values in effect at the new position, or
+    // return the resetting ones (mod wheel, expression, pedal, pressure, bend) to rest when stopping.
+    nextControl=static_cast<std::size_t>(std::lower_bound(timeline.controls.begin(),timeline.controls.end(),frame,[](const ControlEvent& c,std::int64_t f){return c.frame<f;})-timeline.controls.begin());
+    if(instrument&&!timeline.controls.empty()){
+      std::array<std::int32_t,controllerCount> values{};std::array<bool,controllerCount> present{},known{};
+      for(const auto&c:timeline.controls){present[c.controller]=true;if(chase&&c.frame<frame){values[c.controller]=c.value;known[c.controller]=true;}}
+      for(int controller=0;controller<controllerCount;++controller){
+        const auto index=static_cast<std::size_t>(controller);
+        if(!present[index]||controller==bendRangeController)continue;
+        int value=0;
+        if(chase&&timeline.enabled&&known[index])value=values[index];
+        else if(!resetController(controller,value))continue;
+        if(pendingCount>=pendingEvents.size()){++overflows;break;}
+        PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=static_cast<std::uint32_t>(controller);e.value=normalizedControllerValue(controller,value);
+        pendingEvents[pendingCount++]=e;
+      }
+    } else if(!instrument) {
+      controllers=Controllers{};
+      if(chase&&timeline.enabled)for(std::size_t i=0;i<nextControl;++i)applyController(timeline.controls[i].controller,timeline.controls[i].value);
+      snapControllers();
     }
     if(resetEffects){for(auto& effect:inserts){if(effect.builtin)effect.builtin->reset();if(effect.plugin)effect.plugin->requestReset();}compensation.reset();}
     nextNote=static_cast<std::size_t>(std::lower_bound(timeline.notes.begin(),timeline.notes.end(),frame,[](const NotePair& n,std::int64_t f){return n.onFrame<f;})-timeline.notes.begin());
@@ -716,7 +766,18 @@ struct TrackRuntime {
       instrument->process(buffer.data(),frames,std::span(blockEvents).first(eventCount),context);
     } else {
       std::uint32_t cursor=0;
-      if(playing)while(nextNote<timeline.notes.size()&&timeline.notes[nextNote].onFrame<frame+frames) {
+      const auto blockEnd=frame+frames;
+      // Controllers and note onsets in time order; a controller at an onset's sample applies first.
+      if(playing)for(;;) {
+        const bool note=nextNote<timeline.notes.size()&&timeline.notes[nextNote].onFrame<blockEnd;
+        const bool control=nextControl<timeline.controls.size()&&timeline.controls[nextControl].frame<blockEnd;
+        if(!note&&!control)break;
+        if(control&&(!note||timeline.controls[nextControl].frame<=timeline.notes[nextNote].onFrame)) {
+          const auto& c=timeline.controls[nextControl++];
+          if(c.frame>frame){const auto at=static_cast<std::uint32_t>(c.frame-frame);if(at>cursor){voicesInto(buffer.data()+cursor*2,at-cursor,overflows);cursor=at;}}
+          applyController(c.controller,c.value);
+          continue;
+        }
         const auto& n=timeline.notes[nextNote++];if(n.onFrame<frame)continue;
         const auto onset=static_cast<std::uint32_t>(n.onFrame-frame);
         voicesInto(buffer.data()+cursor*2,onset-cursor,overflows);cursor=onset;
@@ -786,7 +847,7 @@ bool sameStructure(const ControlRecipe& a,const ControlRecipe& b) {
     const auto&tx=x.tracks[i];const auto&ty=y.tracks[i];
     const auto samePlugin=[](const PluginSpec&a,const PluginSpec&b){return a.instanceId==b.instanceId&&a.path==b.path&&a.classId==b.classId&&a.state==b.state&&a.controllerState==b.controllerState&&a.isInstrument==b.isInstrument;};
     const auto&sx=tx.source;const auto&sy=ty.source;
-    if(tx.id!=ty.id||sx.kind!=sy.kind||sx.instrumentId!=sy.instrumentId||sx.sampleSetId!=sy.sampleSetId||sx.isKit!=sy.isKit||!samePlugin(sx.plugin,sy.plugin)||tx.enabled!=ty.enabled||tx.notes!=ty.notes||tx.audio!=ty.audio||tx.inserts.size()!=ty.inserts.size())return false;
+    if(tx.id!=ty.id||sx.kind!=sy.kind||sx.instrumentId!=sy.instrumentId||sx.sampleSetId!=sy.sampleSetId||sx.isKit!=sy.isKit||!samePlugin(sx.plugin,sy.plugin)||tx.enabled!=ty.enabled||tx.notes!=ty.notes||tx.controls!=ty.controls||tx.audio!=ty.audio||tx.inserts.size()!=ty.inserts.size())return false;
     for(std::size_t j=0;j<tx.inserts.size();++j){const auto&ex=tx.inserts[j];const auto&ey=ty.inserts[j];
       if(ex.id!=ey.id||ex.type!=ey.type||ex.enabled!=ey.enabled||(ex.type=="vst3"&&!samePlugin(ex.plugin,ey.plugin)))return false;
     }
@@ -1010,8 +1071,11 @@ struct RenderEngine::Impl {
         if(type==0x90&&ev.data2>0)t.spawn(ev.data1&0x7F,static_cast<float>(ev.data2&0x7F)/127.f,unlimitedFrame,unlimitedFrame,ev.noteId,true,voiceOverflows);
         else if(type==0x80||type==0x90)t.noteOff(ev.data1&0x7F,ev.noteId,voiceOverflows);
         else if(type==0xB0&&(ev.data1==120||ev.data1==123))t.allNotesOff(voiceOverflows);
-        // CC64 sustain (built-ins defer note-offs) and, for VST3, every controller.
+        // Controllers (CC64 defers built-in note-offs), pitch bend, channel pressure, program change.
         else if(type==0xB0)t.controlChange(ev.data1&0x7F,ev.data2&0x7F,voiceOverflows);
+        else if(type==0xE0)t.controlChange(pitchBendController,(((ev.data2&0x7F)<<7)|(ev.data1&0x7F))-8192,voiceOverflows);
+        else if(type==0xD0)t.controlChange(channelPressureController,ev.data1&0x7F,voiceOverflows);
+        else if(type==0xC0)t.controlChange(programChangeController,ev.data1&0x7F,voiceOverflows);
       }
       ++liveMidiNext;
     }
@@ -1567,9 +1631,13 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
       if(track.instrument&&n.velocity>0){track.events.push_back({n.onFrame,{PluginEvent::Type::NoteOn,0,n.id,static_cast<std::uint8_t>(n.pitch),0,track.wavetable?n.velocity:std::min(1.f,n.velocity),0}});track.events.push_back({n.offFrame,{PluginEvent::Type::NoteOff,0,n.id,static_cast<std::uint8_t>(n.pitch),0,0,0}});}
     }
     std::stable_sort(track.timeline.notes.begin(),track.timeline.notes.end(),[](const NotePair&a,const NotePair&b){return a.onFrame<b.onFrame||(a.onFrame==b.onFrame&&a.id<b.id);});
-    if(t.source.kind==TrackSource::Kind::Vst3)for(const auto&c:t.controls){
-      require(c.frame>=0&&c.frame<=p.lengthFrames&&c.controller<=127&&c.value<=127,"Invalid native control event");
-      PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=c.controller;e.value=static_cast<float>(c.value)/127.f;
+    for(std::size_t i=0;i<t.controls.size();++i){
+      const auto&c=t.controls[i];
+      require(c.frame>=0&&c.frame<=p.lengthFrames&&validControllerValue(c.controller,c.value)&&(!i||t.controls[i-1].frame<=c.frame),"Invalid native control event");
+      // Plug-in instruments (VST3, IEUM WAVE) take controllers as sample-accurate events; built-in voices read
+      // timeline.controls while rendering. The bend range is a built-in meta controller.
+      if(!track.instrument||c.controller==bendRangeController)continue;
+      PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=c.controller;e.value=normalizedControllerValue(c.controller,c.value);
       track.events.push_back({c.frame,e});
     }
     std::stable_sort(track.events.begin(),track.events.end(),[](const TimedPluginEvent&a,const TimedPluginEvent&b){return a.frame<b.frame||(a.frame==b.frame&&eventOrder(a.event.type)<eventOrder(b.event.type));});
@@ -1656,7 +1724,7 @@ std::uint64_t RenderEngine::seek(std::int64_t frame){Impl::Command c;c.kind=Impl
 std::uint64_t RenderEngine::previewNote(std::uint32_t track,int pitch,float velocity,std::uint32_t duration){require(track<256&&pitch>=0&&pitch<=127&&duration>0&&duration<=impl_->rate*30,"Invalid preview note");checked(velocity,0,2,"Invalid preview velocity");Impl::Command c;c.kind=Impl::Kind::Preview;c.track=track;c.pitch=pitch;c.value=velocity;c.frame=duration;c.noteId=-2;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::noteOn(std::uint32_t track,int pitch,float velocity,std::int32_t id){require(track<256&&pitch>=0&&pitch<=127,"Invalid live MIDI note");checked(velocity,0,2,"Invalid MIDI velocity");Impl::Command c;c.kind=Impl::Kind::NoteOn;c.track=track;c.pitch=pitch;c.value=velocity;c.noteId=id;c.frame=unlimitedFrame;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::noteOff(std::uint32_t track,int pitch,std::int32_t id){require(track<256&&pitch>=0&&pitch<=127,"Invalid MIDI note off");Impl::Command c;c.kind=Impl::Kind::NoteOff;c.track=track;c.pitch=pitch;c.noteId=id;return impl_->enqueue(c);}
-std::uint64_t RenderEngine::controlChange(std::uint32_t track,int controller,int value){require(track<256&&controller>=0&&controller<=127&&value>=0&&value<=127,"Invalid MIDI control change");Impl::Command c;c.kind=Impl::Kind::Control;c.track=track;c.pitch=controller;c.value=static_cast<float>(value);return impl_->enqueue(c);}
+std::uint64_t RenderEngine::controlChange(std::uint32_t track,int controller,int value){require(track<256&&validControllerValue(controller,value),"Invalid MIDI control change");Impl::Command c;c.kind=Impl::Kind::Control;c.track=track;c.pitch=controller;c.value=static_cast<float>(value);return impl_->enqueue(c);}
 std::uint64_t RenderEngine::allNotesOff(std::uint32_t track){require(track<256,"Invalid audition track index");Impl::Command c;c.kind=Impl::Kind::AllNotesOff;c.track=track;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::setMonitoring(std::span<const std::uint32_t> tracks){Impl::Command c;c.kind=Impl::Kind::Monitor;for(const auto t:tracks){require(t<256,"Invalid monitor track index");c.mask[t/64]|=std::uint64_t{1}<<(t%64);}return impl_->enqueue(c);}
 std::vector<RecordingTake> RenderEngine::planRecording(std::span<const std::uint32_t> tracks)const {

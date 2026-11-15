@@ -98,7 +98,9 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
       const track = existing ?? { ...createTrack('instrument', part.channel === 9 ? 'drums' : 'keys'), name: partName }
       if (!existing && part.program !== undefined) warnings.add('MIDI 악기 지정은 기본 건반·드럼 음색에 연결했습니다. 라이브러리에서 원하는 음색으로 바꿀 수 있습니다.')
       const clip: MidiClip = { id: uid(), kind: 'midi', name: partName, startBeat: beat, lengthBeats: Math.max(MIN_CLIP_BEATS, item.midi.lengthBeats), gain: 1,
-        notes: part.notes.map(note => ({ ...note, id: uid() })), ...(part.sustain?.length ? { sustain: part.sustain.map(event => ({ ...event })) } : {}) }
+        notes: part.notes.map(note => ({ ...note, id: uid() })), ...(part.sustain?.length ? { sustain: part.sustain.map(event => ({ ...event })) } : {}),
+        ...(part.controllers && Object.keys(part.controllers).length ? { controllers: Object.fromEntries(Object.entries(part.controllers).map(([key, points]) => [key, (points ?? []).map(point => ({ ...point }))])) } : {}),
+        ...(part.bendRange === undefined ? {} : { bendRange: part.bendRange }) }
       append(track, clip, !!existing)
     }
   }

@@ -2,7 +2,8 @@ import { isSampleRate, type SampleRate } from '../../core/audioSettings'
 import { EFFECT_DEFS, type ParamDef } from '../../core/devices'
 import { instrumentDef, isInstrumentId } from '../../core/instruments'
 import { quarterNotesPerBar, validateTimeSignature } from '../../core/meter'
-import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd, playbackNotes, playbackSustain, type Occurrence } from '../../core/playback'
+import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd, playbackControllers, playbackNotes, playbackSustain, type Occurrence } from '../../core/playback'
+import { BEND_RANGE_NUMBER, controllerNumber, controllerSpec } from '../../core/controllers'
 import type { EffectType, MidiClip, Project, TimeSignature, Track, TrackInputRoute, TrackInputTap } from '../../core/types'
 import { reconcileTrackRoutes, routeOf } from '../../core/trackRouting'
 import { loopRange } from '../math'
@@ -21,8 +22,8 @@ export const NATIVE_TIMELINE_LIMITS = {
   audioWindowsPerTrack: 2048,
   occurrencesPerClip: 4096,
   insertsPerTrack: 64,
-  /** CC64 events per track (VST3 instruments only). */
-  controlsPerTrack: 50_000,
+  /** Controller events per track (CC64 for VST3 instruments, controller lanes for every instrument). */
+  controlsPerTrack: 100_000,
 } as const
 
 export type NativeTimelineErrorCode = 'INVALID_PROJECT' | 'INVALID_PCM_ASSET' | 'MISSING_PCM_ASSET' | 'LIMIT_EXCEEDED' | 'UNSUPPORTED_SOURCE' | 'INVALID_POSITION'
@@ -84,11 +85,15 @@ export interface NativeNotePair {
   readonly velocity: number
 }
 
-/** A MIDI control change delivered sample-accurately to a VST3 instrument (currently only CC64 sustain). */
+/**
+ * A controller event delivered sample-accurately (docs/MIDI_CONTROLLERS.md). controller: 0–127 CC (value 0…127),
+ * 128 channel aftertouch (0…127), 129 pitch bend (−8192…8191), 130 program change (0…127), 131 pitch-bend range in
+ * semitones (0…48, built-in instruments only). VST3 receives everything including CC64; IEUM WAVE everything but
+ * CC64 and 131; built-in synths/samplers everything but CC64 and 130 (the pedal is in their note-off frames).
+ */
 export interface NativeControlEvent {
   readonly frame: number
   readonly controller: number
-  /** 0…127 */
   readonly value: number
 }
 
@@ -225,7 +230,7 @@ function prepareOccurrences(project: Project): Map<MidiClip, readonly Occurrence
       if (clip.kind === 'midi') {
         sourceNotes += clip.notes.length
         limit(sourceNotes <= NATIVE_TIMELINE_LIMITS.sourceNotes, 'source notes')
-        if (!clip.notes.length) continue
+        if (!clip.notes.length && !clip.controllers) continue
       }
       if (clip.mute) continue
       const occurrences = clipOccurrences(track, clip, project.lengthBeats)
@@ -307,17 +312,33 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
   const routed = new Map(reconcileTrackRoutes(project.tracks).map(track => [track.id, routeOf(track)]))
   const tracks = project.tracks.map((track): NativeTrackTimeline => {
     const notes: NativeNotePair[] = []
-    const controls: NativeControlEvent[] = []
+    const controls: (NativeControlEvent & { reset: boolean; order: number })[] = []
     const audio: NativeAudioWindow[] = []
     const pedalEvents = track.kind === 'instrument' && !!track.pluginInstrument
+    const builtin = track.kind === 'instrument' && !track.pluginInstrument && instrumentDef(track.instrument).kind !== 'native'
+    const pushControl = (beat: number, controller: number, value: number, reset: boolean, description: string): void => {
+      const frame = Math.round(number(beat, -10_000_000, 20_000_000, `${description} position`) * framesPerBeat)
+      if (frame >= lengthFrames) return
+      controls.push({ frame: Math.max(0, frame), controller, value, reset, order: controls.length })
+      limit(controls.length <= NATIVE_TIMELINE_LIMITS.controlsPerTrack, 'controller events per track')
+    }
     for (const clip of track.clips) {
       if (clip.kind !== 'midi' || clip.mute) continue
       for (const occurrence of prepared.get(clip) ?? []) {
-        if (pedalEvents) for (const event of playbackSustain(track, clip, occurrence)) {
-          const frame = Math.round(number(event.beat, -10_000_000, 20_000_000, 'sustain position') * framesPerBeat)
-          if (frame >= lengthFrames) continue
-          controls.push({ frame: Math.max(0, frame), controller: 64, value: number(event.value, 0, 127, 'sustain value') })
-          limit(controls.length <= NATIVE_TIMELINE_LIMITS.controlsPerTrack, 'sustain events per track')
+        if (pedalEvents) {
+          const events = playbackSustain(track, clip, occurrence)
+          events.forEach((event, index) => pushControl(event.beat, 64, number(event.value, 0, 127, 'sustain value'), index === events.length - 1 && index > 0 && event.value === 0, 'sustain'))
+        }
+        // Built-in instruments take the region's bend range with the first bend event of every occurrence.
+        let bendRange: number | null = null
+        if (track.kind === 'instrument') for (const event of playbackControllers(track, clip, occurrence)) {
+          if (builtin && event.key === 'program') continue
+          const spec = controllerSpec(event.key)
+          if (builtin && event.key === 'pitchBend' && event.range !== bendRange) {
+            bendRange = event.range ?? 2
+            pushControl(event.beat, BEND_RANGE_NUMBER, number(bendRange, 0, 48, 'pitch-bend range'), !!event.reset, 'pitch-bend range')
+          }
+          pushControl(event.beat, controllerNumber(event.key), number(event.value, spec.min, spec.max, 'controller value'), !!event.reset, 'controller')
         }
         for (const note of playbackNotes(track, clip, occurrence, !pedalEvents)) {
           const onFrame = Math.round(number(note.start, -10_000_000, 20_000_000, 'note onset') * framesPerBeat)
@@ -350,8 +371,8 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
         fadeInCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeInCurve)], fadeOutCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeOutCurve)] })
     }
     notes.sort((a, b) => a.onFrame - b.onFrame || a.offFrame - b.offFrame || a.id - b.id)
-    // Stable: equal frames keep occurrence order, so a release at a region end precedes the next region's chase.
-    controls.sort((a, b) => a.frame - b.frame)
+    // At equal frames a release/reset at a region end precedes the next region's chase; otherwise emission order.
+    controls.sort((a, b) => a.frame - b.frame || (a.reset === b.reset ? a.order - b.order : a.reset ? -1 : 1))
     audio.sort((a, b) => a.startFrame - b.startFrame || a.id - b.id)
     return { id: track.id, source: source(track), gain: number(track.volume, 0, 2, 'track gain'), pan: number(track.pan, -1, 1, 'track pan'),
       enabled: isTrackEnabled(track) && track.pluginInstrument?.enabled !== false, mute: track.mute, solo: track.solo, soloSafe: track.soloSafe, audible: audible.has(track.id) && track.pluginInstrument?.enabled !== false,
@@ -365,7 +386,7 @@ export function compileNativeTimeline(project: Project, pcmAssets: ReadonlyMap<s
         }
         if (!Object.hasOwn(EFFECT_DEFS, device.type)) throw new NativeTimelineError('UNSUPPORTED_SOURCE', 'Unknown builtin insert.')
         return { id: id(device.id), type: device.type, enabled: device.enabled, params: parameters(EFFECT_DEFS[device.type].params, device.params) }
-      }), notes, controls, audio }
+      }), notes, controls: controls.map(({ frame, controller, value }) => ({ frame, controller, value })), audio }
   })
   return { version: 1, projectId: project.id, revision, sampleRate, bpm, timeSignature, beatsPerBar: project.beatsPerBar,
     lengthFrames, cycle, masterGain: number(project.masterVolume, 0, 2, 'master gain'), assets: [...usedAssets.values()], tracks }

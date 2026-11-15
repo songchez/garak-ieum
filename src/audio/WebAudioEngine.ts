@@ -4,7 +4,7 @@ import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
 import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
 import { numberedInputChoices } from '../core/trackInputs'
 import {
-  connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
+  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, rmsLevel, scheduleInstrument, scheduleRange, scheduleSampled,
   setRouteMonitoring, trackLayoutKey, updateGraph,
 } from './graph'
 import type { EngineGraph } from './graph'
@@ -100,7 +100,8 @@ export class WebAudioEngine implements AudioEngine {
   /** Monitor-only clicks on the audio clock; never part of the graph, recordings or export. */
   private readonly metronome = new WebMetronome()
   /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md). */
-  readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time) })
+  readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time),
+    control: (trackId, key, value) => { const controls = this.graph?.tracks.get(trackId)?.controls; if (controls && this.context) applyControl(controls, key, value, this.context.currentTime) } })
 
   constructor(project?: Project, settings: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     this.settings = normalizeAudioSettings(settings)
@@ -549,9 +550,10 @@ export class WebAudioEngine implements AudioEngine {
     if (def.set && !loaded) { void this.preloadSamples(def.set).catch(() => undefined); return null }
     const when = context.currentTime
     // available === duration: no release-noise sample is scheduled at the far end of the hold.
+    const input = channel.controls?.input ?? channel.input, pitchBus = def.isKit ? undefined : channel.controls?.pitch
     const voice = loaded
-      ? scheduleSampled(graph, channel.input, loaded, def.isKit, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, channel.chokes)
-      : scheduleInstrument(graph, channel.input, track.instrument, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams)
+      ? scheduleSampled(graph, input, loaded, def.isKit, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, channel.chokes, pitchBus)
+      : scheduleInstrument(graph, input, track.instrument, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, pitchBus)
     if (!voice) return null
     // Drum hits ring out on their own, like timeline notes; note-offs do not cut them.
     if (def.isKit) return { release: () => undefined }

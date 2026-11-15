@@ -1,5 +1,7 @@
 import { HeldNotes, parseMidi, routeAccepts, routeNoteOn, type MidiRoute } from '../core/midiInput'
 import { SUSTAIN_CONTROLLER, isPedalDown } from '../core/sustain'
+import { keyOfNumber } from '../core/controllers'
+import type { ControllerKey } from '../core/types'
 
 /** One incoming MIDI message after the engine played it (docs/MIDI_RECORDING.md). */
 export interface StampedMidi {
@@ -40,6 +42,8 @@ export interface WebLiveMidiHost {
   startNote(trackId: string, pitch: number, velocity: number): LiveVoiceHandle | null
   /** Transport beat heard at a performance.now() time, or null while not playing. */
   beatAt(timeMs: number): number | null
+  /** Live controller (pitch bend, CCs other than the pedal, aftertouch) for a track's built-in instrument. */
+  control?(trackId: string, key: ControllerKey, value: number): void
 }
 
 interface HeldVoice { trackId: string; pitch: number; voice: LiveVoiceHandle | null }
@@ -113,6 +117,13 @@ export class WebLiveMidi implements LiveMidiPort {
       for (const trackId of tracks) {
         if (isPedalDown(message.value)) this.pedal.add(trackId)
         else if (this.pedal.has(trackId)) this.liftPedal(trackId)
+      }
+    } else if (message.type === 'controller' || message.type === 'pitchBend' || message.type === 'aftertouch' || message.type === 'program') {
+      // Pitch bend, mod wheel, expression…: every track hearing this input (docs/MIDI_CONTROLLERS.md).
+      const key = message.type === 'controller' ? keyOfNumber(message.controller) : message.type
+      const value = message.type === 'program' ? message.program : message.value
+      if (key && this.host.control) {
+        for (const trackId of new Set(this.routes.filter(route => routeAccepts(route, source, message.channel)).map(route => route.trackId))) this.host.control(trackId, key, value)
       }
     }
     // Every message (controllers included) is reported for recording and capture.

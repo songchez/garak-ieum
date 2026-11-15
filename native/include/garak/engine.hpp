@@ -66,8 +66,9 @@ struct ProcessContext {
   std::int64_t cycleStartFrame = 0, cycleEndFrame = 0, continuousFrame = 0;
 };
 struct PluginEvent {
-  // Controller: MIDI control change; parameterId is the controller number (0..127) and value is
-  // normalized (CC value / 127). VST3 delivers it through the plug-in's IMidiMapping.
+  // Controller: MIDI controller; parameterId is the controller number (ControlEvent numbering: 0..127 CC,
+  // 128 channel pressure, 129 pitch bend, 130 program change) and value is normalizedControllerValue().
+  // VST3 delivers it through the plug-in's IMidiMapping; IEUM WAVE interprets it itself.
   enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff, Controller };
   Type type = Type::NoteOn;
   std::uint32_t offset = 0;
@@ -118,15 +119,43 @@ struct NotePair {
   float velocity = 1;
   bool operator==(const NotePair&) const = default;
 };
-// A MIDI control change on the timeline (currently CC64 sustain for VST3 instruments; built-in sources get
-// the pedal applied to their note-off frames by the timeline compiler, docs/SUSTAIN_PEDAL.md).
+// A MIDI controller event on the timeline (docs/MIDI_CONTROLLERS.md, docs/SUSTAIN_PEDAL.md).
+// controller: 0..127 control change (value 0..127), 128 channel pressure (0..127), 129 pitch bend
+// (-8192..8191, 0 = centre), 130 program change (0..127), 131 pitch-bend range in semitones (0..48,
+// a host meta-controller for built-in sources only). The timeline compiler sends VST3 instruments every
+// controller including CC64; IEUM WAVE everything but CC64/131 (the pedal is baked into note-offs);
+// built-in sources everything but CC64/130.
 struct ControlEvent {
   std::int64_t frame = 0;
-  std::uint8_t controller = 64, value = 0;
+  std::uint16_t controller = 64;
+  std::int32_t value = 0;
   bool operator==(const ControlEvent&) const = default;
 };
 constexpr int sustainController = 64;
+constexpr int modWheelController = 1, volumeController = 7, expressionController = 11;
+constexpr int channelPressureController = 128, pitchBendController = 129, programChangeController = 130, bendRangeController = 131;
+constexpr int controllerCount = 132;
 [[nodiscard]] constexpr bool pedalDown(int value) noexcept { return value >= 64; }
+// Valid value range of a controller (pitch bend is signed; the bend range is 0..48 semitones).
+[[nodiscard]] constexpr bool validControllerValue(int controller, int value) noexcept {
+  if (controller < 0 || controller >= controllerCount) return false;
+  if (controller == pitchBendController) return value >= -8192 && value <= 8191;
+  if (controller == bendRangeController) return value >= 0 && value <= 48;
+  return value >= 0 && value <= 127;
+}
+// Normalized 0..1 value a plug-in receives (VST3 IMidiMapping parameter point; IEUM WAVE decodes it back).
+[[nodiscard]] constexpr float normalizedControllerValue(int controller, int value) noexcept {
+  return controller == pitchBendController ? static_cast<float>(value + 8192) / 16383.f : static_cast<float>(value) / 127.f;
+}
+// Controllers returned to a default when playback stops and at region ends (mod wheel, expression, sustain,
+// channel pressure, pitch bend); others (volume, pan, program, ...) keep their last value.
+[[nodiscard]] constexpr bool resetController(int controller, int& defaultValue) noexcept {
+  switch (controller) {
+    case modWheelController: case sustainController: case channelPressureController: case pitchBendController: defaultValue = 0; return true;
+    case expressionController: defaultValue = 127; return true;
+    default: return false;
+  }
+}
 struct AudioWindow {
   std::int32_t id = 0;
   std::string assetId;
@@ -181,7 +210,7 @@ struct TrackTimeline {
   bool enabled = true, mute = false, solo = false, soloSafe = false, audible = true;
   std::vector<BuiltinInsert> inserts;
   std::vector<NotePair> notes;
-  std::vector<ControlEvent> controls; // Sorted by frame.
+  std::vector<ControlEvent> controls; // Sorted by frame; equal frames keep their order.
   std::vector<AudioWindow> audio;
 };
 struct ProjectTimeline {
@@ -369,8 +398,9 @@ class RenderEngine {
                                         std::uint32_t durationFrames = 24000);
   [[nodiscard]] std::uint64_t noteOn(std::uint32_t trackIndex, int pitch, float velocity, std::int32_t noteId);
   [[nodiscard]] std::uint64_t noteOff(std::uint32_t trackIndex, int pitch, std::int32_t noteId);
-  // Live MIDI control change (0..127). CC64 sustains live notes: built-in and IEUM WAVE sources defer
-  // live note-offs while the pedal is down; VST3 instruments receive the controller as an event.
+  // Live MIDI controller (ControlEvent numbering and ranges: validControllerValue). CC64 sustains live notes:
+  // built-in and IEUM WAVE sources defer live note-offs while the pedal is down; VST3 instruments receive
+  // every controller as an event. Built-ins follow pitch bend, mod wheel/pressure (vibrato), CC7 and CC11.
   [[nodiscard]] std::uint64_t controlChange(std::uint32_t trackIndex, int controller, int value);
   // Release audition/live notes on this track without touching timeline notes.
   [[nodiscard]] std::uint64_t allNotesOff(std::uint32_t trackIndex);

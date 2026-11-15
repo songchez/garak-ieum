@@ -951,13 +951,97 @@ void sustainPedal(){
   checkSame(render(restrike,6000),render(reference,6000),0,"Pedal survived a panic");
   // Invalid controller numbers and values are rejected on the control thread.
   rejects([&]{(void)pedal.controlChange(0,64,128);},"Out-of-range controller value accepted");
-  rejects([&]{(void)pedal.controlChange(0,128,0);},"Out-of-range controller number accepted");
+  rejects([&]{(void)pedal.controlChange(0,132,0);},"Out-of-range controller number accepted");
+  rejects([&]{(void)pedal.controlChange(0,129,8192);},"Out-of-range pitch bend accepted");
+  rejects([&]{(void)pedal.controlChange(0,131,49);},"Out-of-range bend range accepted");
+}
+
+// MIDI controllers (docs/MIDI_CONTROLLERS.md). Measured pitch and level, never golden PCM.
+// Positive-going zero crossings of the left channel with sub-sample interpolation, in [first, last) frames.
+std::vector<double> crossings(const std::vector<float>&d,std::size_t first,std::size_t last){
+  std::vector<double>result;
+  for(std::size_t i=first+1;i<last;++i){const double a=d[(i-1)*2],b=d[i*2];if(a<0&&b>=0)result.push_back(static_cast<double>(i-1)+a/(a-b));}
+  return result;
+}
+double frequencyOf(const std::vector<float>&d,std::size_t first,std::size_t last,double rate=48000){
+  const auto x=crossings(d,first,last);check(x.size()>2,"No periodic signal to measure");
+  return static_cast<double>(x.size()-1)*rate/(x.back()-x.front());
+}
+// Spread (cents) between the fastest and slowest single cycle.
+double cycleSpreadCents(const std::vector<float>&d,std::size_t first,std::size_t last){
+  const auto x=crossings(d,first,last);check(x.size()>3,"No periodic signal to measure");
+  double shortest=1e9,longest=0;for(std::size_t i=1;i<x.size();++i){shortest=std::min(shortest,x[i]-x[i-1]);longest=std::max(longest,x[i]-x[i-1]);}
+  return 1200*std::log2(longest/shortest);
+}
+double rmsOf(const std::vector<float>&d,std::size_t first,std::size_t last){double sum=0;for(std::size_t i=first*2;i<last*2;++i)sum+=static_cast<double>(d[i])*d[i];return std::sqrt(sum/static_cast<double>((last-first)*2));}
+void midiControllers(){
+  auto base=project(48000,96000);TrackTimeline t;t.id="keys";t.source.kind=TrackSource::Kind::BuiltinSynth;t.source.instrumentId="keys";
+  t.source.params={{"bell",0},{"sustain",1},{"release",.05}};t.notes={{1,0,96000,96000,69,.5f}};base.tracks.push_back(t);
+  const auto play=[&](std::vector<ControlEvent> controls,std::uint32_t frames=24000){auto p=base;p.tracks[0].controls=std::move(controls);RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");return render(e,frames,256);};
+  const auto plain=play({});const double f0=frequencyOf(plain,2400,24000);near(f0,440,.5,"Unbent built-in pitch");
+  near(frequencyOf(play({{0,129,8191}}),2400,24000)/f0,std::pow(2,2/12.0),.001,"Full pitch bend up is not two semitones");
+  near(frequencyOf(play({{0,129,-8192}}),2400,24000)/f0,std::pow(2,-2/12.0),.001,"Full pitch bend down is not two semitones");
+  near(frequencyOf(play({{0,131,12},{0,129,8191}}),2400,24000)/f0,2,.002,"The bend range controller was ignored");
+  near(frequencyOf(play({{0,129,4096}}),2400,24000)/f0,std::pow(2,1/12.0),.001,"Half pitch bend is not one semitone");
+  // Neutral values change nothing: centred bend, CC7 at 100, a program change, and an unknown controller.
+  checkSame(play({{0,129,0},{0,7,100},{0,130,5},{0,74,30}}),plain,0,"Neutral controllers changed the built-in sound");
+  // Expression and volume scale the level by (value/127)^2 and (value/100)^2.
+  near(rmsOf(play({{0,11,90}}),2400,24000)/rmsOf(plain,2400,24000),(90.0/127)*(90.0/127),.002,"CC11 expression level");
+  near(rmsOf(play({{0,7,50}}),2400,24000)/rmsOf(plain,2400,24000),.25,.002,"CC7 volume level");
+  // The mod wheel (and channel pressure) add a ~±50 cent vibrato; without it every cycle has the same length.
+  check(cycleSpreadCents(plain,2400,24000)<2,"Unmodulated pitch wobbles");
+  const double vibrato=cycleSpreadCents(play({{0,1,127}}),2400,24000);check(vibrato>80&&vibrato<110,"Mod wheel vibrato depth");
+  const double pressure=cycleSpreadCents(play({{0,128,64}}),2400,24000);check(pressure>35&&pressure<60,"Channel pressure vibrato depth");
+  // A bend is smoothed: the cycle right after the event is between the old and the new pitch.
+  {const auto glide=play({{12000,129,8191}});const auto x=crossings(glide,12000,12400);check(x.size()>2,"No cycles after the bend");
+   const double first=48000/(x[1]-x[0]);check(first>f0*1.01&&first<f0*std::pow(2,2/12.0)*.995,"Pitch bend jumped instead of gliding");
+   near(frequencyOf(glide,16800,24000)/f0,std::pow(2,2/12.0),.001,"Pitch bend did not settle");}
+  // Drum kits ignore bend and vibrato.
+  {auto kit=project(48000,24000);TrackTimeline d;d.id="kit";d.source.kind=TrackSource::Kind::BuiltinSynth;d.source.instrumentId="drums";d.source.isKit=true;d.notes={{1,0,2000,24000,50,.8f}};kit.tracks.push_back(d);
+   auto bentKit=kit;bentKit.tracks[0].controls={{0,129,8191},{0,1,127}};RenderEngine a,b;a.submit(a.prepare(kit,{}));b.submit(b.prepare(bentKit,{}));check(a.play()&&b.play(),"Play failed");
+   checkSame(render(a,6000),render(b,6000),0,"A drum kit followed pitch bend or vibrato");}
+  // Seek chases the bend in effect (no glide); stop and replay from the start returns it to centre.
+  {auto p=base;p.tracks[0].controls={{1000,129,8191}};RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");(void)render(e,2048,256);
+   check(e.seek(48000),"Seek failed");const auto chased=render(e,4800,256);near(frequencyOf(chased,0,4800)/f0,std::pow(2,2/12.0),.001,"Seek did not chase the pitch bend");
+   check(e.stop(),"Stop failed");(void)render(e,256,256);check(e.play(),"Replay failed");const auto again=render(e,960,256);near(frequencyOf(again,0,960)/f0,1,.003,"Replay kept the chased bend before its event");}
+  // Live pitch bend (and the raw 0xE0 message) bends a live note; a panic re-centres it.
+  {auto live=project();TrackTimeline l=t;l.notes.clear();live.tracks.push_back(l);RenderEngine e;e.submit(e.prepare(live,{}));
+   check(e.noteOn(0,69,.5f,7),"Live note failed");check(e.controlChange(0,129,8191),"Live bend failed");
+   near(frequencyOf(render(e,12000),2400,12000)/f0,std::pow(2,2/12.0),.001,"Live pitch bend");
+   const std::array<LiveMidiEvent,1> centre{LiveMidiEvent{0,0,0xE0,0,64,-1}};check(e.queueLiveMidi(centre)==1,"Live MIDI queue");
+   near(frequencyOf(render(e,12000),2400,12000)/f0,1,.001,"Live 0xE0 centre");
+   check(e.controlChange(0,1,127)&&e.allNotesOff(0),"Live mod/panic failed");(void)render(e,6000);
+   check(e.noteOn(0,69,.5f,8),"Live note after panic failed");check(cycleSpreadCents(render(e,12000),2400,12000)<2,"Panic did not reset the mod wheel");}
+  // VST3: every controller as a normalized, sample-accurate event; the bend range stays in the host.
+  {auto plugin=std::make_shared<TestPlugin>();plugin->instrument=true;auto p=project(48000,1000);
+   TrackTimeline v;v.id="vst";v.source.kind=TrackSource::Kind::Vst3;v.source.plugin.instanceId="synth";v.source.plugin.isInstrument=true;
+   v.notes={{1,10,500,1000,60,.7f}};v.controls={{5,129,8191},{6,128,64},{7,1,127},{8,131,12},{9,7,90},{9,129,-8192}};p.tracks.push_back(v);
+   RenderEngine e(48000,64);e.submit(e.prepare(p,{}, {},[&](const PluginSpec&,double,unsigned){return plugin;}));check(e.play(),"Play failed");(void)render(e,64,64);
+   std::vector<PluginEvent> got;for(std::size_t i=0;i<plugin->eventCount;++i)if(plugin->received[i].type==PluginEvent::Type::Controller)got.push_back(plugin->received[i]);
+   const auto is=[](const PluginEvent&x,std::uint32_t id,std::uint32_t offset,float value){return x.parameterId==id&&x.offset==offset&&std::abs(x.value-value)<1e-6f;};
+   const float centre=8192.f/16383;
+   check(got.size()==8,"VST3 controller event count (chase + timeline, no bend range)");
+   check(is(got[0],1,0,0)&&is(got[1],128,0,0)&&is(got[2],129,0,centre),"Play did not reset mod wheel, pressure and bend");
+   check(is(got[3],129,5,1)&&is(got[4],128,6,64.f/127)&&is(got[5],1,7,1),"VST3 controller sample offsets or values");
+   check(is(got[6],7,9,90.f/127)&&is(got[7],129,9,0),"Same-sample controllers lost their order");
+   plugin->eventCount=0;check(e.seek(8),"Seek failed");(void)render(e,16,16);got.clear();
+   for(std::size_t i=0;i<plugin->eventCount;++i)if(plugin->received[i].type==PluginEvent::Type::Controller&&plugin->received[i].offset==0)got.push_back(plugin->received[i]);
+   check(got.size()==3&&is(got[0],1,0,1)&&is(got[1],128,0,64.f/127)&&is(got[2],129,0,1),"Seek did not chase the VST3 controllers");
+   plugin->eventCount=0;check(e.stop(),"Stop failed");(void)render(e,16,16);got.clear();
+   for(std::size_t i=0;i<plugin->eventCount;++i)if(plugin->received[i].type==PluginEvent::Type::Controller)got.push_back(plugin->received[i]);
+   check(got.size()==3&&is(got[0],1,0,0)&&is(got[1],128,0,0)&&is(got[2],129,0,centre),"Stop did not reset the VST3 controllers (volume must keep its value)");
+   plugin->eventCount=0;const std::array<LiveMidiEvent,3> live{LiveMidiEvent{0,0,0xE0,0x7F,0x7F,-1},LiveMidiEvent{0,0,0xD0,100,0,-1},LiveMidiEvent{0,0,0xC0,3,0,-1}};
+   check(e.queueLiveMidi(live)==3&&e.controlChange(0,131,12),"Live controllers failed");(void)render(e,16,16);
+   check(plugin->eventCount==3&&is(plugin->received[0],129,0,1)&&is(plugin->received[1],128,0,100.f/127)&&is(plugin->received[2],130,0,3.f/127)&&plugin->received[0].audition,"Live bend/pressure/program to VST3");}
+  // Timeline validation.
+  {auto p=base;p.tracks[0].controls={{0,129,9000}};RenderEngine e;rejects([&]{(void)e.prepare(p,{});},"Out-of-range timeline pitch bend accepted");
+   p.tracks[0].controls={{10,1,5},{5,1,6}};rejects([&]{(void)e.prepare(p,{});},"Unsorted timeline controls accepted");}
 }
 
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

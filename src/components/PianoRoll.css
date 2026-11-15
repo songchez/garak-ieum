@@ -99,6 +99,28 @@
 .piano-sustain-track { position: relative; flex-shrink: 0; cursor: crosshair; touch-action: none; background-image: repeating-linear-gradient(to right, var(--grid-minor) 0, var(--grid-minor) 1px, transparent 1px, transparent var(--piano-beat)); }
 .piano-sustain-span { position: absolute; top: 6px; bottom: 6px; box-sizing: border-box; border-radius: 3px; border-left: 2px solid var(--piano-color); background: color-mix(in srgb, var(--piano-color) 38%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--piano-color) 55%, transparent); overflow: hidden; pointer-events: none; }
 .piano-sustain-span::after { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 2px; background: color-mix(in srgb, var(--piano-color) 70%, #fff); opacity: .7; }
+.piano-lane-slot { position: sticky; z-index: 4; box-sizing: border-box; }
+.piano-lane-slot > .piano-sustain-lane { position: relative; }
+.piano-controller-lane { position: relative; display: flex; box-sizing: border-box; height: 100%; background: var(--surface-panel); border-top: 1px solid var(--border-default); }
+.piano-controller-corner { flex-direction: row; flex-wrap: wrap; align-items: center; align-content: flex-start; justify-content: flex-end; gap: 2px; padding: 4px 3px 0 16px; }
+.piano-controller-name { font-size: 8px; font-weight: 700; letter-spacing: .1em; color: var(--text-secondary, var(--text-muted)); }
+.piano-controller-range { height: 15px; max-width: 34px; padding: 0 2px; border: 1px solid var(--border-default); border-radius: 3px; background: var(--surface-panel); color: var(--text-muted); font: inherit; font-size: 8px; }
+.piano-controller-remove { position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--text-muted); font-size: 11px; line-height: 12px; cursor: pointer; opacity: .55; }
+.piano-controller-remove:hover, .piano-controller-remove:focus-visible { opacity: 1; background: var(--ink-26); }
+.piano-controller-track { position: relative; flex-shrink: 0; cursor: crosshair; touch-action: none; outline: none; background-image: repeating-linear-gradient(to right, var(--grid-minor) 0, var(--grid-minor) 1px, transparent 1px, transparent var(--piano-beat)); }
+.piano-controller-track:focus-visible { box-shadow: inset 0 0 0 1px var(--focus); }
+.piano-controller-track--select { cursor: default; }
+.piano-controller-track--erase { cursor: not-allowed; }
+.piano-controller-svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.piano-controller-center { stroke: var(--border-strong, var(--grid-minor)); stroke-dasharray: 3 3; stroke-width: 1; }
+.piano-controller-fill { fill: color-mix(in srgb, var(--piano-color) 20%, transparent); stroke: none; }
+.piano-controller-line { fill: none; stroke: var(--piano-color); stroke-width: 1.5; }
+.piano-controller-point { fill: var(--piano-color); stroke: var(--surface-panel); stroke-width: 1; }
+.piano-controller-point--selected { fill: var(--ink-99, #fff); stroke: var(--piano-color); stroke-width: 1.5; }
+.piano-controller-box { fill: color-mix(in srgb, var(--focus) 15%, transparent); stroke: var(--focus); stroke-width: 1; }
+.piano-controller-erase { fill: color-mix(in srgb, var(--danger, #e5484d) 18%, transparent); }
+.piano-controller-readout { position: sticky; left: 4px; top: 3px; display: inline-block; margin: 3px 0 0 4px; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, var(--surface-panel) 80%, transparent); color: var(--text-muted); font-size: 8px; pointer-events: none; }
+.piano-lane-tool select { max-width: 64px; }
 .piano-sustain-span--draft { opacity: .75; }
 .piano-sustain-label { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); font-size: 8px; font-style: italic; font-weight: 700; letter-spacing: .02em; color: var(--text-primary); opacity: .8; }
 .piano-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 0 0 34px; padding: 0 13px; background: var(--surface-panel-soft); border-top: 1px solid var(--border-subtle); }

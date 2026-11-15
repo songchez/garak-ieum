@@ -2,6 +2,8 @@ import type { MidiClip, MidiNote, Project, TrackMidiInput } from './types'
 import { acceptsMidi, parseMidi } from './midiInput'
 import { applyDragMode, fitProjectLength, joinClips, uid } from './project'
 import { SUSTAIN_CONTROLLER, isPedalDown, spansToSustain } from './sustain'
+import { AFTERTOUCH_NUMBER, PITCH_BEND_NUMBER, PROGRAM_NUMBER, controllerSpec, controllerValueAt, keyOfNumber, normalizeController, pruneController, thinController } from './controllers'
+import type { ControllerKey, ControllerPoint } from './types'
 import type { StampedMidi } from '../audio/liveMidi'
 
 /**
@@ -40,8 +42,12 @@ export const frameToBeat = (frame: number, sampleRate: number, bpm: number): num
 export const compensatedBeat = (beatAtArrival: number, latencySeconds: number, bpm: number): number => beatAtArrival - Math.max(0, latencySeconds) * bpm / 60
 
 export interface RecordedNote { pitch: number; start: number; end: number; velocity: number }
-/** Raw controller data (CC64 becomes the region's sustain pedal; other controllers wait for the controller-lane work). */
-export interface RecordedController { beat: number; channel: number; controller: number; value: number }
+/**
+ * Raw controller data. controller: 0–127 CC, 128 aftertouch, 129 pitch bend (value −8192…8191), 130 program.
+ * CC64 becomes the region's sustain pedal, the rest its controller lanes (docs/MIDI_CONTROLLERS.md). `pass` is the
+ * cycle pass (0 without a cycle): a later pass replaces what an earlier one recorded on the same lane.
+ */
+export interface RecordedController { beat: number; channel: number; controller: number; value: number; pass?: number }
 export interface TakeTrack { trackId: string; input: TrackMidiInput }
 export interface MidiTakeOptions {
   startBeat: number
@@ -138,7 +144,7 @@ export class MidiTake {
   input(event: Pick<StampedMidi, 'source' | 'data' | 'beat'>): boolean {
     if (event.beat === null || !Number.isFinite(event.beat)) return false
     const message = parseMidi(event.data)
-    if (message.type === 'other' || message.type === 'pitchBend') return false
+    if (message.type === 'other') return false
     let beat = event.beat
     this.advance(beat)
     if (this.cycle) beat = Math.min(Math.max(beat, this.cycle.start), this.cycle.end)
@@ -147,8 +153,13 @@ export class MidiTake {
     let changed = false
     for (const track of this.tracks) {
       if (!acceptsMidi(track.input, event.source, message.channel)) continue
+      if (message.type === 'pitchBend' || message.type === 'aftertouch' || message.type === 'program') {
+        const controller = message.type === 'pitchBend' ? PITCH_BEND_NUMBER : message.type === 'aftertouch' ? AFTERTOUCH_NUMBER : PROGRAM_NUMBER
+        this.controllers.get(track.trackId)?.push({ beat, channel: message.channel, controller, value: message.type === 'program' ? message.program : message.value, pass: this.pass })
+        continue
+      }
       if (message.type === 'controller') {
-        this.controllers.get(track.trackId)?.push({ beat, channel: message.channel, controller: message.controller, value: message.value })
+        this.controllers.get(track.trackId)?.push({ beat, channel: message.channel, controller: message.controller, value: message.value, pass: this.pass })
         if (message.controller === SUSTAIN_CONTROLLER) {
           const downAt = this.pedal.get(track.trackId) ?? null
           if (isPedalDown(message.value) && downAt === null) this.pedal.set(track.trackId, beat)
@@ -209,11 +220,47 @@ export function takeSpan(result: Pick<MidiTakeResult, 'startBeat' | 'endBeat' | 
 export interface CommitOptions { mode: MidiRecordMode; beatsPerBar: number; name: string }
 export interface CommitResult { project: Project; clipIds: string[] }
 
+/**
+ * Controller lanes of a recording, region-relative to [start, end): each lane's raw stream (a later cycle pass
+ * replacing the span it covers on that lane), the value held at `start` chased at 0, then thinned (Logic-like).
+ */
+export function recordedControllers(events: readonly RecordedController[], start: number, end: number): MidiClip['controllers'] {
+  const byKey = new Map<ControllerKey, RecordedController[]>()
+  for (const event of events) {
+    const key = keyOfNumber(event.controller)
+    if (!key) continue
+    const list = byKey.get(key)
+    if (list) list.push(event)
+    else byKey.set(key, [event])
+  }
+  const result: NonNullable<MidiClip['controllers']> = {}
+  for (const [key, list] of byKey) {
+    let lane: ControllerPoint[] = []
+    const passes = [...new Set(list.map(event => event.pass ?? 0))].sort((a, b) => a - b)
+    for (const pass of passes) {
+      const recorded = list.filter(event => (event.pass ?? 0) === pass).map(event => ({ beat: event.beat, value: event.value }))
+      if (lane.length && recorded.length) {
+        const from = Math.min(...recorded.map(point => point.beat)), to = Math.max(...recorded.map(point => point.beat))
+        lane = lane.filter(point => point.beat < from - EPSILON || point.beat > to + EPSILON)
+      }
+      lane = [...lane, ...recorded].sort((a, b) => a.beat - b.beat)
+    }
+    const spec = controllerSpec(key)
+    const initial = controllerValueAt(lane, start)
+    const visible = lane.filter(point => point.beat > start + EPSILON && point.beat < end - EPSILON).map(point => ({ beat: point.beat - start, value: point.value }))
+    const points = pruneController(normalizeController(key, thinController(key, [...(initial !== undefined ? [{ beat: 0, value: initial }] : []), ...visible])))
+    if (points.length && (!spec.reset || points.some(point => point.value !== spec.default))) result[key] = points
+  }
+  return Object.keys(result).length ? result : undefined
+}
+
 /** One region from absolute-beat notes starting at `start`. */
-export function recordedClip(notes: readonly RecordedNote[], start: number, end: number, name: string, pedal: readonly (readonly [number, number])[] = []): MidiClip {
+export function recordedClip(notes: readonly RecordedNote[], start: number, end: number, name: string, pedal: readonly (readonly [number, number])[] = [], controllerEvents: readonly RecordedController[] = []): MidiClip {
   const sustain = spansToSustain(pedal.map(([from, to]) => [Math.max(start, from) - start, Math.min(end, to) - start] as [number, number]).filter(([from, to]) => to - from > EPSILON))
+  const controllers = recordedControllers(controllerEvents, start, end)
   return {
     ...(sustain.length ? { sustain } : {}),
+    ...(controllers ? { controllers } : {}),
     id: uid(), kind: 'midi', name, startBeat: start, lengthBeats: end - start, gain: 1,
     notes: notes.filter(note => note.end > start + EPSILON && note.start < end - EPSILON).map((note): MidiNote => {
       const noteStart = Math.max(start, note.start)
@@ -231,11 +278,12 @@ export function commitMidiTake(project: Project, result: MidiTakeResult, options
   let next = project
   const clipIds: string[] = []
   for (const take of result.tracks) {
-    if (!take.notes.length && !take.sustain?.length) continue
+    const lanes = take.controllers.filter(event => event.controller !== SUSTAIN_CONTROLLER && keyOfNumber(event.controller))
+    if (!take.notes.length && !take.sustain?.length && !lanes.length) continue
     const track = next.tracks.find(item => item.id === take.trackId)
     if (!track || track.kind !== 'instrument') continue
     const span = takeSpan(result, take.notes, options.beatsPerBar)
-    let clip: MidiClip = recordedClip(take.notes, span.start, span.end, options.name, take.sustain)
+    let clip: MidiClip = recordedClip(take.notes, span.start, span.end, options.name, take.sustain, lanes)
     if (options.mode === 'replace') {
       next = { ...next, tracks: next.tracks.map(item => item.id === track.id ? { ...item, clips: [...item.clips, clip] } : item) }
       next = applyDragMode(next, [track.id], [clip.id], 'noOverlap')

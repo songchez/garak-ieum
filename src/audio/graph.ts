@@ -1,7 +1,9 @@
 import { SAMPLED_KIT_PARAMS, SAMPLED_PIANO_PARAMS, paramValue } from '../core/devices'
 import { instrumentDef } from '../core/instruments'
-import { audibleTrackIds, audioWindows, isTrackEnabled, midiEvents } from '../core/playback'
-import type { AudioWindow, PlaybackNote } from '../core/playback'
+import { audibleTrackIds, audioWindows, isTrackEnabled, midiControllerEvents, midiEvents } from '../core/playback'
+import type { AudioWindow, PlaybackController, PlaybackNote } from '../core/playback'
+import { DEFAULT_BEND_RANGE, controllerSpec } from '../core/controllers'
+import type { ControllerKey } from '../core/types'
 import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
 import { masterFeedExcluded, reconcileTrackRoutes, routeOf } from '../core/trackRouting'
 import { clamp, secondsPerBeat } from './math'
@@ -37,7 +39,32 @@ export interface TrackGraph {
   meter: AnalyserNode
   meterData: Float32Array<ArrayBuffer>
   chokes: ChokeMap
+  /** Controller response of the built-in instruments (instrument tracks only; docs/MIDI_CONTROLLERS.md). */
+  controls?: TrackControls
 }
+
+/**
+ * Per-track controller nodes. Voices connect to `input` (volume CC7 x expression CC11) instead of the track input,
+ * and pitched voices connect `pitch` (a cents bus: pitch bend + mod-wheel vibrato) to their sources' detune.
+ */
+export interface TrackControls {
+  input: GainNode
+  pitch: GainNode
+  bend: ConstantSourceNode
+  vibrato: OscillatorNode
+  vibratoDepth: GainNode
+  /** Last scheduled values (MIDI units; bend in cents). */
+  state: { bend: number; mod: number; aftertouch: number; volume: number; expression: number }
+}
+
+/** Mod wheel / aftertouch at 127 = this vibrato depth in cents, at VIBRATO_HZ. */
+export const VIBRATO_CENTS = 50
+export const VIBRATO_HZ = 5.5
+const BEND_SMOOTHING = 0.004
+const GAIN_SMOOTHING = 0.005
+const defaultControlState = (): TrackControls['state'] => ({ bend: 0, mod: 0, aftertouch: 0, volume: 100, expression: 127 })
+/** CC7 100 = unity (the GM default); both follow the usual squared MIDI volume curve. */
+export const controllerGain = (volume: number, expression: number): number => (volume / 100) ** 2 * (expression / 127) ** 2
 
 export interface EngineGraph {
   context: BaseAudioContext
@@ -188,9 +215,10 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
       tail.connect(postFx).connect(panner)
       panner.connect(fader).connect(trackMeter).connect(sum)
 
+      const controls = track.kind === 'instrument' ? createTrackControls(context, input, remember) : undefined
       tracks.set(track.id, {
         input, postFx, devices, panner, fader, meter: trackMeter,
-        meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(),
+        meterData: new Float32Array(trackMeter.fftSize), chokes: new Map(), ...(controls ? { controls } : {}),
       })
     }
     const { routes, resampleVolume } = connectRoutes(context, project, tracks, remember)
@@ -204,6 +232,51 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     // A partially constructed effect must not leave a connected/dry path behind.
     releaseResources(resources, nodes)
     throw error
+  }
+}
+
+function createTrackControls(context: BaseAudioContext, destination: AudioNode, remember: <T extends AudioNode>(node: T) => T): TrackControls | undefined {
+  if (typeof context.createConstantSource !== 'function') return undefined
+  const input = remember(context.createGain())
+  input.connect(destination)
+  const pitch = remember(context.createGain())
+  const bend = remember(context.createConstantSource())
+  bend.offset.value = 0
+  bend.connect(pitch)
+  const vibrato = remember(context.createOscillator())
+  vibrato.frequency.value = VIBRATO_HZ
+  const vibratoDepth = remember(context.createGain())
+  vibratoDepth.gain.value = 0
+  vibrato.connect(vibratoDepth).connect(pitch)
+  bend.start()
+  vibrato.start()
+  return { input, pitch, bend, vibrato, vibratoDepth, state: defaultControlState() }
+}
+
+/** Applies one controller value at `time`. Other controllers (pan, other CCs, program) have no built-in meaning. */
+export function applyControl(controls: TrackControls, key: ControllerKey, value: number, time: number, range = DEFAULT_BEND_RANGE): void {
+  const state = controls.state
+  if (key === 'pitchBend') {
+    state.bend = value / 8192 * range * 100
+    controls.bend.offset.setTargetAtTime(state.bend, time, BEND_SMOOTHING)
+  } else if (key === 'cc1' || key === 'aftertouch') {
+    if (key === 'cc1') state.mod = value
+    else state.aftertouch = value
+    controls.vibratoDepth.gain.setTargetAtTime(Math.max(state.mod, state.aftertouch) / 127 * VIBRATO_CENTS, time, GAIN_SMOOTHING)
+  } else if (key === 'cc7' || key === 'cc11') {
+    if (key === 'cc7') state.volume = value
+    else state.expression = value
+    controls.input.gain.setTargetAtTime(controllerGain(state.volume, state.expression), time, GAIN_SMOOTHING)
+  }
+}
+
+/** Jumps every controller to its value in effect at `beat` (chase on start, seek and cycle wrap). */
+export function chaseControls(controls: TrackControls, events: readonly PlaybackController[], beat: number, time: number): void {
+  const last = new Map<ControllerKey, PlaybackController>()
+  for (const event of events) { if (event.beat > beat + 1e-9) break; last.set(event.key, event) }
+  for (const key of ['pitchBend', 'cc1', 'aftertouch', 'cc7', 'cc11'] as const) {
+    const event = last.get(key)
+    applyControl(controls, key, event?.value ?? controllerSpec(key).default, time, event?.range)
   }
 }
 
@@ -326,11 +399,17 @@ export function disposeGraph(graph: EngineGraph): void {
     try { voice.disconnect() } catch { /* Continue releasing the remaining graph. */ }
   }
   graph.voices.clear()
+  for (const channel of graph.tracks.values()) {
+    if (!channel.controls) continue
+    try { channel.controls.bend.stop(); channel.controls.vibrato.stop() } catch { /* Already stopped. */ }
+  }
   releaseResources(graph.resources, graph.nodes)
 }
 
-function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNode[], envelope: GainNode): Voice {
+function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNode[], envelope: GainNode, pitchBus?: AudioNode): Voice {
   let disconnected = false
+  // Pitch bend and vibrato reach every source of a pitched voice through its detune (cents).
+  if (pitchBus) for (const source of sources) pitchBus.connect(source.detune)
   let ended = 0
   let stopped = false
   const voice: Voice = {
@@ -361,6 +440,7 @@ function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNo
       if (disconnected) return
       disconnected = true
       for (const node of nodes) node.disconnect()
+      if (pitchBus) for (const source of sources) { try { pitchBus.disconnect(source.detune) } catch { /* Not connected. */ } }
       for (const source of sources) source.onended = null
       graph.voices.delete(voice)
     },
@@ -398,6 +478,7 @@ export function scheduleInstrument(
   velocity: number,
   availableSeconds: number,
   params?: Record<string, number>,
+  pitchBus?: AudioNode,
 ): Voice | undefined {
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
   // Native instruments are rendered by their host; never use the browser's keys fallback.
@@ -560,7 +641,7 @@ export function scheduleInstrument(
       }
     }
   }
-  const voice = registerVoice(graph, sources, nodes, envelope)
+  const voice = registerVoice(graph, sources, nodes, envelope, instrument === 'drums' ? undefined : pitchBus)
   for (const source of sources) { source.start(when); source.stop(end) }
   return voice
 }
@@ -578,6 +659,7 @@ export function scheduleSampled(
   availableSeconds: number,
   params?: Record<string, number>,
   chokes?: ChokeMap,
+  pitchBus?: AudioNode,
 ): Voice | undefined {
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
   const { set, startOffset } = loaded
@@ -650,7 +732,7 @@ export function scheduleSampled(
       noise.start(when + noteDuration, startOffset)
     }
   }
-  const voice = registerVoice(graph, [source], nodes, envelope)
+  const voice = registerVoice(graph, [source], nodes, envelope, isKit ? undefined : pitchBus)
   source.start(when, startOffset)
   source.stop(end)
   if (isKit && chokes && zone.choke !== undefined) {
@@ -741,6 +823,17 @@ export function scheduleRange(
       const localSeconds = (beat - window.start + window.sourceOffsetBeats) * beatSeconds
       scheduleAudioClip(graph, channel.input, window.clip, asset, localSeconds, time, (windowEnd - beat) * beatSeconds, beatSeconds)
     }
+    const controls = channel.controls
+    const voiceInput = controls?.input ?? channel.input
+    const pitchBus = def.isKit ? undefined : controls?.pitch
+    if (controls && events.controls.length) {
+      if (chase) chaseControls(controls, events.controls, startBeat, adjustStart(startBeat)[1])
+      for (const event of events.controls) {
+        if (event.beat >= endBeat - epsilon) break
+        if (event.beat < startBeat - epsilon || (chase && event.beat <= startBeat + epsilon)) continue
+        applyControl(controls, event.key, event.value, adjustStart(event.beat)[1], event.range)
+      }
+    }
     for (const note of events.notes) {
       const noteEnd = Math.min(note.end, boundary, project.lengthBeats)
       if (noteEnd <= startBeat || note.start >= endBeat) continue
@@ -749,9 +842,9 @@ export function scheduleRange(
       if (beat >= noteEnd) continue
       const available = (Math.min(note.limit, boundary, project.lengthBeats) - beat) * beatSeconds
       if (loaded) {
-        scheduleSampled(graph, channel.input, loaded, def.isKit, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams, channel.chokes)
+        scheduleSampled(graph, voiceInput, loaded, def.isKit, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams, channel.chokes, pitchBus)
       } else {
-        scheduleInstrument(graph, channel.input, track.instrument, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams)
+        scheduleInstrument(graph, voiceInput, track.instrument, note.pitch, time, (noteEnd - beat) * beatSeconds, note.velocity, available, track.instrumentParams, pitchBus)
       }
     }
   }
@@ -761,6 +854,7 @@ interface TrackEvents {
   projectEnd: number
   bpm: number
   notes: PlaybackNote[]
+  controls: PlaybackController[]
   windows: AudioWindow[]
 }
 
@@ -770,7 +864,7 @@ const eventCache = new WeakMap<Track, TrackEvents>()
 function trackEvents(track: Track, projectEnd: number, bpm: number): TrackEvents {
   const cached = eventCache.get(track)
   if (cached && cached.projectEnd === projectEnd && cached.bpm === bpm) return cached
-  const events: TrackEvents = { projectEnd, bpm, notes: midiEvents(track, projectEnd), windows: audioWindows(track, projectEnd, bpm) }
+  const events: TrackEvents = { projectEnd, bpm, notes: midiEvents(track, projectEnd), controls: track.kind === 'instrument' ? midiControllerEvents(track, projectEnd) : [], windows: audioWindows(track, projectEnd, bpm) }
   eventCache.set(track, events)
   return events
 }
