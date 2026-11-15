@@ -1,6 +1,6 @@
 # Rust 오디오 코어
 
-> **상태:** 1단계(커널) 구현 완료, **기본값은 여전히 꺼짐.** 기타 랙을 뺀 모든 내장 이펙트(시김새 10종, 파라메트릭 EQ·스윕 필터, 컴프레서, 드라이브, 리버브)가 `rust/garak-dsp`에 있고, C++ 엔진에서는 `GARAK_RUST=ON` 빌드 + 이펙트별 스위치로, 웹 워크릿에서는 기능 플래그로 Rust 커널을 쓸 수 있습니다. 패리티 하네스가 C++·TS 커널과의 차이를 -90 dBFS 이하로 묶습니다([1단계 결과](#1단계-결과-패리티벤치마크크기)). 기본 경로는 그대로 TypeScript 워크릿 커널과 C++ 네이티브 엔진이고, 전환(그리고 `kernels.ts`·`sigimsae_effects.inc` 삭제)은 청취 확인 후 별도 PR에서 합니다.
+> **상태:** 0.3.0부터 **데스크톱 앱은 기타 랙을 뺀 모든 내장 이펙트를 Rust로 처리합니다.** `scripts/build-native-audio.mjs`가 데스크톱 빌드에서 `GARAK_RUST=ON` + `GARAK_RUST_EFFECTS=all`로 구성하고, Windows·macOS 배포 워크플로가 고정 툴체인을 설치합니다. 실행 중 C++ 경로로 되돌리려면 환경 변수 `GARAK_RUST_EFFECTS=none`으로 앱을 띄웁니다. Rust 없이 호스트를 빌드하려면 `GARAK_RUST=0 pnpm native:build`. 웹 워크릿은 아직 기능 플래그(기본 꺼짐)이고, C++·TS 커널 삭제("두 벌 유지" 종료)는 3단계에서 합니다. 패리티 하네스가 C++·TS 커널과의 차이를 -90 dBFS 이하로 묶습니다([1단계 결과](#1단계-결과-패리티벤치마크크기)).
 
 ## 왜 Rust인가
 
@@ -172,7 +172,7 @@ pub trait Kernel {                      // fx/mod.rs
 ### C++: `GARAK_RUST=ON`과 이펙트별 스위치
 
 - `GarakRust.cmake`가 `garak_core`에 `garak_rust`를 링크하고 `GARAK_RUST=1`로 `dsp.cpp`를 컴파일합니다. `native/src/rust_effects.inc`의 `RustEffect`가 `StereoProcessor`를 구현해 `garak_rs_fx_*`를 부릅니다: 생성 시 C++과 같은 `Reader` 검증(같은 예외), C++·Rust 카탈로그 id·순서 대조(다르면 `logic_error`), `automate(Reader)`, `setTempo`, `dynamics()` 탭, `latencyFrames`/`tailSeconds`, `takeStateFrom`(Rust가 두 상태 저장 공간을 통째로 맞바꿨으면 소유한 `std::vector`도 맞바꿈, O(1)).
-- **기본값은 C++ 그대로입니다.** Rust로 돌릴 이펙트는
+- **plain CMake 빌드의 기본값은 C++입니다**(데스크톱 배포 빌드는 `all`). `none`/`cpp`는 목록을 비웁니다(왼쪽부터 적용). Rust로 돌릴 이펙트는
   - 빌드 시: `-DGARAK_RUST_EFFECTS="chorus;delay"` 또는 `all`
   - 시작 시: 환경 변수 `GARAK_RUST_EFFECTS=all` (청취 비교용)
   - 실행 중: `garak::dsp::setEffectBackend("delay", EffectBackend::Rust)`, 명시적으로는 `makeEffect(type, params, sr, bpm, EffectBackend::Rust)` (패리티 하네스)

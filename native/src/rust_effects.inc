@@ -80,7 +80,8 @@ class RustEffect final : public StereoProcessor {
 };
 
 // Per-type backend choice. Defaults come from the GARAK_RUST_EFFECTS CMake list and the
-// GARAK_RUST_EFFECTS environment variable ("all" or comma-separated type ids); empty = C++ only.
+// GARAK_RUST_EFFECTS environment variable ("all", "none"/"cpp", or comma-separated type ids, applied left to right); empty = C++ only.
+// Release desktop builds default to "all"; GARAK_RUST_EFFECTS=none at run time goes back to C++.
 std::array<std::atomic<bool>, GARAK_RS_FX_COUNT>& rustSelection() {
   static std::array<std::atomic<bool>, GARAK_RS_FX_COUNT> selected{};
   static const bool initialised = [] {
@@ -89,6 +90,7 @@ std::array<std::atomic<bool>, GARAK_RS_FX_COUNT>& rustSelection() {
         const auto comma = list.find_first_of(",; ");
         const auto item = list.substr(0, comma);
         if (item == "all") for (auto& v : selected) v.store(true);
+        else if (item == "none" || item == "cpp") for (auto& v : selected) v.store(false);
         else if (const int kind = rustKind(item); kind >= 0) selected[static_cast<std::size_t>(kind)].store(true);
         list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
       }

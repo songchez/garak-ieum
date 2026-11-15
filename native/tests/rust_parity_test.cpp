@@ -361,7 +361,12 @@ void ffiContract() {
   // Runtime switch: default C++ (or the GARAK_RUST_EFFECTS start-up list), per type, "all".
   const char* env = std::getenv("GARAK_RUST_EFFECTS");
   if (env && std::string(env) == "all") check(garak::dsp::effectBackend("reverb") == EffectBackend::Rust, "GARAK_RUST_EFFECTS=all selects Rust");
+  else if (env && (std::string(env) == "none" || std::string(env) == "cpp")) check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "GARAK_RUST_EFFECTS=none selects C++");
+#ifdef GARAK_RUST_EFFECTS_DEFAULT
+  else if (!env && std::string(GARAK_RUST_EFFECTS_DEFAULT) == "all") check(garak::dsp::effectBackend("delay") == EffectBackend::Rust, "build default (all) selects Rust");
+#else
   else if (!env) check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "default backend is C++");
+#endif
   garak::dsp::setEffectBackend("delay", EffectBackend::Rust);
   check(garak::dsp::effectBackend("delay") == EffectBackend::Rust, "setEffectBackend(delay)");
   garak::dsp::setEffectBackend("all", EffectBackend::Cpp);

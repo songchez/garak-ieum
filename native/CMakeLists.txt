@@ -238,7 +238,7 @@ foreach(dependency_index RANGE 0 ${dependency_last})
   endforeach()
 endforeach()
 
-# Optional Rust DSP core and its C++ parity test (docs/RUST.md). Off by default; nothing ships it yet.
+# Rust DSP core and its C++ parity test (docs/RUST.md). Off for plain CMake builds; scripts/build-native-audio.mjs turns it on (with GARAK_RUST_EFFECTS=all) for desktop builds since 0.3.0.
 option(GARAK_RUST "Build the Rust DSP core (rust/garak-ffi) and garak-rust-parity-test" OFF)
 if(GARAK_RUST)
   include(cmake/GarakRust.cmake)

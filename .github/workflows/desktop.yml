@@ -15,6 +15,7 @@ on:
       - '.github/workflows/desktop.yml'
       - 'desktop/**'
       - 'native/**'
+      - 'rust/**'
       - 'scripts/native-*.mjs'
       - 'scripts/build-native-audio.mjs'
       - 'scripts/desktop-*.mjs'
@@ -74,6 +75,11 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      # The desktop host links the Rust DSP core (docs/RUST.md); install the pinned toolchain.
+      - name: Install the pinned Rust toolchain
+        shell: pwsh
+        run: ./scripts/setup-rust.ps1 -SkipVerify
+
       # Validation builds reuse the native host when native sources, its build scripts and CMake
       # are unchanged (most pushes only touch src/). Release builds always compile from scratch.
       - name: Restore unchanged native engine build
@@ -83,7 +89,7 @@ jobs:
           path: |
             build/native-audio
             build/native-work
-          key: native-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/**', 'scripts/build-native-audio.mjs', 'scripts/native-dependencies.mjs') }}
+          key: native-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/**', 'rust/**', 'scripts/build-native-audio.mjs', 'scripts/native-dependencies.mjs') }}
 
       - name: Build Windows installer
         env:
@@ -103,7 +109,7 @@ jobs:
           path: |
             build/native-audio
             build/native-work
-          key: native-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/**', 'scripts/build-native-audio.mjs', 'scripts/native-dependencies.mjs') }}
+          key: native-host-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/**', 'rust/**', 'scripts/build-native-audio.mjs', 'scripts/native-dependencies.mjs') }}
 
       - name: Verify native audio and actual VST3 host
         run: pnpm native:test
