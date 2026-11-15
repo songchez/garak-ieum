@@ -212,23 +212,23 @@ pub trait Kernel {                      // fx/mod.rs
 
 | 이펙트 | 렌더 수 | Windows MinGW (로컬) | Windows MSVC (CI) | macOS arm64 (CI) |
 |---|---:|---:|---:|---:|
-| chorus | 18 | -400 (비트 동일) | CI_MSVC_chorus | CI_MAC_chorus |
-| flanger | 21 | -400 | CI_MSVC_flanger | CI_MAC_flanger |
-| phaser | 21 | -400 | CI_MSVC_phaser | CI_MAC_phaser |
-| tremolo | 24 | -400 | CI_MSVC_tremolo | CI_MAC_tremolo |
-| limiter | 18 | -400 | CI_MSVC_limiter | CI_MAC_limiter |
-| gate | 21 | -400 | CI_MSVC_gate | CI_MAC_gate |
-| tape | 21 | -400 | CI_MSVC_tape | CI_MAC_tape |
-| bitcrusher | 18 | -400 | CI_MSVC_bitcrusher | CI_MAC_bitcrusher |
-| utility | 24 | -400 | CI_MSVC_utility | CI_MAC_utility |
-| delay | 39 | -400 | CI_MSVC_delay | CI_MAC_delay |
-| eq | 156 | -210.7 | CI_MSVC_eq | CI_MAC_eq |
-| filter | 21 | -400 | CI_MSVC_filter | CI_MAC_filter |
-| compressor | 24 | -400 | CI_MSVC_compressor | CI_MAC_compressor |
-| drive | 21 | -400 | CI_MSVC_drive | CI_MAC_drive |
-| reverb | 24 | -138.5 | CI_MSVC_reverb | CI_MAC_reverb |
+| chorus | 18 | -400 (비트 동일) | -400 | -400 |
+| flanger | 21 | -400 | -400 | -144.5 |
+| phaser | 21 | -400 | -400 | -400 |
+| tremolo | 24 | -400 | -400 | -400 |
+| limiter | 18 | -400 | -400 | -400 |
+| gate | 21 | -400 | -400 | -400 |
+| tape | 21 | -400 | -400 | -150.5 |
+| bitcrusher | 18 | -400 | -400 | -400 |
+| utility | 24 | -400 | -400 | -400 |
+| delay | 39 | -400 | -400 | -162.6 |
+| eq | 156 | -210.7 | -210.7 | -132.5 |
+| filter | 21 | -400 | -400 | -373.3 |
+| compressor | 24 | -400 | -400 | -222.8 |
+| drive | 21 | -400 | -400 | -400 |
+| reverb | 24 | -138.5 | -138.5 | -138.5 |
 
-MinGW에서 대부분 비트 동일인 것은 같은 식·같은 순서에 `libm`(musl 계열)과 MinGW 수학 함수가 대부분의 입력에서 같은 값을 주기 때문입니다. 리버브는 FFT 회전 인자(`cosf`/`sinf`)와 복소 곱셈 순서 차이로 float 반올림 수준(-138 dBFS) 차이가 납니다. MSVC CRT와 Apple libm(arm64는 FMA 축약까지)은 마지막 비트가 더 자주 달라 잔차가 조금 커집니다.
+MinGW에서 대부분 비트 동일인 것은 같은 식·같은 순서에 `libm`(musl 계열)과 MinGW 수학 함수가 대부분의 입력에서 같은 값을 주기 때문입니다. 리버브는 FFT 회전 인자(`cosf`/`sinf`)와 복소 곱셈 순서 차이로 float 반올림 수준(-138 dBFS) 차이가 납니다. MSVC도 MinGW와 같은 결과였습니다. macOS arm64는 AppleClang의 FMA 축약(`-ffp-contract=on`)과 Apple libm 때문에 몇 이펙트가 float 반올림 수준(최악 EQ -132.5 dBFS)으로 달라지지만 게이트(-90 dBFS)에 한참 못 미칩니다.
 
 ### Rust(WASM) ↔ TypeScript (`parity.test.ts`, Node 24)
 
@@ -269,7 +269,7 @@ TS 커널은 바이쿼드 출력을 float로 반올림하지 않고 f64로 다�
 - **초월 함수가 많은 커널(tape의 `tanh`, compressor의 `log10`+`pow`, phaser의 `sin`+`pow`+`tan`)이 0.4~0.6배**입니다. 순수 Rust `libm`(musl 이식)이 플랫폼 수학 라이브러리보다 느리기 때문입니다. 대신 네이티브·wasm32 결과가 비트 단위로 같습니다. 아키텍처 검토의 1단계 게이트(ns/샘플 1.15배 이하)는 아직 못 넘었고, 경로 전환 전에 해결합니다: 후보는 (a) 핫 루프의 `libm` 함수를 더 빠른 구현으로 교체(패리티 허용 오차 안), (b) 블록 단위 계산(LFO 등)으로 호출 수 줄이기.
 - **reverb는 2.4배 빠릅니다.** C++의 `std::complex<float>` 곱셈은 NaN 처리 경로(`__mulsc3`) 때문에 느리고, Rust는 단순 곱셈입니다.
 - 절대값으로는 가장 무거운 reverb도 C++ 기준 실시간의 15배(Rust 37배)라, 지금 수치로도 트랙당 부하는 작습니다.
-- CI의 MSVC·macOS 수치는 각 실행의 Step Summary에 표로 남습니다.
+- CI 러너(3초 실행, 공유 머신이라 참고용) Rust/C++ 비율: Windows MSVC — chorus 0.90, flanger 0.89, phaser 0.60, tremolo 0.75, limiter 0.93, gate 1.85, tape 0.49, bitcrusher 1.25, utility 1.28, delay 0.82, eq 1.29, filter 1.29, compressor 0.40, drive 1.29, reverb 1.43. macOS arm64 — chorus 0.73, flanger 0.65, phaser 0.47, tremolo 0.53, limiter 0.72, gate 0.97, tape 0.38, bitcrusher 0.76, utility 0.78, delay 1.00, eq 1.21, filter 1.02, compressor 0.19, drive 0.77, reverb 1.40 (Apple libm이 특히 빨라 초월 함수 커널 격차가 큼). 매 실행의 Step Summary에 전체 표가 남습니다.
 
 ### 크기
 
