@@ -34,6 +34,7 @@ function harness(input = project(), samples?: SampleLibrary, supportsWave = true
     if (method === 'engine.capabilities') return { protocol: 1, ...(supportsWave ? { wavetable: { protocolVersion: 1, schemaFingerprint: WAVE_SCHEMA_FINGERPRINT } } : {}) }
     if (method === 'engine.configure') return { backend: params.backend, inputDeviceId: params.inputDeviceId || 'input', outputDeviceId: params.outputDeviceId || 'output', inputChannels: params.inputChannels, inputChannelOffset: params.inputChannelOffset, outputChannels: 2, sampleRate: params.sampleRate, bufferFrames: 160, inputLatencyFrames: 80, outputLatencyFrames: 240 } as NativeDeviceState
     if (method === 'project.set') return { revision: (params.timeline as NativeProjectTimeline).revision }
+    if (method === 'project.patch') return { revision: params.revision }
     if (method === 'render.wav') return { data: new Uint8Array(48) }
     if (method === 'plugins.state') return { component: 'AQID', controller: 'BA==' }
     if (method === 'plugins.parameters') return [{ id: 1, title: 'Gain', value: .8, defaultValue: .5, stepCount: 0 }]

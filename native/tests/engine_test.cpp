@@ -1329,10 +1329,193 @@ void automationTempoSendsReturns(){
   }
 }
 
+// ---- Incremental updates (docs/RENDER_DIFF_PROTOCOL.md) ---------------------------------------------------
+// A synth with a long note into a reverb, plus a second track: the diff paths keep voices and tails.
+ProjectTimeline editProject(){
+  auto p=project(48000,96000);
+  auto keys=synthTrack();keys.id="keys";keys.source.params["level"]=.2;keys.source.params["release"]=.6;
+  keys.notes={{1,0,60000,96000,60,.9f},{2,30000,36000,96000,67,.7f},{3,70000,80000,96000,64,.6f}};
+  keys.inserts={{"eq","eq",true,{{"mid",-3}},{}},{"verb","reverb",true,{{"amount",.6},{"size",.4}},{}}};
+  auto bass=synthTrack("bass");bass.id="bass";bass.gain=.5f;bass.notes={{1,5000,20000,96000,36,.8f},{2,50000,65000,96000,43,.8f}};
+  p.tracks={keys,bass};
+  return p;
+}
+std::vector<float> renderSpan(RenderEngine&e,std::uint32_t frames,std::uint32_t block=128){return render(e,frames,block);}
+void append(std::vector<float>&to,const std::vector<float>&from){to.insert(to.end(),from.begin(),from.end());}
+
+void updateDiffsMatchRebuild(){
+  const auto p=editProject();
+  // Mix diff (gain, pan, solo flags) == the same edit through a full graph rebuild.
+  {
+    RenderEngine diff(48000,256),full(48000,256);
+    diff.submit(diff.prepare(p,{}));full.submit(full.prepare(p,{}));check(diff.play()&&full.play(),"Play failed");
+    auto a=renderSpan(diff,8000),b=renderSpan(full,8000);
+    auto edited=p;edited.revision=4;edited.tracks[0].gain=.55f;edited.tracks[0].pan=-.4f;edited.tracks[1].audible=false;edited.tracks[1].solo=false;
+    const auto result=diff.update(edited,{});
+    check(result.kind==UpdateResult::Kind::Diff&&result.replacedTracks==0,"A mixer edit did not become a diff command");
+    full.submit(full.prepare(edited,{}));
+    append(a,renderSpan(diff,20000,67));append(b,renderSpan(full,20000,67));
+    checkSame(a,b,1e-6,"Mix diff differs from a full rebuild");
+    check(diff.snapshot().revision==4,"Diff revision was not applied");
+  }
+  // Live insert parameters (EQ band, reverb amount/tone) == the same edit through a full rebuild.
+  {
+    RenderEngine diff(48000,256),full(48000,256);
+    diff.submit(diff.prepare(p,{}));full.submit(full.prepare(p,{}));check(diff.play()&&full.play(),"Play failed");
+    auto a=renderSpan(diff,9000),b=renderSpan(full,9000);
+    auto edited=p;edited.revision=5;edited.tracks[0].inserts[0].params["mid"]=4;edited.tracks[0].inserts[1].params["amount"]=.3;edited.tracks[0].inserts[1].params["tone"]=5000;
+    const auto builds=dsp::impulseCacheStats().builds;
+    const auto result=diff.update(edited,{});
+    check(result.kind==UpdateResult::Kind::Diff,"A live insert parameter did not become a diff command");
+    check(dsp::impulseCacheStats().builds==builds,"A live reverb parameter rebuilt an impulse response");
+    full.submit(full.prepare(edited,{}));
+    append(a,renderSpan(diff,30000,67));append(b,renderSpan(full,30000,67));
+    check(maxDifference(a,b)<2e-4,"Parameter diff differs from a full rebuild");
+    // After the glides settle both paths render the same signal.
+    const std::vector<float>lateA(a.end()-4000,a.end()),lateB(b.end()-4000,b.end());
+    check(maxDifference(lateA,lateB)<2e-5,"Parameter diff did not converge to the rebuilt graph");
+    // Reverb size shapes the impulse response: that edit rebuilds the track (and keeps its tail).
+    auto sized=edited;sized.revision=6;sized.tracks[0].inserts[1].params["size"]=.8;
+    check(diff.update(sized,{}).kind==UpdateResult::Kind::Tracks,"A reverb size edit was applied in place");
+  }
+  // A note edit ahead of the playhead, through update(), == a graph built with that note from the start.
+  {
+    auto edited=p;edited.revision=7;edited.tracks[0].notes[2].onFrame=72000;edited.tracks[0].notes[2].pitch=65;
+    RenderEngine live(48000,256),reference(48000,256);
+    live.submit(live.prepare(p,{}));reference.submit(reference.prepare(edited,{}));check(live.play()&&reference.play(),"Play failed");
+    auto a=renderSpan(live,10000),b=renderSpan(reference,10000);
+    const auto result=live.update(edited,{});
+    check(result.kind==UpdateResult::Kind::Tracks&&result.replacedTracks==1,"A note edit did not replace exactly its track");
+    append(a,renderSpan(live,80000,97));append(b,renderSpan(reference,80000,97));
+    checkSame(a,b,1e-6,"A note edit through update() differs from the edited graph");
+    // IDs are renumbered against the running graph: an unchanged note keeps its running voice.
+    auto renumbered=edited;renumbered.revision=8;for(auto&n:renumbered.tracks[0].notes)n.id+=100;
+    check(live.update(renumbered,{}).kind==UpdateResult::Kind::None,"Renumbered but equal notes were treated as an edit");
+  }
+  // Tempo is a header change: a full graph whose tracks still continue by id.
+  {
+    RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");(void)renderSpan(e,4000);
+    auto tempo=p;tempo.revision=9;tempo.bpm=90;
+    check(e.update(tempo,{}).kind==UpdateResult::Kind::Full,"A tempo change did not rebuild the graph");
+    (void)renderSpan(e,2000);
+    auto invalid=tempo;invalid.revision=10;invalid.tracks[0].gain=7;
+    rejects([&]{(void)e.update(invalid,{});},"An out-of-range diff value was accepted");
+  }
+}
+
+// The held note (0..60000) and the reverb tail continue across a note edit and parameter edits: compared
+// against an engine that never edits, nothing restarts or drops out.
+void updatesKeepVoicesAndTails(){
+  const auto p=editProject();
+  RenderEngine live(48000,256),reference(48000,256);
+  live.submit(live.prepare(p,{}));reference.submit(reference.prepare(p,{}));check(live.play()&&reference.play(),"Play failed");
+  auto a=renderSpan(live,12000),b=renderSpan(reference,12000);
+  // Note edit on the same track while note 1 sounds: note 3 (later) moves, note 1 must not be retriggered.
+  auto edited=p;edited.revision=1;edited.tracks[0].notes[2].onFrame=71000;
+  check(live.update(edited,{}).kind==UpdateResult::Kind::Tracks,"Note edit was not a track replacement");
+  append(a,renderSpan(live,20000,101));append(b,renderSpan(reference,20000,101));
+  checkSame(a,b,1e-6,"A note edit restarted the held note or the reverb tail");
+  // Delete note 2 while it sounds (30000..36000): only that note releases; the held note and tail go on.
+  auto removed=edited;removed.revision=2;removed.tracks[0].notes.erase(removed.tracks[0].notes.begin()+1);
+  (void)renderSpan(live,1000);(void)renderSpan(reference,1000); // Into note 2 (frame 33000).
+  check(live.update(removed,{}).kind==UpdateResult::Kind::Tracks,"Note removal was not a track replacement");
+  const auto after=renderSpan(live,4000);
+  check(energy(after)>1e-3,"Removing one note silenced the track");
+  // A live parameter edit (reverb amount) and a bass note edit keep everything else ringing.
+  auto knob=removed;knob.revision=3;knob.tracks[0].inserts[1].params["amount"]=.5;knob.tracks[1].notes[1].offFrame=64000;
+  const auto result=live.update(knob,{});
+  check(result.kind==UpdateResult::Kind::Tracks&&result.replacedTracks==1,"Parameter + other-track note edit replaced the wrong tracks");
+  const auto ringing=renderSpan(live,4000);check(energy(ringing)>1e-3,"A parameter edit dropped the tail");
+  // Stop the notes: the reverb tail continues past the last note through a further edit.
+  RenderEngine tail(48000,256),tailReference(48000,256);
+  auto shortNote=p;shortNote.tracks.resize(1);shortNote.tracks[0].notes={{1,0,4800,96000,60,.9f}};
+  tail.submit(tail.prepare(shortNote,{}));tailReference.submit(tailReference.prepare(shortNote,{}));check(tail.play()&&tailReference.play(),"Play failed");
+  auto x=renderSpan(tail,9000),y=renderSpan(tailReference,9000);
+  auto later=shortNote;later.revision=1;later.tracks[0].notes.push_back({2,80000,82000,96000,72,.5f});
+  check(tail.update(later,{}).kind==UpdateResult::Kind::Tracks,"Adding a later note was not a track replacement");
+  append(x,renderSpan(tail,30000,89));append(y,renderSpan(tailReference,30000,89));
+  checkSame(x,y,1e-6,"A note edit cut the running reverb tail");
+  check(energy(std::vector<float>(x.end()-20000,x.end()))>1e-6,"The reverb tail had already ended");
+  // VST3: a parameter change reaches the cached instance through the resolver; a note edit keeps the held note.
+  auto plugin=std::make_shared<TestPlugin>();plugin->instrument=true;unsigned resolves=0;
+  const PluginResolver resolver=[&](const PluginSpec&,double,std::uint32_t){++resolves;return plugin;};
+  auto vst=project(48000,48000);TrackTimeline inst;inst.id="vst";inst.source.kind=TrackSource::Kind::Vst3;inst.source.plugin.instanceId="synth";inst.source.plugin.isInstrument=true;
+  inst.notes={{1,0,40000,48000,60,.8f},{2,44000,46000,48000,64,.8f}};vst.tracks.push_back(inst);
+  RenderEngine v(48000,64);v.submit(v.prepare(vst,{}, {},resolver));check(v.play(),"Play failed");(void)renderSpan(v,640,64);
+  const auto resets=plugin->resets,before=resolves;
+  auto knobbed=vst;knobbed.revision=1;knobbed.tracks[0].source.plugin.parameters[3]=.7;
+  check(v.update(knobbed,{}, {},resolver).replacedTracks==0&&resolves==before+1,"A VST3 parameter change did not go through the resolver in place");
+  auto moved=knobbed;moved.revision=2;moved.tracks[0].notes[1].onFrame=43000;
+  check(v.update(moved,{}, {},resolver).kind==UpdateResult::Kind::Tracks,"A VST3 note edit was not a track replacement");
+  const auto held=renderSpan(v,640,64);
+  check(plugin->resets==resets,"A VST3 note edit reset the instrument");near(held[0],.02,1e-8,"A VST3 note edit interrupted the held note");
+}
+
+// Adding or removing a track rebuilds the graph, but every other track continues by id.
+void graphChangesKeepOtherTracks(){
+  const auto p=editProject();
+  RenderEngine live(48000,256),reference(48000,256);
+  live.submit(live.prepare(p,{}));reference.submit(reference.prepare(p,{}));check(live.play()&&reference.play(),"Play failed");
+  auto a=renderSpan(live,10000),b=renderSpan(reference,10000);
+  auto grown=p;grown.revision=1;auto extra=synthTrack("pad");extra.id="extra";extra.notes={{1,90000,95000,96000,72,.5f}};
+  grown.tracks.insert(grown.tracks.begin(),extra); // Shifts every index.
+  check(live.update(grown,{}).kind==UpdateResult::Kind::Full,"Adding a track did not rebuild the graph");
+  append(a,renderSpan(live,40000,77));append(b,renderSpan(reference,40000,77));
+  checkSame(a,b,1e-6,"Adding a silent track restarted the other tracks' voices or tails");
+  auto shrunk=grown;shrunk.revision=2;shrunk.tracks.erase(shrunk.tracks.begin()+2); // Remove bass.
+  check(live.update(shrunk,{}).kind==UpdateResult::Kind::Full,"Removing a track did not rebuild the graph");
+  const auto ringing=renderSpan(live,3000);check(energy(ringing)>1e-3,"Removing another track cut the keys track");
+}
+
+// 32 tracks with a reverb each fit the memory budget (shared impulse spectra) and build one impulse response.
+void manyReverbsShareImpulses(){
+  auto p=project(48000,48000);
+  const auto builds=dsp::impulseCacheStats().builds;
+  for(int i=0;i<32;++i){auto t=synthTrack();t.id="t"+std::to_string(i);t.notes={{1,0,4000,48000,60+i%12,.5f}};t.inserts={{"verb","reverb",true,{{"amount",.25},{"size",.61}},{}}};p.tracks.push_back(t);}
+  RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");
+  check(dsp::impulseCacheStats().builds-builds<=1,"Equal reverbs built their impulse response more than once");
+  check(energy(renderSpan(e,2000))>0,"32 reverb tracks rendered silence");
+  // 32 differently sized reverbs (one impulse response each) still fit the budget.
+  for(int i=0;i<32;++i)p.tracks[static_cast<std::size_t>(i)].inserts[0].params["size"]=.2+.01*i;
+  p.revision=1;check(e.update(p,{}).replacedTracks==32,"Reverb size edits did not rebuild their tracks");(void)renderSpan(e,512);
+  RenderEngine fresh(48000,256);fresh.submit(fresh.prepare(p,{}));
+}
+
+// Render-ahead tracks take diffs after their ring drains; a note edit far ahead renders bit-identically to the
+// callback-only engine, and nothing in the callback allocates (rt() checks every block).
+void updatesWithRenderAhead(){
+  workerHeapOperations=0;
+  constexpr std::uint32_t block=128;
+  const auto b=busyProject(10,31,false);
+  auto plain=busyEngine(b,processing(0)),ahead=busyEngine(b,processing(2,RenderAhead::High,block));
+  auto notes=b.project;notes.revision=3;
+  // A note well after the edit time (the cycle runs 12000..60000; the edit lands at buffer 60, frame 7680).
+  for(auto&t:notes.tracks)for(auto&n:t.notes)if(n.onFrame>40000&&n.onFrame<50000){n.velocity=std::min(1.f,n.velocity+.2f);break;}
+  auto mix=notes;mix.revision=4;mix.tracks[0].gain=.6f;mix.tracks[2].pan=-.5f;
+  std::uint32_t mostAhead=0;
+  const auto outs=drive({plain.get(),ahead.get()},560,[](std::size_t){return block;},[&](RenderEngine&e,std::size_t k) {
+    if(k==0)check(e.play(),"Play failed");
+    if(k==60)check(e.update(notes,b.assets,b.sets,testInstruments()).kind==UpdateResult::Kind::Tracks,"Note edits were not track replacements");
+    if(k==460)(void)e.update(mix,b.assets,b.sets,testInstruments());
+    if(k%25==0)e.collectRetired();
+    if(&e==ahead.get())mostAhead=std::max(mostAhead,e.snapshot().renderAheadTracks);
+  });
+  check(mostAhead>=5,"Non-live tracks did not render ahead");
+  // Blocks 0..459 cover the edited notes (frames 40000..50000) before the cycle wraps at 60000.
+  bitIdentical(outs[0],outs[1],"A note edit on render-ahead tracks differs from callback rendering",0,460*block);
+  const std::vector<float>lateA(outs[0].begin()+static_cast<std::ptrdiff_t>(520*block*2),outs[0].end()),lateB(outs[1].begin()+static_cast<std::ptrdiff_t>(520*block*2),outs[1].end());
+  check(maxDifference(lateA,lateB)<1e-5,"A mix diff on render-ahead tracks did not converge");
+  check(ahead->snapshot().renderAheadResyncs==0,"A render-ahead ring lost sync during updates");
+  check(workerHeapOperations.load()==0,"A render-ahead worker allocated or freed heap storage");
+}
+
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation},{"automation x tempo map x sends x returns",automationTempoSendsReturns}};
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation},{"automation x tempo map x sends x returns",automationTempoSendsReturns},
+    {"update: diffs equal a full rebuild",updateDiffsMatchRebuild},{"update: voices and tails survive edits",updatesKeepVoicesAndTails},
+    {"update: track add/remove keeps other tracks",graphChangesKeepOtherTracks},{"update: 32 reverbs share impulse responses",manyReverbsShareImpulses},
+    {"update: render-ahead tracks take diffs",updatesWithRenderAhead}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

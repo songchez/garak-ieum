@@ -80,8 +80,8 @@ target = { kind: 'track', param: 'volume'|'pan'|'mute' }
 - 센드 레벨 레인은 그 센드를 받는 리턴 트랙이 샘플마다 평가합니다(`TrackRuntime::Feed::lane`). 프리 페이더
   센드는 트랙이 들리지 않으면(뮤트/솔로) 여전히 0입니다.
 - 타임라인은 TS가 컴파일합니다(`src/audio/native/timeline.ts` → `automation[]`, 프레임 단위, 범위·로그·선택지 정보).
-- 레인이 바뀌면 `sameStructure`가 다른 구조로 보아 미리 렌더한 오디오를 버립니다(오래된 레인으로 렌더한
-  render-ahead 버퍼를 이어 쓰지 않도록).
+- 레인이 바뀌면 그 트랙만 다시 준비해 블록 경계에서 교체합니다(`RenderEngine::update`, [RENDER_DIFF_PROTOCOL.md](RENDER_DIFF_PROTOCOL.md)).
+  미리 렌더한 링은 먼저 비우므로 오래된 레인으로 렌더한 오디오를 이어 쓰지 않고, 음성과 이펙트 꼬리는 이어집니다.
 
 ## 기록 (`src/core/automationRecording.ts`)
 
