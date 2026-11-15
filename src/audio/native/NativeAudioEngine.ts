@@ -11,7 +11,8 @@ import type { AudioRecordingCallbacks } from '../AudioRecording'
 import { SampleLibrary } from '../samples'
 import { clamp, normalizedStart } from '../math'
 import { assertNativeInstrumentsSupported, canPlayInstrument, unsupportedNativeInstruments, WAVETABLE_HOST_REQUIRED } from '../instrumentSupport'
-import { compileNativeTimeline, type NativePcmAsset } from './timeline'
+import { NativeTimelineCompiler, type NativePcmAsset } from './timeline'
+import { planNativeSync, type SyncTimeline } from './timelineSync'
 import { tempoMapOf } from '../../core/tempoMap'
 import type {
   NativeAudioBridge, NativeAudioFile, NativeBackend, NativeDevice, NativeDeviceProbe, NativeDeviceState,
@@ -90,6 +91,11 @@ export class NativeAudioEngine implements AudioEngine {
   private pendingPlayRequest: number | null = null
   private revision = 0
   private appliedRevision = -1
+  /** Per-track incremental compilation (cached expansions survive edits to other tracks or to mixer state). */
+  private readonly compiler = new NativeTimelineCompiler()
+  /** The timeline the host acknowledged in this process generation and device configuration: later syncs
+   * send only the tracks that differ from it (project.patch, docs/RENDER_DIFF_PROTOCOL.md). */
+  private synced: { timeline: SyncTimeline; generation: number; configuration: number } | null = null
   private syncTask: Promise<void> | null = null
   private syncTimer: ReturnType<typeof setTimeout> | null = null
   private configurationTask: Promise<void> | null = null
@@ -605,7 +611,7 @@ export class NativeAudioEngine implements AudioEngine {
       await this.putPcm(id, asset.buffer)
       metadata.set(id, { id, sampleRate: asset.buffer.sampleRate, frames: asset.buffer.length, channels: asset.buffer.numberOfChannels })
     }
-    const timeline = compileNativeTimeline(project, metadata, revision)
+    const timeline = this.compiler.compile(project, metadata, revision)
     // Native DSP receives the bounded binary schema. Unsupported older hosts
     // can still save/edit WAVE and play other tracks; audible use is rejected.
     const tracks = timeline.tracks.map(track => {
@@ -631,8 +637,12 @@ export class NativeAudioEngine implements AudioEngine {
         if (generation !== this.generation || configuration !== this.configurationEpoch) throw abortError()
         if (revision !== this.revision) continue
         const awaitApplied = timeline.tracks.some(track => track.source.kind === 'native-wavetable')
-        const result = await this.request<NativeProjectApplied>('project.set', { timeline, ...(awaitApplied ? { awaitApplied: true } : {}) })
+        const previous = this.synced?.generation === generation && this.synced.configuration === configuration ? this.synced.timeline : null
+        const plan = planNativeSync(previous, timeline)
+        this.synced = null
+        const result = await this.request<NativeProjectApplied>(plan.method, { ...plan.params, ...(awaitApplied ? { awaitApplied: true } : {}), ...(plan.binary ? { binary: plan.binary } : {}) })
         if (generation !== this.generation || configuration !== this.configurationEpoch) throw abortError()
+        this.synced = { timeline, generation, configuration }
         if (awaitApplied && result?.revision !== revision) throw new Error('IEUM WAVE의 프로젝트 적용 확인 번호가 일치하지 않습니다.')
         this.appliedRevision = revision
         this.liveMidi.resync()
