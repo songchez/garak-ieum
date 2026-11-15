@@ -1,0 +1,158 @@
+name: Rust core
+
+# The Rust DSP core (docs/RUST.md): lint, unit tests, the WASM module (+ size report and the
+# TypeScript parity test against it) on Linux, and the garak-ffi staticlib linked into the C++
+# parity test with the real CI toolchains (Windows MSVC, macOS arm64). Web-only and other native
+# PRs never run this; the app does not depend on the Rust artifacts yet.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/rust.yml'
+      - 'rust/**'
+      - 'native/CMakeLists.txt'
+      - 'native/cmake/**'
+      - 'native/include/garak/dsp.hpp'
+      - 'native/src/dsp.cpp'
+      - 'native/src/sigimsae_effects.inc'
+      - 'native/tests/rust_parity_test.cpp'
+      - 'src/audio/rust/**'
+      - 'src/devices/effects/kernels.ts'
+      - 'src/devices/effects/eqModel.ts'
+      - 'scripts/rust.mjs'
+      - 'scripts/setup-rust.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  core:
+    name: Lint, test and WASM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The same one-command setup contributors use; installs the toolchain pinned in
+      # rust/rust-toolchain.toml (rustup is preinstalled on GitHub runners).
+      - name: Install the pinned Rust toolchain
+        run: sh scripts/setup-rust.sh --skip-verify
+
+      - name: Cache cargo registry and build outputs
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: rust -> target
+
+      - name: Check formatting
+        working-directory: rust
+        run: cargo fmt --all --check
+
+      - name: Clippy (host and wasm32, warnings are errors)
+        working-directory: rust
+        run: |
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo clippy --locked -p garak-dsp -p garak-wasm --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Unit tests
+        working-directory: rust
+        run: cargo test --locked --workspace
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Build the WASM module (fails above its size budget)
+        run: |
+          node scripts/rust.mjs wasm
+          size=$(stat -c %s public/wasm/garak-dsp.wasm)
+          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the WASM module
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: garak-dsp-wasm
+          path: public/wasm/garak-dsp.wasm
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: '11.25.0'
+          run_install: false
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript parity against the built WASM module
+        run: pnpm exec vitest run src/audio/rust
+
+  native-parity:
+    name: C++ parity (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows MSVC x64
+            os: windows-latest
+            cmake_args: ''
+          - name: macOS arm64
+            os: macos-15
+            cmake_args: '-DCMAKE_OSX_ARCHITECTURES=arm64'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup-rust.ps1 -SkipVerify
+
+      - name: Install the pinned Rust toolchain (macOS)
+        if: runner.os != 'Windows'
+        run: sh scripts/setup-rust.sh --skip-verify
+
+      - name: Cache cargo registry and build outputs
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: rust -> ../build/native-rust/rust-target
+
+      - name: Cache verified native source archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/native-rust/archives
+          key: native-archives-${{ hashFiles('native/dependencies.lock.json') }}
+
+      # Core-only configuration: the parity test needs garak_core, not devices, ASIO or VST3.
+      # CMake picks the Rust target from the compiler (MSVC -> x86_64-pc-windows-msvc,
+      # AppleClang arm64 -> aarch64-apple-darwin).
+      - name: Configure with GARAK_RUST=ON
+        run: >
+          cmake -S native -B build/native-rust -DCMAKE_BUILD_TYPE=Release
+          -DGARAK_RUST=ON -DGARAK_ENABLE_DEVICES=OFF -DGARAK_ENABLE_ASIO=OFF -DGARAK_ENABLE_VST3=OFF
+          ${{ matrix.cmake_args }}
+
+      - name: Build garak-ffi and the parity test
+        run: cmake --build build/native-rust --config Release --target garak-rust-parity-test --parallel 4
+
+      - name: Run the Rust vs C++ parity test
+        run: ctest --test-dir build/native-rust -C Release -R native-rust-parity --output-on-failure

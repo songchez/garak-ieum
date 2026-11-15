@@ -1,0 +1,19 @@
+[package]
+name = "garak-ffi"
+description = "C ABI over garak-dsp for the native C++ host (staticlib, no_std, no libc beyond abort)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+# Unit tests run in the std test harness; no doctests (a no_std staticlib cannot host them).
+doctest = false
+
+[dependencies]
+garak-dsp.workspace = true
+
+[lints]
+workspace = true

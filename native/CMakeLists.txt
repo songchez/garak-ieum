@@ -237,3 +237,9 @@ foreach(dependency_index RANGE 0 ${dependency_last})
     install(FILES "${license_source}/${license_file}" DESTINATION "licenses/${dependency_id}/${license_parent}")
   endforeach()
 endforeach()
+
+# Optional Rust DSP core and its C++ parity test (docs/RUST.md). Off by default; nothing ships it yet.
+option(GARAK_RUST "Build the Rust DSP core (rust/garak-ffi) and garak-rust-parity-test" OFF)
+if(GARAK_RUST)
+  include(cmake/GarakRust.cmake)
+endif()

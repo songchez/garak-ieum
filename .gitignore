@@ -24,3 +24,6 @@ build/native-deps/
 /public/licenses/THIRD_PARTY_NOTICES.txt
 /public/licenses/SOURCE.txt
 /public/licenses/SOURCE.json
+
+# Built by `pnpm rust:wasm` (docs/RUST.md); never committed.
+/public/wasm/

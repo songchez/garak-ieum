@@ -1,0 +1,5 @@
+# The real-time lints (workspace Cargo.toml) guard shipping code; tests may index and unwrap.
+allow-indexing-slicing-in-tests = true
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
