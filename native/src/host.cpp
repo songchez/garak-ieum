@@ -23,6 +23,7 @@
 #include <thread>
 #if defined(_WIN32)
 #include <windows.h>
+#include <mmsystem.h>
 #include <io.h>
 #include <fcntl.h>
 #else
@@ -203,7 +204,7 @@ class Host {
       if (!recordingError_) { recordingError_=true; (void)engine_->stopRecording(); }
     }
   }
-  Json request(const std::string& method,const Json& a) {
+  Json request(const std::string& method,const Json& a,std::string_view blob={}) {
     if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"midiInput",true},{"midiDevices",midi::MidiInputManager::supported()},{"backends",DeviceHost::availableBackends()},
       {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}}};
     if (method=="engine.snapshot") { auto result=snapshot(); drainMidi(result); return result; }
@@ -227,15 +228,21 @@ class Host {
     }
     if (method=="asset.load") return loadAsset(a);
     if (method=="samples.register") { auto set=sampleSet(a); for(const auto& z:set.zones) if(!assets_.contains(z.assetId)) throw std::runtime_error("Sample asset is missing"); for(const auto& z:set.releaseZones) if(!assets_.contains(z.assetId)) throw std::runtime_error("Release sample asset is missing"); sets_[set.id]=std::move(set); return Json::object(); }
-    if (method=="project.set") {
-      auto project=timeline(a.at("timeline"));
+    // project.set: a complete timeline; project.patch: the changed tracks only (docs/RENDER_DIFF_PROTOCOL.md).
+    // Both reach the engine as RenderEngine::update(), which applies the smallest diff to the running graph.
+    if (method=="project.set" || method=="project.patch") {
+      if (method=="project.patch" && (!engine_ || project_.projectId.empty())) throw std::runtime_error("project.patch needs a project; send project.set first");
+      auto project=method=="project.set"?timeline(a.at("timeline"),blob):patchTimeline(project_,a,blob);
       if (engine_ && configured_ && project.sampleRate!=engine_->snapshot().sampleRate) throw std::runtime_error("Project and device sample rates differ; configure the device first");
       if (!engine_) { engine_=std::make_unique<RenderEngine>(project.sampleRate,scratchFrames); engine_->setProcessing(processingOptions(true)); applyMetronome(); }
-      auto prepared=engine_->prepare(project,assets_,sets_,resolver(false));
       if(a.value("awaitApplied",false))requireEngine();
-      const auto ticket=engine_->submit(std::move(prepared)); project_=std::move(project); prunePlugins(); publishMidiRoutes();
-      if(a.value("awaitApplied",false))awaitApplied(ticket);
-      return {{"revision",project_.revision}};
+      const auto began=Clock::now();
+      const auto applied=engine_->update(project,assets_,sets_,resolver(false));
+      const auto micros=std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-began).count();
+      project_=std::move(project); prunePlugins(); publishMidiRoutes();
+      if(a.value("awaitApplied",false))awaitApplied(applied.ticket);
+      const char* kind=applied.kind==UpdateResult::Kind::Full?"full":applied.kind==UpdateResult::Kind::Tracks?"tracks":applied.kind==UpdateResult::Kind::Diff?"diff":"none";
+      return {{"revision",project_.revision},{"applied",kind},{"replacedTracks",applied.replacedTracks},{"updateMicros",micros}};
     }
     if (method=="render.wav") return render(a);
     if (method=="metronome.set") return setMetronome(a);
@@ -922,7 +929,10 @@ class Host {
   }
 };
 
-struct InputQueue { std::mutex mutex; std::condition_variable changed; std::deque<std::string> lines; bool done=false; std::string error; };
+// One request: its JSON line and the binary frame sent just before it, if any. A frame is announced by a line
+// "#<byte length>" followed by exactly that many raw bytes (docs/RENDER_DIFF_PROTOCOL.md); JSON never starts with '#'.
+struct InputLine { std::string line, blob; };
+struct InputQueue { std::mutex mutex; std::condition_variable changed; std::deque<InputLine> lines; bool done=false; std::string error; };
 /** Bounded, interruptible stdin reader. A GUI/plugin failure cannot leave a
  * joinable thread blocked forever in getline during stack unwinding. */
 class InputReader {
@@ -931,8 +941,15 @@ class InputReader {
   ~InputReader() { stop_.store(true); if(thread_.joinable()) thread_.join(); }
  private:
   void read() noexcept {
+#if defined(_WIN32)
+    // The pipe is polled: a 1 ms system timer keeps a request's pickup latency near 1 ms instead of one
+    // default 15.6 ms tick (a fader tick or note edit would otherwise wait that long before parsing).
+    timeBeginPeriod(1);
+    struct TimerPeriod { ~TimerPeriod() { timeEndPeriod(1); } } restore;
+#endif
     try {
-      std::string line; line.reserve(4096); std::array<char,8192> buffer{};
+      std::string line, blob; line.reserve(4096); std::array<char,8192> buffer{};
+      std::size_t blobRemaining=0; bool haveBlob=false;
       while(!stop_.load()) {
         std::size_t length=0;
 #if defined(_WIN32)
@@ -943,7 +960,7 @@ class InputReader {
             if(GetLastError()==ERROR_BROKEN_PIPE) break;
             throw std::runtime_error("Cannot inspect the audio control pipe");
           }
-          if(!available) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue; }
+          if(!available) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
         } else if(GetFileType(input)!=FILE_TYPE_DISK) throw std::runtime_error("The audio protocol requires piped stdin");
         if(!ReadFile(input,buffer.data(),DWORD(buffer.size()),&received,nullptr)) {
           if(GetLastError()==ERROR_BROKEN_PIPE) break;
@@ -961,10 +978,22 @@ class InputReader {
 #endif
         if(!length) break;
         for(std::size_t i=0;i<length;++i) {
+          if(blobRemaining) {
+            const auto take=std::min(blobRemaining,length-i);
+            blob.append(buffer.data()+i,take); blobRemaining-=take; i+=take-1;
+            continue;
+          }
           if(buffer[i]=='\n') {
+            if(!line.empty()&&line[0]=='#') {
+              // A binary frame for the next request.
+              std::size_t size=0; const auto parsed=std::from_chars(line.data()+1,line.data()+line.size(),size);
+              if(parsed.ec!=std::errc{}||parsed.ptr!=line.data()+line.size()||size>maxLine||haveBlob) throw std::runtime_error("Invalid binary request frame");
+              blob.clear(); blob.reserve(size); blobRemaining=size; haveBlob=true; line.clear();
+              continue;
+            }
             std::lock_guard lock(queue_.mutex);
             if(queue_.lines.size()>=64) throw std::runtime_error("Native command queue overflow");
-            queue_.lines.push_back(std::move(line)); line.clear(); line.reserve(4096); queue_.changed.notify_one();
+            queue_.lines.push_back({std::move(line),haveBlob?std::move(blob):std::string()}); line.clear(); line.reserve(4096); blob.clear(); haveBlob=false; queue_.changed.notify_one();
           } else { line.push_back(buffer[i]); if(line.size()>maxLine) throw std::runtime_error("Native request exceeds 64 MiB"); }
         }
       }
@@ -996,13 +1025,20 @@ int run(const std::vector<std::string>& args) {
     Host host(test); InputQueue queue; InputReader reader(queue);
     bool failed=false;
     for(;;) {
-      std::string line; bool finished=false;
-      { std::unique_lock lock(queue.mutex); if(queue.lines.empty()&&!queue.done) queue.changed.wait_for(lock,std::chrono::milliseconds(2)); if(!queue.lines.empty()) {line=std::move(queue.lines.front());queue.lines.pop_front();} finished=queue.done&&queue.lines.empty()&&line.empty(); if(!queue.error.empty()) failed=true; }
+      std::string line,blob; bool finished=false;
+      { std::unique_lock lock(queue.mutex); if(queue.lines.empty()&&!queue.done) queue.changed.wait_for(lock,std::chrono::milliseconds(2)); if(!queue.lines.empty()) {line=std::move(queue.lines.front().line);blob=std::move(queue.lines.front().blob);queue.lines.pop_front();} finished=queue.done&&queue.lines.empty()&&line.empty(); if(!queue.error.empty()) failed=true; }
       if(finished) break;
       pumpNativeEvents(); host.service();
       if(line.empty()) continue;
       Json id=nullptr;
-      try { const auto request=Json::parse(line); id=request.at("id"); if(!id.is_number_unsigned()&&!id.is_number_integer()) throw std::runtime_error("Invalid request ID"); const auto method=string(request,"method",128); const auto params=request.value("params",Json::object()); if(!params.is_object()) throw std::runtime_error("Invalid params"); emit(output,{{"id",id},{"ok",true},{"result",host.request(method,params)}}); }
+      try {
+        const auto received=Clock::now();
+        const auto request=Json::parse(line); id=request.at("id"); if(!id.is_number_unsigned()&&!id.is_number_integer()) throw std::runtime_error("Invalid request ID"); const auto method=string(request,"method",128); static const Json noParams=Json::object(); const Json& params=request.contains("params")?request.at("params"):noParams; if(!params.is_object()) throw std::runtime_error("Invalid params");
+        auto result=host.request(method,params,blob);
+        // Project updates report their whole host-side cost: JSON parse, binary decode, merge and engine update.
+        if(result.is_object()&&result.contains("updateMicros"))result["hostMicros"]=std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-received).count();
+        emit(output,{{"id",id},{"ok",true},{"result",std::move(result)}});
+      }
       catch(const DeviceError& error) {
         // Classified device failures carry `code` (and `details`) both at the top
         // level (docs/AUDIO_CORE_PLAN.md) and inside the existing error object.
