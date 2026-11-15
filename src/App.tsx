@@ -7,7 +7,7 @@ import { quarterNotesPerBeat, setProjectTimeSignature } from './core/meter'
 import { TempoInput } from './components/TempoInput'
 import { TimeSignatureControl } from './components/TimeSignatureControl'
 import { MetronomeControl } from './components/MetronomeControl'
-import { getMetronomePrefs, metronomeEngineState, subscribeMetronomePrefs, updateMetronomePrefs } from './core/metronome'
+import { getMetronomePrefs, metronomeEngineState, subscribeMetronomePrefs, toggleCountIn, updateMetronomePrefs } from './core/metronome'
 import { bindRecordingToTransport, pausePlaybackWithRecording, stopPlaybackWithRecording, togglePlaybackWithRecording } from './audio/recordingTransport'
 import { inputConstraints, loadAudioSettings, normalizeAudioSettings, recordingOffsetMs, saveAudioSettings, type AudioSettings, type SampleRate } from './core/audioSettings'
 import { appendAudioRecordings, combineTakeCaptures, createTakeCapture, sessionCapture, recordingStartBeat, selectInputChannels, simultaneousTakeLimit, type MultiTakeEngine, type RecordingDraft, type TakeCallbacks, type TakeCapture, type TakeResult } from './core/recording'
@@ -1076,6 +1076,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       case 'record':void toggleRecord();break
       case 'musicalTyping':{const on=!midi.typing.enabled;midi.toggleTyping(on);notify(on?'컴퓨터 키보드 연주 켬 · A~K 건반, Z/X 옥타브, C/V 벨로시티':'컴퓨터 키보드 연주 끔');break}
       case 'captureMidi':midi.captureMidi();break
+      case 'countIn':{const bars=toggleCountIn().countInBars;notify(bars?`녹음 카운트인 ${bars}마디`:'녹음 카운트인 끔');break}
       case 'metronome':{const on=updateMetronomePrefs({enabled:!getMetronomePrefs().enabled}).enabled;notify(on?'메트로놈 켬':'메트로놈 끔');break}
       case 'snapToggle':setView(v=>({...v,snap:{...v.snap,on:!v.snap.on}}));break
       case 'zoomIn':case 'zoomOut':case 'zoomInV':case 'zoomOutV':case 'zoomToFit':zoomArea(command,ctx.scope);break
@@ -1510,7 +1511,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   }:undefined
   const timelineUi:TimelineUi={headerWidth:trackHeader.headerWidth,headerConfig:trackHeader.headerConfig,hideView,recording:recording||midi.recording,catch:view.catch,scrollInPlay:view.scrollInPlay,snap:view.snap,dragMode:view.dragMode,globalTracks:view.globalTracks,gridLines:view.gridLines,trackZoom,zoomFocused:view.zoomFocused,soloRecall,renamingTrackId}
   const iconTrack=iconMenu?project.tracks.find(t=>t.id===iconMenu.id):undefined
-  const trackProps={project,engine,recording,onTrackChange:changeTrack,onTrackButton:trackButton,onTrackSweep:trackSweep,onInstrumentChange:changeInstrument,onAddDevice:addDevice,onToggleDevice:toggleDevice,onMoveDevice:(id:string,deviceId:string,offset:number)=>editTrack(id,t=>moveDevice(t,deviceId,offset)),onRemoveDevice:(id:string,deviceId:string)=>editTrack(id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)})),onOpenDevices:openDevices,onMasterChange:(value:number)=>commit(p=>p.masterVolume===value?p:{...p,masterVolume:value},'master-volume','마스터 볼륨 조절'),onOpenColorPalette:paletteFor,onIconMenu:(id:string,e:React.MouseEvent)=>setIconMenu({id,...anchorAt(e.currentTarget)}),onSendChange:changeSend}
+  const trackProps={project,engine,recording,onTrackChange:changeTrack,onTrackButton:trackButton,onTrackSweep:trackSweep,onInstrumentChange:changeInstrument,onAddDevice:addDevice,onToggleDevice:toggleDevice,onMoveDevice:(id:string,deviceId:string,offset:number)=>editTrack(id,t=>moveDevice(t,deviceId,offset)),onRemoveDevice:(id:string,deviceId:string)=>editTrack(id,t=>({...t,devices:t.devices.filter(d=>d.id!==deviceId)})),onOpenDevices:openDevices,onOpenLibrary:(id:string)=>{trackFocus(id);patchView({browserOpen:true});setLibraryTab('effect')},onMasterChange:(value:number)=>commit(p=>p.masterVolume===value?p:{...p,masterVolume:value},'master-volume','마스터 볼륨 조절'),onOpenColorPalette:paletteFor,onIconMenu:(id:string,e:React.MouseEvent)=>setIconMenu({id,...anchorAt(e.currentTarget)}),onSendChange:changeSend}
   const automationMenuTrack=automationMenu?project.tracks.find(track=>track.id===automationMenu.trackId):undefined
   const automationMenuLane=automationMenu&&automationMenuTrack?laneFor(automationMenuTrack,automationMenu.target):undefined
   return <HistoryGestureContext.Provider value={gestureHost}><AutomationDisplayContext.Provider value={automationDisplay}><AutomationUi.Provider value={automationUi}><div className="studio-app">

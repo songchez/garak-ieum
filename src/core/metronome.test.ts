@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   clicksInRange, countInBeats, countInClicks, DEFAULT_METRONOME_PREFS, getMetronomePrefs, isCompoundMeter, METRONOME_STORAGE_KEY, metronomeEngineState,
-  metronomeGrid, normalizeMetronomePrefs, scheduleSegment, updateMetronomePrefs,
+  metronomeGrid, normalizeMetronomePrefs, scheduleSegment, toggledCountIn, updateMetronomePrefs,
 } from './metronome'
 
 const levels = (signature: { numerator: number; denominator: 2 | 4 | 8 | 16 }, start: number, end: number) =>
@@ -86,5 +86,14 @@ describe('metronome preferences', () => {
     expect(metronomeEngineState(prefs, false).enabled).toBe(false)
     expect(metronomeEngineState(prefs, true).enabled).toBe(true)
     expect(metronomeEngineState({ ...prefs, recordOnly: false }, false).enabled).toBe(true)
+  })
+})
+
+describe('count-in toggle (⇧K)', () => {
+  it('turns count-in off, and back on at the last bar count (1 the first time)', () => {
+    expect(toggledCountIn(2, 2)).toBe(0)
+    expect(toggledCountIn(0, 2)).toBe(2)
+    expect(toggledCountIn(0, 0)).toBe(1)
+    expect(toggledCountIn(1, 2)).toBe(0)
   })
 })

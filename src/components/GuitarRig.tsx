@@ -478,7 +478,7 @@ export function GuitarRigEditor({ device, track, audioState, onParam, onParams, 
           </section>
           {rackView('post')}
           <section className="gr-stage gr-stage-cab" aria-label="캐비닛 · 마이크" data-bypassed={!cabOn}>
-            <header className="gr-stage-head"><button className="gr-unit-power" aria-pressed={cabOn} aria-label={`캐비닛 ${cabOn ? '켜짐, 누르면 바이패스' : '바이패스, 누르면 켜기'}`} onClick={() => toggle(cabPk('cabinetEnabled'))}><i aria-hidden="true"/></button><h3>CABINET</h3><RigChoice id={cabPk('cabinet')} label="모델" params={params} onParam={onParam}/></header>
+            <header className="gr-stage-head"><button className="gr-unit-power" aria-pressed={cabOn} aria-label={`캐비닛 ${cabOn ? '켜짐, 누르면 바이패스' : '바이패스, 누르면 켜기'}`} title={cabOn ? '캐비닛 켜짐 · 누르면 바이패스' : '캐비닛 바이패스 · 누르면 켜기'} onClick={() => toggle(cabPk('cabinetEnabled'))}><i aria-hidden="true"/><span className="gr-unit-power-switch" aria-hidden="true"><span/></span><small aria-hidden="true">{cabOn ? 'ON' : 'BYPASS'}</small></button><h3>CABINET</h3><RigChoice id={cabPk('cabinet')} label="모델" params={params} onParam={onParam}/></header>
             <CabinetFace pk={cabPk} params={params} onParam={onParam}/>
           </section>
           </div>

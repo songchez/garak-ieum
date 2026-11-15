@@ -37,7 +37,7 @@ export type ProjectShortcut =
   | 'trackZoomIn' | 'trackZoomOut' | 'trackZoomToggle' | 'trackZoomReset' | 'zoomFocusedTrack'
   | 'toggleInspector' | 'toggleMixer' | 'toggleBrowser' | 'globalTracks' | 'createMarker'
   | 'deleteNotes' | 'quantize' | 'transposeUp' | 'transposeDown' | 'transposeOctaveUp' | 'transposeOctaveDown'
-  | 'musicalTyping' | 'captureMidi' | 'toggleAutomation'
+  | 'musicalTyping' | 'captureMidi' | 'toggleAutomation' | 'countIn'
 
 export function isShortcutSuppressed(event: ShortcutEvent, allowRepeat = false, platform: ShortcutPlatform = shortcutPlatform()): boolean {
   // Firefox on macOS can report Option as AltGraph. Only that Option-only
@@ -140,7 +140,7 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('home', named('Home', 'Home'), '', TPW), bind('home', ENTER, '', TW),
   bind('rewind', punct('Comma', ','), '', TW), bind('forward', punct('Period', '.'), '', TW),
   bind('escape', named('Escape', 'Esc'), '', TPW), bind('help', named('?', '?'), 'anyShift', TPW),
-  bind('cycle', letter('C'), '', TPW), bind('record', letter('R'), '', TPW), bind('metronome', letter('K'), '', TPW),
+  bind('cycle', letter('C'), '', TPW), bind('record', letter('R'), '', TPW), bind('metronome', letter('K'), '', TPW), bind('countIn', letter('K'), 'shift', TPW),
   // docs/MIDI_RECORDING.md: Logic ⌘K Musical Typing, Logic ⇧R Capture Recording.
   bind('musicalTyping', letter('K'), 'mod', TPW), bind('captureMidi', letter('R'), 'shift', TPW),
   bind('snapToggle', letter('G'), 'mod', TPW),
@@ -192,7 +192,7 @@ export function resolveProjectShortcut(event: ShortcutEvent, scope: ShortcutScop
   return SHORTCUT_BINDINGS.find(b => inScope(b, editScope) && onPlatform(b, platform) && MODS[b.mods](event) && keyMatches(event, b.key))?.command ?? null
 }
 
-const GLOBAL_ONLY_COMMANDS = new Set<ProjectShortcut>(['playback', 'playFromSelection', 'undo', 'redo', 'save', 'home', 'rewind', 'forward', 'help', 'openSettings', 'cycle', 'record', 'metronome', 'musicalTyping', 'captureMidi', 'toggleInspector', 'toggleMixer', 'toggleBrowser'])
+const GLOBAL_ONLY_COMMANDS = new Set<ProjectShortcut>(['playback', 'playFromSelection', 'undo', 'redo', 'save', 'home', 'rewind', 'forward', 'help', 'openSettings', 'cycle', 'record', 'metronome', 'countIn', 'musicalTyping', 'captureMidi', 'toggleInspector', 'toggleMixer', 'toggleBrowser'])
 export interface ShortcutVisibility { editors: readonly ShortcutEditScope[]; preferred?: ShortcutEditScope }
 
 /** Resolve app/editor keys without stealing typing, modal keys, or control navigation. */
@@ -235,6 +235,7 @@ const META: Record<ProjectShortcut, { label: string; logic: string }> = {
   cycle: { label: '반복 구간(사이클) 켜기/끄기', logic: 'C' },
   record: { label: '녹음', logic: 'R' },
   metronome: { label: '메트로놈 켜기/끄기', logic: 'K' },
+  countIn: { label: '녹음 카운트인 켜기/끄기', logic: '⇧K' },
   snapToggle: { label: '스냅 켜기/끄기', logic: '⌘G' },
   zoomIn: { label: '가로 확대', logic: '⌘→' },
   zoomOut: { label: '가로 축소', logic: '⌘←' },

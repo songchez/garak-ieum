@@ -104,8 +104,15 @@ export function subscribeMetronomePrefs(listener: () => void): () => void {
   listeners.add(listener)
   return () => { listeners.delete(listener) }
 }
+let lastCountIn: CountInBars = 1
+/** ⇧K: count-in off, or back on at the last bar count used (1 bar the first time). */
+export const toggledCountIn = (current: CountInBars, last: CountInBars): CountInBars => current > 0 ? 0 : last > 0 ? last : 1
+export function toggleCountIn(): MetronomePrefs {
+  return updateMetronomePrefs({ countInBars: toggledCountIn(getMetronomePrefs().countInBars, lastCountIn) })
+}
 export function updateMetronomePrefs(patch: Partial<MetronomePrefs>): MetronomePrefs {
   const next = normalizeMetronomePrefs({ ...getMetronomePrefs(), ...patch })
+  if (next.countInBars > 0) lastCountIn = next.countInBars
   current = next
   saveMetronomePrefs(next)
   for (const listener of listeners) listener()

@@ -16,6 +16,7 @@ import { useHistoryGesture } from '../core/historyGesture'
 import { canSend, returnLetter, returnTracks, sendTo, sendersOf, type SendPatch } from '../core/sends'
 import { SendKnob, formatSendDb } from './SendKnob'
 import { useDisplayTrack } from './automationUi'
+import { draggedLibraryRole, readLibraryDrag } from '../core/libraryDrag'
 
 const deviceName = (device: Device) => device.type === 'vst3' ? device.name : effectDeviceName(device)
 
@@ -36,11 +37,14 @@ export interface ChannelStripProps {
   onTrackButton: (trackId: string, kind: TrackButtonKind, mods: TrackButtonMods) => void
   onTrackSweep: (trackId: string, kind: TrackButtonKind, value: boolean) => void
   onInstrumentChange?: (trackId: string, instrument: InstrumentId) => void
-  onAddDevice?: (trackId: string, type: EffectType) => void
+  /** `variantId` names a library variant (src/core/sigimsaeVariants.ts) when the effect comes from a library drop. */
+  onAddDevice?: (trackId: string, type: EffectType, variantId?: string) => void
   onToggleDevice?: (trackId: string, deviceId: string) => void
   onMoveDevice?: (trackId: string, deviceId: string, offset: number) => void
   onRemoveDevice?: (trackId: string, deviceId: string) => void
   onOpenDevices?: (trackId: string, deviceId?: string) => void
+  /** Opens the left library on its 시김새 tab for this track (the empty insert slot's action). */
+  onOpenLibrary?: (trackId: string) => void
   onMasterChange?: (v: number) => void
   onSelect?: () => void
   onOpenColorPalette?: (trackId: string, e: React.MouseEvent) => void
@@ -57,6 +61,7 @@ export function ChannelStrip(props: ChannelStripProps) {
   // Pan, fader and mute follow automation during playback (docs/AUTOMATION.md).
   const shown = useDisplayTrack(track)
   const [menu, setMenu] = useState<Menu | null>(null)
+  const [libraryOver, setLibraryOver] = useState(false)
   const dragFrom = useRef<{ id: string; index: number; pointerId: number } | null>(null)
   const insertGesture = useHistoryGesture('시김새 순서 변경')
   const cancelInsertDrag = useRef<(() => void) | null>(null)
@@ -77,6 +82,15 @@ export function ChannelStrip(props: ChannelStripProps) {
 
   const id = track.id
   const def = instrumentDef(track.instrument)
+  // Library drops, like the 시김새 chain: effects join the end of the chain, instruments replace an instrument track's source.
+  const acceptsDrop = (data: DataTransfer) => { const role = draggedLibraryRole(data); return (role === 'effect' && !!props.onAddDevice) || (role === 'instrument' && track.kind === 'instrument' && !!props.onInstrumentChange) }
+  function libraryDrop(e: React.DragEvent) {
+    if (!acceptsDrop(e.dataTransfer)) return
+    e.preventDefault(); e.stopPropagation(); setLibraryOver(false)
+    const item = readLibraryDrag(e.dataTransfer)
+    if (item?.kind === 'effect') props.onAddDevice?.(id, item.effectType, item.variantId)
+    else if (item?.kind === 'instrument') props.onInstrumentChange?.(id, item.instrument)
+  }
   const items = (): ContextMenuItem[] => {
     if (!menu) return []
     if (menu.kind === 'instrument') return INSTRUMENT_SECTIONS.map(section => ({ label: section.title, items: INSTRUMENTS.filter(i => section.categories.includes(i.category)).map(i => ({ label: `${i.name} · ${i.nameKo}`, checked: i.id === track.instrument, onSelect: () => props.onInstrumentChange?.(id, i.id) })) }))
@@ -110,7 +124,9 @@ export function ChannelStrip(props: ChannelStripProps) {
     cancelInsertDrag.current = finish
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up); window.addEventListener('blur', finish)
   }
-  return <div className={`cstrip ${focused ? 'focused' : ''} ${compact ? 'compact' : ''} ${track.enabled ? '' : 'off'}`} style={{ '--track-color': track.color, '--track-label-color': contrastTextColor(track.color) } as React.CSSProperties} aria-label={`${track.name} 채널 스트립`} onClick={onSelect}>
+  return <div className={`cstrip ${focused ? 'focused' : ''} ${compact ? 'compact' : ''} ${track.enabled ? '' : 'off'} ${libraryOver ? 'library-drop' : ''}`} style={{ '--track-color': track.color, '--track-label-color': contrastTextColor(track.color) } as React.CSSProperties} aria-label={`${track.name} 채널 스트립`} onClick={onSelect}
+    onDragOver={e => { if (!acceptsDrop(e.dataTransfer)) return; e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; if (!libraryOver) setLibraryOver(true) }}
+    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setLibraryOver(false) }} onDrop={libraryDrop}>
     <div className="cstrip-slot cstrip-kind">{track.kind === 'audio' ? '오디오' : track.kind === 'return' ? '리턴' : '악기'}</div>
     {track.kind === 'instrument' && <div className="cstrip-slot cstrip-instrument" title={track.pluginInstrument ? `${track.pluginInstrument.name} · VST3` : `${def.name} · ${def.nameKo}`}>
       <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); if (props.onOpenDevices) props.onOpenDevices(id); else open('instrument', e) }} aria-label={`악기 ${track.pluginInstrument?.name ?? def.name}`}><Icon name={track.pluginInstrument ? 'plug' : def.icon} size={11} /><span>{track.pluginInstrument?.name ?? def.name}</span></button>
@@ -121,7 +137,9 @@ export function ChannelStrip(props: ChannelStripProps) {
         <button type="button" className={`cstrip-power ${device.enabled ? 'on' : ''}`} aria-pressed={device.enabled} aria-label={`${deviceName(device)} 켜기/끄기`} title="켜기/끄기 (바이패스)" onClick={e => { stop(e); props.onToggleDevice?.(id, device.id) }} />
         <button type="button" className="cstrip-slot-main" onClick={e => { stop(e); props.onOpenDevices?.(id, device.id) }} title={`${deviceName(device)}${device.type === 'vst3' ? '' : ` · ${effectLabel(device.type)}`} 열기`}><span>{deviceName(device)}</span></button>
       </div>)}
-      <button type="button" className="cstrip-slot cstrip-insert-empty" onClick={e => { stop(e); open('add', e) }} aria-label="시김새 추가" aria-haspopup="menu" aria-expanded={menu?.kind === 'add'} title="시김새 추가"><Icon name="plus" size={10} /></button>
+      {props.onOpenLibrary
+        ? <button type="button" className="cstrip-slot cstrip-insert-empty" onClick={e => { stop(e); props.onOpenLibrary?.(id) }} aria-label="시김새 추가: 왼쪽 라이브러리에서 끌어다 놓기 · 라이브러리 열기" title="시김새 추가 — 왼쪽 라이브러리에서 이 스트립으로 끌어다 놓으세요. 클릭하면 라이브러리의 시김새 목록을 엽니다."><Icon name="plus" size={10} /></button>
+        : <button type="button" className="cstrip-slot cstrip-insert-empty" onClick={e => { stop(e); open('add', e) }} aria-label="시김새 추가" aria-haspopup="menu" aria-expanded={menu?.kind === 'add'} title="시김새 추가"><Icon name="plus" size={10} /></button>}
     </div>
     <Sends track={track} project={project} compact={compact} onSendChange={props.onSendChange} />
     <div className="cstrip-slot cstrip-output" title="출력">Stereo Out</div>
