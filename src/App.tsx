@@ -62,9 +62,8 @@ import { SHORTCUT_TABLE, ZOOM_COMMANDS, isShortcutSuppressed, isUnmodified, reso
 import { bindTransportShortcuts, isTransportTextTarget } from './core/transportShortcuts'
 import { DEVICE_KEY_FACTOR, ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, loadZoom, saveZoom, zoomBy, type ZoomCommand, type ZoomHandle, type ZoomState } from './core/zoom'
 import { ZoomControls } from './components/ZoomControls'
-import AudioSettingsDialog, { type SettingsTab } from './components/AudioSettingsDialog'
+import type { SettingsTab } from './components/AudioSettingsDialog'
 import type { NativePluginDescriptor, NativePluginInstance } from './audio/native/contracts'
-import McpConnectionDialog from './components/McpConnectionDialog'
 import { ProjectSession } from './core/ProjectSession'
 import { HistoryGestureContext } from './core/historyGesture'
 import { createDawRequestHandler } from './automation/host'
@@ -81,6 +80,9 @@ import type { AutomationTarget } from './core/types'
 // An application-session service, independent of React's render/effect lifecycle.
 const initialAudioSettings = loadAudioSettings()
 const PitchEditor = lazy(() => import('./devices/pitch-editor/PitchEditor').then(module => ({ default: module.PitchEditor })))
+// Dialogs load on first open: they are not needed to show or play a project (docs/ARCHITECTURE_REVIEW.md, bottleneck 5).
+const AudioSettingsDialog = lazy(() => import('./components/AudioSettingsDialog'))
+const McpConnectionDialog = lazy(() => import('./components/McpConnectionDialog'))
 const engine = createAudioEngine(initialAudioSettings)
 const subscribeTransport = (cb:()=>void)=>engine.subscribe(cb)
 const readTransport = ()=>engine.getSnapshot()
@@ -1569,8 +1571,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
 
     <input ref={mediaInput} type="file" accept={MEDIA_FILE_ACCEPT} aria-label="오디오·MIDI 파일" multiple hidden onChange={e=>{if(e.target.files?.length)void addMediaFiles(e.target.files,importTarget.current.trackId,importTarget.current.beat??0,importTarget.current.sustainToLength===true)}}/>
     {headerMenu&&<ContextMenu x={headerMenu.x} y={headerMenu.y} items={headerMenu.items} label={`${headerMenu.label} 메뉴`} trigger={headerMenu.trigger} onClose={()=>setHeaderMenu(null)}/>}
-    {modal==='mcp'&&<McpConnectionDialog client={bridgeClient} instanceId={instanceId} projectName={project.name} editsAllowed={aiEditsAllowed} onEditsAllowed={value=>{aiEditsAllowedRef.current=value;setAiEditsAllowed(value)}} onClose={()=>setModal(null)}/> }
-    {modal==='settings'&&<AudioSettingsDialog initialTab={settingsTab} engine={engine} midi={midi.service} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}
+    <Suspense fallback={null}>{modal==='mcp'&&<McpConnectionDialog client={bridgeClient} instanceId={instanceId} projectName={project.name} editsAllowed={aiEditsAllowed} onEditsAllowed={value=>{aiEditsAllowedRef.current=value;setAiEditsAllowed(value)}} onClose={()=>setModal(null)}/> }
+    {modal==='settings'&&<AudioSettingsDialog initialTab={settingsTab} engine={engine} midi={midi.service} inputCapture={inputCapture} settings={audioSettings} project={project} blockedReason={recording||recordPreparing?'녹음·녹음 준비가 끝난 뒤 적용할 수 있습니다.':busy?busy:null} onApply={applyAudioSettings} onClose={()=>{if(!audioApplyingRef.current)setModal(null)}}/>}</Suspense>
     {palette&&<ColorPalette x={palette.x} y={palette.y} value={project.tracks.find(t=>t.id===palette.ids[0])?.color??''} onPick={hex=>changeTracks(palette.ids.map(id=>({id,patch:{color:hex}})),`${palette.ids.join()}:color`)} onClose={()=>setPalette(null)}/>}
     {headerConfig&&<HeaderConfigPopover x={headerConfig.x} y={headerConfig.y} config={trackHeader.headerConfig} onChange={headerConfig=>setTrackHeader(h=>({...h,headerConfig}))} onClose={()=>setHeaderConfig(null)}/>}
     {iconMenu&&iconTrack&&<ContextMenu x={iconMenu.x} y={iconMenu.y} label="트랙 아이콘" onClose={()=>setIconMenu(null)} items={[{label:'기본',icon:iconTrack.kind==='audio'?'wave':instrumentDef(iconTrack.instrument).icon,checked:!iconTrack.icon,onSelect:()=>editTrack(iconTrack.id,t=>{const {icon:_i,...rest}=t;return rest})},{type:'separator'},...TRACK_ICON_OPTIONS.map(([name,label])=>({label,icon:name,checked:iconTrack.icon===name,onSelect:()=>changeTrack(iconTrack.id,{icon:name})}))]}/>}

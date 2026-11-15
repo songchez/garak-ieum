@@ -27,9 +27,12 @@ function previewButton(markup: string): string {
 }
 
 describe('native and wavetable source cards', () => {
-  it('keeps wave editing and the guitar chain available without claiming a native wavetable capability', () => {
+  it('keeps wave editing and the guitar chain available without claiming a native wavetable capability', async () => {
     const track = createTrack('instrument', 'wavetable')
     track.devices = [createDevice('guitar-rig')]
+    // The guitar rig card is a lazy chunk: the first render starts loading it, the next one shows it.
+    expect(render(track)).toContain('dc-view-loading')
+    await import('./GuitarRig'); await new Promise(resolve => setTimeout(resolve, 0))
     const markup = render(track)
     expect(markup).toContain('aria-label="IEUM WAVE 편집기 열기"')
     expect(markup).toContain('음색 편집 · 저장 가능 / 엔진 연결 대기')
