@@ -1,5 +1,6 @@
 import { MAX_MIDI_FILE_BYTES, parseMidiFile, type MidiImportOptions, type MidiImportResult } from './midiImport'
 import { quarterNotesPerBar, validateTimeSignature } from './meter'
+import { withMeterEvents } from './meterMap'
 import { createTrack, fitProjectLength, insertTracks, MIN_CLIP_BEATS, uid, validateProject } from './project'
 import type { AudioAsset, AudioClip, MidiClip, Project, Track } from './types'
 import { decideWarp, type TempoAnalysis } from '../devices/audio-warp/tempo'
@@ -60,6 +61,8 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
       try {
         const timeSignature = validateTimeSignature(initialMidi.timeSignature)
         next = { ...next, timeSignature, beatsPerBar: quarterNotesPerBar(timeSignature) }
+        // Its time-signature changes come along as the meter map (docs/METER_MAP.md).
+        next = withMeterEvents(next, [{ bar: 0, ...timeSignature }, ...(initialMidi.meterMap ?? [])])
       } catch { warnings.add('MIDI의 초기 박자가 지원 범위를 벗어나 프로젝트 박자를 유지했습니다.') }
     }
   }
@@ -91,7 +94,7 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
     midiFiles++
     for (const warning of item.midi.warnings) warnings.add(`${item.name}: ${warning}`)
     if (!initialMidi && ((item.midi.bpm !== undefined && Math.abs(item.midi.bpm - next.bpm) > .000001) || item.midi.tempoMap)) warnings.add('기존 작업의 템포를 유지했습니다. MIDI 음표는 프로젝트 템포에 맞춰 재생됩니다.')
-    if (!initialMidi && item.midi.timeSignature && (item.midi.timeSignature.numerator !== next.timeSignature.numerator || item.midi.timeSignature.denominator !== next.timeSignature.denominator)) warnings.add('기존 작업의 박자를 유지했습니다. MIDI 음표의 박 위치는 그대로 가져왔습니다.')
+    if (!initialMidi && (item.midi.meterMap?.length || item.midi.timeSignature && (item.midi.timeSignature.numerator !== next.timeSignature.numerator || item.midi.timeSignature.denominator !== next.timeSignature.denominator))) warnings.add('기존 작업의 박자를 유지했습니다. MIDI 음표의 박 위치는 그대로 가져왔습니다.')
     for (const part of parts) {
       // A multi-part file keeps its channel separation. A single part can use
       // the explicitly selected instrument, including its existing WAVE patch.

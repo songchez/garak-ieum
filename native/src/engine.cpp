@@ -1109,13 +1109,13 @@ struct ControlRecipe {
 };
 ProjectTimeline headerOf(const ProjectTimeline& p) {
   ProjectTimeline h;
-  h.version=p.version;h.projectId=p.projectId;h.revision=p.revision;h.sampleRate=p.sampleRate;h.bpm=p.bpm;h.beatsPerBar=p.beatsPerBar;h.tempoMap=p.tempoMap;
+  h.version=p.version;h.projectId=p.projectId;h.revision=p.revision;h.sampleRate=p.sampleRate;h.bpm=p.bpm;h.beatsPerBar=p.beatsPerBar;h.tempoMap=p.tempoMap;h.meterMap=p.meterMap;
   h.timeSigNumerator=p.timeSigNumerator;h.timeSigDenominator=p.timeSigDenominator;h.lengthFrames=p.lengthFrames;h.cycle=p.cycle;h.masterGain=p.masterGain;h.lowLatencyMonitoring=p.lowLatencyMonitoring;
   return h;
 }
 // Header fields that every track's frames or the transport depend on: a change rebuilds the graph.
 bool sameTiming(const ProjectTimeline& x,const ProjectTimeline& y) {
-  return x.bpm==y.bpm&&x.beatsPerBar==y.beatsPerBar&&x.timeSigNumerator==y.timeSigNumerator&&x.timeSigDenominator==y.timeSigDenominator&&x.lengthFrames==y.lengthFrames&&x.cycle==y.cycle&&x.tempoMap==y.tempoMap;
+  return x.bpm==y.bpm&&x.beatsPerBar==y.beatsPerBar&&x.timeSigNumerator==y.timeSigNumerator&&x.timeSigDenominator==y.timeSigDenominator&&x.lengthFrames==y.lengthFrames&&x.cycle==y.cycle&&x.tempoMap==y.tempoMap&&x.meterMap==y.meterMap;
 }
 bool samePlugin(const PluginSpec&a,const PluginSpec&b){return a.instanceId==b.instanceId&&a.path==b.path&&a.classId==b.classId&&a.state==b.state&&a.controllerState==b.controllerState&&a.isInstrument==b.isInstrument;}
 // Instrument identity: equal sources keep their voices and instrument across an edit (parameters may differ;
@@ -1299,16 +1299,21 @@ void LoadMeter::record(double processing,double buffer)noexcept {
 }
 void LoadMeter::reset()noexcept{overloads_.store(0,std::memory_order_relaxed);last_.store(0,std::memory_order_relaxed);}
 
-// Tempo map in a block's process context: the tempo at the block start and frame→beat for plug-ins.
+// Tempo and meter maps in a block's process context: the tempo and time signature at the block start and
+// frame→beat for plug-ins (docs/TEMPO_MAP.md, docs/METER_MAP.md).
 template<class Graph> void tempoContext(ProcessContext& context,const Graph& g)noexcept {
-  if(g.timeline.tempoMap.empty())return;
-  context.tempo=&g.tempo;context.bpm=g.tempo.bpmAt(g.tempo.beatAtFrame(static_cast<double>(context.projectFrame),context.sampleRate));
+  if(!g.timeline.tempoMap.empty()){context.tempo=&g.tempo;context.bpm=g.tempo.bpmAt(g.tempo.beatAtFrame(static_cast<double>(context.projectFrame),context.sampleRate));}
+  if(!g.timeline.meterMap.empty()) {
+    const auto& meter=g.meters.at(context.beatAt(static_cast<double>(context.projectFrame)));
+    context.meters=&g.meters;context.timeSigNumerator=meter.numerator;context.timeSigDenominator=meter.denominator;
+  }
 }
 
 struct PreparedProject::Impl {
   ProjectTimeline timeline; // Header only: the tracks live in `tracks` (and in the control recipe).
   // Compiled once on the control thread; null-free for the callback (constant maps use timeline.bpm).
   TempoMap tempo;
+  MeterMap meters; // Time-signature changes; constant (one event) when timeline.meterMap is empty.
   PtrList<TrackRuntime> tracks;
   dsp::Master master;
   std::uint32_t latency=0,senderLatency=0;
@@ -1324,7 +1329,7 @@ struct PreparedProject::Impl {
   // routes, the original single fork. `masterLevel` is the first level holding a master-resampling track.
   std::vector<std::uint32_t> levelOrder,levelStart;
   std::uint32_t masterLevel=std::numeric_limits<std::uint32_t>::max();
-  explicit Impl(const ProjectTimeline& p):timeline(headerOf(p)),tempo(p.bpm,p.tempoMap),master(p.sampleRate){}
+  explicit Impl(const ProjectTimeline& p):timeline(headerOf(p)),tempo(p.bpm,p.tempoMap),meters(p.timeSigNumerator,p.timeSigDenominator,p.meterMap),master(p.sampleRate){}
   void reset(std::int64_t frame,bool chase,bool effects,std::uint64_t& overflows)noexcept {
     for(auto&track:tracks) track.reset(frame,chase,effects,overflows);
     if(effects) master.reset();
@@ -1933,10 +1938,18 @@ struct RenderEngine::Impl {
     clickPlayer.mix(out,count,gain);
     if(active) {
       const auto&t=active->impl_->timeline;
-      // The count-in clicks evenly at the tempo where the transport starts; the transport follows the map.
-      const auto&tempo=active->impl_->tempo;const bool mapped=!t.tempoMap.empty();
-      if(countingIn)metronome::clicks(metronome::grid(rate,mapped?tempo.bpmAt(tempo.beatAtFrame(static_cast<double>(position),rate)):t.bpm,t.timeSigNumerator,t.timeSigDenominator),*clicks,clickPlayer,out,countInElapsed,count,gain,countInLength);
-      else if(metronomeOn&&playing&&position<t.lengthFrames)metronome::clicks(metronome::grid(rate,t.bpm,t.timeSigNumerator,t.timeSigDenominator,mapped?&tempo:nullptr),*clicks,clickPlayer,out,position,count,gain);
+      // The count-in clicks evenly at the tempo and in the meter where the transport starts; the transport
+      // follows the tempo map and accents each bar's first pulse across meter changes (docs/METER_MAP.md).
+      const auto&tempo=active->impl_->tempo;const auto&meters=active->impl_->meters;const bool mapped=!t.tempoMap.empty();
+      if(countingIn) {
+        const double startBeat=mapped?tempo.beatAtFrame(static_cast<double>(position),rate):static_cast<double>(position)*t.bpm/(60.0*rate);
+        const auto&meter=t.meterMap.empty()?MeterEvent{0,t.timeSigNumerator,t.timeSigDenominator,0}:meters.at(startBeat);
+        metronome::clicks(metronome::grid(rate,mapped?tempo.bpmAt(startBeat):t.bpm,meter.numerator,meter.denominator),*clicks,clickPlayer,out,countInElapsed,count,gain,countInLength);
+      }
+      else if(metronomeOn&&playing&&position<t.lengthFrames) {
+        if(t.meterMap.empty())metronome::clicks(metronome::grid(rate,t.bpm,t.timeSigNumerator,t.timeSigDenominator,mapped?&tempo:nullptr),*clicks,clickPlayer,out,position,count,gain);
+        else metronome::meterClicks(meters,rate,t.bpm,mapped?&tempo:nullptr,*clicks,clickPlayer,out,position,count,gain);
+      }
     }
     if(countingIn)countInElapsed+=count;
   }

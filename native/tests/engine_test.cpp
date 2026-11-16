@@ -992,6 +992,34 @@ void metronomeClicks(){
   {RenderEngine e(44100,256);auto q=project(44100,44100*4);e.submit(e.prepare(q,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");checkClicks(render(e,1000),{},"Mismatched-rate clicks played");}
 }
 
+// Time-signature changes (docs/METER_MAP.md): 4/4 → 3/4 → 7/8 → 6/8 at 120 BPM (a quarter = 24000 frames).
+// Every bar's first pulse is the downbeat; 7/8 clicks seven eighths; 6/8 accents its dotted group (겹박자).
+void meterMapClicks(){
+  const MeterMap map(4,4,{{0,4,4},{1,3,4},{2,7,8},{3,6,8}});
+  check(map.events().size()==4&&map.events()[1].beat==4&&map.events()[2].beat==7&&map.events()[3].beat==10.5,"Meter map bar walk is wrong");
+  check(map.barStart(12)==10.5&&map.barStart(13.5)==13.5&&map.barStart(8.9)==7,"Meter map bar lines are wrong");
+  check(MeterMap(3,4,{}).constant()&&!map.constant(),"Constant meter detection failed");
+  // Out-of-order and duplicate bars are dropped, never reordered.
+  check(MeterMap(4,4,{{0,4,4},{3,3,4},{2,7,8},{3,5,4}}).events().size()==2,"Unsorted meter events were accepted");
+  auto p=project(48000,48000*8);p.meterMap=map.events();
+  const std::vector<std::pair<std::size_t,float>> want{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f},
+    {96000,1.f},{120000,.25f},{144000,.25f},
+    {168000,1.f},{180000,.25f},{192000,.25f},{204000,.25f},{216000,.25f},{228000,.25f},{240000,.25f},
+    {252000,1.f},{264000,.25f},{276000,.25f},{288000,.5f},{300000,.25f},{312000,.25f},{324000,1.f}};
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");
+   checkClicks(render(e,324001,97),want,"Metronome accents do not follow the meter changes");}
+  // Starting mid-song (inside the 3/4 bar) and with odd block sizes clicks the same frames.
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.seek(130000),"Seek failed");check(e.play(),"Play failed");
+   std::vector<std::pair<std::size_t,float>> later;for(const auto&[frame,level]:want)if(frame>=130000)later.push_back({frame-130000,level});
+   checkClicks(render(e,324001-130000,61),later,"Meter-map clicks depend on the start position");}
+  // The count-in clicks whole bars of the meter where the transport starts: one 7/8 bar of eighths.
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),false,1),"Metronome command failed");check(e.seek(168000),"Seek failed");check(e.play(84000),"Count-in play failed");
+   checkClicks(render(e,84000,89),{{0,1.f},{12000,.25f},{24000,.25f},{36000,.25f},{48000,.25f},{60000,.25f},{72000,.25f}},"Count-in does not use the local meter");}
+  // With a tempo map the downbeats stay on the bar lines and take the map's frames (60 BPM from beat 4).
+  {auto q=p;q.tempoMap={{0,120,false},{4,60,false}};RenderEngine e(48000,256);e.submit(e.prepare(q,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");
+   checkClicks(render(e,96000+48000*3+1,101),{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f},{96000,1.f},{144000,.25f},{192000,.25f},{240000,1.f}},"Meter changes do not follow the tempo map");}
+}
+
 void dynamicsMeters(){
   auto p=project(48000,96000);TrackTimeline t;t.id="audio";t.audio.push_back({1,"sine",0,24000,0,48000,0,24000,1,0,0});
   std::vector<float>pcm(24000);for(std::size_t i=0;i<pcm.size();++i)pcm[i]=static_cast<float>(.5*std::sin(2*dsp::pi*220*i/48000));
@@ -1512,7 +1540,7 @@ void updatesWithRenderAhead(){
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation},{"automation x tempo map x sends x returns",automationTempoSendsReturns},
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"meter map: metronome accents across time-signature changes",meterMapClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation},{"automation x tempo map x sends x returns",automationTempoSendsReturns},
     {"update: diffs equal a full rebuild",updateDiffsMatchRebuild},{"update: voices and tails survive edits",updatesKeepVoicesAndTails},
     {"update: track add/remove keeps other tracks",graphChangesKeepOtherTracks},{"update: 32 reverbs share impulse responses",manyReverbsShareImpulses},
     {"update: render-ahead tracks take diffs",updatesWithRenderAhead}};

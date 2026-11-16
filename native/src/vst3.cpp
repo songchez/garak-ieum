@@ -647,8 +647,9 @@ struct Vst3Processor::Impl {
     timing.timeSigNumerator = context.timeSigNumerator;
     timing.timeSigDenominator = context.timeSigDenominator;
     timing.projectTimeMusic = context.beatAt(double(context.projectFrame)); // through the tempo map (docs/TEMPO_MAP.md)
+    // Bar lines follow the meter map when the time signature changes (docs/METER_MAP.md).
     const auto bar = std::max(1., context.timeSigNumerator * 4. / std::max(1, context.timeSigDenominator));
-    timing.barPositionMusic = std::floor(timing.projectTimeMusic / bar) * bar;
+    timing.barPositionMusic = context.meters ? context.meters->barStart(timing.projectTimeMusic) : std::floor(timing.projectTimeMusic / bar) * bar;
     data.numSamples = int32(frames);
     data.processContext = &timing;
     const auto result = processor->process(data);

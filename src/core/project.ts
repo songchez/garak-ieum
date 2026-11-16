@@ -6,12 +6,13 @@ import { joinSustain } from './sustain'
 import { MAX_BEND_RANGE, controllerOrder, controllerSpec, isControllerKey, joinControllers, mapControllerBeats } from './controllers'
 import { cloneNativePlugin, validateNativePlugin } from './nativePlugins'
 import { DEFAULT_TIME_SIGNATURE, quarterNotesPerBar, validateTimeSignature } from './meter'
+import { MAX_METER_BAR, MAX_METER_EVENTS, meterMapOf, normalizeMeterEvents } from './meterMap'
 import { copyPitchDocument, hasPitchAudioEdits, validatePitchDocument } from '../devices/pitch-editor/state'
 import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type ControllerKey, type ControllerPoint, type TempoPoint, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend, type AutomationLane, type AutomationMode, type AutomationTarget } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type ControllerKey, type ControllerPoint, type TempoPoint, type MeterEvent, PROJECT_SCHEMA_VERSION, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend, type AutomationLane, type AutomationMode, type AutomationTarget } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
 import { MAX_TEMPO_POINTS, TEMPO_MAX, TEMPO_MIN, beatAfterSeconds, normalizeTempoPoints, spanSeconds, tempoMapOf, type Tempo } from './tempoMap'
 // sends.ts imports this module too: only use its exports inside functions (no top-level reads).
@@ -19,6 +20,8 @@ import { SEND_LEVEL_MAX, copySend, reconcileSends } from './sends'
 import { AUTOMATION_MODES, MAX_AUTOMATION_LANES, MAX_AUTOMATION_POINTS, copyAutomation, parseTargetKey, pruneAutomation, targetKey } from './automation'
 
 let fallbackSequence = 0
+/** First schema with Project.meterMap (time-signature changes). Renumber here if another format change lands first. */
+const METER_MAP_SCHEMA = 18
 
 /** Logic defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%); returns at 270°. */
 export const DEFAULT_TRACK_COLORS: Readonly<Record<Track['kind'], string>> = { audio: '#669ed6', instrument: '#66d666', return: '#9e66d6' }
@@ -104,13 +107,14 @@ export function createTrack(kind: Track['kind'], instrument: InstrumentId = 'key
 
 export function createEmptyProject(): Project {
   return {
-    schemaVersion: 17,
+    schemaVersion: PROJECT_SCHEMA_VERSION,
     id: uid(),
     name: 'Untitled session',
     bpm: 96,
     sampleRate: DEFAULT_SAMPLE_RATE,
     timeSignature: { ...DEFAULT_TIME_SIGNATURE },
     beatsPerBar: 4,
+    meterMap: [{ bar: 0, ...DEFAULT_TIME_SIGNATURE }],
     lengthBeats: 64,
     masterVolume: 0.8,
     loop: { enabled: false, startBeat: 0, endBeat: 32 },
@@ -448,7 +452,7 @@ export function duplicateTrackSettings(track: Track): Track {
 /** Grows to the last source/manual-loop end; continuous loops never grow the project. */
 export function fitProjectLength(project: Project): Project {
   const end = Math.max(0, ...project.tracks.flatMap(track => track.clips.map(clip => clip.startBeat + (clip.loop ? clip.loopLengthBeats ?? clip.lengthBeats : clip.lengthBeats))))
-  const lengthBeats = Math.max(project.lengthBeats, Math.ceil(end / project.beatsPerBar) * project.beatsPerBar)
+  const lengthBeats = Math.max(project.lengthBeats, meterMapOf(project).ceilBarStart(end))
   return lengthBeats === project.lengthBeats ? project : { ...project, lengthBeats }
 }
 
@@ -802,6 +806,26 @@ function validateTempoMap(input: unknown, bpm: number): TempoPoint[] | undefined
   if (Math.abs(points[0].bpm - bpm) > 1e-6) throw new Error('The first tempo point must match the project tempo.')
   return points.length > 1 ? normalizeTempoPoints(bpm, points) : undefined
 }
+/**
+ * Meter map (docs/METER_MAP.md). Schema METER_MAP_SCHEMA+ stores the time-signature changes; older files (and
+ * newer ones without the field) migrate to one event at bar 0 with the project meter.
+ */
+function validateMeterMap(input: unknown, signature: { numerator: number; denominator: 2 | 4 | 8 | 16 }, version: number): MeterEvent[] {
+  // Older files cannot carry meter changes: like the tempo map before schema 14, anything there is ignored.
+  if (input === undefined || version < METER_MAP_SCHEMA) return normalizeMeterEvents(signature, [])
+  const events = list(input, 'Meter map', MAX_METER_EVENTS).map((eventInput, index): MeterEvent => {
+    const path = `Meter change ${index + 1}`
+    const event = object(eventInput, path)
+    return { bar: integer(event.bar, `${path} bar`, 0, MAX_METER_BAR), ...validateTimeSignature({ numerator: event.numerator, denominator: event.denominator }) }
+  })
+  if (!events.length) return normalizeMeterEvents(signature, [])
+  for (let index = 1; index < events.length; index += 1) {
+    if (!(events[index].bar > events[index - 1].bar)) throw new Error('Meter changes must be sorted by bar without duplicates.')
+  }
+  if (events[0].bar !== 0) throw new Error('The first meter change must be at bar 1.')
+  if (events[0].numerator !== signature.numerator || events[0].denominator !== signature.denominator) throw new Error('The first meter change must match the project time signature.')
+  return normalizeMeterEvents(signature, events.slice(1))
+}
 function parseAutomationMode(value: unknown, path: string): AutomationMode {
   if (typeof value !== 'string' || !AUTOMATION_MODES.includes(value as AutomationMode)) throw new Error(`${path} must be one of ${AUTOMATION_MODES.join(', ')}.`)
   return value as AutomationMode
@@ -861,7 +885,7 @@ export function validateProject(input: unknown): Project {
 function validateProjectFields(input: unknown): Project {
   const source = object(input, 'Project')
   const version = source.schemaVersion
-  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > 17) throw new Error('This project version is not supported. Expected schema version 1 through 17.')
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1 || version > PROJECT_SCHEMA_VERSION) throw new Error(`This project version is not supported. Expected schema version 1 through ${PROJECT_SCHEMA_VERSION}.`)
   const timeSignature = version >= 5 ? validateTimeSignature(source.timeSignature) : { ...DEFAULT_TIME_SIGNATURE }
   const beatsPerBar = quarterNotesPerBar(timeSignature)
   if (source.beatsPerBar !== beatsPerBar) throw new Error('Time signature and quarter-note beats per bar must agree. Legacy projects must use 4/4 time.')
@@ -1093,8 +1117,9 @@ function validateProjectFields(input: unknown): Project {
   }))
   const bpm = number(source.bpm, 'Tempo', 30, 300)
   const tempoMap = version >= 14 ? validateTempoMap(source.tempoMap, bpm) : undefined
+  const meterMap = validateMeterMap(source.meterMap, timeSignature, version)
   return {
-    schemaVersion: 17,
+    schemaVersion: PROJECT_SCHEMA_VERSION,
     id: projectId,
     name: text(source.name, 'Project name'),
     bpm,
@@ -1102,6 +1127,7 @@ function validateProjectFields(input: unknown): Project {
     sampleRate: projectSampleRate(source.sampleRate),
     timeSignature,
     beatsPerBar,
+    meterMap,
     lengthBeats,
     masterVolume: number(source.masterVolume, 'Master volume', 0, 2),
     loop: { enabled: flag(loop.enabled, 'Loop enabled'), startBeat: loopStart, endBeat: loopEnd },

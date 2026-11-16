@@ -1,5 +1,6 @@
 #pragma once
 
+#include "garak/meter.hpp"
 #include "garak/tempo.hpp"
 #include <array>
 #include <atomic>
@@ -67,6 +68,9 @@ struct ProcessContext {
   bool cycleActive = false, recording = false;
   std::int64_t cycleStartFrame = 0, cycleEndFrame = 0, continuousFrame = 0;
   const TempoMap* tempo = nullptr;
+  // Time-signature changes (docs/METER_MAP.md); null = timeSigNumerator/Denominator for the whole song. When set,
+  // the signature fields already hold the meter at projectFrame.
+  const MeterMap* meters = nullptr;
   // Musical position (quarter notes) of a project frame: through the tempo map when there is one.
   [[nodiscard]] double beatAt(double frame) const noexcept { return tempo ? tempo->beatAtFrame(frame, sampleRate) : frame / sampleRate * bpm / 60.0; }
 };
@@ -269,6 +273,9 @@ struct ProjectTimeline {
   // Note/audio/cycle frames already follow it; the host uses it for clicks, synced effects and VST3 time.
   std::vector<TempoPoint> tempoMap;
   int timeSigNumerator = 4, timeSigDenominator = 4;
+  // Time-signature changes (schema 18; docs/METER_MAP.md): events sorted by bar, the first at bar 0 with the
+  // meter above. Empty = one meter. The host uses it for metronome accents and the VST3 signature/bar position.
+  std::vector<MeterEvent> meterMap;
   std::int64_t lengthFrames = 1;
   std::optional<std::array<std::int64_t, 2>> cycle;
   float masterGain = 1;

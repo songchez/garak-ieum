@@ -159,6 +159,26 @@ inline ProjectTimeline timelineHeader(const Json& value) {
   p.timeSigNumerator = static_cast<int>(integer(signature, "numerator", 1, 32, 4));
   p.timeSigDenominator = static_cast<int>(integer(signature, "denominator", 2, 16, 4));
   if (p.timeSigDenominator != 2 && p.timeSigDenominator != 4 && p.timeSigDenominator != 8 && p.timeSigDenominator != 16) throw std::runtime_error("Invalid meter denominator");
+  // Meter map (docs/METER_MAP.md): events sorted by bar, the first at bar 0 with the meter above. Absent = one meter.
+  if (value.contains("meterMap") && !value.at("meterMap").is_null()) {
+    const auto& events = value.at("meterMap");
+    if (!events.is_array() || events.size() > 1024) throw std::runtime_error("Invalid meter map");
+    std::vector<MeterEvent> parsed;
+    for (const auto& item : events) {
+      MeterEvent e;
+      e.bar = integer(item, "bar", 0, 1000000, 0);
+      e.numerator = static_cast<int>(integer(item, "numerator", 1, 32, 4));
+      e.denominator = static_cast<int>(integer(item, "denominator", 2, 16, 4));
+      e.beat = number(item, "beat", 0, 1e9, 0);
+      if (e.denominator != 2 && e.denominator != 4 && e.denominator != 8 && e.denominator != 16) throw std::runtime_error("Invalid meter denominator");
+      if (parsed.empty() ? (e.bar != 0 || e.numerator != p.timeSigNumerator || e.denominator != p.timeSigDenominator) : !(e.bar > parsed.back().bar)) throw std::runtime_error("Invalid meter map order");
+      parsed.push_back(e);
+    }
+    // The bar walk decides every downbeat; a payload whose beats disagree with its bars is rejected, not trusted.
+    const MeterMap compiled(p.timeSigNumerator, p.timeSigDenominator, parsed);
+    for (std::size_t i = 0; i < parsed.size(); ++i) if (std::abs(compiled.events()[i].beat - parsed[i].beat) > 1e-6) throw std::runtime_error("Meter map beats disagree with its bars");
+    if (compiled.events().size() > 1) p.meterMap = compiled.events();
+  }
   if (value.contains("cycle") && !value.at("cycle").is_null()) {
     const auto& cycle = value.at("cycle");
     const auto start = integer(cycle, "startFrame", 0, p.lengthFrames - 1, 0);

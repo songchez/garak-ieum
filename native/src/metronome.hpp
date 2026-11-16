@@ -4,6 +4,7 @@
 // Click PCM (one mono stroke per level) is synthesized by the UI and owned by
 // the control thread; the callback only reads it. No allocation in here.
 #include "garak/engine.hpp"
+#include "garak/meter.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -89,6 +90,35 @@ inline void clicks(const Grid& g, const MetronomeClicks& set, Player& player, fl
   for (auto at = g.frameOf(pulse); at < end; at = g.frameOf(++pulse)) {
     if (at < begin || (limit >= 0 && at >= limit)) continue;
     player.trigger(&set.levels[static_cast<std::size_t>(g.level(pulse))], stereo, static_cast<std::uint32_t>(at - begin), frames, gain);
+  }
+}
+
+// Clicks across time-signature changes (docs/METER_MAP.md, the mirror of meterClicksInRange in
+// src/core/metronome.ts): each meter's pulses restart on its first bar line, so every bar's first pulse is
+// the level-0 downbeat and compound meters group their pulses in threes inside each bar. Pulse frames follow
+// the tempo map when there is one, else `bpm`. Only used when the meter changes; one meter keeps clicks().
+inline void meterClicks(const MeterMap& meters, double sampleRate, double bpm, const TempoMap* tempo, const MetronomeClicks& set, Player& player,
+                        float* stereo, std::int64_t begin, std::uint32_t frames, float gain) noexcept {
+  if (frames == 0) return;
+  const double framesPerBeat = sampleRate * 60.0 / std::max(1.0, bpm);
+  const auto frameOf = [&](double beat) { return std::llround(tempo ? tempo->frameAt(beat, sampleRate) : beat * framesPerBeat); };
+  const double startBeat = std::max(0.0, tempo ? tempo->beatAtFrame(static_cast<double>(begin), sampleRate) : static_cast<double>(begin) / framesPerBeat);
+  const auto end = begin + static_cast<std::int64_t>(frames);
+  const auto& events = meters.events();
+  for (auto index = meters.segmentAt(startBeat); index < events.size(); ++index) {
+    const auto& e = events[index];
+    const double until = meters.segmentEnd(index), pulse = MeterMap::pulseBeats(e);
+    const Grid g = grid(sampleRate, bpm, e.numerator, e.denominator);
+    // Start one pulse early: rounding can put a pulse's frame inside this block while its beat is just before it.
+    for (auto k = std::max<std::int64_t>(0, static_cast<std::int64_t>(std::floor((startBeat - e.beat) / pulse)) - 1);; ++k) {
+      const double beat = e.beat + static_cast<double>(k) * pulse;
+      if (beat >= until - 1e-9) break;
+      const auto at = frameOf(beat);
+      if (at >= end) return;
+      if (at < begin) continue;
+      player.trigger(&set.levels[static_cast<std::size_t>(g.level(k))], stereo, static_cast<std::uint32_t>(at - begin), frames, gain);
+    }
+    if (!(until < HUGE_VAL) || frameOf(until) >= end) return;
   }
 }
 

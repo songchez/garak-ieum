@@ -1,5 +1,6 @@
 import type { TimeSignature } from './types'
 import type { TempoMap } from './tempoMap'
+import { MeterMap } from './meterMap'
 
 /**
  * Metronome: app preferences, the click grid for a time signature, and the
@@ -156,7 +157,27 @@ export function clicksInRange(grid: MetronomeGrid, startBeat: number, endBeat: n
   return clicks
 }
 
-/** Quarter-note beats of a count-in: whole bars of the project meter. */
+/**
+ * Clicks with startBeat <= beat < endBeat across time-signature changes (docs/METER_MAP.md): each meter's
+ * pulses restart on its first bar line, so the first pulse of every bar is the accented downbeat and compound
+ * meters keep their dotted groups (겹박자) inside each bar. With one meter this equals clicksInRange.
+ */
+export function meterClicksInRange(meters: MeterMap, startBeat: number, endBeat: number): MetronomeClick[] {
+  const clicks: MetronomeClick[] = []
+  if (!(endBeat > startBeat)) return clicks
+  const segments = meters.segments
+  for (let index = meters.segmentAt(Math.max(0, startBeat)); index < segments.length; index += 1) {
+    const segment = segments[index]
+    if (segment.beat >= endBeat - EPSILON) break
+    const until = segments[index + 1]?.beat ?? Infinity
+    const from = Math.max(startBeat, segment.beat)
+    const to = Math.min(endBeat, until)
+    for (const click of clicksInRange(metronomeGrid(segment), from - segment.beat, to - segment.beat)) clicks.push({ ...click, beat: click.beat + segment.beat })
+  }
+  return clicks
+}
+
+/** Quarter-note beats of a count-in: whole bars of `signature` (the meter where the transport starts). */
 export function countInBeats(signature: TimeSignature, bars: number): number {
   const count = Number.isFinite(bars) ? Math.max(0, Math.min(4, Math.floor(bars))) : 0
   return count * signature.numerator * (4 / signature.denominator)
@@ -176,7 +197,8 @@ export const effectiveLevel = (level: MetronomeLevel, accent: boolean): Metronom
  * `timing` is the project's tempo map (clicks follow its steps and ramps exactly) or a constant number
  * of seconds per beat. Returns audio-clock times.
  */
-export function scheduleSegment(grid: MetronomeGrid, startBeat: number, endBeat: number, startTime: number, timing: number | TempoMap): Array<MetronomeClick & { time: number }> {
+export function scheduleSegment(grid: MetronomeGrid | MeterMap, startBeat: number, endBeat: number, startTime: number, timing: number | TempoMap): Array<MetronomeClick & { time: number }> {
   const at = typeof timing === 'number' ? (beat: number) => (beat - startBeat) * timing : (beat: number) => timing.secondsBetween(startBeat, beat)
-  return clicksInRange(grid, startBeat, endBeat).map(click => ({ ...click, time: startTime + at(click.beat) }))
+  const clicks = grid instanceof MeterMap ? meterClicksInRange(grid, startBeat, endBeat) : clicksInRange(grid, startBeat, endBeat)
+  return clicks.map(click => ({ ...click, time: startTime + at(click.beat) }))
 }
