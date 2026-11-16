@@ -1,0 +1,21 @@
+[package]
+name = "garak-engine"
+description = "가락이음 render engine (stage 4): timeline -> tracks -> effects -> sends/returns -> master, on garak-dsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Native hosts (garak-ffi): transcendentals from the platform C library, like garak-dsp's feature
+# of the same name, so the engine's own math (fades, pan law, automation curves, tempo ramps,
+# master) calls the very functions the C++ engine calls. Ignored on wasm32.
+platform-math = ["garak-dsp/platform-math"]
+
+[dependencies]
+garak-dsp.workspace = true
+libm.workspace = true
+
+[lints]
+workspace = true

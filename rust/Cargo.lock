@@ -10,10 +10,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "garak-engine"
+version = "0.1.0"
+dependencies = [
+ "garak-dsp",
+ "libm",
+]
+
+[[package]]
+name = "garak-engine-wasm"
+version = "0.1.0"
+dependencies = [
+ "garak-engine",
+]
+
+[[package]]
 name = "garak-ffi"
 version = "0.1.0"
 dependencies = [
  "garak-dsp",
+ "garak-engine",
 ]
 
 [[package]]
