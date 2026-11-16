@@ -1,6 +1,7 @@
 import type { EffectDef, RealtimeEffectModule } from '../contracts.js'
 import { clamp } from '../../audio/math.js'
 import { parameterReader, setParameter, dbToGain, noTail } from './shared.js'
+import { createWorkletGraph, prepareRustEffect, rustEffectsReady } from './sigimsae.js'
 
 let driveCurve: Float32Array<ArrayBuffer> | null = null
 
@@ -27,7 +28,11 @@ const definition: EffectDef = {
 
 export const driveEffect: RealtimeEffectModule = {
   id: 'drive', kind: 'realtime-effect', stateVersion: 1, definition,
+  prepare: prepareRustEffect,
   create(context, remember) {
+    // Rust kernel (the desktop engine's, docs/RUST.md) whenever the module loaded; the Web Audio graph below is the fallback.
+    // Its 2x oversampler delays the output by 8 frames (the desktop compensates; the web graph has no PDC).
+    if (rustEffectsReady(context)) return createWorkletGraph(context, remember, 'drive')
     const input = remember(context.createGain())
     const dry = remember(context.createGain())
     const pre = remember(context.createGain())

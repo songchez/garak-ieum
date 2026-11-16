@@ -10,7 +10,7 @@
   "packageManager": "pnpm@11.25.0",
   "scripts": {
     "dev": "pnpm licenses:prepare && vite --host 0.0.0.0",
-    "build": "pnpm licenses:prepare && tsc -b && vite build",
+    "build": "pnpm licenses:prepare && node scripts/rust.mjs web-build && tsc -b && vite build",
     "licenses:prepare": "node scripts/prepare-licenses.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "mcp:build": "tsc -p tsconfig.mcp.json",

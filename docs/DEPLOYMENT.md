@@ -32,6 +32,8 @@
 | `PNPM_VERSION` | `11.25.0` |
 | 정적 자산 디렉터리 | `wrangler.jsonc`의 `assets.directory: "./dist"` |
 
+**Rust DSP 모듈(`dist/wasm/garak-dsp.wasm`).** 0.3.x의 3단계(웹)부터 `pnpm run build`가 Vite 전에 Rust WASM 모듈을 빌드합니다([RUST](RUST.md#빌드와-rust-없는-개발)). Workers Builds 이미지에 Rust가 없으면 빌드 단계가 CI 환경(`CI`)을 감지해 `scripts/setup-rust.sh --skip-verify`로 고정 툴체인(약 1분)을 설치한 뒤 빌드하므로 대시보드 설정을 바꿀 필요는 없습니다. 설치가 막힌 환경에서 모듈 없이 배포하려면 빌드 환경 변수 `GARAK_RUST_DSP=0`을 넣습니다(앱은 TS 커널과 Web Audio 노드로 동작).
+
 Wrangler는 최신 제공 로그에 나온 `4.156.2`로 두 명령에서 고정합니다. 이 명령의 `npx`는 배포 CLI를 실행하는 용도이며, 앱 의존성 설치와 빌드는 기존 pnpm 및 `pnpm-lock.yaml`을 사용합니다. Workers Builds의 인증은 연결한 Cloudflare 프로젝트 설정을 사용합니다.
 
 프로덕션 브랜치는 Deploy command를, 다른 브랜치의 미리보기 빌드는 별도의 Preview command를 사용합니다. 대시보드의 Deploy command만 변경해도 Preview command가 같이 바뀌지는 않습니다. 위 표는 적용할 설정이며 저장소 파일 수정만으로 대시보드의 명령 문자열이 변경되는 것은 아닙니다. [Workers Builds 설정](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)

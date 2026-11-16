@@ -3,6 +3,7 @@ import { clamp } from '../../audio/math.js'
 import { parameterReader, setParameter, noTail, dbToGain } from './shared.js'
 import { EQ_BAND_COUNT, EQ_OUTPUT_ID, IDENTITY_SECTION, MAX_SECTIONS, eqBandSections, eqParamDefs, readEqBands, type BiquadSection } from './eqModel.js'
 import { createAnalysisTap, unbindDeviceAnalysis } from './analysis.js'
+import { createWorkletGraph, prepareRustEffect, rustEffectsReady } from './sigimsae.js'
 
 const definition: EffectDef = { name: 'Curve 8', short: 'EQ', label: '파라메트릭 EQ', params: eqParamDefs() }
 
@@ -16,7 +17,10 @@ export function applySection(node: BiquadFilterNode, section: BiquadSection, now
 
 export const eqEffect: RealtimeEffectModule = {
   id: 'eq', kind: 'realtime-effect', stateVersion: 1, definition,
+  prepare: prepareRustEffect,
   create(context, remember) {
+    // Rust kernel (the desktop engine's, docs/RUST.md) whenever the module loaded; the Web Audio graph below is the fallback.
+    if (rustEffectsReady(context)) return createWorkletGraph(context, remember, 'eq', { analysis: 'spectrum' })
     // Eight bands × four stages, always wired; unused stages are exact identities so band
     // switches and slope changes never rebuild the graph.
     const stages = Array.from({ length: EQ_BAND_COUNT * MAX_SECTIONS }, () => remember(context.createBiquadFilter()))

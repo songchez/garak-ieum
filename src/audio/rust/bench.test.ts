@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { createKernel, type SigimsaeKernel } from '../../devices/effects/kernels'
 import { KERNEL_DEFS, type KernelType } from '../../devices/effects/sigimsaeDefs'
-import { instantiateGarakWasm } from './garakWasm'
+import { instantiateGarakWasm, type RustEffectType } from './garakWasm'
 
 // Worklet CPU baseline: the TS kernels vs the Rust kernels in WASM, both driven exactly like the
 // AudioWorklet drives them (planar 128-frame blocks, 48 kHz). Opt-in, prints a Markdown table:
@@ -66,6 +66,20 @@ describe.skipIf(!enabled)('worklet CPU: TS kernels vs Rust WASM', () => {
         effect!.free()
       }
       rows.push(`| ${type} | ${(ts / 1e6).toFixed(2)} | ${(rust / 1e6).toFixed(2)} | ${(rust / ts).toFixed(2)} |`)
+    }
+    // Rust-only on the web (they replaced built-in Web Audio nodes, which run natively and cannot be timed here).
+    const busy: Partial<Record<RustEffectType, Record<string, number>>> = {
+      eq: { b4On: 1, b5On: 1, b6On: 1, b7On: 1, b8On: 1, b1Slope: 3 }, filter: { slope: 2 }, reverb: { size: 1, lowcut: 200 },
+    }
+    for (const type of ['eq', 'filter', 'compressor', 'drive', 'reverb'] as RustEffectType[]) {
+      let rust = 0
+      for (let round = 0; round < ROUNDS; round += 1) {
+        const effect = dsp.createEffect(type, SR, busy[type] ?? {})!
+        expect(effect, type).not.toBeNull()
+        rust = Math.max(rust, framesPerSecond(effect, frames, inL, inR))
+        effect.free()
+      }
+      rows.push(`| ${type} | (Web Audio node) | ${(rust / 1e6).toFixed(2)} | — |`)
     }
     console.log(rows.join('\n'))
   }, 600_000)

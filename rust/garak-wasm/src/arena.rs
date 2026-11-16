@@ -173,6 +173,11 @@ impl Arena {
         }
     }
 
+    /// Usable bytes of the region `alloc` returned at `start`; None for any other address.
+    pub fn len_of(&self, start: usize) -> Option<usize> {
+        self.regions.iter().take(self.count).find(|r| r.used && r.start == start).map(|r| r.len)
+    }
+
     /// Bytes in use (diagnostics and tests).
     pub fn used(&self) -> usize {
         self.regions.iter().take(self.count).filter(|r| r.used).map(|r| r.len).sum()

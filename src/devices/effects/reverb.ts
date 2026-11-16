@@ -1,6 +1,7 @@
 import type { EffectDef, RealtimeEffectModule } from '../contracts.js'
 import { clamp } from '../../audio/math.js'
 import { parameterReader, setParameter, randomGenerator } from './shared.js'
+import { createWorkletGraph, prepareRustEffect, rustEffectsReady } from './sigimsae.js'
 
 /**
  * Space types. Each has a short and a long decaying-noise impulse; Size blends them. The impulse
@@ -75,7 +76,11 @@ const spaceOf = (value: number) => clamp(Math.round(value), 0, REVERB_SPACES.len
 
 export const reverbEffect: RealtimeEffectModule = {
   id: 'reverb', kind: 'realtime-effect', stateVersion: 1, definition,
+  prepare: prepareRustEffect,
   create(context, remember) {
+    // Rust kernel (the desktop engine's, docs/RUST.md) whenever the module loaded; the Web Audio graph below is the fallback.
+    // The impulse response is synthesised on the main thread (sigimsae.ts reverbKernels) and copied to the worklet.
+    if (rustEffectsReady(context)) return createWorkletGraph(context, remember, 'reverb')
     const input = remember(context.createGain())
     const output = remember(context.createGain())
     const small = remember(context.createConvolver())
