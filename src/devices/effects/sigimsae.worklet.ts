@@ -1,5 +1,6 @@
 import { createKernel, type SigimsaeKernel } from './kernels.js'
-import { createRustKernel } from '../../audio/rust/sigimsaeRust.js'
+import { createRustKernel, type RustSigimsaeKernel } from '../../audio/rust/sigimsaeRust.js'
+import { RUST_EFFECT, type RustEffectType } from '../../audio/rust/garakWasm.js'
 import { KERNEL_TYPES, type KernelType } from './sigimsaeDefs.js'
 
 declare const sampleRate: number
@@ -10,11 +11,19 @@ declare abstract class AudioWorkletProcessor {
 }
 declare function registerProcessor(name: string, constructor: typeof AudioWorkletProcessor): void
 
-interface Options { processorOptions?: { type?: string; params?: Record<string, number>; bpm?: number; garakWasm?: unknown } }
+interface Options { processorOptions?: { type?: string; params?: Record<string, number>; bpm?: number; garakWasm?: unknown; reverbKernels?: unknown } }
 
-/** One processor for every kernel-backed 시김새; the kernel type and first parameters arrive with construction. */
+/** Pass-through for the Rust-only effects (EQ, filter, compressor, drive, reverb) if their module cannot run here. */
+const bypass: SigimsaeKernel = { configure() {}, process() {}, reset() {} }
+
+/**
+ * One processor for every kernel-backed 시김새; the kernel type and first parameters arrive with construction.
+ * The ten kernels.ts types have a TypeScript fallback; EQ, filter, compressor, drive and reverb run here only
+ * as Rust effects (the main thread uses built-in Web Audio nodes for them when the module is unavailable).
+ */
 class SigimsaeProcessor extends AudioWorkletProcessor {
   private readonly kernel: SigimsaeKernel
+  private readonly rust: RustSigimsaeKernel | null
   private readonly left = new Float32Array(128)
   private readonly right = new Float32Array(128)
   private left2 = this.left
@@ -30,14 +39,25 @@ class SigimsaeProcessor extends AudioWorkletProcessor {
   constructor(options?: unknown) {
     super(options)
     const init = (options as Options | undefined)?.processorOptions ?? {}
-    const type = KERNEL_TYPES.includes(init.type as KernelType) ? init.type as KernelType : 'utility'
-    // Rust/WASM kernel when the main thread opted in (docs/RUST.md; off by default), else TypeScript.
-    const rust = typeof WebAssembly !== 'undefined' && init.garakWasm instanceof WebAssembly.Module
-      ? createRustKernel(init.garakWasm, type, sampleRate, init.params, init.bpm) : null
-    this.kernel = rust ?? createKernel(type, sampleRate, init.params, init.bpm)
+    const requested = typeof init.type === 'string' && init.type in RUST_EFFECT ? init.type as RustEffectType : 'utility'
+    const tsType = KERNEL_TYPES.includes(requested as KernelType) ? requested as KernelType : null
+    // Rust/WASM kernel whenever the main thread sent the module (docs/RUST.md; the default), else TypeScript.
+    const reverbKernels = init.reverbKernels instanceof Float32Array ? init.reverbKernels : null
+    this.rust = typeof WebAssembly !== 'undefined' && init.garakWasm instanceof WebAssembly.Module
+      ? createRustKernel(init.garakWasm, requested, sampleRate, init.params, init.bpm, reverbKernels) : null
+    this.kernel = this.rust ?? (tsType ? createKernel(tsType, sampleRate, init.params, init.bpm) : bypass)
+    // Tells the main thread which path runs (diagnostics, docs/RUST.md), and the effect's latency.
+    this.port.postMessage({ type: 'backend', rust: !!this.rust, latency: this.rust?.latencyFrames() ?? 0 })
     this.port.onmessage = event => {
-      const data = event.data as { type?: string; params?: Record<string, number>; bpm?: number } | undefined
-      if (data?.type === 'dispose') this.disposed = true
+      const data = event.data as { type?: string; params?: Record<string, number>; bpm?: number; reverbKernels?: unknown } | undefined
+      if (data?.type === 'dispose') { this.disposed = true; this.pending = []; this.rust?.free() }
+      else if (data?.type === 'rebuild') {
+        // A direct edit of a construction-time parameter (reverb space / size / pre-delay), applied now.
+        this.pending = []
+        const kernels = data.reverbKernels instanceof Float32Array ? data.reverbKernels : null
+        if (this.rust) this.rust.rebuild(data.params, data.bpm ?? 120, kernels)
+        else this.kernel.configure(data.params, data.bpm ?? 120)
+      }
       else if (data?.type === 'meter') this.metering = (data as { on?: boolean }).on === true && typeof this.kernel.meter === 'function'
       else if (data?.type === 'params') {
         // A direct edit cancels what was scheduled after it, like AudioParam.cancelScheduledValues.

@@ -2,6 +2,7 @@ import type { EffectDef, RealtimeEffectModule } from '../contracts.js'
 import { clamp } from '../../audio/math.js'
 import { parameterReader, setParameter, dbToGain, noTail } from './shared.js'
 import { analyserPeak, type DynamicsMeterSource } from './dynamicsMeter.js'
+import { createWorkletGraph, prepareRustEffect, rustEffectsReady } from './sigimsae.js'
 
 const definition: EffectDef = {
   name: 'Glue 76', short: '컴프', label: '컴프레서',
@@ -16,7 +17,11 @@ const definition: EffectDef = {
 
 export const compressorEffect: RealtimeEffectModule = {
   id: 'compressor', kind: 'realtime-effect', stateVersion: 1, definition,
+  prepare: prepareRustEffect,
   create(context, remember) {
+    // Rust kernel (the desktop engine's, docs/RUST.md) whenever the module loaded; the Web Audio graph below is the fallback.
+    // The Rust compressor (dsp.cpp) reports its own detector level and gain reduction to the view.
+    if (rustEffectsReady(context)) return createWorkletGraph(context, remember, 'compressor')
     const compressor = remember(context.createDynamicsCompressor())
     const makeup = remember(context.createGain())
     compressor.knee.value = 6

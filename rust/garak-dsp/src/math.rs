@@ -5,9 +5,15 @@
 //!   Linux). These are the very functions the C++ kernels call through `std::exp` etc. in the same
 //!   linked binary, so Rust and C++ get identical values and the platform's tuned implementations.
 //!   Nothing extra is linked: the symbols resolve against the CRT the C++ host already links.
-//! - **wasm32, or without the feature**: the pure-Rust `libm` crate (musl port). The browser
-//!   worklet has no C library; `libm` keeps the crate `no_std` and dependency-light. On wasm32,
-//!   `floor` / `ceil` / `sqrt` use the wasm instructions instead (exact either way).
+//! - **wasm32** (the browser worklet, which has no C library): `tan`/`exp`/`log`/`pow` are imported
+//!   from the host (`"math"` import module, `Math.*` in garakWasm.ts). Engines call imported `Math`
+//!   builtins directly as native code (no JS frame), which beats the same musl code compiled to
+//!   wasm (the phaser's per-sample `pow` + `tan` ran at 0.75x the TS kernel) and matches the
+//!   `Math.*` the TS kernels call. `sin`/`cos` stay in `libm`: inlined, they are cheaper than the
+//!   import call (chorus/flanger measured faster that way). `floor` / `ceil` / `sqrt` are wasm
+//!   instructions (exact either way); the rest is `libm`.
+//! - **without the feature** (host tests of garak-dsp alone): the pure-Rust `libm` crate (musl
+//!   port), keeping the crate `no_std` and dependency-light.
 //!
 //! `sqrt` and the rounding functions are exact (correctly rounded / integral) in every
 //! implementation, so they only differ in speed.
@@ -43,7 +49,24 @@ mod imp {
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod imp {
     use core::arch::wasm32::{f64x2_ceil, f64x2_extract_lane, f64x2_floor, f64x2_splat, f64x2_sqrt};
-    pub use libm::{cos, cosf, exp, log, log10, pow, round, sin, sinf, tan, tanh};
+    pub use libm::{cos, cosf, log10, round, sin, sinf, tanh};
+
+    // Host `Math` functions (garakWasm.ts `MATH_IMPORTS`). Only builtins V8 lowers to a direct call
+    // of its own C implementation when imported (`tanh` and `log10` are not on that list, so they
+    // stay in wasm; `sin`/`cos` are faster inlined, see the module docs). The import names differ from the C
+    // names so wasm-ld cannot resolve them against compiler-builtins' own `sin`/`exp` symbols.
+    // SAFETY: pure functions of their f64 arguments, defined for every input (NaN in, NaN out).
+    #[link(wasm_import_module = "math")]
+    unsafe extern "C" {
+        #[link_name = "garak_tan"]
+        pub safe fn tan(x: f64) -> f64;
+        #[link_name = "garak_exp"]
+        pub safe fn exp(x: f64) -> f64;
+        #[link_name = "garak_log"]
+        pub safe fn log(x: f64) -> f64;
+        #[link_name = "garak_pow"]
+        pub safe fn pow(x: f64, y: f64) -> f64;
+    }
 
     // The exact operations wasm has as instructions. `libm` only uses them behind a nightly-only
     // switch and otherwise falls back to integer bit manipulation (the bitcrusher's per-sample
