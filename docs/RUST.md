@@ -91,6 +91,7 @@ sh scripts/setup-rust.sh
 | `GARAK_WASM_BENCH=1 pnpm exec vitest run src/audio/rust/bench.test.ts` | 워크릿 CPU 기준선(TS 커널 vs Rust WASM, `pnpm rust:wasm` 후) |
 | `GARAK_RUST_EFFECTS=all ctest -R native-engine` | 엔진 회귀 테스트 전체를 Rust 이펙트로 |
 | `node scripts/rust-dsp-smoke.mjs` | 브라우저(Playwright)에서 웹 Rust 경로 확인: 이펙트 7개 트랙 재생·내보내기, 끈 경로와 비교 |
+| `pnpm vintage:smoke` | 브라우저(Playwright)에서 옥구슬 EP·한밤 106 확인: 시김새와 같은 `garak-dsp.wasm` 모듈로 로드, 내보내기·실시간 재생이 들리는지, `garak.rustDsp=0`에서도 소리가 나는지. `GARAK_CHROMIUM_EXECUTABLE` 선택 |
 | `node scripts/rust.mjs web-build` | `pnpm build`가 부르는 단계(아래 [빌드](#빌드와-rust-없는-개발)) |
 
 `cargo`를 직접 쓰려면 `rust/`에서 실행하세요. 추가 인자는 그대로 넘어갑니다: `pnpm rust:test -- biquad`.
@@ -412,6 +413,7 @@ src/devices/vintage/                카탈로그(params.ts), 프리셋, 사용�
 | CPU: 8보이스 @ 48 kHz < 한 코어의 3 % | `native-rust-instruments` (CI 게이트) | EP 0.44 %, 106 1.31 %(최악 설정: 모든 오실레이터·레조넌스·코러스 I+II) |
 | 워크릿 CPU(참고) | `vintage.test.ts` | EP 0.53 %, 106 1.46 % |
 | 엔진: 타임라인 음, 라이브 페달, 파라미터 편집 중 울림 유지, 알 수 없는 파라미터 거부 | `native-rust-instruments` | 통과 |
+| 웹 브라우저: 공유 모듈 로드, 내보내기·실시간 재생 | `pnpm vintage:smoke` (로컬 Chrome) | EP 내보내기 RMS 0.073·트랙 레벨 0.21, 106 RMS 0.048·0.08, `garak.rustDsp=0`에서도 같음 |
 
 DSP를 바꾸면 체크섬이 바뀝니다. `cargo test -p garak-dsp parity_scene -- --nocapture`가 새 값을 출력하면 `parity.golden`을 고치고, C++·WASM 테스트가 같은 값에 닿는지 확인합니다.
 
