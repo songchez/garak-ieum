@@ -460,6 +460,9 @@ if (cliMode) {
           } finally { fileDialogPending = false }
         },
       })
+      // Spawn the audio host and finish its handshake while the window loads, so the renderer's
+      // launch connection (NativeAudioEngine.autoStart) does not wait for process start-up.
+      void nativeAudio.request('engine.capabilities').catch(() => undefined)
       installIpc()
       installPermissions()
       buildMenu()

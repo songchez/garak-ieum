@@ -16,6 +16,7 @@ import { applyTrackSource, detachDeletedRoutes, isRouted, remapCopiedRoutes, rou
 import { applySend, createEffectReturns, createReturnTrack, detachDeletedSends, nextReturnName, remapCopiedSends, type SendPatch } from './core/sends'
 import { encodePcm16Wav } from './audio/math'
 import { nativeErrorCode, supportedRatesOf } from './audio/native/deviceErrors'
+import { backendLabel, startupBackend, type NativeStartupReport } from './audio/native/deviceStartup'
 import { backgroundAction, nearestSampleRate, shouldAlertOverload } from './audio/native/deviceProfile'
 import { importTempoNotice, MEDIA_FILE_ACCEPT, planMediaImport, readMediaFile, type ImportedMedia } from './core/mediaImport'
 import { writeMidiFile } from './core/midiExport'
@@ -79,6 +80,10 @@ import type { AutomationTarget } from './core/types'
 
 // An application-session service, independent of React's render/effect lifecycle.
 const initialAudioSettings = loadAudioSettings()
+/** The user's saved choice. A launch fallback never replaces it; only a successful 적용 does (docs/NATIVE_AUDIO.md). */
+let preferredAudioSettings = initialAudioSettings
+/** One launch notice per app session, even when several projects are opened. */
+const shownStartupNotices = new Set<string>()
 const PitchEditor = lazy(() => import('./devices/pitch-editor/PitchEditor').then(module => ({ default: module.PitchEditor })))
 // Dialogs load on first open: they are not needed to show or play a project (docs/ARCHITECTURE_REVIEW.md, bottleneck 5).
 const AudioSettingsDialog = lazy(() => import('./components/AudioSettingsDialog'))
@@ -590,6 +595,46 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     void engine.configure(audioSettingsRef.current,project.sampleRate).catch(error=>{if(!cancelled)notify(`프로젝트 오디오 설정을 적용하지 못했습니다: ${error instanceof Error?error.message:''}`,audioFailureActions(error))})
     return()=>{cancelled=true}
   },[project.sampleRate,loaded,audioApplying,recording,recordPreparing,busy,notify])
+  // Launch connection: open the saved device as soon as a project is shown, so live MIDI, previews and
+  // monitoring work without 설정 › 적용. A fallback is used for this session only and announced once.
+  const [startupReport,setStartupReport]=useState<NativeStartupReport|null>(null)
+  useEffect(()=>{
+    if(!loaded||engine.kind!=='native')return
+    const native=engine,state=native.getAudioState(),session=projectSession.current
+    if(state.status==='ready'||state.status==='configuring'||native.startupPending||audioApplyingRef.current||recordRef.current)return
+    void native.autoStart(preferredAudioSettings,projectRef.current.sampleRate).then(report=>{
+      if(report.state==='cancelled'||session!==projectSession.current)return
+      // The settings dialog shows what is running (a fallback, or the saved device back again after one).
+      if(report.state==='fallback'||report.state==='ready'){const actual=native.getAudioState().settings;audioSettingsRef.current=actual;setAudioSettings(actual)}
+      setStartupReport(report)
+      if(report.notice&&!shownStartupNotices.has(report.notice)){
+        shownStartupNotices.add(report.notice)
+        notify(report.notice,[{label:'설정 열기',run:()=>openAudioSettings(report.state==='failed'?'devices':'status')}])
+      }
+    })
+  },[loaded,notify])
+  const applyAudioSettingsRef=useRef<(value:AudioSettings,sampleRate:SampleRate)=>Promise<{persisted:boolean}>>(async()=>({persisted:false}))
+  applyAudioSettingsRef.current=applyAudioSettings
+  // Running on a fallback because the saved device was missing: offer it back once it reappears.
+  // Device lists do not open drivers, so polling them is cheap; switching stays the user's choice.
+  useEffect(()=>{
+    if(engine.kind!=='native'||startupReport?.state!=='fallback'||!startupReport.preferredMissing)return
+    const native=engine,preferred=preferredAudioSettings,backend=startupBackend(preferred,native.platform)
+    if(!backend||!preferred.outputDeviceId)return
+    let stopped=false
+    const timer=window.setInterval(()=>{
+      if(stopped||document.hidden||recordRef.current||audioApplyingRef.current)return
+      void native.listDevices(backend).then(devices=>{
+        const device=devices.find(item=>item.id===preferred.outputDeviceId)
+        if(stopped||!device)return
+        stopped=true;window.clearInterval(timer)
+        notify(`저장된 오디오 장치(${backendLabel(backend)} · ${device.name})가 다시 연결되었습니다.`,[{label:'이 장치로 전환',run:()=>{
+          void applyAudioSettingsRef.current(preferred,projectRef.current.sampleRate).catch(error=>notify(`오디오 장치를 전환하지 못했습니다: ${error instanceof Error?error.message:String(error)}`,audioFailureActions(error)))
+        }}])
+      },()=>undefined)
+    },5000)
+    return()=>{stopped=true;window.clearInterval(timer)}
+  },[startupReport,notify])
   useEffect(()=>{engine.setAssets(assets)},[assets])
   useEffect(()=>{
     let cancelled=false
@@ -800,7 +845,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
       await engine.configure(next,sampleRate);configured=true
       if(session!==projectSession.current)throw new DOMException('오디오 설정 적용이 취소되었습니다.','AbortError')
       prepared?.commit();prepared=undefined
-      audioSettingsRef.current=next;setAudioSettings(next)
+      audioSettingsRef.current=next;setAudioSettings(next);preferredAudioSettings=next;setStartupReport(null)
       engine.setInputMonitor(null,[])
       if(!nextTargets.length)inputCapture.setNeeded('monitor',false)
       if(sampleRate!==projectRef.current.sampleRate){breakHistoryMerge();commit(p=>({...p,sampleRate}),'project-sample-rate')}

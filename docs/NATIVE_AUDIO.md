@@ -43,7 +43,16 @@ flowchart TD
 
 입력은 설정의 **입출력 채널**에서 켠 물리 채널 목록(`inputChannelList`, 최대 32개)이고, 출력은 선택한 스테레오 쌍입니다. 장치 callback은 켠 채널을 목록 순서대로 인터리브해 넘기고, 엔진이 트랙마다 고른 물리 채널(`Track.input`)을 그 위치로 찾습니다. 열리지 않은 채널을 고른 트랙은 무음을 받고 `tracksMissingInput`에 나타납니다. 예전 `inputChannels`+`inputChannelOffset` 설정도 목록으로 바꿔 받습니다. 장치 목록을 만들 때는 드라이버를 열지 않고, 드라이버를 고르면 `devices.probe`가 잠깐 열어 채널 이름·개수, 허용 버퍼(`buffer.sizes`, 고정 여부), 지원 레이트, 클럭 소스, 직접 모니터링 지원, 지연을 읽습니다.
 
-선택한 드라이버나 장치가 실패했을 때 다른 backend나 장치로 자동 대체하지 않습니다. 대신 실패 원인을 코드(`DEVICE_NOT_FOUND`, `DEVICE_IN_USE`, `DRIVER_INIT_FAILED`, `SAMPLE_RATE_UNSUPPORTED`, `BUFFER_UNSUPPORTED`, `CHANNELS_UNAVAILABLE`, `DEVICE_LOST`)와 `details`로 알리고, 화면이 원인별 해결 동작을 보여 줍니다. 실행 중 장치가 멈추거나 경로가 바뀌거나 사라지면 0.25·0.5·1·2초, 이후 2초 간격으로 같은 설정을 다시 엽니다(`recovering`, `recoveries`). 재생 위치와 엔진 상태는 유지하며, 30초 안에 돌아오지 않으면 재설정을 요구하고 사라진 장치는 다시 나타날 때까지 계속 확인합니다. ASIO control panel은 실행 중인 장치뿐 아니라 설정이 거절된 드라이버에서도 엽니다(`device.controlPanel {backend, deviceId}`). `device.suspend`/`device.resume`은 다른 앱이 장치를 쓰도록 닫았다가 같은 설정으로 다시 엽니다(설정의 **백그라운드에서 드라이버 해제**). ASIO의 클럭 소스와 하드웨어 직접 모니터링은 `device.clockSource`, `device.directMonitor`로 바꿉니다. WASAPI callback 스레드는 MMCSS "Pro Audio"와 실시간 우선순위로 실행합니다. WASAPI/Core Audio는 요청 버퍼 크기가 실제 callback 크기와 다를 수 있으므로 상태에는 실제 관찰값을 표시합니다. [장치 계약](../native/include/garak/device.hpp)
+**시작할 때 장치 연결.** 프로젝트를 열면 저장된 오디오 설정으로 장치를 바로 엽니다(`NativeAudioEngine.autoStart`). 설정의 **적용**과 같은 `engine.configure` 경로를 쓰므로 실시간 MIDI·미리듣기·모니터링이 설정을 열지 않아도 동작합니다. Electron은 창을 띄우는 동안 오디오 호스트를 미리 실행해 handshake를 끝내 둡니다. 순서와 정책은 다음과 같습니다. [시작 정책](../src/audio/native/deviceStartup.ts)
+
+1. 저장된 설정을 엽니다. 먼저 `devices.list`(드라이버를 열지 않음)로 저장된 장치가 목록에 있는지 확인하고, 없으면 열지 않고 다음 단계로 갑니다.
+2. 일시적인 실패(`DEVICE_IN_USE`, `DRIVER_INIT_FAILED`, `DEVICE_LOST`, 호스트 재시작·응답 시간 초과)는 0.4·0.8·1.6·3.2초 간격으로 다시 시도합니다(부팅 직후 아직 초기화 중인 ASIO 드라이버, 잠시 장치를 쥔 다른 앱).
+3. `BUFFER_UNSUPPORTED`이면 같은 장치를 드라이버 권장 버퍼로 엽니다.
+4. 그래도 안 되면 같은 backend의 기본 장치(WASAPI·Core Audio), 마지막으로 운영체제 기본(Windows WASAPI 기본 장치, macOS Core Audio 기본 장치)을 엽니다. ASIO에는 "기본 드라이버"가 없으므로 다른 ASIO 드라이버를 추측해 열지 않습니다. 대체 단계는 한 번만 다시 시도합니다.
+
+대체 장치로 연결했거나 모두 실패하면 이유와 바뀐 내용을 담은 알림을 **앱 실행당 한 번** 띄우고(모달 없음, **설정 열기** 버튼), 같은 내용과 단계별 시간 기록을 **설정 › 상태·진단**의 "시작할 때 장치 연결"과 **진단 복사**에 남깁니다. 대체는 이번 실행에만 쓰는 설정입니다. 저장된 설정은 바꾸지 않으므로 다음 실행 때 저장된 장치를 다시 시도하고, 사용자가 **적용**을 눌러야 지금 설정이 저장됩니다. 저장된 장치가 목록에서 사라져 대체한 경우에는 5초마다 장치 목록을 확인해 다시 나타나면 "이 장치로 전환" 알림을 한 번 띄웁니다(자동으로 바꾸지 않음). 재생 중 실패나 호스트 종료 뒤에는 다음 **재생**이 같은 설정으로 장치를 다시 엽니다.
+
+이 시작 단계 밖에서는 선택한 드라이버나 장치가 실패했을 때 다른 backend나 장치로 자동 대체하지 않습니다. 대신 실패 원인을 코드(`DEVICE_NOT_FOUND`, `DEVICE_IN_USE`, `DRIVER_INIT_FAILED`, `SAMPLE_RATE_UNSUPPORTED`, `BUFFER_UNSUPPORTED`, `CHANNELS_UNAVAILABLE`, `DEVICE_LOST`)와 `details`로 알리고, 화면이 원인별 해결 동작을 보여 줍니다. 실행 중 장치가 멈추거나 경로가 바뀌거나 사라지면 0.25·0.5·1·2초, 이후 2초 간격으로 같은 설정을 다시 엽니다(`recovering`, `recoveries`). 재생 위치와 엔진 상태는 유지하며, 30초 안에 돌아오지 않으면 재설정을 요구하고 사라진 장치는 다시 나타날 때까지 계속 확인합니다. ASIO control panel은 실행 중인 장치뿐 아니라 설정이 거절된 드라이버에서도 엽니다(`device.controlPanel {backend, deviceId}`). `device.suspend`/`device.resume`은 다른 앱이 장치를 쓰도록 닫았다가 같은 설정으로 다시 엽니다(설정의 **백그라운드에서 드라이버 해제**). ASIO의 클럭 소스와 하드웨어 직접 모니터링은 `device.clockSource`, `device.directMonitor`로 바꿉니다. WASAPI callback 스레드는 MMCSS "Pro Audio"와 실시간 우선순위로 실행합니다. WASAPI/Core Audio는 요청 버퍼 크기가 실제 callback 크기와 다를 수 있으므로 상태에는 실제 관찰값을 표시합니다. [장치 계약](../native/include/garak/device.hpp)
 
 지연 정보는 다음처럼 나눕니다.
 

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron } from 'playwright'
-import { verifyNativeAudioUI } from './desktop-native-ui-smoke.mjs'
+import { saveMissingAudioDevice, verifyMissingDeviceFallback, verifyNativeAudioUI, watchLaunchNotices } from './desktop-native-ui-smoke.mjs'
 
 // Run against the packaged application, with normal sandbox/security settings.
 // Native dialogs are stubbed only through Playwright's Electron main context;
@@ -921,6 +921,10 @@ try {
     })
   }
 
+  await checked('save an audio device that will be missing at the next launch', async () => {
+    await saveMissingAudioDevice(session.page)
+  })
+
   await checked('normal close commits active BPM input and flushes autosave', async () => {
     const bpm = session.page.getByRole('spinbutton', { name: '템포 BPM', exact: true })
     await bpm.fill('143') // Intentionally leave the draft focused and uncommitted.
@@ -931,12 +935,17 @@ try {
   await checked('same-profile relaunch and project persistence', async () => {
     await launch('second-launch')
     await session.page.goto(reopenURL)
+    await watchLaunchNotices(session.page)
     await valueIs(session.page.getByRole('textbox', { name: '프로젝트 이름', exact: true }), projectName)
     await valueIs(session.page.getByRole('spinbutton', { name: '템포 BPM', exact: true }), '143')
     await valueIs(session.page.getByLabel('박자표 분자', { exact: true }), '6')
     await valueIs(session.page.getByLabel('박자표 분모', { exact: true }), '8')
     await session.page.locator('.save-indicator.saved').waitFor()
     await screenshot('03-reopened-project.png')
+  })
+
+  await checked('launch with a missing saved audio device falls back to the default with one notice', async () => {
+    report.launchAudioFallback = await verifyMissingDeviceFallback(session.page)
     await closeNormally()
   })
   const failedChecks = report.checks.filter(check => check.status === 'failed')
