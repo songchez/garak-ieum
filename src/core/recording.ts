@@ -1,6 +1,7 @@
 import { loopRange, normalizedStart } from '../audio/math'
 import type { AudioRecordingCallbacks, AudioRecordingResult } from '../audio/AudioRecording'
 import { recordingPlacement } from './recordingOffset'
+import { meterMapOf } from './meterMap'
 import { beatAfterSeconds, spanSeconds, type Tempo } from './tempoMap'
 import type { AudioClip, Project, Track } from './types'
 
@@ -76,7 +77,7 @@ export function appendAudioRecording(project: Project, draft: RecordingDraft, as
   return {
     project: {
       ...project, tracks,
-      lengthBeats: Math.max(project.lengthBeats, Math.ceil((clip.startBeat + clip.lengthBeats) / project.beatsPerBar) * project.beatsPerBar),
+      lengthBeats: Math.max(project.lengthBeats, meterMapOf(project).ceilBarStart(clip.startBeat + clip.lengthBeats)),
     },
     clip,
   }

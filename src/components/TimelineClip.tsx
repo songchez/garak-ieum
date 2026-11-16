@@ -7,6 +7,7 @@ import { clipOccurrences, isTrackEnabled, loopEnd } from '../core/playback'
 import { regionDisplayName } from '../core/regionDisplay'
 import { visibleMidiNotes } from '../core/midiRegions'
 import { musicalSpan } from '../core/musicalGrid'
+import type { MeterMap } from '../core/meterMap'
 import { isShortcutSuppressed, isUnmodified } from '../core/input'
 import { contrastTextColor } from '../core/colors'
 import { Icon } from './Icon'
@@ -58,7 +59,7 @@ function WarpBadge({on,sourceBpm,bpm,onToggle}:{on:boolean;sourceBpm:number;bpm:
 }
 
 export interface TimelineClipProps {
-  clip:Clip; track:Track; asset?:AudioAsset; ppb:number; tempo:Tempo; projectEnd:number; beatsPerBar?:number
+  clip:Clip; track:Track; asset?:AudioAsset; ppb:number; tempo:Tempo; projectEnd:number; beatsPerBar?:number; meters?:MeterMap
   selected:boolean; preview?:Preview; renaming:boolean; actions:React.RefObject<ClipActions>
   occurrenceTrack?:Track; silent?:boolean
 }
@@ -67,7 +68,7 @@ export interface TimelineClipProps {
  * One region plus its loop repeats (Logic §5): muted = gray body with a dot before the name, looped = shaded
  * ghost repeats with notches, transposed MIDI = "(+N)" suffix, audio fades as triangles when zoomed in.
  */
-export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,tempo,projectEnd,beatsPerBar=4,selected,preview,renaming,actions,occurrenceTrack=track,silent=false}:TimelineClipProps){
+export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,tempo,projectEnd,beatsPerBar=4,meters,selected,preview,renaming,actions,occurrenceTrack=track,silent=false}:TimelineClipProps){
   const regionRef=useRef<HTMLDivElement>(null)
   const notePreviewId=useId()
   const onSelect=(trackId:string,clipId:string)=>actions.current.select(trackId,clipId)
@@ -96,7 +97,7 @@ export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,tempo
     {displayClip.kind==='audio'&&<ClipEnvelope clip={displayClip} widthPx={widthPx} tempo={tempo} asset={asset} showFades={ppb>=FADE_MIN_PPB} readOnly={repeat||!!preview} actions={envelopeActions}/>}
   </>
   return <>
-    <div ref={regionRef} className={cls.join(' ')} tabIndex={0} role="button" aria-pressed={selected} aria-label={`${label}, ${clip.startBeat/beatsPerBar+1} 마디${clip.mute?', 뮤트됨':''}${clip.loop?', 루프':''}`} onFocus={()=>{if(!focusFromPointer&&!selected)onSelect(track.id,clip.id)}} onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'move')} onDoubleClick={e=>{if(!(e.target as Element).closest('input,.clip-loop-handle'))actions.current.open(track.id,clip.id)}} onContextMenu={e=>actions.current.clipMenu(e,track,clip)} onKeyDown={e=>{if(e.key==='Enter'&&isUnmodified(e.nativeEvent)&&!isShortcutSuppressed(e.nativeEvent,true)){e.preventDefault();e.stopPropagation();if(!e.repeat)onSelect(track.id,clip.id)}}} style={{...geometry,transform:dy?`translateY(${dy}px)`:undefined,'--clip-color':track.color,'--clip-selected-text':contrastTextColor(track.color,.2)} as React.CSSProperties}>
+    <div ref={regionRef} className={cls.join(' ')} tabIndex={0} role="button" aria-pressed={selected} aria-label={`${label}, ${+((meters?meters.barAt(clip.startBeat):clip.startBeat/beatsPerBar)+1).toFixed(3)} 마디${clip.mute?', 뮤트됨':''}${clip.loop?', 루프':''}`} onFocus={()=>{if(!focusFromPointer&&!selected)onSelect(track.id,clip.id)}} onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'move')} onDoubleClick={e=>{if(!(e.target as Element).closest('input,.clip-loop-handle'))actions.current.open(track.id,clip.id)}} onContextMenu={e=>actions.current.clipMenu(e,track,clip)} onKeyDown={e=>{if(e.key==='Enter'&&isUnmodified(e.nativeEvent)&&!isShortcutSuppressed(e.nativeEvent,true)){e.preventDefault();e.stopPropagation();if(!e.repeat)onSelect(track.id,clip.id)}}} style={{...geometry,transform:dy?`translateY(${dy}px)`:undefined,'--clip-color':track.color,'--clip-selected-text':contrastTextColor(track.color,.2)} as React.CSSProperties}>
       {contents()}
       <div className="clip-resize-left" style={{width:Math.min(7,widthPx/3)}} title="드래그하여 시작 지점 자르기" onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'trimStart')}/>
       <div className="clip-resize" style={{width:Math.min(7,widthPx/3)}} title="드래그하여 클립 길이 조절" onPointerDown={e=>actions.current.beginClipGesture(e,track,clip,'trimEnd')}/>

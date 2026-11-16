@@ -2,6 +2,7 @@ import { isSampleRate, type SampleRate } from '../../core/audioSettings'
 import { EFFECT_DEFS, type ParamDef } from '../../core/devices'
 import { instrumentDef, isInstrumentId } from '../../core/instruments'
 import { quarterNotesPerBar, validateTimeSignature } from '../../core/meter'
+import { meterMapOf } from '../../core/meterMap'
 import { audibleTrackIds, audioWindows, clipOccurrences, isTrackEnabled, loopEnd, playbackControllers, playbackNotes, playbackSustain, type Occurrence } from '../../core/playback'
 import { BEND_RANGE_NUMBER, controllerNumber, controllerSpec } from '../../core/controllers'
 import type { EffectType, MidiClip, Project, TimeSignature, Track, TrackInputRoute, TrackInputTap } from '../../core/types'
@@ -199,6 +200,10 @@ export interface NativeProjectTimeline {
   readonly tempoMap?: readonly { readonly beat: number; readonly bpm: number; readonly curve: 'step' | 'ramp' }[]
   readonly timeSignature: Readonly<TimeSignature>
   readonly beatsPerBar: number
+  /** Time-signature changes (docs/METER_MAP.md) when the meter changes: events sorted by bar, the first at bar 0 with
+   * `timeSignature`; `beat` is the bar line in quarter notes (core/meterMap.ts). The host accents each bar's first
+   * pulse (native/include/garak/meter.hpp recomputes `beat` from the bars and rejects a mismatch). */
+  readonly meterMap?: readonly { readonly bar: number; readonly beat: number; readonly numerator: number; readonly denominator: number }[]
   readonly lengthFrames: number
   readonly cycle: { readonly startFrame: number; readonly endFrame: number } | null
   readonly masterGain: number
@@ -399,6 +404,7 @@ function compileTimeline(project: Project, pcmAssets: ReadonlyMap<string, Native
   try { timeSignature = validateTimeSignature(project.timeSignature) }
   catch { throw new NativeTimelineError('INVALID_PROJECT', 'Invalid time signature.') }
   if (project.beatsPerBar !== quarterNotesPerBar(timeSignature)) throw new NativeTimelineError('INVALID_PROJECT', 'Time signature and beats per bar disagree.')
+  const meters = meterMapOf(project)
   number(project.loop.startBeat, 0, lengthBeats, 'cycle start')
   number(project.loop.endBeat, 0, lengthBeats, 'cycle end')
   const loop = loopRange(project)
@@ -473,6 +479,7 @@ function compileTimeline(project: Project, pcmAssets: ReadonlyMap<string, Native
       ...(lanes.muted ? { unmutedAudible: audibleTrackIds(project.tracks.map(item => item.id === track.id ? { ...item, mute: false } : item)).has(track.id) && track.pluginInstrument?.enabled !== false } : {}) }
   })
   return { version: 1, projectId: project.id, revision, sampleRate, bpm, ...(tempo.isConstant ? {} : { tempoMap: tempo.points.map(point => ({ ...point })) }), timeSignature, beatsPerBar: project.beatsPerBar,
+    ...(meters.segments.length > 1 ? { meterMap: meters.segments.map(({ bar, beat, numerator, denominator }) => ({ bar, beat, numerator, denominator })) } : {}),
     lengthFrames, cycle, masterGain: number(project.masterVolume, 0, 2, 'master gain'), assets: [...usedAssets.values()], tracks }
 }
 

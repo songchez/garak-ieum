@@ -305,6 +305,16 @@ export interface TimeSignature {
   numerator: number
   denominator: TimeSignatureDenominator
 }
+/**
+ * One time-signature change (schema 18; docs/METER_MAP.md). `bar` is the 0-based bar index where the meter
+ * starts (the UI shows bar + 1). Meters change only on bar lines, so positions are bars, not beats: editing
+ * an earlier meter keeps every later change on its bar line. Convert bars ↔ beats only through core/meterMap.ts.
+ */
+export interface MeterEvent extends TimeSignature {
+  bar: number
+}
+/** Current project file format. Bump it together with the migration notes in core/project.ts (validateProjectFields). */
+export const PROJECT_SCHEMA_VERSION = 18 as const
 /** Shape of the tempo segment that starts at a point; see core/tempoMap.ts. */
 export type TempoCurve = 'step' | 'ramp'
 /** One tempo-map point (schema 14). bpm is quarter notes per minute, like Project.bpm. */
@@ -314,8 +324,8 @@ export interface TempoPoint {
   curve: TempoCurve
 }
 export interface Project {
-  /** 17: track automation lanes (Track.automation, Track.automationMode; send levels and return tracks automatable). 16: MIDI controller lanes (MidiClip.controllers, bendRange). 15: send/return tracks (Track.kind 'return', Track.sends). 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 17
+  /** 18: time-signature changes (Project.meterMap). 17: track automation lanes (Track.automation, Track.automationMode; send levels and return tracks automatable). 16: MIDI controller lanes (MidiClip.controllers, bendRange). 15: send/return tracks (Track.kind 'return', Track.sends). 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: typeof PROJECT_SCHEMA_VERSION
   id: string
   name: string
   /** Tempo at beat 0. With a tempo map this mirrors tempoMap[0].bpm. */
@@ -325,9 +335,13 @@ export interface Project {
   tempoMap?: TempoPoint[]
   /** Project rendering rate; device preferences are stored separately in this browser. */
   sampleRate: SampleRate
+  /** Meter of bar 1. With a meter map this mirrors meterMap[0]. */
   timeSignature: TimeSignature
-  /** Derived quarter-note beats per bar, not the numerator: 6/8 has 3. */
+  /** Derived quarter-note beats per bar of bar 1, not the numerator: 6/8 has 3. Later bars: core/meterMap.ts. */
   beatsPerBar: number
+  /** Time-signature changes (schema 18; docs/METER_MAP.md). Sorted by bar, the first at bar 0 equal to timeSignature.
+   * Validated projects always carry it; absent (older in-memory snapshots) = timeSignature for the whole song. */
+  meterMap?: MeterEvent[]
   lengthBeats: number
   masterVolume: number
   loop: { enabled: boolean; startBeat: number; endBeat: number }

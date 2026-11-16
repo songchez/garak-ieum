@@ -1,3 +1,5 @@
+import type { MeterMap } from './meterMap'
+
 /** Shared visual rhythm grid. Display detail follows zoom; the editing snap stays independent. */
 export interface MusicalGrid {
   ppb: number
@@ -43,8 +45,8 @@ export function musicalGridStyle(grid: MusicalGrid): { backgroundImage: string; 
 
 export interface MusicalRulerMark { beat: number; kind: 'bar' | 'beat' | 'subdivision'; label: string }
 
-/** Only request the visible interval. The cap also protects unusual imported lengths and scales. */
-export function musicalRulerMarks(grid: MusicalGrid, startBeat: number, endBeat: number, maxMarks = 512): MusicalRulerMark[] {
+/** Only request the visible interval. The cap also protects unusual imported lengths and scales. `barOffset` numbers the bars of a later meter. */
+export function musicalRulerMarks(grid: MusicalGrid, startBeat: number, endBeat: number, maxMarks = 512, barOffset = 0): MusicalRulerMark[] {
   if (!Number.isFinite(startBeat) || !Number.isFinite(endBeat) || endBeat < startBeat) return []
   const start = Math.max(0, startBeat), end = Math.max(start, endBeat), cap = Math.max(1, Math.floor(maxMarks))
   let step = grid.stepBeats
@@ -60,10 +62,10 @@ export function musicalRulerMarks(grid: MusicalGrid, startBeat: number, endBeat:
   const first = Math.max(0, Math.floor(start / step)), last = Math.ceil(end / step)
   const barLabelStep = grid.beatsPerBar * Math.max(1, 2 ** Math.ceil(Math.log2(42 / (grid.ppb * grid.beatsPerBar))))
   for (let index = first; index <= last && marks.length < cap; index++) {
-    const beat = index * step, bar = Math.floor((beat + 1e-7) / grid.beatsPerBar) + 1
+    const beat = index * step, localBar = Math.floor((beat + 1e-7) / grid.beatsPerBar), bar = localBar + 1 + barOffset
     const isBar = closeToInteger(beat / grid.beatsPerBar), isBeat = closeToInteger(beat / grid.beatUnit)
     const kind = isBar ? 'bar' : isBeat ? 'beat' : 'subdivision'
-    const localBeat = (beat - (bar - 1) * grid.beatsPerBar) / grid.beatUnit
+    const localBeat = (beat - localBar * grid.beatsPerBar) / grid.beatUnit
     const beatNumber = Math.floor(localBeat + 1e-7) + 1
     let label = ''
     if (isBar && closeToInteger(beat / barLabelStep)) label = String(bar)
@@ -72,6 +74,51 @@ export function musicalRulerMarks(grid: MusicalGrid, startBeat: number, endBeat:
     marks.push({ beat, kind, label })
   }
   return marks
+}
+
+// --- Time-signature changes (docs/METER_MAP.md): one grid per meter, each starting on its own bar line ---
+
+const segmentEnd = (meters: MeterMap, index: number) => meters.segments[index + 1]?.beat ?? Infinity
+
+/** Ruler marks across meter changes; with one meter this is musicalRulerMarks with the bar-1 grid. */
+export function meterRulerMarks(meters: MeterMap, ppb: number, snap: number, startBeat: number, endBeat: number, maxMarks = 512): MusicalRulerMark[] {
+  if (!Number.isFinite(startBeat) || !Number.isFinite(endBeat) || endBeat < startBeat) return []
+  const marks: MusicalRulerMark[] = []
+  for (let index = meters.segmentAt(Math.max(0, startBeat)); index < meters.segments.length && marks.length < maxMarks; index++) {
+    const segment = meters.segments[index], until = segmentEnd(meters, index)
+    if (segment.beat > endBeat) break
+    const grid = musicalGrid(ppb, { snap, beatsPerBar: segment.barBeats, beatUnit: segment.beatUnit })
+    const local = musicalRulerMarks(grid, Math.max(startBeat, segment.beat) - segment.beat, Math.min(endBeat, until) - segment.beat, maxMarks - marks.length, segment.bar)
+    // The next meter draws its own first bar line (with its own number) at the change.
+    for (const mark of local) if (mark.beat + segment.beat < until - 1e-7) marks.push({ ...mark, beat: mark.beat + segment.beat })
+  }
+  return marks
+}
+
+/**
+ * CSS layers for the lane grid across meter changes. One meter keeps the cheap repeating layers of
+ * musicalGridStyle; with changes each meter gets its own repeating gradient clipped to its span.
+ */
+export function meterGridStyle(meters: MeterMap, ppb: number, snap: number, width: number): { backgroundImage: string; backgroundSize: string; backgroundPosition?: string; backgroundRepeat?: string } {
+  const first = meters.segments[0]
+  if (meters.isConstant) return musicalGridStyle(musicalGrid(ppb, { snap, beatsPerBar: first.barBeats, beatUnit: first.beatUnit }))
+  const images: string[] = [], sizes: string[] = [], positions: string[] = []
+  meters.segments.forEach((segment, index) => {
+    const left = segment.beat * ppb
+    if (left >= width) return
+    const span = Math.max(0, Math.min(width, segmentEnd(meters, index) * ppb) - left)
+    if (!(span > 0)) return
+    const grid = musicalGrid(ppb, { snap, beatsPerBar: segment.barBeats, beatUnit: segment.beatUnit })
+    const layers: [number, string][] = [[grid.barBeats, 'var(--grid-major)']]
+    if (grid.beatBeats) layers.push([grid.beatBeats, 'var(--grid-minor)'])
+    if (grid.subdivisionBeats) layers.push([grid.subdivisionBeats, 'color-mix(in srgb,var(--grid-minor) 75%,transparent)'])
+    for (const [beats, color] of layers) {
+      images.push(`repeating-linear-gradient(to right,${color} 0 1px,transparent 1px ${beats * ppb}px)`)
+      sizes.push(`${span}px 100%`)
+      positions.push(`${left}px 0`)
+    }
+  })
+  return { backgroundImage: images.join(','), backgroundSize: sizes.join(','), backgroundPosition: positions.join(','), backgroundRepeat: 'no-repeat' }
 }
 
 /** Shared endpoints, with no visual padding that would turn adjacent regions into apparent gaps. */

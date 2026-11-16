@@ -37,6 +37,7 @@
     "wavetable:build": "cmake -S native/devices/wavetable-synth -B build/native/wavetable-synth -DCMAKE_BUILD_TYPE=Release && cmake --build build/native/wavetable-synth --config Release",
     "wavetable:test": "ctest --test-dir build/native/wavetable-synth -C Release --output-on-failure",
     "wavetable:smoke": "node scripts/wavetable-smoke.mjs",
+    "meter:smoke": "node scripts/meter-smoke.mjs",
     "rust:test": "node scripts/rust.mjs test",
     "rust:build": "node scripts/rust.mjs build",
     "rust:wasm": "node scripts/rust.mjs wasm",

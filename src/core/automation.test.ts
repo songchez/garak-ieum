@@ -138,7 +138,7 @@ describe('schema 17 migration', () => {
     const track = { ...project.tracks[0], automationMode: 'latch' as const, automation: [...project.tracks[0].automation!, lane({ kind: 'device', deviceId: 'gone', param: 'cutoff' }, [{ beat: 0, value: 1 }])] }
     track.automation[0] = { ...track.automation[0], points: [{ beat: 4, value: 0.5 }, { beat: 0, value: 0, curve: 0.5 }], enabled: false }
     const parsed = validateProject(JSON.parse(JSON.stringify({ ...project, tracks: [track] })))
-    expect(parsed.schemaVersion).toBe(17)
+    expect(parsed.schemaVersion).toBe(18)
     expect(parsed.tracks[0].automationMode).toBe('latch')
     expect(parsed.tracks[0].automation).toHaveLength(3)
     expect(parsed.tracks[0].automation![0]).toMatchObject({ enabled: false, points: [{ beat: 0, value: 0, curve: 0.5 }, { beat: 4, value: 0.5 }] })
@@ -148,8 +148,8 @@ describe('schema 17 migration', () => {
     const project = base()
     expect(() => validateProject({ ...project, schemaVersion: 16 })).toThrow(/schema version 17/)
     const { automation: _a, ...plain } = project.tracks[0]
-    for (const version of [13, 14, 15, 16, 17]) expect(validateProject({ ...project, schemaVersion: version, tracks: [plain] }).schemaVersion).toBe(17)
-    expect(() => validateProject({ ...project, schemaVersion: 18 })).toThrow(/1 through 17/)
+    for (const version of [13, 14, 15, 16, 17]) expect(validateProject({ ...project, schemaVersion: version, tracks: [plain] }).schemaVersion).toBe(18)
+    expect(() => validateProject({ ...project, schemaVersion: 19 })).toThrow(/1 through 18/)
   })
 
   it('rejects malformed lanes', () => {

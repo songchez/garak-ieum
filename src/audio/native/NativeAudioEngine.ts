@@ -15,6 +15,7 @@ import { assertNativeInstrumentsSupported, canPlayInstrument, unsupportedNativeI
 import { NativeTimelineCompiler, type NativePcmAsset } from './timeline'
 import { planNativeSync, type SyncTimeline } from './timelineSync'
 import { tempoMapOf } from '../../core/tempoMap'
+import { meterMapOf } from '../../core/meterMap'
 import type {
   NativeAudioBridge, NativeAudioFile, NativeBackend, NativeDevice, NativeDeviceProbe, NativeDeviceState,
   NativeEngineEvent, NativeLatencyMeasurement, NativePluginDescriptor, NativePluginInstance, NativePluginParameter, NativePluginState,
@@ -696,8 +697,8 @@ export class NativeAudioEngine implements AudioEngine {
     if (generation !== this.generation || this.transportRequest !== request) return
     const project = this.requireProject()
     const start = normalizedStart(project, this.snapshot.beat)
-    // The count-in runs at the tempo where the transport starts (native/src/engine.cpp clicks it the same way).
-    const countInFrames = Math.round(countInBeats(project.timeSignature, options.countInBars ?? 0) * 60 / tempoMapOf(project).bpmAt(start) * this.desiredSampleRate)
+    // The count-in runs at the tempo and meter where the transport starts (native/src/engine.cpp clicks it the same way).
+    const countInFrames = Math.round(countInBeats(meterMapOf(project).meterAt(start), options.countInBars ?? 0) * 60 / tempoMapOf(project).bpmAt(start) * this.desiredSampleRate)
     await this.startNativePlayback(request, generation, start, countInFrames)
   }
 

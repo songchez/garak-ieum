@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ProjectSession } from '../core/ProjectSession'
 import { createDevice, createEmptyProject, createTrack, setClipLoopEnd, trimClipStart } from '../core/project'
 import { setProjectTimeSignature } from '../core/meter'
+import { addMeterEvent } from '../core/meterMap'
 import type { MidiClip, Project } from '../core/types'
 import { createDawRequestHandler, type DawRuntime } from './host'
 import type { BridgeParams, DawMethod } from './protocol'
@@ -54,6 +55,9 @@ describe('DAW host bounded reads', () => {
     expect(response).toMatchObject({ project: { timeSignature: { numerator: 6, denominator: 8 }, beatsPerBar: 3 } })
     response.project.timeSignature.numerator = 9
     expect(session.getSnapshot().history.present.timeSignature.numerator).toBe(6)
+    // Time-signature changes (docs/METER_MAP.md) are reported with their bar-line beats.
+    session.edit(project => addMeterEvent(project, 2, 7, 8))
+    expect(handler('get_state', {})).toMatchObject({ project: { meterMap: [{ bar: 0, beat: 0, numerator: 6, denominator: 8 }, { bar: 2, beat: 6, numerator: 7, denominator: 8 }] } })
     expect(handler('get_capabilities', {})).toMatchObject({
       units: { meter: expect.stringContaining('quarter-note length = numerator * 4 / denominator') },
       unsupported: expect.arrayContaining(['time-signature changes through MCP']),

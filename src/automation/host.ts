@@ -6,6 +6,7 @@ import { GM_KIT_NAMES, INSTRUMENTS } from '../core/instruments'
 import type { Project, Track, TransportSnapshot } from '../core/types'
 import { monitorModeOf } from '../core/trackActions'
 import { sendsOf } from '../core/sends'
+import { meterMapOf } from '../core/meterMap'
 import { BRIDGE_PROTOCOL_VERSION, type BridgeParams, type DawMethod } from './protocol'
 
 export interface DawSelection {
@@ -32,7 +33,7 @@ const units = {
   pitch: 'MIDI integer 0..127; displayed middle C is C3=60',
   position: 'Zero-based quarter-note beats. clip startBeat is absolute; stored note start is source-relative. Region-local note start = note.start - (clip.sourceOffsetBeats ?? 0); new MIDI clips use offset 0.',
   regionLoop: 'loop=true repeats the visible source window; loopLengthBeats optionally bounds the total span from startBeat. The next region or project end can stop repeats sooner. Missing loopLengthBeats means continuous.',
-  meter: 'project.timeSignature is numerator/denominator (numerator 1..32; denominator 2, 4, 8 or 16). beatsPerBar is quarter-note length = numerator * 4 / denominator; user bar 1 starts at beat 0. BPM remains quarter notes per minute.',
+  meter: 'project.timeSignature is the meter of bar 1: numerator/denominator (numerator 1..32; denominator 2, 4, 8 or 16). beatsPerBar is its quarter-note length = numerator * 4 / denominator; user bar 1 starts at beat 0. project.meterMap lists time-signature changes (read-only here) as { bar (zero-based), beat (quarter-note bar line), numerator, denominator }, the first at bar 0; later bars use the meter in effect, so never derive bar numbers from beatsPerBar alone. BPM remains quarter notes per minute.',
   noteVelocity: '0..1 normalized; distinct from MIDI-unit region/track velocity offsets',
   volume: 'track volume is linear gain 0..2; volumeDb uses 20*log10(gain), null means silence',
   pan: '-1=left, 0=center, 1=right',
@@ -105,7 +106,7 @@ export function createDawRequestHandler(options: DawHostOptions) {
     if (!runtime.ready) throw new DomainError('DAW_NOT_READY', '프로젝트 불러오기가 끝난 뒤 다시 요청해주세요.')
     const context = {
       projectId: project.id, revision: snapshot.revision,
-      project: { id: project.id, name: project.name, bpm: project.bpm, timeSignature: { ...project.timeSignature }, beatsPerBar: project.beatsPerBar, lengthBeats: project.lengthBeats, sampleRate: project.sampleRate, masterVolume: project.masterVolume, loop: { ...project.loop }, markerCount: project.markers.length },
+      project: { id: project.id, name: project.name, bpm: project.bpm, timeSignature: { ...project.timeSignature }, beatsPerBar: project.beatsPerBar, meterMap: meterMapOf(project).segments.map(({ bar, beat, numerator, denominator }) => ({ bar, beat, numerator, denominator })), lengthBeats: project.lengthBeats, sampleRate: project.sampleRate, masterVolume: project.masterVolume, loop: { ...project.loop }, markerCount: project.markers.length },
       selection: selection(project, options.getSelection()), transport: { ...options.getTransport() },
       history: { canUndo: snapshot.history.past.length > 0, canRedo: snapshot.history.future.length > 0, lastChange: snapshot.lastChange ?? null },
       persistence: runtime.persistence,

@@ -3,6 +3,7 @@ import { clipOccurrences, isTrackEnabled, playbackControllers, playbackNotes, pl
 import { DEFAULT_BEND_RANGE, bendRangeOf, controllerNumber } from './controllers'
 import type { Project, Track } from './types'
 import { tempoMapOf, tempoStepsForExport } from './tempoMap'
+import { meterEventsForExport, meterMapOf } from './meterMap'
 
 /**
  * Standard MIDI File (Type 1, 960 PPQ) of every MIDI region as it plays: loops expanded, region quantize,
@@ -50,14 +51,15 @@ function trackChunk(events: TimedEvent[]): number[] {
 
 export function writeMidiFile(project: Project, tracks: readonly Track[] = project.tracks): Uint8Array<ArrayBuffer> {
   const tick = (beat: number) => Math.max(0, Math.round(beat * MIDI_EXPORT_PPQ))
-  const denominatorPower = Math.round(Math.log2(project.timeSignature.denominator))
   // The tempo map as SMF tempo events; ramps become 32nd-note steps (docs/TEMPO_MAP.md).
   const tempos = tempoStepsForExport(tempoMapOf(project), MIDI_EXPORT_PPQ).map(({ tick, microseconds }): TimedEvent =>
     ({ tick, order: 1, bytes: [0xff, 0x51, 3, (microseconds >> 16) & 255, (microseconds >> 8) & 255, microseconds & 255] }))
   const conductor = trackChunk([
     { tick: 0, order: 0, bytes: [0xff, 0x03, ...variable(text(project.name).length), ...text(project.name)] },
     ...tempos,
-    { tick: 0, order: 2, bytes: [0xff, 0x58, 4, project.timeSignature.numerator, denominatorPower, 24, 8] },
+    // One FF 58 per time-signature change, on its bar line (docs/METER_MAP.md).
+    ...meterEventsForExport(meterMapOf(project), MIDI_EXPORT_PPQ).map(({ tick, numerator, denominatorPower, clocksPerClick }): TimedEvent =>
+      ({ tick, order: 2, bytes: [0xff, 0x58, 4, numerator, denominatorPower, clocksPerClick, 8] })),
   ])
   const chunks: number[][] = [conductor]
   let melodic = 0
