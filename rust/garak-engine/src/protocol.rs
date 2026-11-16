@@ -524,7 +524,7 @@ pub fn parse_track(
         let start = integer(a, "startFrame", 0, length, 0)?;
         let end = integer(a, "endFrame", start + 1, length, start + 1)?;
         let clip_length = integer(a, "clipLengthFrames", 1, rate * 3600, end - start)?;
-        // Evaluation order of protocol.hpp (each field's range depends on the ones before).
+        // Same fields, ranges and defaults as protocol.hpp (the clip length bounds the fades).
         let id = integer(a, "id", 0, 2_000_000_000, 0)?;
         let asset_id = id_string(a, "assetId")?;
         let source_start_frame = number(a, "sourceStartFrame", 0.0, 1e9, 0.0)?;
