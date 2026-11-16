@@ -266,6 +266,7 @@ inline TrackTimeline timelineTrack(const Json& item, const ProjectTimeline& p, s
     // Automation lanes (docs/AUTOMATION.md): { target: { kind, insertId?, param?, returnId? }, minimum, maximum, logarithmic?,
     // options?, points: [{ frame, value, curve? }] }.
     t.unmutedAudible = item.value("unmutedAudible", t.audible);
+    t.directOut = item.value("directOut", true); t.preFader = item.value("preFader", false);
     if (item.contains("automation")) {
       present.automation = true;
       const auto& lanes = item.at("automation");
@@ -309,7 +310,9 @@ inline TrackTimeline timelineTrack(const Json& item, const ProjectTimeline& p, s
       AudioWindow w;
       w.id = static_cast<std::int32_t>(integer(a, "id", 0, 2000000000, 0)); w.assetId = string(a, "assetId");
       w.startFrame = integer(a, "startFrame", 0, p.lengthFrames, 0);
-      w.endFrame = integer(a, "endFrame", w.startFrame + 1, p.lengthFrames, w.startFrame + 1);
+      w.freeze = a.value("freeze", false); if (w.freeze) w.tailSeconds = number(a, "tailSeconds", 0, 3600, 0);
+      // A frozen window may run into the export tail (at most the 30 s export cap past the project end).
+      w.endFrame = integer(a, "endFrame", w.startFrame + 1, w.freeze ? p.lengthFrames + std::int64_t(p.sampleRate) * 31 : p.lengthFrames, w.startFrame + 1);
       w.sourceStartFrame = number(a, "sourceStartFrame", 0, 1000000000, 0);
       w.sourceSampleRate = number(a, "sourceSampleRate", 8000, 192000, p.sampleRate);
       w.clipOffsetFrames = integer(a, "clipOffsetFrames", 0, std::int64_t(p.sampleRate) * 3600, 0);

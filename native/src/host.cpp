@@ -41,12 +41,14 @@ std::filesystem::path pathOf(const std::string& value) { return std::filesystem:
 
 void put16(std::ostream& out, std::uint16_t v) { const char b[]{char(v),char(v>>8)}; out.write(b,2); }
 void put32(std::ostream& out, std::uint32_t v) { const char b[]{char(v),char(v>>8),char(v>>16),char(v>>24)}; out.write(b,4); }
-void waveHeader(std::ostream& out, std::uint32_t rate, std::uint16_t channels, std::uint64_t frames, bool floating) {
-  const auto bytes = frames * channels * (floating ? 4 : 2);
+void waveHeader(std::ostream& out, std::uint32_t rate, std::uint16_t channels, std::uint64_t frames, bool floating, unsigned bits = 0) {
+  if (!bits) bits = floating ? 32 : 16;
+  const unsigned width = bits / 8;
+  const auto bytes = frames * channels * width;
   if (bytes > 0xffffffffu - 36) throw std::runtime_error("WAV exceeds RIFF capacity");
   out.seekp(0); out.write("RIFF",4); put32(out,static_cast<std::uint32_t>(bytes+36)); out.write("WAVEfmt ",8); put32(out,16);
-  put16(out,floating ? 3 : 1); put16(out,channels); put32(out,rate); put32(out,rate*channels*(floating?4:2));
-  put16(out,channels*(floating?4:2)); put16(out,floating?32:16); out.write("data",4); put32(out,static_cast<std::uint32_t>(bytes));
+  put16(out,floating ? 3 : 1); put16(out,channels); put32(out,rate); put32(out,rate*channels*width);
+  put16(out,static_cast<std::uint16_t>(channels*width)); put16(out,static_cast<std::uint16_t>(bits)); out.write("data",4); put32(out,static_cast<std::uint32_t>(bytes));
 }
 
 /** One non-realtime consumer drains the shared capture ring into one WAV per
@@ -696,33 +698,51 @@ class Host {
       throw;
     }
   }
+  // render.wav options (docs/BOUNCE_FREEZE_STEMS.md): bitDepth 16 | 24 | 32 (IEEE float, unclipped), tailSeconds
+  // (replaces the graph's tail, for stems that must share one length), preMaster (no master gain/processor) and
+  // startFrame (frames dropped from the start, after plug-in delay compensation). Defaults are the mix export.
   Json renderStopped(const Json& a) {
     auto project=timeline(a.at("timeline")); project.cycle.reset();
-    RenderEngine offline(project.sampleRate,scratchFrames); offline.setOffline(true); offline.setProcessing(processingOptions(false));
+    const auto bitDepth=static_cast<unsigned>(integer(a,"bitDepth",16,32,16));
+    if(bitDepth!=16&&bitDepth!=24&&bitDepth!=32) throw std::runtime_error("Invalid WAV bit depth");
+    const bool preMaster=a.value("preMaster",false);
+    const auto startFrame=std::uint64_t(integer(a,"startFrame",0,project.lengthFrames,0));
+    RenderEngine offline(project.sampleRate,scratchFrames); offline.setOffline(true); offline.setMasterBypass(preMaster); offline.setProcessing(processingOptions(false));
     std::vector<std::shared_ptr<Vst3Processor>> renderedPlugins;
-    auto prepared=offline.prepare(project,assets_,sets_,resolver(true,&renderedPlugins)); const auto tail=std::min(30.0,prepared->tailSeconds());
-    const std::uint64_t latency=prepared->latencyFrames();
-    const auto total=std::uint64_t(project.lengthFrames)+std::uint64_t(std::ceil(tail*project.sampleRate));
-    if(total*4>512u*1024*1024) throw std::runtime_error("WAV export exceeds 512 MiB");
+    auto prepared=offline.prepare(project,assets_,sets_,resolver(true,&renderedPlugins));
+    const bool fixedTail=a.contains("tailSeconds")&&!a.at("tailSeconds").is_null();
+    const auto tail=std::min(30.0,fixedTail?number(a,"tailSeconds",0,30,0):prepared->tailSeconds());
+    const std::uint64_t latency=prepared->latencyFrames(); const double trackTail=prepared->trackTailSeconds();
+    const auto rendered=std::uint64_t(project.lengthFrames)+std::uint64_t(std::ceil(tail*project.sampleRate));
+    const auto total=rendered-startFrame;
+    const unsigned width=bitDepth/8;
+    if(total*2*width>512ull*1024*1024) throw std::runtime_error("WAV export exceeds 512 MiB");
     const auto path=string(a,"path",32768); std::ofstream file(pathOf(path),std::ios::binary|std::ios::out|std::ios::trunc); if(!file) throw std::runtime_error("Cannot create WAV export");
-    waveHeader(file,project.sampleRate,2,total,false); offline.submit(std::move(prepared)); (void)offline.play();
-    std::array<float,scratchFrames*2> pcm{}; std::array<char,scratchFrames*4> bytes{};
-    // Remove the common PDC delay from the file, rendering those extra frames
+    waveHeader(file,project.sampleRate,2,total,bitDepth==32,bitDepth); offline.submit(std::move(prepared)); (void)offline.play();
+    std::array<float,scratchFrames*2> pcm{}; std::array<char,scratchFrames*8> bytes{};
+    // Remove the common PDC delay (and the requested start) from the file, rendering those extra frames
     // at the end so the first clip and the complete release tail stay aligned.
-    for(std::uint64_t done=0;done<total+latency;) {
-      const auto frames=std::uint32_t(std::min<std::uint64_t>(scratchFrames,total+latency-done)); offline.render(pcm.data(),nullptr,frames,0);
+    const auto skipped=latency+startFrame;
+    for(std::uint64_t done=0;done<rendered+latency;) {
+      const auto frames=std::uint32_t(std::min<std::uint64_t>(scratchFrames,rendered+latency-done)); offline.render(pcm.data(),nullptr,frames,0);
       for(const auto& processor:renderedPlugins) {
         processor->service(); const auto status=processor->status();
         if(status.faulted || status.restartFlags) throw std::runtime_error("VST3 export failed: "+(status.error.empty()?std::string("plugin processing configuration changed"):status.error));
       }
-      const auto skip=std::uint32_t(std::min<std::uint64_t>(frames,done<latency?latency-done:0));
+      const auto skip=std::uint32_t(std::min<std::uint64_t>(frames,done<skipped?skipped-done:0));
       const auto written=frames-skip;
-      for(std::uint32_t i=0;i<written*2;++i) { const float x=std::clamp(pcm[skip*2+i],-1.f,1.f); const auto v=std::int16_t(std::lround(x*(x<0?32768:32767))); bytes[i*2]=char(v); bytes[i*2+1]=char(std::uint16_t(v)>>8); }
-      file.write(bytes.data(),std::streamsize(written)*4); if(!file) throw std::runtime_error("WAV export write failed"); done+=frames;
+      for(std::uint32_t i=0;i<written*2;++i) {
+        const float sample=pcm[skip*2+i];
+        if(bitDepth==32) { std::uint32_t bits; const float value=std::isfinite(sample)?sample:0.f; std::memcpy(&bits,&value,4); for(unsigned b=0;b<4;++b) bytes[i*4+b]=char((bits>>(8*b))&0xff); continue; }
+        const float x=std::clamp(sample,-1.f,1.f);
+        if(bitDepth==24) { const auto v=std::int32_t(std::lround(double(x)*(x<0?8388608.0:8388607.0))); for(unsigned b=0;b<3;++b) bytes[i*3+b]=char((std::uint32_t(v)>>(8*b))&0xff); continue; }
+        const auto v=std::int16_t(std::lround(x*(x<0?32768:32767))); bytes[i*2]=char(v); bytes[i*2+1]=char(std::uint16_t(v)>>8);
+      }
+      file.write(bytes.data(),std::streamsize(written)*2*width); if(!file) throw std::runtime_error("WAV export write failed"); done+=frames;
       if(done%(scratchFrames*32)==0) pumpNativeEvents();
     }
     file.flush(); if(!file) throw std::runtime_error("WAV export flush failed");
-    return {{"path",path},{"sampleRate",project.sampleRate},{"frames",total},{"channels",2}};
+    return {{"path",path},{"sampleRate",project.sampleRate},{"frames",total},{"channels",2},{"bitDepth",bitDepth},{"tailSeconds",tail},{"trackTailSeconds",trackTail}};
   }
   Json snapshot() const {
     Json result={{"type","state"},{"ready",false},{"playing",false},{"frame",0},{"sampleRate",48000},{"masterLevel",0},{"levels",Json::object()},{"testClock",test_}};
