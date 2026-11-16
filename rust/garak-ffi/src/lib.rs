@@ -22,6 +22,9 @@ use garak_dsp::{Biquad, Coefficients, FilterType, Utility, UtilityParams};
 /// Built-in effects (`garak_rs_fx_*`, `garak_rs_reverb_*`).
 pub mod fx;
 
+/// Built-in instruments (`garak_rs_instrument_*`).
+pub mod instruments;
+
 /// Bumped on any incompatible change to `garak_rust.h`.
 pub const GARAK_RS_ABI_VERSION: u32 = 2;
 
@@ -264,11 +267,13 @@ mod tests {
     const HEADER: &str = include_str!("../include/garak_rust.h");
     const SOURCE: &str = include_str!("lib.rs");
     const FX_SOURCE: &str = include_str!("fx.rs");
+    const INSTRUMENT_SOURCE: &str = include_str!("instruments.rs");
 
     fn exported() -> Vec<String> {
         SOURCE
             .lines()
             .chain(FX_SOURCE.lines())
+            .chain(INSTRUMENT_SOURCE.lines())
             .filter_map(|l| l.split("extern \"C\" fn ").nth(1))
             .filter_map(|rest| rest.split('(').next())
             .filter(|name| name.starts_with("garak_rs_"))
