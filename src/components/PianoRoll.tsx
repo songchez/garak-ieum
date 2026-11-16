@@ -13,7 +13,8 @@ import { ZOOM_KEY_FACTOR, ZOOM_KEY_FACTOR_V, ZOOM_LIMITS, clampZoom, fitScale, z
 import { bakeSustain, sustainPressCount } from '../core/sustain'
 import SustainLane from './SustainLane'
 import ControllerLane, { CONTROLLER_TOOLS, type ControllerTool } from './ControllerLane'
-import { ccKey, controllerKeys, controllerName, controllerOrder } from '../core/controllers'
+import { ccKey, controllerKeys, controllerName, controllerOrder, controllerSpec } from '../core/controllers'
+import { LANE_COLLAPSED_HEIGHT, LANE_SPLITTER_HEIGHT, layoutLanePane, loadLanePane, saveLanePane, type LanePanePrefs } from './pianoLaneLayout'
 import ContextMenu from './ContextMenu'
 import { QuantizePopover, loadPianoQuantize, savePianoQuantize, type PianoQuantizeSettings } from './QuantizePopover'
 import { quantizeNotes } from '../core/quantize'
@@ -96,15 +97,16 @@ const ROW_HEIGHT = 19
 const COMPACT_ROW = 13
 const RULER_HEIGHT = 24
 const KEY_WIDTH = 70
-const LANE_HEIGHT = 52
-const SUSTAIN_HEIGHT = 26
-const CONTROLLER_HEIGHT = 60
-const MIN_CONTROLLER_HEIGHT = 30
+/** The note grid keeps this many default rows before the lane pane may grow; at least one row always stays. */
+const GRID_MIN_ROWS = 3
+/** …or this share of the space under the ruler, whichever is more (the default pane height only; a drag may take more). */
+const GRID_MIN_SHARE = 0.4
+const SPLITTER_STEP = 8
 /** A piano-roll lane under the notes: a controller lane or the sustain pedal (docs/MIDI_CONTROLLERS.md). */
 type LaneId = ControllerKey | 'sustain'
+type PaneLaneId = LaneId | 'velocity'
 const laneOrder = (a: LaneId, b: LaneId): number => a === 'sustain' ? (b === 'sustain' ? 0 : 1) : b === 'sustain' ? -1 : controllerOrder(a, b)
 const COMMON_LANES: [LaneId, string][] = [['pitchBend', '피치 벤드'], ['cc1', '모듈레이션 (CC1)'], ['cc11', '익스프레션 (CC11)'], ['cc7', '볼륨 (CC7)'], ['cc10', '팬 (CC10)'], ['sustain', '서스테인 (CC64)'], ['aftertouch', '애프터터치'], ['program', '프로그램 체인지']]
-const LANE_RANGE = LANE_HEIGHT - 12
 const MIN_VELOCITY = 1 / 127
 
 // Shared between clips so notes can be copied from one region to another.
@@ -144,6 +146,8 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
   const [hiddenLanes, setHiddenLanes] = useState<ReadonlySet<LaneId>>(() => new Set())
   const [laneTool, setLaneTool] = useState<ControllerTool>('pencil')
   const [laneMenu, setLaneMenu] = useState<{ x: number; y: number; trigger: Element } | null>(null)
+  const [lanePrefs, setLanePrefs] = useState<LanePanePrefs>(loadLanePane)
+  const splitterDragRef = useRef<{ pointerId: number; originY: number; origin: number } | null>(null)
   const [quantizeOpen, setQuantizeOpen] = useState(false)
   const [quantizeSettings, setQuantizeSettings] = useState<PianoQuantizeSettings>(loadPianoQuantize)
   const [snapState, setSnapState] = useState(0)
@@ -158,13 +162,27 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
   // data). The + menu adds lanes, × hides one (its data stays).
   const dataLanes = controllerKeys(sourceClip)
   const lanes = [...new Set<LaneId>([...dataLanes, ...addedLanes, ...(!drumMode || pedalPresses > 0 ? ['sustain' as const] : [])])].filter(lane => !hiddenLanes.has(lane)).sort(laneOrder)
-  const showSustain = lanes.includes('sustain')
-  // Controller lanes share what the notes leave (at least ~4 rows stay visible): 60 px each, down to 30 px.
-  const controllerCount = lanes.filter(lane => lane !== 'sustain').length
-  const laneRoom = viewport.height - RULER_HEIGHT - 4 * ROW_HEIGHT - (showVelocity ? LANE_HEIGHT : 0) - (showSustain ? SUSTAIN_HEIGHT : 0)
-  const controllerHeight = controllerCount ? Math.max(MIN_CONTROLLER_HEIGHT, Math.min(CONTROLLER_HEIGHT, Math.floor(laneRoom / controllerCount))) : CONTROLLER_HEIGHT
-  const laneHeight = (lane: LaneId) => lane === 'sustain' ? SUSTAIN_HEIGHT : controllerHeight
+  // The lane pane under the splitter: velocity on top, then the lanes. Its height is the user's (remembered per
+  // browser), clamped so the grid keeps a few rows and each expanded lane a usable height; collapsed lanes are strips.
+  const collapsedLanes = new Set(lanePrefs.collapsed)
+  const paneLanes: PaneLaneId[] = [...(showVelocity ? ['velocity' as const] : []), ...lanes]
+  const laneRoom = viewport.height - RULER_HEIGHT - (paneLanes.length ? LANE_SPLITTER_HEIGHT : 0)
+  const pane = layoutLanePane(paneLanes.map(id => ({ kind: id === 'velocity' ? 'velocity' : id === 'sustain' ? 'sustain' : 'controller', collapsed: collapsedLanes.has(id) })),
+    lanePrefs.height, laneRoom, Math.max(GRID_MIN_ROWS * ROW_HEIGHT, Math.round(laneRoom * GRID_MIN_SHARE)), ROW_HEIGHT)
+  const paneHeight = paneLanes.length ? pane.height + LANE_SPLITTER_HEIGHT : 0
+  const laneHeight = (lane: PaneLaneId) => pane.heights[paneLanes.indexOf(lane)] ?? 0
   const lanesHeight = lanes.reduce((total, lane) => total + laneHeight(lane), 0)
+  const velocityCollapsed = collapsedLanes.has('velocity')
+  const velocityRange = Math.max(8, laneHeight('velocity') - 12)
+  const updateLanePrefs = (update: (previous: LanePanePrefs) => LanePanePrefs, persist = true) => setLanePrefs(previous => {
+    const next = update(previous)
+    if (persist) saveLanePane(next)
+    return next
+  })
+  const setLaneCollapsed = (lane: PaneLaneId, collapsed: boolean) => updateLanePrefs(previous => ({ ...previous, collapsed: collapsed ? [...new Set([...previous.collapsed, lane])] : previous.collapsed.filter(item => item !== lane) }))
+  const resizePane = (height: number | null, persist = true) => updateLanePrefs(previous => ({ ...previous, height: height === null ? null : Math.round(Math.min(pane.max, Math.max(pane.min, height))) }), persist)
+  const laneLabel = (lane: PaneLaneId) => lane === 'velocity' ? 'VELOCITY' : lane === 'sustain' ? 'SUSTAIN' : controllerSpec(lane).short
+  const laneTitle = (lane: PaneLaneId) => lane === 'velocity' ? '벨로시티' : lane === 'sustain' ? '서스테인' : controllerSpec(lane).label
   const showLane = (lane: LaneId) => { setHiddenLanes(previous => { const next = new Set(previous); next.delete(lane); return next }); setAddedLanes(previous => previous.includes(lane) ? previous : [...previous, lane]) }
   const hideLane = (lane: LaneId) => { setHiddenLanes(previous => new Set([...previous, lane])); setAddedLanes(previous => previous.filter(item => item !== lane)) }
   const toggleLane = (lane: LaneId) => lanes.includes(lane) ? hideLane(lane) : showLane(lane)
@@ -172,9 +190,14 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
     label: `CC ${number}${controllerName(number) ? ` · ${controllerName(number)}` : ''}`, checked: lanes.includes(ccKey(number)), onSelect: () => toggleLane(ccKey(number)),
   })) })
   const laneMenuItems: ContextMenuItem[] = [
+    { label: '벨로시티', checked: showVelocity, onSelect: () => setShowVelocity(value => !value) },
     ...COMMON_LANES.map(([lane, label]): ContextMenuItem => ({ label, checked: lanes.includes(lane), onSelect: () => toggleLane(lane) })),
     { type: 'separator' },
     { label: 'CC 번호…', items: [ccGroup(0, 31), ccGroup(32, 63), ccGroup(65, 95), ccGroup(96, 127)] },
+    { type: 'separator' },
+    { label: '모든 레인 펼치기', disabled: !paneLanes.some(lane => collapsedLanes.has(lane)), onSelect: () => updateLanePrefs(previous => ({ ...previous, collapsed: [] })) },
+    { label: '모든 레인 접기', disabled: paneLanes.every(lane => collapsedLanes.has(lane)), onSelect: () => updateLanePrefs(previous => ({ ...previous, collapsed: [...new Set([...previous.collapsed, ...paneLanes])] })) },
+    { label: '레인 높이 기본값', disabled: lanePrefs.height === null, onSelect: () => resizePane(null) },
   ]
   const DRUM_NAMES = def.padNames ?? GM_KIT_NAMES
   const pitches = useMemo(() => {
@@ -326,7 +349,7 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
     const rows = clip.notes.map(note => pitchRows.get(note.pitch)).filter((row): row is number => row !== undefined)
     const top = rows.length ? Math.min(...rows) : pitchRows.get(drumMode ? 42 : 72) ?? 0
     const bottom = rows.length ? Math.max(...rows) : pitchRows.get(drumMode ? 36 : 48) ?? pitches.length - 1
-    const available = (scroll?.clientHeight ?? viewport.height) - RULER_HEIGHT - (showVelocity ? LANE_HEIGHT : 0) - lanesHeight
+    const available = (scroll?.clientHeight ?? viewport.height) - RULER_HEIGHT - paneHeight
     const rowHeight = Math.floor(clampZoom(available / (bottom - top + 3), ZOOM_LIMITS.pianoY))
     zoomAnchorRef.current = { x: { beat: 0, px: KEY_WIDTH }, y: { row: (top + bottom + 1) / 2, py: RULER_HEIGHT + available / 2 } }
     setZoom({ ppb: null, rowHeight })
@@ -580,7 +603,7 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
     if (!gesture.activated && !crossedDragThreshold(0, dy, 2)) return
     gesture.activated = true
     gesture.pending = null
-    const change = -dy / LANE_RANGE
+    const change = -dy / velocityRange
     const anchor = gesture.originals.find(note => note.id === gesture.anchorId)
     // Shift sets every selected note to the anchor's value (Logic's ⌥⇧-drag).
     const moved = gesture.originals.map(note => ({ ...note, velocity: clamp((event.shiftKey && anchor ? anchor.velocity : note.velocity) + change, MIN_VELOCITY, 1) }))
@@ -887,6 +910,52 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
   } as CSSProperties
   const gridHeight = pitches.length * ROW
 
+  function beginSplitter(event: PointerEvent<HTMLElement>) {
+    if (!pane.resizable || event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    splitterDragRef.current = { pointerId: event.pointerId, originY: event.clientY, origin: pane.height }
+    event.currentTarget.dataset.dawGesture = 'lane-resize'
+    try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* the drag still follows while the pointer stays on the bar */ }
+  }
+  function moveSplitter(event: PointerEvent<HTMLElement>) {
+    const drag = splitterDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    event.preventDefault()
+    resizePane(drag.origin - (event.clientY - drag.originY), false)
+  }
+  function endSplitter(event: PointerEvent<HTMLElement>, keep: boolean) {
+    const drag = splitterDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    splitterDragRef.current = null
+    delete event.currentTarget.dataset.dawGesture
+    if (keep) updateLanePrefs(previous => previous)
+    else resizePane(drag.origin)
+  }
+  function splitterKey(event: KeyboardEvent<HTMLElement>) {
+    if (!pane.resizable || event.ctrlKey || event.metaKey || event.altKey) return
+    const step = event.shiftKey ? SPLITTER_STEP * 4 : SPLITTER_STEP
+    const next = event.key === 'ArrowUp' ? pane.height + step : event.key === 'ArrowDown' ? pane.height - step
+      : event.key === 'Home' ? pane.min : event.key === 'End' ? pane.max : event.key === 'Enter' ? null : undefined
+    if (next === undefined) return
+    event.preventDefault()
+    event.stopPropagation()
+    resizePane(next)
+  }
+  function collapseButton(lane: PaneLaneId, collapsed = false) {
+    const action = `${laneTitle(lane)} 레인 ${collapsed ? '펼치기' : '접기'}`
+    return <button type="button" className="piano-lane-collapse" aria-expanded={!collapsed} onClick={event => { event.stopPropagation(); setLaneCollapsed(lane, !collapsed) }}
+      onKeyDown={event => { if (event.key === ' ' || event.key === 'Enter') event.stopPropagation() }} title={action} aria-label={action}>
+      <span className="piano-lane-chevron" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>{laneLabel(lane)}
+    </button>
+  }
+  function laneStrip(lane: PaneLaneId, bottom: number) {
+    return <div key={lane} className="piano-lane-slot piano-lane-strip" style={{ height: LANE_COLLAPSED_HEIGHT, bottom }}>
+      <div className="piano-velocity-corner piano-lane-strip-corner" style={{ width: KEY_WIDTH }}>{collapseButton(lane, true)}</div>
+      <div className="piano-lane-strip-track" style={{ width: gridWidth }} onDoubleClick={() => setLaneCollapsed(lane, false)} title={`더블 클릭: ${laneTitle(lane)} 레인 펼치기`} />
+    </div>
+  }
+
   return (
     <section className={`piano-roll${drumMode ? ' piano-roll--drums' : ''}${ROW < COMPACT_ROW ? ' piano-roll--compact' : ''}`} style={style} ref={rootRef} tabIndex={0} data-keyboard-scope="piano" onKeyDown={handleKeyDown}
       onContextMenu={event => { if (event.target === event.currentTarget) openMenu(event, 'grid', 0) }} aria-label="피아노롤 음표 편집기">
@@ -925,7 +994,7 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
       </header>
 
       <div className="piano-scroll" ref={scrollRef} onScroll={event => { const left = event.currentTarget.scrollLeft; setViewport(previous => previous.left === left ? previous : { ...previous, left }) }}>
-        <div className="piano-content" style={{ width: gridWidth + KEY_WIDTH, height: gridHeight + RULER_HEIGHT + (showVelocity ? LANE_HEIGHT : 0) + lanesHeight }}>
+        <div className="piano-content" style={{ width: gridWidth + KEY_WIDTH, height: gridHeight + RULER_HEIGHT + paneHeight }}>
           <div className="piano-ruler" style={{ height: RULER_HEIGHT }}>
             <div className="piano-ruler-corner" style={{ width: KEY_WIDTH }}>NOTE</div>
             <div className="piano-ruler-beats" style={{ width: gridWidth }}>
@@ -1003,8 +1072,17 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
             </div>
           </div>
 
-          {showVelocity && <div className="piano-velocity-lane" style={{ height: LANE_HEIGHT, bottom: lanesHeight }}>
-            <div className="piano-velocity-corner" style={{ width: KEY_WIDTH }}>VELOCITY</div>
+          {paneLanes.length > 0 && <div className={`piano-lane-splitter${pane.resizable ? '' : ' piano-lane-splitter--fixed'}`} style={{ height: LANE_SPLITTER_HEIGHT, bottom: pane.height }}
+            role="separator" aria-orientation="horizontal" aria-label="음표 영역과 레인 사이 크기 조절" tabIndex={pane.resizable ? 0 : -1} aria-disabled={pane.resizable ? undefined : true}
+            aria-valuemin={pane.min} aria-valuemax={pane.max} aria-valuenow={pane.height} aria-valuetext={`레인 높이 ${pane.height}px`}
+            title="드래그해 레인 높이 조절 · 더블 클릭: 기본 높이 · ↑↓ 키 (Shift: 크게) · Home/End: 최소/최대"
+            onPointerDown={beginSplitter} onPointerMove={moveSplitter} onPointerUp={event => endSplitter(event, true)} onPointerCancel={event => endSplitter(event, false)} onLostPointerCapture={event => endSplitter(event, true)}
+            onDoubleClick={event => { event.stopPropagation(); resizePane(null) }} onKeyDown={splitterKey}>
+            <span className="piano-lane-splitter-grip" aria-hidden="true" />
+          </div>}
+          {showVelocity && velocityCollapsed && laneStrip('velocity', lanesHeight)}
+          {showVelocity && !velocityCollapsed && <div className="piano-velocity-lane" style={{ height: laneHeight('velocity'), bottom: lanesHeight }}>
+            <div className="piano-velocity-corner" style={{ width: KEY_WIDTH }}>{collapseButton('velocity')}</div>
             <div className="piano-velocity-bars" style={{ width: gridWidth, ...gridStyle }} {...pointerHandlers} aria-hidden="true">
               {[...notes].sort((a, b) => Number(selectedIds.has(a.id)) - Number(selectedIds.has(b.id))).map(note => {
                 const selected = selectedIds.has(note.id)
@@ -1012,7 +1090,7 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
                 const original = clipNotesById.get(note.id) ?? note
                 return <span key={note.id}
                   className={`piano-velocity-bar${selected ? ' piano-velocity-bar--selected' : ''}`}
-                  style={{ left: note.start * beatWidth, '--bar-height': `${Math.max(2, noteVelocity * LANE_RANGE)}px`, '--note-velocity': clamp(noteVelocity, 0.15, 1) } as CSSProperties}
+                  style={{ left: note.start * beatWidth, '--bar-height': `${Math.max(2, noteVelocity * velocityRange)}px`, '--note-velocity': clamp(noteVelocity, 0.15, 1) } as CSSProperties}
                   onPointerDown={event => beginVelocity(event, original)}
                   title={`${labelForPitch(note.pitch)} · 세기 ${Math.round(noteVelocity * 127)} · 위아래로 드래그 (Shift: 선택한 음표를 같은 값으로)`}
                 />
@@ -1020,13 +1098,17 @@ function PianoRoll({ clip: sourceClip, color, instrument, onChange, onPreview, p
               <PlayheadMark {...playheadProps} beatWidth={beatWidth} className="piano-playhead" hidden={false} />
             </div>
           </div>}
-          {lanes.map((lane, index) => <div key={lane} className="piano-lane-slot" style={{ height: laneHeight(lane), bottom: lanes.slice(index + 1).reduce((total, below) => total + laneHeight(below), 0) }}>
-            <WithPlayhead {...playheadProps}>{local => lane === 'sustain'
-              ? <SustainLane clip={sourceClip} beatWidth={beatWidth} gridWidth={gridWidth} gridStyle={gridStyle} keyWidth={KEY_WIDTH} height={SUSTAIN_HEIGHT}
-                snap={snap} beatsPerBar={beatsPerBar} playhead={local} onChange={onChange} />
-              : <ControllerLane clip={sourceClip} laneKey={lane} tool={laneTool} beatWidth={beatWidth} gridWidth={gridWidth} gridStyle={gridStyle} keyWidth={KEY_WIDTH} height={controllerHeight}
-                snap={snap} playhead={local} onChange={onChange} onRemove={() => hideLane(lane)} />}</WithPlayhead>
-          </div>)}
+          {lanes.map((lane, index) => {
+            const bottom = lanes.slice(index + 1).reduce((total, below) => total + laneHeight(below), 0)
+            if (collapsedLanes.has(lane)) return laneStrip(lane, bottom)
+            return <div key={lane} className="piano-lane-slot" style={{ height: laneHeight(lane), bottom }}>
+              <WithPlayhead {...playheadProps}>{local => lane === 'sustain'
+                ? <SustainLane clip={sourceClip} beatWidth={beatWidth} gridWidth={gridWidth} gridStyle={gridStyle} keyWidth={KEY_WIDTH} height={laneHeight(lane)}
+                  snap={snap} beatsPerBar={beatsPerBar} playhead={local} onChange={onChange} label={collapseButton(lane)} />
+                : <ControllerLane clip={sourceClip} laneKey={lane} tool={laneTool} beatWidth={beatWidth} gridWidth={gridWidth} gridStyle={gridStyle} keyWidth={KEY_WIDTH} height={laneHeight(lane)}
+                  snap={snap} playhead={local} onChange={onChange} onRemove={() => hideLane(lane)} label={collapseButton(lane)} />}</WithPlayhead>
+            </div>
+          })}
         </div>
       </div>
 

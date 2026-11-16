@@ -175,3 +175,23 @@
 .piano-quantize-actions button { height: 24px; padding: 0 10px; border-radius: 4px; border: 1px solid var(--accent-border); background: var(--accent-soft); color: var(--accent); font: inherit; cursor: pointer; }
 .piano-quantize-actions button:disabled { opacity: .5; cursor: default; }
 .piano-quantize-popover small { color: var(--text-muted); font-size: 10px; }
+
+/* Lane pane: splitter between the note grid and the lanes, collapsible lanes (pianoLaneLayout.ts). */
+.piano-lane-splitter { position: sticky; z-index: 6; box-sizing: border-box; cursor: ns-resize; touch-action: none; outline: none; background: var(--surface-raised); border-top: 1px solid var(--border-default); box-shadow: 0 -3px 6px #00000020; }
+.piano-lane-splitter:hover, .piano-lane-splitter[data-daw-gesture] { background: color-mix(in srgb, var(--piano-color) 22%, var(--surface-raised)); }
+.piano-lane-splitter:focus-visible { background: color-mix(in srgb, var(--focus) 30%, var(--surface-raised)); box-shadow: inset 0 0 0 1px var(--focus); }
+.piano-lane-splitter--fixed { cursor: default; }
+.piano-lane-splitter-grip { position: sticky; left: calc(50% - 14px); display: block; width: 28px; height: 2px; margin-top: 1px; border-radius: 2px; background: var(--ink-29); pointer-events: none; }
+.piano-lane-splitter--fixed .piano-lane-splitter-grip { opacity: 0; }
+.piano-lane-splitter:hover .piano-lane-splitter-grip, .piano-lane-splitter:focus-visible .piano-lane-splitter-grip { background: var(--text-muted); }
+.piano-velocity-lane { box-shadow: none; }
+.piano-lane-collapse { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; height: 14px; padding: 0 3px 0 1px; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; white-space: nowrap; overflow: hidden; cursor: pointer; }
+.piano-lane-collapse:hover, .piano-lane-collapse:focus-visible { background: var(--ink-26); color: var(--text-primary); outline: none; }
+.piano-lane-collapse:focus-visible { box-shadow: 0 0 0 1px var(--focus); }
+.piano-lane-chevron { display: inline-block; width: 8px; font-size: 8px; line-height: 1; text-align: center; opacity: .8; }
+.piano-velocity-corner { padding-top: 4px; }
+.piano-sustain-corner { padding-top: 0; }
+.piano-controller-name .piano-lane-collapse { color: inherit; }
+.piano-lane-strip { display: flex; background: var(--surface-panel-soft, var(--surface-panel)); border-top: 1px solid var(--border-default); }
+.piano-lane-strip-corner { align-items: center; padding-top: 0; }
+.piano-lane-strip-track { flex-shrink: 0; cursor: pointer; background-image: linear-gradient(to bottom, transparent 7px, var(--grid-minor) 7px, var(--grid-minor) 8px, transparent 8px); }

@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import type { CSSProperties, MouseEvent, PointerEvent } from 'react'
+import type { CSSProperties, MouseEvent, PointerEvent, ReactNode } from 'react'
 import type { MidiClip } from '../core/types'
 import { applyVisibleSustain, spansToSustain, sustainSpans, visibleSustain } from '../core/sustain'
 
@@ -19,6 +19,8 @@ interface SustainLaneProps {
   beatsPerBar: number
   playhead: number | null
   onChange: (clip: MidiClip) => void
+  /** Corner label (the piano roll passes its collapse button); defaults to SUSTAIN. */
+  label?: ReactNode
 }
 
 type Span = [number, number]
@@ -39,7 +41,7 @@ export function removeRange(spans: readonly Span[], [from, to]: Span): Span[] {
   })
 }
 
-export default function SustainLane({ clip, beatWidth, gridWidth, gridStyle, keyWidth, height, snap, beatsPerBar, playhead, onChange }: SustainLaneProps) {
+export default function SustainLane({ clip, beatWidth, gridWidth, gridStyle, keyWidth, height, snap, beatsPerBar, playhead, onChange, label = 'SUSTAIN' }: SustainLaneProps) {
   const spans = useMemo(() => sustainSpans(visibleSustain(clip), 0, clip.lengthBeats), [clip])
   const [draft, setDraft] = useState<Span[] | null>(null)
   const drag = useRef<{ pointerId: number; origin: number; originX: number; erase: boolean; moved: boolean } | null>(null)
@@ -64,7 +66,7 @@ export default function SustainLane({ clip, beatWidth, gridWidth, gridStyle, key
   }
 
   return <div className="piano-sustain-lane" style={{ height }}>
-    <div className="piano-velocity-corner piano-sustain-corner" style={{ width: keyWidth }} title="서스테인 페달(CC64). 페달을 밟은 동안 손을 뗀 음도 페달을 뗄 때까지 울립니다.">SUSTAIN</div>
+    <div className="piano-velocity-corner piano-sustain-corner" style={{ width: keyWidth }} title="서스테인 페달(CC64). 페달을 밟은 동안 손을 뗀 음도 페달을 뗄 때까지 울립니다.">{label}</div>
     <div className="piano-sustain-track" style={{ width: gridWidth, ...gridStyle }}
       role="group" aria-label="서스테인 페달 레인: 빈 곳을 드래그하면 페달 구간을 그리고, 구간에서 시작해 드래그하면 지웁니다. 더블 클릭으로 구간을 켜고 끕니다."
       onPointerDown={event => {
