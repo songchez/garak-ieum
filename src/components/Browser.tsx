@@ -6,7 +6,7 @@ import { SIGIMSAE_CATEGORIES, SIGIMSAE_VARIANTS, searchVariants, variantsIn, typ
 import { effectDeviceName } from '../core/sigimsaeDevices'
 import { writeLibraryDrag, type LibraryItem } from '../core/libraryDrag'
 import type { NativePluginDescriptor } from '../audio/native/contracts'
-import { WAVETABLE_HOST_REQUIRED } from '../audio/instrumentSupport'
+import { instrumentUnavailableReason } from '../audio/instrumentSupport'
 import { Icon } from './Icon'
 import { Waveform } from './Waveform'
 import { useInstrumentAvailability } from './useInstrumentAvailability'
@@ -96,7 +96,7 @@ export function Browser({ assets, engine, focusedTrack, tab, onTabChange, onUse,
   function instrumentRow(def: InstrumentDef) {
     const playable = canPlay(def.id), current = currentPatch?.id === def.id
     return <li key={def.id} className={`library-patch lib-row${current ? ' current' : ''}`} role="option" aria-selected={current} {...dragProps({ kind: 'instrument', instrument: def.id })}>
-      <button type="button" className="library-preview" onClick={() => onPreview(def.id)} disabled={!playable} title={playable ? `${def.name} 미리 듣기` : WAVETABLE_HOST_REQUIRED} aria-label={`${def.name} 미리 듣기`} style={{ color: def.color }}><Icon name={def.icon} size={15} /></button>
+      <button type="button" className="library-preview" onClick={() => onPreview(def.id)} disabled={!playable} title={playable ? `${def.name} 미리 듣기` : instrumentUnavailableReason(engine, def.id)} aria-label={`${def.name} 미리 듣기`} style={{ color: def.color }}><Icon name={def.icon} size={15} /></button>
       <button type="button" className="library-patch-name" onClick={() => onUse({ kind: 'instrument', instrument: def.id })} title={`${def.description}\n끌어서 트랙이나 빈 곳에 놓을 수 있습니다`}><strong>{def.name}</strong><span>{def.nameKo} · {def.type}</span></button>
       <button type="button" className="library-add" onClick={() => onUse({ kind: 'instrument', instrument: def.id }, { newTrack: true })} title={`${def.name} 트랙 추가`} aria-label={`${def.name} 새 트랙`}><Icon name="plus" size={11} />트랙</button>
     </li>
