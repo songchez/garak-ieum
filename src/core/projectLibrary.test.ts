@@ -1,4 +1,4 @@
-import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEmptyProject, createTrack, uid } from './project'
 import { createLocalProject, importAsNewLocalProject } from './projectLibrary'
@@ -6,7 +6,7 @@ import { PROJECT_TEMPLATES } from './projectTemplates'
 import { exportProjectBundle, listProjects, loadProject, saveStoredProject, type StoredProject } from './storage'
 import type { AudioAsset, AudioClip, MidiClip } from './types'
 
-beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()) })
+beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()); vi.stubGlobal('IDBKeyRange', IDBKeyRange) })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 function recording(name: string, bytes: readonly number[]): { stored: StoredProject; exportAssets: Map<string, AudioAsset> } {
