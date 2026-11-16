@@ -1,0 +1,19 @@
+[package]
+name = "garak-engine-wasm"
+description = "garak-engine for the browser AudioWorklet: raw extern \"C\" exports over one engine instance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# cdylib -> garak_engine_wasm.wasm; rlib so host `cargo test` exercises the exports.
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+garak-engine.workspace = true
+
+[lints]
+workspace = true

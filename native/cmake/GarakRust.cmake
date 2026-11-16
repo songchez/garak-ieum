@@ -52,10 +52,10 @@ set(garak_rust_target_dir "${CMAKE_BINARY_DIR}/rust-target")
 # Always the optimised profile: audio-thread code is never shipped or parity-tested unoptimised.
 set(garak_rust_lib "${garak_rust_target_dir}/${garak_rust_target}/release/${garak_rust_lib_name}")
 file(GLOB_RECURSE garak_rust_sources CONFIGURE_DEPENDS
-  "${GARAK_RUST_ROOT}/garak-dsp/src/*.rs" "${GARAK_RUST_ROOT}/garak-ffi/src/*.rs")
+  "${GARAK_RUST_ROOT}/garak-dsp/src/*.rs" "${GARAK_RUST_ROOT}/garak-engine/src/*.rs" "${GARAK_RUST_ROOT}/garak-ffi/src/*.rs")
 set(garak_rust_manifests
   "${GARAK_RUST_ROOT}/Cargo.toml" "${GARAK_RUST_ROOT}/Cargo.lock" "${GARAK_RUST_ROOT}/rust-toolchain.toml"
-  "${GARAK_RUST_ROOT}/garak-dsp/Cargo.toml" "${GARAK_RUST_ROOT}/garak-ffi/Cargo.toml")
+  "${GARAK_RUST_ROOT}/garak-dsp/Cargo.toml" "${GARAK_RUST_ROOT}/garak-engine/Cargo.toml" "${GARAK_RUST_ROOT}/garak-ffi/Cargo.toml")
 
 message(STATUS "Rust DSP core: ${garak_rust_target} via ${GARAK_CARGO}")
 add_custom_command(
@@ -106,4 +106,21 @@ if(GARAK_BUILD_TESTS)
     endif()
   endforeach()
   add_test(NAME native-rust-parity COMMAND garak-rust-parity-test)
+
+  # Render engine (docs/RUST_ENGINE.md, stage 4): the same project through the C++ RenderEngine and
+  # rust/garak-engine (garak_engine.h), parsed by the host's protocol.hpp on the C++ side.
+  add_executable(garak-rust-engine-parity-test tests/rust_engine_parity_test.cpp)
+  # CPU comparison of the two engines (16/32 tracks); prints a table, not part of ctest.
+  add_executable(garak-rust-engine-bench tests/rust_engine_bench.cpp)
+  foreach(target garak-rust-engine-parity-test garak-rust-engine-bench)
+    target_link_libraries(${target} PRIVATE garak_core garak_rust)
+    target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src")
+    target_include_directories(${target} SYSTEM PRIVATE "${GARAK_NLOHMANN_INCLUDE_DIR}")
+    if(MSVC)
+      target_compile_options(${target} PRIVATE /W4 /utf-8)
+    else()
+      target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME native-rust-engine-parity COMMAND garak-rust-engine-parity-test)
 endif()

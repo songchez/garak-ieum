@@ -1,6 +1,8 @@
 # Rust 오디오 코어
 
 > **상태:** 0.3.0부터 **데스크톱 앱은 기타 랙을 뺀 모든 내장 이펙트를 Rust로 처리합니다.** `scripts/build-native-audio.mjs`가 데스크톱 빌드에서 `GARAK_RUST=ON` + `GARAK_RUST_EFFECTS=all`로 구성하고, Windows·macOS 배포 워크플로가 고정 툴체인을 설치합니다. 실행 중 C++ 경로로 되돌리려면 환경 변수 `GARAK_RUST_EFFECTS=none`으로 앱을 띄웁니다. Rust 없이 호스트를 빌드하려면 `GARAK_RUST=0 pnpm native:build`. **3단계(웹)부터 웹도 같은 Rust 커널이 기본입니다**: 시김새 10종에 더해 EQ·필터·컴프레서·드라이브·리버브도 Web Audio 내장 노드 대신 Rust 워크릿으로 돌아 웹과 데스크톱 소리가 같습니다([3단계(웹)](#3단계웹-rust-wasm이-웹-기본-경로)). `pnpm build`가 WASM을 함께 만들고, 모듈이 없거나 실패하면 TS 커널·내장 노드로 조용히 돌아갑니다. 끄려면 `localStorage.setItem('garak.rustDsp', '0')` 또는 `VITE_GARAK_RUST_DSP=0`. C++·TS 커널 삭제("두 벌 유지" 종료)는 청취 확인 뒤에 합니다. 패리티 하네스가 C++·TS 커널과의 차이를 -90 dBFS 이하로 묶습니다([1단계 결과](#1단계-결과-패리티벤치마크크기)).
+>
+> **4단계(렌더 엔진):** 타임라인부터 마스터까지를 Rust로 옮기는 작업은 [RUST_ENGINE.md](RUST_ENGINE.md)에 있습니다(`rust/garak-engine`, 앱 미사용).
 
 ## 왜 Rust인가
 

@@ -1,6 +1,6 @@
 [package]
 name = "garak-ffi"
-description = "C ABI over garak-dsp for the native C++ host (staticlib, no_std; links only against the CRT math functions the host already has)"
+description = "C ABI over garak-dsp and garak-engine for the native C++ host (staticlib, no_std; links only against the CRT math functions the host already has)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,7 @@ doctest = false
 [dependencies]
 # Platform libm: the C++ host links the CRT anyway, and parity with its std::exp etc. is exact.
 garak-dsp = { workspace = true, features = ["platform-math"] }
+garak-engine = { workspace = true, features = ["platform-math"] }
 
 [lints]
 workspace = true
