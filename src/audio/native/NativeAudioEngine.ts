@@ -246,7 +246,9 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   private waveTrack(trackId: string): Track | undefined {
-    return this.project?.tracks.find(track => track.id === trackId && track.kind === 'instrument' && track.instrument === 'wavetable' && !track.pluginInstrument)
+    // A frozen WAVE track plays its cached render: the host has no synth for it.
+    const project = this.project
+    return project?.tracks.find(track => track.id === trackId && track.kind === 'instrument' && track.instrument === 'wavetable' && !track.pluginInstrument && freezeStatus(project, track, this.assets) !== 'frozen')
   }
 
   private trackWaveData(track: Track): string {

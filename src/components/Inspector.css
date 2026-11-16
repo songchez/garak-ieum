@@ -216,3 +216,7 @@
 .send-knob .knob-value{fill:none;stroke-width:4;stroke-linecap:round}
 .send-knob .knob-pointer{stroke:var(--text-primary);stroke-width:2.5;stroke-linecap:round}
 .insp-note.insp-note-info{color:var(--text-muted)}
+/* Bounce and stem export dialogs (components/RenderDialogs.tsx). */
+.render-dialog{max-width:520px}
+.render-dialog .new-tracks-row input[type="text"]{min-width:0;flex:1}
+.render-dialog .stem-summary{max-height:180px;overflow:auto}

@@ -82,6 +82,23 @@ export function safeSuggestedName(name: string, kind: DesktopExportKind): string
   return `${stem}.${exportExtension(kind)}`
 }
 
+/** A stem export subfolder name (one path segment, Windows-safe). */
+export function safeFolderName(name: string): string {
+  let stem = String(name).replaceAll('\\', '/').split('/').pop()!.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').trim().slice(0, 150)
+  if (!stem || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) stem = '가락이음 스템'
+  return stem
+}
+
+/** A file written into a chosen export folder: a plain .wav name (no separators, no traversal), within limits. */
+export function validateFolderFile(value: unknown): { token: string; name: string; data: Uint8Array } {
+  if (!value || typeof value !== 'object') throw new Error('저장할 파일이 올바르지 않습니다.')
+  const { token, name, data } = value as { token?: unknown; name?: unknown; data?: unknown }
+  if (typeof token !== 'string' || !/^[0-9a-f-]{36}$/.test(token) || typeof name !== 'string' || !(data instanceof Uint8Array)) throw new Error('저장할 파일이 올바르지 않습니다.')
+  if (name.length > 200 || /[<>:"/\\|?*\u0000-\u001f]/.test(name) || !/\.wav$/i.test(name) || /^[. ]|[. ]$/.test(name.slice(0, -4)) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name.slice(0, -4))) throw new Error('스템 파일 이름이 올바르지 않습니다.')
+  if (data.byteLength < 44 || data.byteLength > MAX_EXPORT_BYTES) throw new Error('저장할 파일 크기가 지원 범위를 벗어났습니다.')
+  return { token, name, data }
+}
+
 export function validateSaveRequest(value: unknown): DesktopSaveRequest {
   if (!value || typeof value !== 'object') throw new Error('저장할 파일이 올바르지 않습니다.')
   const request = value as Partial<DesktopSaveRequest>

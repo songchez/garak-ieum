@@ -17,7 +17,7 @@ const insert = (track: { devices: Device[] }, index = 0) => track.devices[index]
 describe('schema 7 native plugin persistence', () => {
   it('round-trips catalog IDs, separate component/controller state and normalized parameters without executable paths', () => {
     const raw = project(), normalized = validateProject(JSON.parse(JSON.stringify(raw)))
-    expect(normalized.schemaVersion).toBe(17)
+    expect(normalized.schemaVersion).toBe(18)
     expect(normalized.tracks[0].pluginInstrument).toEqual({ ...raw.tracks[0].pluginInstrument, classId: raw.tracks[0].pluginInstrument.classId.toUpperCase() })
     expect(insert(normalized.tracks[0])).toMatchObject({ type: 'vst3', state: { component: 'AQID', controller: 'BA==' } })
     expect(JSON.stringify(normalized)).not.toContain('path')
@@ -29,7 +29,7 @@ describe('schema 7 native plugin persistence', () => {
     const { devices: _devices, ...sourceOnly } = project().tracks[0]
     expect(() => validateProject({ ...project(), schemaVersion: 5, tracks: [{ ...sourceOnly, devices: [] }] })).toThrow('schema version 6')
     expect(() => validateProject({ ...project(), schemaVersion: 6 })).toThrow('unknown effect type')
-    expect(() => validateProject({ ...project(), schemaVersion: 18 })).toThrow()
+    expect(() => validateProject({ ...project(), schemaVersion: 19 })).toThrow()
   })
 
   it.each(['path', 'modulePath', 'executable', 'unknown'])('rejects executable or unknown plugin field %s instead of passing it through', field => {

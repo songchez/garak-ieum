@@ -295,6 +295,20 @@ describe('native asset and project synchronization', () => {
     await expect(h.engine.exportWav()).rejects.toThrow('disk full')
   })
 
+  it('passes render options for bounce, freeze and stems, and asks the host for the shared stem tail', async () => {
+    const h = managed(); await h.engine.play(); h.engine.pause()
+    h.handlers.set('render.wav', () => ({ data: new Uint8Array(60), frames: 2, sampleRate: 48000, tailSeconds: 1.25, trackTailSeconds: 0.75 }))
+    h.handlers.set('render.tail', () => ({ tailSeconds: 2.5 }))
+    const rendered = await h.engine.renderAudio(project(), { bitDepth: 32, preMaster: true, tailSeconds: 40, startFrame: 480.4 })
+    expect(h.calls('render.wav')[0]).toMatchObject({ bitDepth: 32, preMaster: true, tailSeconds: 30, startFrame: 480 })
+    expect(rendered).toMatchObject({ frames: 2, sampleRate: 48000, tailSeconds: 1.25, trackTailSeconds: 0.75 })
+    await h.engine.exportWav()
+    expect(h.calls('render.wav')[1]).toMatchObject({ bitDepth: 16 })
+    expect(h.calls('render.wav')[1]).not.toHaveProperty('preMaster')
+    expect(await h.engine.renderTail(project())).toBe(2.5)
+    expect(h.calls('render.tail')[0]).toHaveProperty('timeline')
+  })
+
   it('captures both opaque state and editor-changed normalized parameters, without mutating its input', async () => {
     const p = project(); p.tracks[0].pluginInstrument = plugin()
     const h = managed(p); await h.engine.play()

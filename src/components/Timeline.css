@@ -104,3 +104,6 @@
 .tempo-point.ramp circle{fill:var(--brass-soft)}
 .tempo-point.selected circle,.tempo-point:focus-visible circle{fill:var(--brass);stroke:var(--accent-hover)}
 .tempo-label{position:absolute;left:7px;top:-12px;font-size:8px;line-height:10px;color:var(--text-secondary);white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
+/* A frozen track's regions are locked: shown through a cool tint, not editable (docs/BOUNCE_FREEZE_STEMS.md). */
+.track-lane.frozen-lane{background-image:linear-gradient(color-mix(in srgb,#5fb8e8 7%,transparent),color-mix(in srgb,#5fb8e8 7%,transparent))}
+.track-lane.frozen-lane .timeline-clip,.track-lane.frozen-lane [class*="clip"]{filter:saturate(.55)}

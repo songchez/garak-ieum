@@ -33,7 +33,7 @@ export function encodeWav(channels: readonly Float32Array[], sampleRate: number,
 }
 
 /** True when a pre-fader render left its right channel silent: the track's source is mono (keep it mono). */
-export function rightChannelSilent(buffer: Pick<AudioBuffer, 'numberOfChannels' | 'getChannelData'>): boolean {
+export function rightChannelSilent(buffer: { readonly numberOfChannels: number; getChannelData(channel: number): Float32Array }): boolean {
   if (buffer.numberOfChannels < 2) return true
   const right = buffer.getChannelData(1)
   for (let index = 0; index < right.length; index++) if (right[index] !== 0) return false
@@ -41,7 +41,7 @@ export function rightChannelSilent(buffer: Pick<AudioBuffer, 'numberOfChannels' 
 }
 
 /** Largest absolute sample over every channel. */
-export function peakOf(buffer: Pick<AudioBuffer, 'numberOfChannels' | 'getChannelData'>): number {
+export function peakOf(buffer: { readonly numberOfChannels: number; getChannelData(channel: number): Float32Array }): number {
   let peak = 0
   for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
     const data = buffer.getChannelData(channel)

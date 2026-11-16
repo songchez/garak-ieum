@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { freezeStatus } from '../core/freeze'
 import { TempoTrack, TEMPO_ROW_HEIGHT } from './TempoTrack'
 import { spanBeats, tempoMapOf } from '../core/tempoMap'
 import type { AudioAsset, AudioClip, AudioEngine, Clip, InputChoice, Marker, Project, Track, TrackInput, TrackInputRoute } from '../core/types'
@@ -77,6 +78,8 @@ export interface TimelineProps {
   /** kind 'return' adds an empty return track; with effectReturns, the 대청 Hall + 메아리 Echo returns (docs/SENDS_RETURNS.md). */
   onNewTrack(opts:{kind?:Track['kind'];sameAsFocused?:boolean;empty?:boolean;dialog?:boolean;afterId?:string|null;effectReturns?:boolean}):void
   onDuplicateTracks(ids:string[],mode:'settings'|'content'):void
+  /** Bounce in place, freeze and unfreeze (docs/BOUNCE_FREEZE_STEMS.md). */
+  onRenderAction?(action:'bounceTrack'|'bounceRegions'|'freeze'|'unfreeze',trackIds:string[],clipIds:string[]):void
   onDeleteTracks(ids:string[]):void
   onRenameTracks(ids:string[],name:string|null):void
   onOpenLibrary(id:string):void
@@ -357,7 +360,22 @@ export function Timeline(props:TimelineProps){
     const selected=selectedClipIds.has(clip.id)
     if(!selected)props.onSelectClips([clip.id],clip.id,track.id)
     const ids=selected?[...selectedClipIds]:[clip.id],count=ids.length,ctx={clipIds:ids,trackIds:[track.id]}
-    openMenu(e,[cmd('잘라내기','cut',{},ctx),cmd('복사','copy',{},ctx),cmd('붙여넣기','paste',{},ctx),SEP,cmd('반복','repeat',{},ctx),cmd('재생 위치에서 분할','split',{},ctx),cmd('합치기','join',{disabled:count<2},ctx),SEP,cmd('루프','loopClip',{checked:!!clip.loop},ctx),cmd('뮤트','muteClip',{checked:!!clip.mute},ctx),cmd('이름 바꾸기','renameClip',{},ctx),...warpItems(clip,ids),...pitchItems(clip,ids),...envelopeItems(clip,ids),SEP,cmd(count>1?`클립 ${count}개 삭제`:'삭제','deleteClip',{danger:true},ctx)],'클립 메뉴')
+    const renderItems:ContextMenuItem[]=props.onRenderAction&&track.kind!=='return'?[SEP,{label:count>1?`선택한 리전 ${count}개 제자리 바운스…`:'리전 제자리 바운스…',icon:'wave',disabled:!!track.freeze,onSelect:()=>latest.current.onRenderAction?.('bounceRegions',[track.id],ids)}]:[]
+    openMenu(e,[cmd('잘라내기','cut',{},ctx),cmd('복사','copy',{},ctx),cmd('붙여넣기','paste',{},ctx),SEP,cmd('반복','repeat',{},ctx),cmd('재생 위치에서 분할','split',{},ctx),cmd('합치기','join',{disabled:count<2},ctx),SEP,cmd('루프','loopClip',{checked:!!clip.loop},ctx),cmd('뮤트','muteClip',{checked:!!clip.mute},ctx),cmd('이름 바꾸기','renameClip',{},ctx),...warpItems(clip,ids),...pitchItems(clip,ids),...envelopeItems(clip,ids),...renderItems,SEP,cmd(count>1?`클립 ${count}개 삭제`:'삭제','deleteClip',{danger:true},ctx)],'클립 메뉴')
+  }
+  /** 제자리 바운스 · 얼리기 entries for the selected tracks (returns have nothing to render in place). */
+  function renderTrackItems(track:Track,ids:string[]):ContextMenuItem[]{
+    if(!props.onRenderAction)return[]
+    const chosen=project.tracks.filter(t=>ids.includes(t.id)&&t.kind!=='return')
+    if(!chosen.length)return[]
+    const frozen=chosen.filter(t=>t.freeze),live=chosen.filter(t=>!t.freeze&&t.clips.length&&t.enabled)
+    const stale=frozen.filter(t=>freezeStatus(project,t,assets)==='stale')
+    return[SEP,
+      {label:chosen.length>1?`트랙 ${chosen.length}개 제자리 바운스…`:'트랙 제자리 바운스…',icon:'wave',disabled:track.kind==='return'||!chosen.some(t=>t.clips.length),onSelect:()=>latest.current.onRenderAction?.('bounceTrack',chosen.map(t=>t.id),[])},
+      ...(live.length?[{label:live.length>1?`트랙 ${live.length}개 얼리기`:'트랙 얼리기',icon:'snowflake',onSelect:()=>latest.current.onRenderAction?.('freeze',live.map(t=>t.id),[])} as ContextMenuItem]:[]),
+      ...(stale.length?[{label:'다시 얼리기',icon:'snowflake',onSelect:()=>latest.current.onRenderAction?.('freeze',stale.map(t=>t.id),[])} as ContextMenuItem]:[]),
+      ...(frozen.length?[{label:frozen.length>1?`트랙 ${frozen.length}개 얼림 해제`:'얼림 해제',icon:'snowflake',onSelect:()=>latest.current.onRenderAction?.('unfreeze',frozen.map(t=>t.id),[])} as ContextMenuItem]:[]),
+    ]
   }
   function trackMenu(e:React.MouseEvent,track:Track){
     if(!selectedTrackIds.has(track.id))props.onTrackClick(track.id,plainMods)
@@ -372,6 +390,7 @@ export function Timeline(props:TimelineProps){
       ...returnItems(track.id),
       {label:'설정을 복제한 새로운 트랙',icon:'copy',shortcut:shortcutLabel('duplicateTrack')||undefined,onSelect:()=>latest.current.onDuplicateTracks(ids,'settings')},
       {label:'설정 및 콘텐츠를 복제한 새로운 트랙',icon:'copy',shortcut:shortcutLabel('duplicateTrackContent')||undefined,onSelect:()=>latest.current.onDuplicateTracks(ids,'content')},
+      ...renderTrackItems(track,ids),
       SEP,
       {label:'트랙 색상 지정…',icon:'palette',shortcut:shortcutLabel('colorPalette')||undefined,onSelect:()=>latest.current.onOpenColorPalette(ids,at)},
       {label:'트랙 아이콘…',icon:'note',onSelect:()=>latest.current.onIconMenu(track.id,at)},
@@ -785,8 +804,9 @@ export function Timeline(props:TimelineProps){
             <div className="track-main"><span className="track-name">{track.name}</span><span className="recording-track-caption">{recordingDraft?.status==='processing'?'녹음 처리 중':'새 트랙에 녹음 중'}</span></div>
           </div>:<TrackHeader track={track} index={(trackNumber.get(track.id)??1)-1} focused={isFocused} selected={selected} multi={multi} height={h} config={ui.headerConfig} ui={{hideView:ui.hideView,recording:ui.recording}} arm={effectiveArm(track,focusedTrackId,project.tracks)} implicitMute={silent&&!track.mute} renaming={ui.renamingTrackId===track.id} engine={engine} inputChoices={props.inputChoices} onInputChange={props.onTrackInput&&(input=>props.onTrackInput!(track.id,input))} routeTracks={project.tracks} onRouteChange={props.onTrackRoute&&((route,input)=>props.onTrackRoute!(track.id,route,input))}
             onClick={mods=>props.onTrackClick(track.id,mods)} onFocus={()=>props.onTrackFocus(track.id)} onButton={props.onTrackButton} onSweep={props.onTrackSweep} onChange={(patch,key)=>props.onTracksChange([{id:track.id,patch}],key)} onRename={name=>latest.current.onRenameTracks(targetIds(track.id),name)} onOpenLibrary={()=>props.onOpenLibrary(track.id)} onIconMenu={e=>props.onIconMenu(track.id,{x:e.clientX,y:e.clientY})} onContextMenu={e=>trackMenu(e,track)} onReorderStart={e=>beginReorder(e,track)} onResizeStart={(e,all,reset)=>beginResize(e,track,all,reset)}
-            automation={props.onAutomationToggle?{visible:showAutomation,active:!!track.automation?.some(lane=>lane.points.length>0&&lane.enabled!==false),onToggle:()=>props.onAutomationToggle!(track.id)}:undefined}/>}
-          <div className={`track-lane ${ui.gridLines?'':'no-grid'}${track.kind==='return'?' return-lane':''}`} style={{width,...laneGrid}}
+            automation={props.onAutomationToggle?{visible:showAutomation,active:!!track.automation?.some(lane=>lane.points.length>0&&lane.enabled!==false),onToggle:()=>props.onAutomationToggle!(track.id)}:undefined}
+            freeze={track.freeze?freezeStatus(project,track,assets)==='frozen'?'frozen':'stale':undefined}/>}
+          <div className={`track-lane ${ui.gridLines?'':'no-grid'}${track.kind==='return'?' return-lane':''}${track.freeze?' frozen-lane':''}`} style={{width,...laneGrid}}
             onPointerDown={e=>{if(!recordingTarget&&!temporary)beginMarquee(e,track)}}
             onContextMenu={e=>{if(e.target!==e.currentTarget)return;if(recordingTarget||temporary){e.preventDefault();return}laneMenu(e,track)}}
             onDoubleClick={e=>{if(e.target!==e.currentTarget||recordingTarget||temporary||track.kind==='return')return;const beat=laneBeat(e.currentTarget,e.clientX);if(e.shiftKey)props.onSeekPlay(beat);else props.onAddClip(track.id,Math.floor(beat/beatsPerBar)*beatsPerBar)}}

@@ -30,7 +30,7 @@ describe('recoverable MIDI source windows', () => {
       const legacy = { ...current, schemaVersion, tracks: current.tracks.map(track => ({ ...track, effects: { filter: 20000, reverb: 0, delay: 0 } })) }
       const loaded = validateProject(legacy)
       expect(loaded).toEqual(current)
-      expect(loaded.schemaVersion).toBe(17)
+      expect(loaded.schemaVersion).toBe(18)
       expect(events(asMidi(loaded.tracks[0].clips[0]))).toEqual(events(phrase()))
     }
   })
