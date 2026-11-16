@@ -239,6 +239,32 @@ export interface AutomationLane {
 /** Logic's automation modes: 읽기 plays lanes, 터치/래치/쓰기 also record knob moves during playback. */
 export type AutomationMode = 'read' | 'touch' | 'latch' | 'write'
 
+/**
+ * A frozen track (schema FREEZE_SCHEMA_VERSION, docs/BOUNCE_FREEZE_STEMS.md): its instrument and 시김새 chain were
+ * rendered pre-fader into the project asset `assetId`, which plays instead while `signature` still matches the
+ * track (core/freeze.ts). Fader, pan, mute, solo and sends stay live; content edits are locked.
+ */
+export interface TrackFreeze {
+  assetId: string
+  /** freezeSignature() of the track and the project timing it was rendered with. */
+  signature: string
+  /** The track's own release/effect tail after the project end, in seconds (engine render tail). */
+  tailSeconds: number
+  sampleRate: SampleRate
+}
+/**
+ * Offline-render taps (never saved, never in the editing session): set only on derived projects that
+ * core/freeze.ts and core/stems.ts hand to an engine.
+ */
+export interface TrackRenderTap {
+  /** false: the track's own output stays out of the master sum while its sends still feed returns. */
+  directOut?: false
+  /** The post-insert (compensated) signal without pan, fader or mute; a mono source leaves the right channel silent. */
+  preFader?: true
+  /** Play this cached frozen render (a valid Track.freeze) instead of the track's regions, instrument and chain. */
+  frozen?: { assetId: string; tailSeconds: number }
+}
+
 export interface Track {
   id: string
   name: string
@@ -294,6 +320,10 @@ export interface Track {
   automation?: AutomationLane[]
   /** Absent = 'read'. */
   automationMode?: AutomationMode
+  /** Frozen render (schema 18). Absent = not frozen. */
+  freeze?: TrackFreeze
+  /** Derived render projects only; see TrackRenderTap. */
+  render?: TrackRenderTap
 }
 export interface Marker {
   id: string
@@ -314,8 +344,8 @@ export interface TempoPoint {
   curve: TempoCurve
 }
 export interface Project {
-  /** 17: track automation lanes (Track.automation, Track.automationMode; send levels and return tracks automatable). 16: MIDI controller lanes (MidiClip.controllers, bendRange). 15: send/return tracks (Track.kind 'return', Track.sends). 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
-  schemaVersion: 17
+  /** 18: frozen tracks (Track.freeze). 17: track automation lanes (Track.automation, Track.automationMode; send levels and return tracks automatable). 16: MIDI controller lanes (MidiClip.controllers, bendRange). 15: send/return tracks (Track.kind 'return', Track.sends). 14: tempo map (Project.tempoMap). 13: MIDI sustain pedal lane (MidiClip.sustain). 12: audio region pitch (AudioClip.transpose). 11: track-input routes (Track.inputRoute). 10: audio region fade curves and region gain up to +24 dB. 9: audio clip warp/tempo. 8: per-track input and monitor mode. 7: VST3 effects live in devices (schema 6 kept them in a separate pluginInserts list). */
+  schemaVersion: 18
   id: string
   name: string
   /** Tempo at beat 0. With a tempo map this mirrors tempoMap[0].bpm. */
@@ -344,6 +374,27 @@ export interface AudioAsset {
   buffer: AudioBuffer
   peaks: number[]
 }
+export type RenderBitDepth = 16 | 24 | 32
+export interface RenderOptions {
+  /** 32 = IEEE float (unclipped). */
+  bitDepth: RenderBitDepth
+  /** Skip master volume and the master processor. */
+  preMaster?: boolean
+  /** Replaces the project's own render tail (0…30 s). */
+  tailSeconds?: number
+  /** Frames dropped from the start (after plug-in delay compensation), at the project rate. */
+  startFrame?: number
+}
+export interface RenderedAudio {
+  /** A stereo WAV at `sampleRate`. */
+  blob: Blob
+  sampleRate: number
+  frames: number
+  /** The render tail used. */
+  tailSeconds: number
+  /** The longest own tail of a non-return track (freeze stores it). */
+  trackTailSeconds: number
+}
 export interface TransportSnapshot {
   playing: boolean
   beat: number
@@ -368,6 +419,10 @@ export interface AudioEngine {
   previewNote(instrument: InstrumentId, pitch: number, velocity?: number, trackId?: string): Promise<void>
   decodeAsset(blob: Blob, name: string, id?: string): Promise<AudioAsset>
   exportWav(project?: Project): Promise<Blob>
+  /** Offline render with options (bounce, freeze, stems; docs/BOUNCE_FREEZE_STEMS.md). Same graph as exportWav. */
+  renderAudio?(project: Project, options: RenderOptions): Promise<RenderedAudio>
+  /** The render tail exportWav would add to this project, in seconds (stems share it). */
+  renderTail?(project: Project): Promise<number>
   subscribe(callback: () => void): () => void
   getSnapshot(): TransportSnapshot
   /** Sample sets are keyed by InstrumentDef.set and load lazily; see audio/samples.ts. */

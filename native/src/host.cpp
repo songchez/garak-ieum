@@ -247,6 +247,7 @@ class Host {
       return {{"revision",project_.revision},{"applied",kind},{"replacedTracks",applied.replacedTracks},{"updateMicros",micros}};
     }
     if (method=="render.wav") return render(a);
+    if (method=="render.tail") return render(a,true);
     if (method=="metronome.set") return setMetronome(a);
     if (method=="device.controlPanel" || method=="devices.controlPanel") { if(test_) return Json::object(); device_.showControlPanel(a.value("backend",std::string{}),a.value("deviceId",std::string{})); return Json::object(); }
     if (method=="devices.probe") return probeJson(test_?testProbe():device_.probe(string(a,"backend",32),a.value("deviceId",std::string{})));
@@ -681,13 +682,13 @@ class Host {
       host.load_.record(std::chrono::duration<double>(Clock::now()-began).count(),double(frames)/rate);
     host.callbacks_.fetch_add(1,std::memory_order_release);
   }
-  Json render(const Json& a) {
+  Json render(const Json& a,bool tailOnly=false) {
     if(recording_) throw std::runtime_error("Stop recording before exporting");
     if(configured_ && engine_ && engine_->snapshot().playing) awaitApplied(engine_->pause());
     const bool restart=!test_ && device_.state().running;
     if(restart) device_.stop();
     try {
-      auto result=renderStopped(a);
+      auto result=tailOnly?renderTail(a):renderStopped(a);
       if(restart) device_.start();
       return result;
     } catch(...) {
@@ -697,6 +698,13 @@ class Host {
       }
       throw;
     }
+  }
+  // render.tail: the tails render.wav would use for this timeline, without rendering (stems share the mix's tail).
+  Json renderTail(const Json& a) {
+    auto project=timeline(a.at("timeline")); project.cycle.reset();
+    RenderEngine offline(project.sampleRate,scratchFrames); offline.setOffline(true);
+    const auto prepared=offline.prepare(project,assets_,sets_,resolver(true));
+    return {{"tailSeconds",std::min(30.0,prepared->tailSeconds())},{"trackTailSeconds",prepared->trackTailSeconds()},{"latencyFrames",prepared->latencyFrames()}};
   }
   // render.wav options (docs/BOUNCE_FREEZE_STEMS.md): bitDepth 16 | 24 | 32 (IEEE float, unclipped), tailSeconds
   // (replaces the graph's tail, for stems that must share one length), preMaster (no master gain/processor) and

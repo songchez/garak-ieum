@@ -25,7 +25,7 @@ describe('schema 7 native plugin persistence', () => {
 
   it('migrates schema 5 projects while preserving their exact meter and rejects hidden VST data under an old schema', () => {
     const old = { ...createEmptyProject(), schemaVersion: 5, timeSignature: { numerator: 7, denominator: 8 }, beatsPerBar: 3.5 }
-    expect(validateProject(old)).toMatchObject({ schemaVersion: 17, timeSignature: { numerator: 7, denominator: 8 }, beatsPerBar: 3.5 })
+    expect(validateProject(old)).toMatchObject({ schemaVersion: 18, timeSignature: { numerator: 7, denominator: 8 }, beatsPerBar: 3.5 })
     const { devices: _devices, ...sourceOnly } = project().tracks[0]
     expect(() => validateProject({ ...project(), schemaVersion: 5, tracks: [{ ...sourceOnly, devices: [] }] })).toThrow('schema version 6')
     expect(() => validateProject({ ...project(), schemaVersion: 6 })).toThrow('unknown effect type')

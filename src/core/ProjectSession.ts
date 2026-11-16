@@ -5,6 +5,7 @@ import { deviceFromVariant } from './sigimsaeDevices'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { copyTrackInput, createDevice, createTrack, fitProjectLength, validateProject } from './project'
 import { detachDeletedSends } from './sends'
+import { FROZEN_EDIT_MESSAGE, frozenEditViolation } from './freeze'
 import type { Clip, Device, EffectType, MidiClip, Project, Track } from './types'
 import { sameTrackInput } from './trackInputs'
 import { clipGainMaxDb, clipSeconds, fadeCurveOf, gainToDb, withClipGainDb, withFade, withFadeCurve } from './clipEnvelope'
@@ -18,6 +19,11 @@ import {
 } from './commands'
 
 export interface ProjectHistory { past: Project[]; present: Project; future: Project[] }
+
+function assertNotFrozen(current: Project, next: Project): void {
+  const track = frozenEditViolation(current, next)
+  if (track) throw new DomainError('TRACK_FROZEN', FROZEN_EDIT_MESSAGE(track.name), { trackId: track.id })
+}
 export interface SessionChange {
   source: 'ui' | 'mcp' | 'history' | 'reset'
   label: string
@@ -384,6 +390,16 @@ export class ProjectSession {
     this.snapshot = { history: { past: [], present: validateProject(project), future: [] }, revision: 0, undoLabel: null, redoLabel: null }
   }
   readonly getSnapshot = (): ProjectSessionSnapshot => this.snapshot
+  private readonly blockedListeners = new Set<(message: string) => void>()
+  /** Edits refused because they would change a frozen track's content (docs/BOUNCE_FREEZE_STEMS.md). */
+  readonly onBlocked = (listener: (message: string) => void): (() => void) => { this.blockedListeners.add(listener); return () => { this.blockedListeners.delete(listener) } }
+  /** True (and listeners told) when `next` changes a frozen track's regions, instrument or chain. */
+  private refusedFrozen(current: Project, next: Project): boolean {
+    const track = frozenEditViolation(current, next)
+    if (!track) return false
+    for (const listener of [...this.blockedListeners]) listener(FROZEN_EDIT_MESSAGE(track.name))
+    return true
+  }
   readonly subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   readonly breakMerge = (): void => { this.lastEdit = { key: '', time: 0 }; this.gesture = null }
   /** A pointer drag or held adjustment key is one edit, even when it pauses. */
@@ -432,7 +448,7 @@ export class ProjectSession {
   readonly edit = (edit: (project: Project) => Project, key = '', label = '프로젝트 편집'): void => {
     const current = this.snapshot.history.present
     const next = edit(current)
-    if (next === current) return
+    if (next === current || this.refusedFrozen(current, next)) return
     const now = performance.now()
     const merge = this.gesture ? this.gesture.changed : !!key && this.lastEdit.key === key && now - this.lastEdit.time < 450
     label = this.gesture?.label ?? label
@@ -457,6 +473,7 @@ export class ProjectSession {
     }
     const next = action.edit(history.present)
     if (next === history.present) return
+    if (action.type !== 'live' && this.refusedFrozen(history.present, next)) return
     if (action.type === 'live') {
       // Do not add an undo item, but a live change invalidates outstanding external edits.
       // A held control still owns its gesture; cancellation carries these live
@@ -493,6 +510,7 @@ export class ProjectSession {
     this.cached(request, fingerprint)
     this.assertRevision(request)
     const planned = planCommands(this.snapshot.history.present, request)
+    assertNotFrozen(this.snapshot.history.present, planned.project)
     return {
       projectId: request.projectId, revision: this.snapshot.revision, operationId: request.operationId, preview: true,
       changed: planned.project !== this.snapshot.history.present,
@@ -506,6 +524,7 @@ export class ProjectSession {
     if (cached) return cached as CommandResponse
     this.assertRevision(request)
     const planned = planCommands(this.snapshot.history.present, request)
+    assertNotFrozen(this.snapshot.history.present, planned.project)
     const changed = planned.project !== this.snapshot.history.present
     const summary = changed ? `${planned.changes.label}: ${planned.changes.changedCommandCount}개 명령을 적용했습니다.` : `${planned.changes.label}: 변경할 내용이 없습니다.`
     const result: CommandResponse = { projectId: request.projectId, revision: this.snapshot.revision + (changed ? 1 : 0), operationId: request.operationId, changed, summary, changes: planned.changes, results: planned.results }

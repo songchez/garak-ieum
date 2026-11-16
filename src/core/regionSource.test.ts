@@ -125,7 +125,7 @@ describe('recoverable MIDI source windows', () => {
     const project = projectWith(clip)
     const bundle = await exportProjectBundle(project, new Map())
     const serialized = JSON.parse(await bundle.text())
-    expect(serialized).toMatchObject({ schemaVersion: 1, project: { schemaVersion: 17 } })
+    expect(serialized).toMatchObject({ schemaVersion: 1, project: { schemaVersion: 18 } })
     const restored = await importProjectBundle(bundle)
     expect(restored.project).toEqual(project)
     expect(asMidi(trimClipStart(restored.project.tracks[0].clips[0], 8, 120)).notes).toEqual(phrase().notes)

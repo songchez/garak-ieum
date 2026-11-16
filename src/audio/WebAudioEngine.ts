@@ -1,16 +1,18 @@
 import { instrumentDef } from '../core/instruments'
 import { DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, normalizeAudioSettings, projectSampleRate, type AudioSettings, type AudioState, type RenderSizeHint, type SampleRate } from '../core/audioSettings'
 import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
-import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
+import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, RenderOptions, RenderedAudio, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
+import { playbackProject } from '../core/freeze'
+import { encodeWav } from './wavEncode'
 import { numberedInputChoices } from '../core/trackInputs'
 import {
-  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
+  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, trackTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
   setRouteMonitoring, stopTrackVoices, trackLayoutKey, updateEffectTempo, updateGraph,
 } from './graph'
 import { diffArrangement, type TrackChange } from './arrangementDiff'
 import { hasActiveAutomation } from '../core/automation'
 import type { EngineGraph } from './graph'
-import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter } from './math'
+import { clamp, loopRange, normalizedStart, positionAfter } from './math'
 import { tempoMapOf } from '../core/tempoMap'
 import { SampleLibrary } from './samples'
 import { ownAudioBytes } from './assetBytes'
@@ -376,7 +378,10 @@ export class WebAudioEngine implements AudioEngine {
 
   readonly getMasterLevel = (): number => this.masterLevel
 
-  setProject(project: Project): void {
+  setProject(source: Project): void {
+    this.sourceProject = source
+    // Frozen tracks play their cached render (core/freeze.ts); everything below sees that playback project.
+    const project = playbackProject(source, this.assets)
     // A live edit can introduce a native instrument. Stop before the browser scheduler
     // would omit it; the next Play explains the host requirement without replacing its sound.
     if (this.playing && unsupportedWebAudioInstruments(project).length) this.pause()
@@ -420,8 +425,15 @@ export class WebAudioEngine implements AudioEngine {
   setAssets(assets: Map<string, AudioAsset>): void {
     const changed = assets.size !== this.assets.size || [...assets].some(([id, asset]) => this.assets.get(id)?.buffer !== asset.buffer)
     this.assets = new Map(assets)
+    // A freeze cache arriving or leaving switches its track between the cached render and live playback.
+    if (changed && this.sourceProject?.tracks.some(track => track.freeze)) {
+      const before = this.project
+      this.setProject(this.sourceProject)
+      if (before !== this.project) return
+    }
     if (changed && this.playing) this.restartAt(this.currentBeat())
   }
+  private sourceProject: Project | null = null
 
   async resume(): Promise<void> {
     if (this.configurationTask) await this.configurationTask
@@ -709,6 +721,16 @@ export class WebAudioEngine implements AudioEngine {
 
   /** Exports the entire arrangement once; the audition loop is deliberately ignored. */
   async exportWav(project: Project = this.requireProject()): Promise<Blob> {
+    return (await this.renderAudio(project, { bitDepth: 16 })).blob
+  }
+
+  async renderTail(project: Project): Promise<number> {
+    return Math.min(30, renderTailSeconds(playbackProject(project, this.assets)))
+  }
+
+  /** Offline render (export, bounce, freeze, stems; docs/BOUNCE_FREEZE_STEMS.md). */
+  async renderAudio(source: Project, options: RenderOptions): Promise<RenderedAudio> {
+    const project = playbackProject(source, this.assets)
     assertWebAudioProjectSupported(project)
     for (const setId of this.sampleSets(project)) {
       try { await this.preloadSamples(setId) } catch (error) {
@@ -717,7 +739,8 @@ export class WebAudioEngine implements AudioEngine {
     }
     const sampleRate = projectSampleRate(project.sampleRate)
     const tempo = tempoMapOf(project)
-    const duration = tempo.secondsAt(project.lengthBeats) + renderTailSeconds(project)
+    const tailSeconds = options.tailSeconds === undefined ? renderTailSeconds(project) : Math.min(30, Math.max(0, options.tailSeconds))
+    const duration = tempo.secondsAt(project.lengthBeats) + tailSeconds
     const frames = Math.ceil(duration * sampleRate)
     if (!Number.isFinite(frames) || frames < 1) throw new Error('프로젝트의 내보내기 길이가 올바르지 않습니다.')
     // OfflineAudioContext stores all rendered samples in RAM. Fail clearly before
@@ -725,7 +748,7 @@ export class WebAudioEngine implements AudioEngine {
     if (frames > sampleRate * 60 * 15) throw new Error('이 초기 버전은 한 번에 최대 15분까지 WAV로 내보낼 수 있습니다. 프로젝트 길이를 줄여 주세요.')
     const offline = new OfflineAudioContext(2, frames, sampleRate)
     await prepareEffects(offline)
-    const graph = createGraph(offline, project)
+    const graph = createGraph(offline, project, { preMaster: options.preMaster })
     try {
       scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
       // Automation is scheduled for the whole render before it starts, so worklet events are queued first.
@@ -737,8 +760,9 @@ export class WebAudioEngine implements AudioEngine {
       scheduleTempoUpdates(offline, graph, project, duration)
       const rendered = await offline.startRendering()
       assertGuitarRigHealthy(offline)
-      const bytes = encodePcm16Wav([rendered.getChannelData(0), rendered.getChannelData(1)], rendered.sampleRate)
-      return new Blob([bytes], { type: 'audio/wav' })
+      const start = Math.min(rendered.length - 1, Math.max(0, Math.round(options.startFrame ?? 0)))
+      const channels = [rendered.getChannelData(0).subarray(start), rendered.getChannelData(1).subarray(start)]
+      return { blob: encodeWav(channels, rendered.sampleRate, options.bitDepth), sampleRate: rendered.sampleRate, frames: channels[0].length, tailSeconds, trackTailSeconds: trackTailSeconds(project) }
     } finally {
       disposeGraph(graph)
     }
