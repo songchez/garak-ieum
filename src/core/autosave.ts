@@ -13,6 +13,8 @@ import type { Project } from './types'
  *   imports always validate fully, and explicit saves (close, navigation, export) validate fully too.
  * - Crash safety: every full validation also refreshes a "last validated" copy of the project; if the latest autosave
  *   ever fails validation on load, that copy is opened instead (core/storage.ts).
+ * - Writes: storage keeps content-addressed meta/track/clip/asset records and writes only the changed ones, so a note
+ *   edit writes one clip and one track record instead of the whole project and its audio (core/projectRecords.ts).
  */
 export const AUTOSAVE_MIN_DELAY_MS = 650
 export const AUTOSAVE_MAX_DELAY_MS = 4000
