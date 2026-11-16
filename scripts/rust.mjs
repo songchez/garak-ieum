@@ -15,8 +15,10 @@ const wasmTarget = 'wasm32-unknown-unknown'
 const wasmBuilt = path.join(workspace, 'target', wasmTarget, 'wasm', 'garak_wasm.wasm')
 export const wasmOutput = path.join(root, 'public', 'wasm', 'garak-dsp.wasm')
 // Budgets for the worklet module; CI fails above them (docs/RUST.md: stage 1 is ~101 KiB raw /
-// ~36 KiB gzip with every built-in effect; the architecture review allows 80 KB gzip).
-const WASM_BUDGET_BYTES = 128 * 1024
+// ~36 KiB gzip with every built-in effect; the architecture review allows 80 KB gzip). The raw
+// budget went from 128 to 160 KiB with the vintage instruments (~38 KiB of code; gzip ~55 KB, still
+// well inside the 80 KB transfer budget that matters for loading).
+const WASM_BUDGET_BYTES = 160 * 1024
 const WASM_GZIP_BUDGET_BYTES = 80 * 1000
 
 function cargoBinary() {

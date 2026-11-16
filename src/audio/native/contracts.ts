@@ -56,6 +56,8 @@ export interface NativeLatencyMeasurement {
 export interface NativeEngineCapabilities {
   protocol: number
   wavetable?: { protocolVersion: number; schemaFingerprint: number }
+  /** 옥구슬 EP / 한밤 106 (native/src/rust_instrument.hpp): available when the host links the Rust core. */
+  vintage?: { protocolVersion: number; available: boolean; instruments: string[] }
 }
 
 /** With awaitApplied, this revision has crossed the native audio block boundary. */

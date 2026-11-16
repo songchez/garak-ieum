@@ -350,10 +350,19 @@ export interface TransportSnapshot {
   ready: boolean
   sampleRate: number
 }
+/** Availability of the Rust vintage instruments (옥구슬 EP, 한밤 106) on an engine. */
+export interface VintageBridge {
+  available(): boolean
+  /** Why they cannot play (empty when available). */
+  reason(): string
+  subscribe(listener: () => void): () => void
+}
 export interface AudioEngine {
   readonly kind: 'web-audio' | 'native'
   /** Supplied only by a native host that actually loads the IEUM WAVE DSP module. */
   readonly wavetable?: WavetableNativeBridge
+  /** Whether this engine can run the vintage instruments (Rust core: native GARAK_RUST or garak-dsp.wasm). */
+  readonly vintage?: VintageBridge
   setProject(project: Project): void
   setAssets(assets: Map<string, AudioAsset>): void
   resume(): Promise<void>
