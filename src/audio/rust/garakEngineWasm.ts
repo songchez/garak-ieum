@@ -6,6 +6,8 @@
 // detaches existing views; every method here re-creates its views after them. render() never
 // allocates, so the output view returned by render() stays valid until the next control call.
 
+import { MATH_IMPORTS } from './garakWasm.js'
+
 interface EngineExports {
   memory: WebAssembly.Memory
   garak_engine_abi_version(): number
@@ -55,7 +57,8 @@ export interface GarakEngine {
 const encoder = new TextEncoder()
 
 export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: number, maxBlock: number, offline = false): GarakEngine {
-  const instance = new WebAssembly.Instance(module, {})
+  // garak-dsp on wasm32 imports the Math.* transcendentals (rust/garak-dsp/src/math.rs), like garak-dsp.wasm.
+  const instance = new WebAssembly.Instance(module, MATH_IMPORTS)
   const x = instance.exports as unknown as EngineExports
   if (x.garak_engine_abi_version() !== ENGINE_ABI_VERSION) throw new Error('garak-engine.wasm ABI mismatch')
   const error = (): Error => {
