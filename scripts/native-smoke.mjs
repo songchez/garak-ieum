@@ -153,6 +153,21 @@ try {
     assert.ok(peak(audio.samples.subarray(1000 * 2, 6000 * 2)) > .005)
     assert.ok(peak(audio.samples) <= 1)
   })
+  await checked('render.wav formats, pre-master, start frame and render.tail (docs/BOUNCE_FREEZE_STEMS.md)', async () => {
+    const mix = await service.request('render.wav', { timeline: project() })
+    const full = wav(mix.data)
+    const { tailSeconds } = await service.request('render.tail', { timeline: project() })
+    assert.equal(full.frames, 12000 + Math.ceil(tailSeconds * 48000))
+    const float = await service.request('render.wav', { timeline: project(), bitDepth: 32, preMaster: true, startFrame: 500, tailSeconds })
+    const stem = wav(float.data)
+    assert.equal(stem.format, 3); assert.equal(stem.frames, full.frames - 500); assert.equal(float.frames, stem.frames)
+    assert.ok(typeof float.trackTailSeconds === 'number' && float.trackTailSeconds > 0)
+    // Pre-master skips the 0.8 master gain: the note is louder than in the mix.
+    assert.ok(peak(stem.samples) > peak(full.samples) * 1.1)
+    const pcm24 = Buffer.from((await service.request('render.wav', { timeline: project(), bitDepth: 24 })).data)
+    assert.equal(pcm24.readUInt16LE(34), 24); assert.equal(pcm24.readUInt32LE(40), full.frames * 6)
+    await assert.rejects(service.request('render.wav', { timeline: project(), bitDepth: 20 }), /bit depth/i)
+  })
   await checked('native WAVE timeline and custom banks render finite stereo at 44.1/48/96 kHz', async () => {
     for (const sampleRate of [44100, 48000, 96000]) {
       const rendered = []

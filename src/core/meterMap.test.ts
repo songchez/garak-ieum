@@ -147,7 +147,8 @@ describe('schema 18 meter map files', () => {
     const project = song()
     const loaded = validateProject(JSON.parse(JSON.stringify(project)))
     expect(loaded.meterMap).toEqual(EVENTS)
-    expect(loaded.schemaVersion).toBe(18)
+    expect(loaded.schemaVersion).toBe(19)
+    expect(validateProject({ ...JSON.parse(JSON.stringify(project)), schemaVersion: 18 }).meterMap).toEqual(EVENTS)
     const { meterMap: _drop, ...without } = project
     expect(validateProject(without).meterMap).toEqual([{ bar: 0, numerator: 4, denominator: 4 }])
     expect(() => validateProject({ ...project, meterMap: [EVENTS[0], EVENTS[2], EVENTS[1]] })).toThrow(/sorted/)

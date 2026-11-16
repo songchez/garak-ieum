@@ -88,7 +88,7 @@ describe('warp validation', () => {
     const warped = withWarpRender(enableWarp(detected(), 120), 120, 'render')
     const value = project(warped, { ...detected(), id: 'd', startBeat: 20 })
     const loaded = validateProject(JSON.parse(JSON.stringify(value)))
-    expect(loaded.schemaVersion).toBe(18)
+    expect(loaded.schemaVersion).toBe(19)
     expect(loaded.tracks[0].clips).toEqual([warped, { ...detected(), id: 'd', startBeat: 20 }])
   })
 
@@ -115,7 +115,7 @@ describe('warp validation', () => {
     const value = project(detected())
     expect(() => validateProject({ ...value, schemaVersion: 8 })).toThrow(/schema version 9/)
     const legacy = validateProject({ ...project(clip()), schemaVersion: 8 })
-    expect(legacy.schemaVersion).toBe(18)
+    expect(legacy.schemaVersion).toBe(19)
     expect(legacy.tracks[0].clips[0]).toEqual(clip())
     expect('warp' in legacy.tracks[0].clips[0]).toBe(false)
   })

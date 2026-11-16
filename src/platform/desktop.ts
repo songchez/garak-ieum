@@ -20,6 +20,23 @@ export function desktopProjectFile(file: DesktopFile): File {
   return new File([new Uint8Array(file.data)], file.name, { type: 'application/json' })
 }
 
+/**
+ * Multi-file export (stems): the desktop app writes each file into a new folder the user picks; a browser
+ * gets one ZIP download from the caller instead (writer null with status 'browser').
+ */
+export async function openExportFolder(name: string): Promise<{ status: 'browser' } | { status: 'canceled' } | { status: 'open'; folderName: string; write(name: string, blob: Blob): Promise<void>; close(): Promise<void> }> {
+  const desktop = getDesktopBridge()
+  if (!desktop?.chooseExportFolder || !desktop.writeExportFile) return { status: 'browser' }
+  const result = await desktop.chooseExportFolder(name)
+  if (result.canceled || !result.token) return { status: 'canceled' }
+  const token = result.token
+  return {
+    status: 'open', folderName: result.folderName ?? name,
+    write: async (file, blob) => desktop.writeExportFile!(token, file, new Uint8Array(await blob.arrayBuffer())),
+    close: async () => { await desktop.closeExportFolder?.(token) },
+  }
+}
+
 /** Cancellation is a completed dialog, not a successful write or a browser fallback. */
 export async function saveExport(blob: Blob, name: string, kind: DesktopExportKind): Promise<ExportResult> {
   const desktop = getDesktopBridge()

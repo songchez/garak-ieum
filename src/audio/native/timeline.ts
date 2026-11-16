@@ -119,6 +119,10 @@ export interface NativeAudioWindow {
   /** FADE_CURVE_CODES: 0 linear, 1 equal power, 2 S-curve, 3 exponential, 4 logarithmic. */
   readonly fadeInCurve: number
   readonly fadeOutCurve: number
+  /** A frozen track's cached render (docs/BOUNCE_FREEZE_STEMS.md): no click guard, may run into the export tail. */
+  readonly freeze?: true
+  /** Frozen windows: the track's own tail, so the export keeps the unfrozen length. */
+  readonly tailSeconds?: number
 }
 
 export interface NativeTrackInput {
@@ -183,6 +187,9 @@ export interface NativeTrackTimeline {
   readonly audio: readonly NativeAudioWindow[]
   /** Active lanes only; absent when the track has none. */
   readonly automation?: readonly NativeAutomationLane[]
+  /** Offline render taps (TrackRenderTap): out of the master sum (return stems) / pre-fader (freeze, bounce). */
+  readonly directOut?: false
+  readonly preFader?: true
   /** Fader audibility with the track unmuted (solo applied); present when a mute lane is active. */
   readonly unmutedAudible?: boolean
 }
@@ -323,7 +330,7 @@ function trackInput(track: Track): NativeTrackInput | null {
 
 /** Track fields the expanded events (notes, controllers, audio windows) depend on; see core/playback.ts.
  * Mixer, insert, send, automation and instrument-parameter edits leave a track's events untouched. */
-const EVENT_FIELDS = ['clips', 'kind', 'instrument', 'transpose', 'velocityOffset', 'keyLimit', 'velocityLimit', 'delayTicks'] as const
+const EVENT_FIELDS = ['clips', 'kind', 'instrument', 'transpose', 'velocityOffset', 'keyLimit', 'velocityLimit', 'delayTicks', 'render'] as const
 
 /** One track's expanded events. Note and window IDs are unique per track (they start at 0 in every track),
  * so an edit renumbers only its own track. */
@@ -430,11 +437,11 @@ function compileTimeline(project: Project, pcmAssets: ReadonlyMap<string, Native
   // another one its occurrences (checked against the running limits in track order).
   const plans = project.tracks.map(track => {
     // The PCM metadata a track's windows were cut against is part of its key (a re-decoded asset changes length).
-    const assetKey = track.kind === 'audio' ? track.clips.map(clip => {
-      if (clip.kind !== 'audio') return ''
-      const asset = pcmAssets.get(clip.assetId)
-      return asset ? `${asset.id}:${asset.sampleRate}:${asset.frames}:${asset.channels}` : `${clip.assetId}:missing`
-    }).join('|') : ''
+    const pcmKey = (assetId: string): string => {
+      const asset = pcmAssets.get(assetId)
+      return asset ? `${asset.id}:${asset.sampleRate}:${asset.frames}:${asset.channels}` : `${assetId}:missing`
+    }
+    const assetKey = track.kind === 'audio' ? [...track.clips.map(clip => clip.kind === 'audio' ? pcmKey(clip.assetId) : ''), track.render?.frozen ? pcmKey(track.render.frozen.assetId) : ''].join('|') : ''
     const key = [timing, assetKey, !!track.pluginInstrument, ...EVENT_FIELDS.map(field => track[field])]
     const reused = cache?.reusableEvents(track.id, key)
     if (reused) {
@@ -476,6 +483,8 @@ function compileTimeline(project: Project, pcmAssets: ReadonlyMap<string, Native
         return { id: id(device.id), type: device.type, enabled: device.enabled, params: parameters(EFFECT_DEFS[device.type].params, device.params) }
       }), notes: events.notes, controls: events.controls, audio: events.audio,
       ...(lanes.automation ? { automation: lanes.automation } : {}),
+      ...(track.render?.directOut === false ? { directOut: false as const } : {}),
+      ...(track.render?.preFader ? { preFader: true as const } : {}),
       ...(lanes.muted ? { unmutedAudible: audibleTrackIds(project.tracks.map(item => item.id === track.id ? { ...item, mute: false } : item)).has(track.id) && track.pluginInstrument?.enabled !== false } : {}) }
   })
   return { version: 1, projectId: project.id, revision, sampleRate, bpm, ...(tempo.isConstant ? {} : { tempoMap: tempo.points.map(point => ({ ...point })) }), timeSignature, beatsPerBar: project.beatsPerBar,
@@ -558,6 +567,16 @@ function trackEvents(track: Track, context: EventContext, prepared: ReadonlyMap<
       clipOffsetFrames, clipLengthFrames, gain: number(clip.gain, 0, AUDIO_CLIP_GAIN_MAX, 'audio gain'),
       ...fadeFrames(clipLengthFrames, number(clip.fadeIn, 0, 10_000_000, 'fade in') * sampleRate, number(clip.fadeOut, 0, 10_000_000, 'fade out') * sampleRate),
       fadeInCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeInCurve)], fadeOutCurve: FADE_CURVE_CODES[fadeCurveOf(clip.fadeOutCurve)] })
+  }
+  const frozen = track.render?.frozen
+  if (frozen) {
+    // The cached render covers the project from frame 0 plus the track's own tail, at the project rate.
+    const asset = assets.get(frozen.assetId) ?? context.metadata(frozen.assetId)
+    assets.set(asset.id, asset)
+    const frames = Math.floor(asset.frames * sampleRate / asset.sampleRate)
+    const endFrame = Math.min(frames, lengthFrames + sampleRate * 31)
+    if (endFrame > 0) audio.push({ id: nextId++, clipId: `freeze:${track.id}`, assetId: asset.id, startFrame: 0, endFrame, sourceStartFrame: 0, sourceSampleRate: asset.sampleRate,
+      clipOffsetFrames: 0, clipLengthFrames: endFrame, gain: 1, fadeInFrames: 0, fadeOutFrames: 0, fadeInCurve: 0, fadeOutCurve: 0, freeze: true, tailSeconds: number(frozen.tailSeconds, 0, 3600, 'freeze tail') })
   }
   notes.sort((a, b) => a.onFrame - b.onFrame || a.offFrame - b.offFrame || a.id - b.id)
   // At equal frames a release/reset at a region end precedes the next region's chase; otherwise emission order.

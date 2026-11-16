@@ -12,7 +12,7 @@ import type { Clip, Project, Track } from './types'
  * the manifest change too, but nothing else is written: a single note edit writes one clip, one track and the manifest.
  * Records are never overwritten in place, so the manifest put is the commit point: until it lands, the previous
  * manifest still references a complete set of records. Unreachable records are garbage-collected in the same
- * transaction. This is storage only: the Project format (schema 17) and .garak bundles are unchanged.
+ * transaction. This is storage only: the Project format and .garak bundles are unchanged.
  */
 export const RECORD_FORMAT = 'records-1'
 

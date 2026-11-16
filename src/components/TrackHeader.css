@@ -143,3 +143,7 @@
 /* Return (aux) tracks: letter badge and a lane without regions (docs/SENDS_RETURNS.md). */
 .track-header[data-track-id] .track-return-badge{flex-shrink:0;display:inline-grid;place-items:center;height:13px;min-width:13px;padding:0 3px;box-sizing:border-box;border-radius:3px;font-size:8.5px;font-weight:700;line-height:1;color:var(--track-label-color,#fff);background:color-mix(in srgb,var(--track-color) 80%,transparent)}
 .track-lane.return-lane{background-image:repeating-linear-gradient(135deg,color-mix(in srgb,var(--track-color) 7%,transparent) 0 6px,transparent 6px 12px)}
+/* Frozen tracks (docs/BOUNCE_FREEZE_STEMS.md): an ice badge; a stale freeze (playing live) is dashed. */
+.track-header[data-track-id] .track-freeze-badge{flex-shrink:0;display:inline-grid;place-items:center;height:12px;min-width:12px;padding:0 1px;box-sizing:border-box;border-radius:3px;color:#5fb8e8;border:1px solid color-mix(in srgb,#5fb8e8 60%,transparent);background:color-mix(in srgb,#5fb8e8 14%,transparent)}
+.track-header[data-track-id] .track-freeze-badge.stale{color:var(--ink-45);border-style:dashed;background:none}
+.track-header.track-frozen{box-shadow:inset 3px 0 0 color-mix(in srgb,#5fb8e8 55%,transparent)}

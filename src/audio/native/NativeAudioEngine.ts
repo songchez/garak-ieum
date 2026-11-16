@@ -6,7 +6,8 @@ import { defaultInstrumentParams } from '../../core/project'
 import { validateNativePluginState } from '../../core/nativePlugins'
 import { instrumentDef } from '../../core/instruments'
 import { isRouted } from '../../core/trackRouting'
-import { isPluginDevice, type AudioAsset, type AudioEngine, type InputChoice, type InstrumentId, type Project, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot } from '../../core/types'
+import { isPluginDevice, type AudioAsset, type AudioEngine, type InputChoice, type InstrumentId, type Project, type RenderOptions, type RenderedAudio, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot } from '../../core/types'
+import { freezeStatus, playbackProject } from '../../core/freeze'
 import type { AudioRecordingCallbacks } from '../AudioRecording'
 import { SampleLibrary } from '../samples'
 import { packAudioBuffer } from './pcmTransfer'
@@ -252,7 +253,9 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   private waveTrack(trackId: string): Track | undefined {
-    return this.project?.tracks.find(track => track.id === trackId && track.kind === 'instrument' && track.instrument === 'wavetable' && !track.pluginInstrument)
+    // A frozen WAVE track plays its cached render: the host has no synth for it.
+    const project = this.project
+    return project?.tracks.find(track => track.id === trackId && track.kind === 'instrument' && track.instrument === 'wavetable' && !track.pluginInstrument && freezeStatus(project, track, this.assets) !== 'frozen')
   }
 
   private trackWaveData(track: Track): string {
@@ -640,7 +643,7 @@ export class NativeAudioEngine implements AudioEngine {
   setProject(project: Project): void {
     const rate = projectSampleRate(project.sampleRate)
     if (project === this.project) return
-    if ((this.snapshot.playing || this.pendingPlayRequest !== null) && unsupportedNativeInstruments(project, this.sourceAvailable).length) this.pause()
+    if ((this.snapshot.playing || this.pendingPlayRequest !== null) && unsupportedNativeInstruments(playbackProject(project, this.assets), this.sourceAvailable).length) this.pause()
     if (this.project?.id !== project.id) {
       this.clearWaveAudition(true); this.waveReady.clear(); this.wavePatchRequests.clear(); this.wavePayloads.clear()
     }
@@ -720,14 +723,16 @@ export class NativeAudioEngine implements AudioEngine {
 
   private readonly sourceAvailable = (track: Track): boolean => !!track.pluginInstrument || (track.instrument === 'wavetable' ? this.waveCapability === true : canPlayInstrument(this, track.instrument))
 
-  private async prepareTimeline(project: Project, revision: number) {
+  private async prepareTimeline(source: Project, revision: number) {
+    // Frozen tracks play their cached render (core/freeze.ts): their instrument and plug-ins are not loaded.
+    const project = playbackProject(source, this.assets)
     for (const track of project.tracks) {
       if (track.kind !== 'instrument' || track.pluginInstrument) continue
       const setId = instrumentDef(track.instrument).set
       if (setId) await this.preloadSamples(setId)
     }
     const metadata = new Map<string, NativePcmAsset>()
-    const referenced = new Set(project.tracks.flatMap(track => track.clips.flatMap(clip => clip.kind === 'audio' ? [clip.assetId] : [])))
+    const referenced = new Set(project.tracks.flatMap(track => [...track.clips.flatMap(clip => clip.kind === 'audio' ? [clip.assetId] : []), ...(track.render?.frozen ? [track.render.frozen.assetId] : [])]))
     for (const id of referenced) {
       const asset = this.assets.get(id)
       if (!asset) throw new Error(`오디오 자산을 찾을 수 없습니다: ${id}`)
@@ -812,7 +817,7 @@ export class NativeAudioEngine implements AudioEngine {
     await this.ensureWaveCapability()
     if (generation !== this.generation) throw abortError()
     if (request !== this.transportRequest) return
-    assertNativeInstrumentsSupported(this.requireProject(), this.sourceAvailable)
+    assertNativeInstrumentsSupported(playbackProject(this.requireProject(), this.assets), this.sourceAvailable)
     await this.resume()
     if (generation !== this.generation || this.transportRequest !== request) return
     const project = this.requireProject()
@@ -825,7 +830,7 @@ export class NativeAudioEngine implements AudioEngine {
   /** Shared by Play and playback restoration after opening recording/monitoring input. */
   private async startNativePlayback(request: number, generation: number, beat: number, countInFrames = 0): Promise<void> {
     if (generation !== this.generation || request !== this.transportRequest) return
-    assertNativeInstrumentsSupported(this.requireProject(), this.sourceAvailable)
+    assertNativeInstrumentsSupported(playbackProject(this.requireProject(), this.assets), this.sourceAvailable)
     this.pendingPlayRequest = request
     try {
       await this.request('transport.play', { frame: this.frameForBeat(beat), ...(countInFrames > 0 ? { countInFrames } : {}) })
@@ -1037,19 +1042,45 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   async exportWav(project = this.requireProject()): Promise<Blob> {
+    return (await this.renderAudio(project, { bitDepth: 16 })).blob
+  }
+
+  /** Offline render on a clone of the graph (export, bounce, freeze, stems; docs/BOUNCE_FREEZE_STEMS.md). */
+  async renderAudio(project: Project, options: RenderOptions): Promise<RenderedAudio> {
+    const timeline = await this.offlineTimeline(project)
+    const result = await this.request<NativeAudioFile & { frames?: number; sampleRate?: number; tailSeconds?: number; trackTailSeconds?: number }>('render.wav', {
+      timeline, bitDepth: options.bitDepth,
+      ...(options.preMaster ? { preMaster: true } : {}),
+      ...(options.tailSeconds === undefined ? {} : { tailSeconds: Math.min(30, Math.max(0, options.tailSeconds)) }),
+      ...(options.startFrame ? { startFrame: Math.max(0, Math.round(options.startFrame)) } : {}),
+    })
+    if (!(result?.data instanceof Uint8Array) || result.data.byteLength < 44) throw new Error('네이티브 엔진이 유효한 WAV 파일을 반환하지 않았습니다.')
+    const sampleRate = typeof result.sampleRate === 'number' ? result.sampleRate : timeline.sampleRate
+    const frames = typeof result.frames === 'number' ? result.frames : Math.floor((result.data.byteLength - 44) / (options.bitDepth / 4))
+    return { blob: new Blob([new Uint8Array(result.data)], { type: 'audio/wav' }), sampleRate, frames,
+      tailSeconds: typeof result.tailSeconds === 'number' ? result.tailSeconds : 0, trackTailSeconds: typeof result.trackTailSeconds === 'number' ? result.trackTailSeconds : 0 }
+  }
+
+  /** The tail render.wav would add (prepares the graph offline without rendering it). */
+  async renderTail(project: Project): Promise<number> {
+    const timeline = await this.offlineTimeline(project)
+    const result = await this.request<{ tailSeconds?: number }>('render.tail', { timeline })
+    if (typeof result?.tailSeconds !== 'number' || !Number.isFinite(result.tailSeconds)) throw new Error('네이티브 엔진이 렌더 꼬리 길이를 반환하지 않았습니다.')
+    return Math.min(30, Math.max(0, result.tailSeconds))
+  }
+
+  private async offlineTimeline(project: Project) {
     const generation = this.generation
     await this.ensureWaveCapability()
     if (generation !== this.generation) throw abortError()
-    assertNativeInstrumentsSupported(project, this.sourceAvailable)
+    assertNativeInstrumentsSupported(playbackProject(project, this.assets), this.sourceAvailable)
     // Wait for uploads/graph edits and their errors before asking the host to clone.
     await this.resume()
     await this.pauseAndWait()
     const timeline = await this.prepareTimeline(project, this.revision)
     if (generation !== this.generation) throw abortError()
-    assertNativeInstrumentsSupported(project, this.sourceAvailable)
-    const result = await this.request<NativeAudioFile>('render.wav', { timeline })
-    if (!(result?.data instanceof Uint8Array) || result.data.byteLength < 44) throw new Error('네이티브 엔진이 유효한 WAV 파일을 반환하지 않았습니다.')
-    return new Blob([new Uint8Array(result.data)], { type: 'audio/wav' })
+    assertNativeInstrumentsSupported(playbackProject(project, this.assets), this.sourceAvailable)
+    return timeline
   }
 
   /** The enabled profile channels are the ones the running device has open. */
@@ -1139,6 +1170,8 @@ export class NativeAudioEngine implements AudioEngine {
     await this.syncProject()
     const captured = new Map<string, NativePluginInstance>()
     for (const track of project.tracks) for (const instance of pluginsOf(track)) {
+      // A frozen track's plug-ins are not loaded (its cached render plays) and its state is locked: keep it.
+      if (freezeStatus(project, track, this.assets) === 'frozen') { captured.set(instance.id, instance); continue }
       captured.set(instance.id, await this.capturePlugin(instance, !track.enabled || !instance.enabled))
     }
     if (instances.every(instance => captured.get(instance.id) === instance)) return project

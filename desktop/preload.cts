@@ -1,5 +1,5 @@
 import electron = require('electron')
-import type { DesktopBridge, DesktopFile, DesktopSaveRequest, DesktopSaveResult } from './contracts.js'
+import type { DesktopBridge, DesktopFile, DesktopFolderResult, DesktopSaveRequest, DesktopSaveResult } from './contracts.js'
 
 const { contextBridge, ipcRenderer } = electron
 const version = process.argv.find(argument => argument.startsWith('--garak-version='))?.slice('--garak-version='.length) ?? 'unknown'
@@ -24,6 +24,9 @@ const bridge: DesktopBridge = {
   },
   openProject: (): Promise<DesktopFile | null> => ipcRenderer.invoke('garak:open-project'),
   saveFile: (request: DesktopSaveRequest): Promise<DesktopSaveResult> => ipcRenderer.invoke('garak:save-file', request),
+  chooseExportFolder: (name: string): Promise<DesktopFolderResult> => ipcRenderer.invoke('garak:choose-export-folder', name),
+  writeExportFile: (token: string, name: string, data: Uint8Array): Promise<void> => ipcRenderer.invoke('garak:write-export-file', { token, name, data }),
+  closeExportFolder: (token: string): Promise<void> => ipcRenderer.invoke('garak:close-export-folder', token),
   onOpenProject: callback => subscribe('garak:project-opened', callback),
   onSaveProject: callback => subscribe('garak:save-project', callback),
   onNewProject: callback => subscribe('garak:new-project', callback),

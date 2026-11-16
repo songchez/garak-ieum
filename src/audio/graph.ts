@@ -7,7 +7,7 @@ import type { ControllerKey } from '../core/types'
 import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
 import { masterFeedExcluded, reconcileTrackRoutes, routeOf } from '../core/trackRouting'
 import { isReturnTrack, sendLayoutKey, sendsOf } from '../core/sends'
-import { clamp } from './math'
+import { clamp, loopRange } from './math'
 import { tempoMapOf, type TempoMap } from '../core/tempoMap'
 import { AUDIO_CLIP_GAIN_MAX, envelopeAt, envelopeBreakpoints, fadeLengths } from '../core/clipEnvelope.js'
 import { pickZone, releaseNoiseGain, type LoadedSet, type SampleLibrary } from './samples'
@@ -288,13 +288,15 @@ export function updateEffectTempo(graph: EngineGraph, project: Project, bpm: num
   }
 }
 
-export function renderTailSeconds(project: Project): number {
+/** Own tails of the enabled tracks (instrument release plus insert tails; a frozen track's stored tail). */
+function trackTails(project: Project): Map<string, number> {
   const tails = new Map<string, number>()
   // Synced delays ring longest at the slowest tempo of the map.
   const slowest = Math.min(...tempoMapOf(project).points.map(point => point.bpm))
   for (const track of project.tracks) {
     if (!isTrackEnabled(track)) continue
     let tail = 0
+    if (track.render?.frozen) { tails.set(track.id, track.render.frozen.tailSeconds); continue }
     const def = instrumentDef(track.instrument)
     if (track.kind === 'instrument' && !def.isKit) {
       tail = Math.max(tail, clamp(paramValue(def.params, track.instrumentParams, 'release'), 0, 30) + 0.2)
@@ -305,6 +307,17 @@ export function renderTailSeconds(project: Project): number {
     }
     tails.set(track.id, tail)
   }
+  return tails
+}
+
+/** The longest own tail of a non-return track: what a frozen render of that track stores (docs/BOUNCE_FREEZE_STEMS.md). */
+export function trackTailSeconds(project: Project): number {
+  const tails = trackTails(project)
+  return Math.max(0, ...project.tracks.filter(track => !isReturnTrack(track)).map(track => tails.get(track.id) ?? 0))
+}
+
+export function renderTailSeconds(project: Project): number {
+  const tails = trackTails(project)
   let result = 0.85
   for (const track of project.tracks) {
     const own = tails.get(track.id)
@@ -320,8 +333,13 @@ function usesGuitarRigMaster(tracks: readonly Track[]): boolean {
   return tracks.some(track => isTrackEnabled(track) && track.devices.some(device => device.enabled && device.type === 'guitar-rig'))
 }
 
+export interface GraphOptions {
+  /** Offline stems, bounce and freeze: the track sum goes straight out, without master volume or the master processor. */
+  preMaster?: boolean
+}
+
 /** This graph is used unchanged by realtime playback and OfflineAudioContext. */
-export function createGraph(context: BaseAudioContext, project: Project): EngineGraph {
+export function createGraph(context: BaseAudioContext, project: Project, options: GraphOptions = {}): EngineGraph {
   const nodes: AudioNode[] = []
   const resources: DeviceGraph[] = []
   const remember = <T extends AudioNode>(node: T): T => { nodes.push(node); return node }
@@ -330,7 +348,10 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     const masterVolume = remember(context.createGain())
     const hasGuitarRig = usesGuitarRigMaster(project.tracks)
     let master: { input: AudioNode; output: AudioNode }
-    if (hasGuitarRig) {
+    if (options.preMaster) {
+      const through = remember(context.createGain())
+      master = { input: through, output: through }
+    } else if (hasGuitarRig) {
       // The legacy DynamicsCompressor has 6 ms of fixed lookahead. Select the same
       // causal master for live and offline rig projects; preserve existing mixes.
       const processor = createGuitarRigMaster(context, remember)
@@ -348,7 +369,8 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     const gate = remember(context.createGain())
     const meter = remember(context.createAnalyser())
     meter.fftSize = 256
-    sum.connect(masterVolume).connect(master.input)
+    if (options.preMaster) sum.connect(master.input)
+    else sum.connect(masterVolume).connect(master.input)
     master.output.connect(gate).connect(meter).connect(context.destination)
     const previewInput = remember(context.createGain())
     previewInput.gain.value = 0.65
@@ -377,7 +399,18 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
       }
       const postFx = remember(context.createGain())
       tail.connect(postFx).connect(panner)
-      panner.connect(fader).connect(trackMeter).connect(sum)
+      panner.connect(fader)
+      if (track.render?.preFader) {
+        // Freeze/bounce renders: the post-insert signal without pan or fader. Discrete up-mixing leaves a mono
+        // source's right channel silent, which marks the render mono (the live pan then keeps the mono law).
+        const discrete = remember(context.createGain())
+        discrete.channelCount = 2
+        discrete.channelCountMode = 'explicit'
+        discrete.channelInterpretation = 'discrete'
+        postFx.connect(discrete).connect(trackMeter)
+      } else fader.connect(trackMeter)
+      // directOut false (return stems): the track still feeds its sends, but not the master sum.
+      if (track.render?.directOut !== false) trackMeter.connect(sum)
 
       const controls = track.kind === 'instrument' ? createTrackControls(context, input, remember) : undefined
       tracks.set(track.id, {
@@ -1044,6 +1077,29 @@ function scheduleTracks(
         if (library && library.status(def.set) === 'idle') library.load(def.set, graph.context).catch(() => undefined)
         continue
       }
+    }
+    const frozen = track.render?.frozen
+    if (frozen) {
+      // A frozen render starts at beat 0 and runs into the export tail. Offline it plays to its end; live
+      // playback stops it at a cycle boundary (the next pass schedules it again from the cycle start).
+      const asset = assets.get(frozen.assetId)
+      if (asset && (startsInRange(0) || (chase && startBeat > 0))) {
+        const [beat, time] = adjustStart(Math.max(0, startBeat))
+        const offset = tempo.secondsAt(beat)
+        const limit = realtime && loopRange(project) ? seconds(beat, boundary) : Infinity
+        if (offset < asset.buffer.duration && limit > 0.001) {
+          voiceOwner = { trackId: track.id, onset: time, audio: true }
+          const source = graph.context.createBufferSource()
+          source.buffer = asset.buffer
+          const envelope = graph.context.createGain()
+          // A chased start (seek) fades in like a region; a render from the start must stay sample-exact.
+          if (beat > epsilon) { envelope.gain.setValueAtTime(0, time); envelope.gain.linearRampToValueAtTime(1, time + 0.004) }
+          source.connect(envelope).connect(channel.input)
+          registerVoice(graph, [source], [source, envelope], envelope)
+          if (Number.isFinite(limit)) { source.start(time, offset, limit); source.stop(time + limit + 0.002) } else source.start(time, offset)
+        }
+      }
+      continue
     }
     const events = trackEvents(track, project.lengthBeats, tempo)
     for (const window of events.windows) {

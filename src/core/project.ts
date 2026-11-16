@@ -1,5 +1,5 @@
 import { EFFECT_DEFS, defaultParams, type ParamDef } from './devices'
-import { DEFAULT_SAMPLE_RATE, projectSampleRate } from './audioSettings'
+import { DEFAULT_SAMPLE_RATE, isSampleRate, projectSampleRate } from './audioSettings'
 import { instrumentDef, isInstrumentId } from './instruments'
 import { midiEditorClip, midiSourceOffset } from './midiRegions'
 import { joinSustain } from './sustain'
@@ -12,7 +12,7 @@ import { checkWarpClip, validateWarp } from '../devices/audio-warp/state'
 import { checkTransposeClip, validateTranspose } from '../devices/region-pitch/state'
 import { cloneWavetableState, combineWavetablePatch, createDefaultWavetablePatch, parseWavetableParams, splitWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 import { AUDIO_CLIP_GAIN_MAX, FADE_CURVES, MIDI_CLIP_GAIN_MAX, crossfadeOverlaps, isFadeCurve } from './clipEnvelope.js'
-import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type ControllerKey, type ControllerPoint, type TempoPoint, type MeterEvent, PROJECT_SCHEMA_VERSION, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend, type AutomationLane, type AutomationMode, type AutomationTarget } from './types'
+import { QUANTIZE_VALUES, type FadeCurve, type Clip, type Device, type EffectDevice, type EffectType, type InstrumentId, type Marker, type MidiClip, type MidiNote, type Project, type SustainEvent, type ControllerKey, type ControllerPoint, type TempoPoint, type MeterEvent, PROJECT_SCHEMA_VERSION, type Track, type TrackInput, type TrackInputRoute, type TrackInputTap, type TrackMidiInput, type TrackMonitorMode, type TrackSend, type AutomationLane, type AutomationMode, type AutomationTarget, type TrackFreeze } from './types'
 import { copyRoute, reconcileTrackRoutes } from './trackRouting'
 import { MAX_TEMPO_POINTS, TEMPO_MAX, TEMPO_MIN, beatAfterSeconds, normalizeTempoPoints, spanSeconds, tempoMapOf, type Tempo } from './tempoMap'
 // sends.ts imports this module too: only use its exports inside functions (no top-level reads).
@@ -25,6 +25,13 @@ const METER_MAP_SCHEMA = 18
 
 /** Logic defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%); returns at 270°. */
 export const DEFAULT_TRACK_COLORS: Readonly<Record<Track['kind'], string>> = { audio: '#669ed6', instrument: '#66d666', return: '#9e66d6' }
+
+/**
+ * The schema this build writes (defined in core/types.ts). Freeze state (Track.freeze) arrived in
+ * FREEZE_SCHEMA_VERSION (19, after the meter map at 18; docs/BOUNCE_FREEZE_STEMS.md).
+ */
+export { PROJECT_SCHEMA_VERSION }
+export const FREEZE_SCHEMA_VERSION = 19
 
 /** IDs describe editing objects; they are not security tokens. */
 export function uid(): string {
@@ -403,8 +410,9 @@ export const copyTrackInput = (input: TrackInput): TrackInput => ({ channels: [.
 
 /** A deep copy with new track, clip, note and device IDs; audio assets stay shared. */
 export function duplicateTrack(track: Track): Track {
+  const { freeze: _freeze, ...unfrozen } = track
   const copy: Track = {
-    ...track,
+    ...unfrozen,
     id: uid(),
     name: `${track.name} 복사본`.slice(0, 512),
     ...(track.input ? { input: copyTrackInput(track.input) } : {}),
@@ -429,8 +437,9 @@ function withCopiedAutomation(source: Track, copy: Track): Track {
 /** Logic "New Track With Duplicate Settings": every setting but no clips; arm and monitor stay off.
  * The input and monitor mode are settings and carry over, except that `in` (the I flag) becomes `off`. */
 export function duplicateTrackSettings(track: Track): Track {
+  const { freeze: _freeze, ...unfrozen } = track
   const copy: Track = {
-    ...track,
+    ...unfrozen,
     id: uid(),
     armed: false,
     monitor: false,
@@ -602,6 +611,18 @@ export function deleteMarker(project: Project, markerId: string): Project {
 }
 
 type RecordValue = Record<string, unknown>
+
+/** Schema 19 freeze record; undefined when malformed (the track then plays live and can be frozen again). */
+function parseFreeze(value: unknown): TrackFreeze | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as RecordValue
+  const { assetId, signature, tailSeconds, sampleRate } = record
+  if (typeof assetId !== 'string' || !assetId || assetId.length > 200) return undefined
+  if (typeof signature !== 'string' || !signature || signature.length > 200) return undefined
+  if (typeof tailSeconds !== 'number' || !Number.isFinite(tailSeconds) || tailSeconds < 0 || tailSeconds > 3600) return undefined
+  if (!isSampleRate(sampleRate)) return undefined
+  return { assetId, signature, tailSeconds, sampleRate }
+}
 
 function object(value: unknown, path: string): RecordValue {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -1065,6 +1086,9 @@ function validateProjectFields(input: unknown): Project {
     if (version < 17 && (track.automation !== undefined || track.automationMode !== undefined)) throw new Error('Track automation requires project schema version 17 or later.')
     const automationMode = track.automationMode === undefined ? undefined : parseAutomationMode(track.automationMode, `${path} automation mode`)
     const automation = track.automation === undefined ? undefined : parseAutomation(track.automation, `${path} automation`, id)
+    if (version < FREEZE_SCHEMA_VERSION && track.freeze !== undefined) throw new Error(`Frozen tracks require project schema version ${FREEZE_SCHEMA_VERSION} or later.`)
+    // A return track has nothing to freeze; a malformed record (hand-edited) is dropped and the track plays live.
+    const freeze = track.freeze === undefined || track.kind === 'return' ? undefined : parseFreeze(track.freeze)
     const parsed: Track = {
       id: trackId,
       name: text(track.name, `${path} name`),
@@ -1098,6 +1122,7 @@ function validateProjectFields(input: unknown): Project {
       ...(sends?.length ? { sends } : {}),
       ...(automation?.length ? { automation } : {}),
       ...(automationMode && automationMode !== 'read' ? { automationMode } : {}),
+      ...(freeze ? { freeze } : {}),
     }
     // Lanes of a device or instrument parameter that is gone (hand-edited or older writers) are dropped, not fatal.
     return pruneAutomation(parsed)

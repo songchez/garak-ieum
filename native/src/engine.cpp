@@ -895,12 +895,14 @@ struct TrackRuntime {
               const ProcessContext& context,std::uint64_t& overflows,std::uint64_t& invalid)noexcept {
     std::fill_n(buffer.data(),static_cast<std::size_t>(frames)*2,0.f);
     if(!timeline.enabled){peak=0;if(!preTap.empty())std::fill_n(preTap.data(),static_cast<std::size_t>(frames)*2,0.f);if(!postTap.empty())std::fill_n(postTap.data(),static_cast<std::size_t>(frames)*2,0.f);if(!faderTap.empty())std::fill_n(faderTap.data(),static_cast<std::size_t>(frames)*2,0.f);return;}
-    if(playing)for(const auto& resolved:windows) {
+    // Offline engines keep reading frozen windows after the project end: that part is the frozen tail.
+    const bool freezeTail=!playing&&context.offline&&frame>=projectLength;
+    if(playing||freezeTail)for(const auto& resolved:windows) {
       const auto&w=resolved.window;
       if(w.startFrame>=frame+frames)break;
-      if(w.endFrame<=frame)continue;
+      if(w.endFrame<=frame||(freezeTail&&!w.freeze))continue;
       const auto start=std::max(frame,w.startFrame),end=std::min<std::int64_t>(frame+frames,w.endFrame);
-      const double click=std::min(sampleRate*.004,(w.endFrame-w.startFrame)/4.0);
+      const double click=w.freeze?0:std::min(sampleRate*.004,(w.endFrame-w.startFrame)/4.0);
       for(auto absolute=start;absolute<end;++absolute){const auto delta=absolute-w.startFrame;const auto offset=static_cast<std::size_t>(absolute-frame);
         const double envelopePos=w.clipOffsetFrames+delta;
         double gain=w.gain;
@@ -978,6 +980,15 @@ struct TrackRuntime {
     const bool lowLatencyMonitor=monitor&&!isReturn&&context.playing&&!context.offline&&contextLowLatency;
     if(!lowLatencyMonitor)compensation.process(buffer.data(),frames);
     if(!postTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,postTap.data());
+    if(timeline.preFader) {
+      // Freeze/bounce renders: the compensated post-insert signal, without pan, fader or mute. A mono track
+      // (whose pan uses the mono law) leaves the right channel silent: the render is then kept mono.
+      if(!(stereoSource||stereoEffects))for(std::uint32_t i=0;i<frames;++i)buffer[2*i+1]=0;
+      peak=0;for(std::size_t i=0;i<static_cast<std::size_t>(frames)*2;++i){if(!std::isfinite(buffer[i])){buffer[i]=0;++invalid;}peak=std::max(peak,std::abs(buffer[i]));}
+      if(!faderTap.empty())std::copy_n(buffer.data(),static_cast<std::size_t>(frames)*2,faderTap.data());
+      if(!lowLatencyMonitor)outputDelay.process(buffer.data(),frames);
+      return;
+    }
     const double targetPan=timeline.pan,targetGain=timeline.audible?timeline.gain:0;
     const double smoothing=1-std::exp(-1/(sampleRate*.012));
     peak=0;
@@ -1317,7 +1328,7 @@ struct PreparedProject::Impl {
   PtrList<TrackRuntime> tracks;
   dsp::Master master;
   std::uint32_t latency=0,senderLatency=0;
-  double tail=.85;
+  double tail=.85,trackTail=0;
   std::unique_ptr<ControlRecipe> recipe; // Moved to the engine by submit().
   std::uint64_t serial=0,preserveFrom=0;
   // Set by submit() when this graph continues the running one: tempo/length/cycle changed (every track
@@ -1353,6 +1364,7 @@ PreparedProject::PreparedProject(PreparedProject&&)noexcept=default;
 PreparedProject& PreparedProject::operator=(PreparedProject&&)noexcept=default;
 std::size_t PreparedProject::trackCount()const noexcept{return impl_->tracks.size();}
 double PreparedProject::tailSeconds()const noexcept{return impl_->tail;}
+double PreparedProject::trackTailSeconds()const noexcept{return impl_->trackTail;}
 std::uint32_t PreparedProject::latencyFrames()const noexcept{return impl_->latency;}
 std::uint32_t PreparedProject::senderLatencyFrames()const noexcept{return impl_->senderLatency;}
 
@@ -1383,7 +1395,7 @@ struct RenderEngine::Impl {
   std::size_t lastSubmittedWavetableTableMemory=0;
   std::int64_t position=0;
   std::int64_t continuousFrame=0;
-  bool playing=false,offline=false,recording=false;
+  bool playing=false,offline=false,recording=false,masterBypass=false;
   float masterGain=1;
   float targetMasterGain=1;
   // Metronome (callback-owned view; see metronome.hpp). During a count-in the
@@ -2141,10 +2153,12 @@ TrackBuild buildTrack(const ProjectTimeline& p,const TrackTimeline& t,const Asse
     // Leave room for all queued live notes and their auto-release events.
     require(end-begin+1<=maxPluginEvents-maxVoices*2-1,"Instrument note density exceeds the bounded event buffer");
   }
-  for(const auto&w:t.audio){require(w.startFrame>=0&&w.endFrame>w.startFrame&&w.endFrame<=p.lengthFrames&&w.clipLengthFrames>0&&w.clipOffsetFrames>=0&&w.fadeInFrames>=0&&w.fadeOutFrames>=0&&w.fadeInCurve>=0&&w.fadeInCurve<=4&&w.fadeOutCurve>=0&&w.fadeOutCurve<=4,"Invalid native audio window");
+  for(const auto&w:t.audio){require(w.startFrame>=0&&w.endFrame>w.startFrame&&(w.endFrame<=p.lengthFrames||w.freeze)&&w.clipLengthFrames>0&&w.clipOffsetFrames>=0&&w.fadeInFrames>=0&&w.fadeOutFrames>=0&&w.fadeInCurve>=0&&w.fadeInCurve<=4&&w.fadeOutCurve>=0&&w.fadeOutCurve<=4,"Invalid native audio window");
     checked(w.gain,0,16,"Invalid audio window gain");checked(w.sourceStartFrame,0,1e15,"Invalid audio source offset");checked(w.sourceSampleRate,8000,192000,"Invalid source sample rate");
     auto a=resolveAsset(assets,w.assetId);require(w.sourceSampleRate==a->sampleRate&&w.sourceStartFrame<a->frames(),"Audio window does not match registered PCM");
     track.stereoSource|=a->channels>1;
+    // A frozen render already carries its track's release and effect tails: the window states that own tail.
+    if(w.freeze)trackTail=std::max(trackTail,w.tailSeconds);
     info.assets.push_back(a);
     track.windows.push_back({w,std::move(a)});
   }
@@ -2212,7 +2226,7 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
   }
   {std::vector<const ControlTrack*> all;for(const auto&t:recipe->tracks)all.push_back(&t);estimated+=sharedMemory(all);}
   require(estimated<=memoryLimit,"Native project exceeds bounded memory/event limits");
-  for(std::size_t i=0;i<result->tracks.size();++i)result->tail=std::max(result->tail,recipe->tracks[i].tail+.15);
+  for(std::size_t i=0;i<result->tracks.size();++i){result->tail=std::max(result->tail,recipe->tracks[i].tail+.15);if(!p.tracks[i].isReturn)result->trackTail=std::max(result->trackTail,recipe->tracks[i].tail);}
   // Send/return plug-in delay compensation (docs/SENDS_RETURNS.md). Senders align to the largest non-return
   // latency S (as before); a fed return R adds its own chain latency after that, so every return is padded
   // to the largest fed return latency L and every non-return track's output waits L after its taps. The
@@ -2347,7 +2361,7 @@ UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& ass
     }
     plan.mix=neu.gain!=old.gain||neu.pan!=old.pan||neu.mute!=old.mute||neu.solo!=old.solo||neu.soloSafe!=old.soloSafe||neu.audible!=old.audible||neu.unmutedAudible!=old.unmutedAudible;
     if(plan.mix){checked(neu.gain,0,2,"Invalid native track gain");checked(neu.pan,-1,1,"Invalid native pan");}
-    bool replace=neu.enabled!=old.enabled||neu.input!=old.input||!sameNotes(neu.notes,old.notes)||neu.controls!=old.controls||neu.audio!=old.audio||neu.automation!=old.automation;
+    bool replace=neu.enabled!=old.enabled||neu.directOut!=old.directOut||neu.preFader!=old.preFader||neu.input!=old.input||!sameNotes(neu.notes,old.notes)||neu.controls!=old.controls||neu.audio!=old.audio||neu.automation!=old.automation;
     if(!replace) {
       if(!(neu.source==old.source)) {
         // A VST3 instrument's parameter values reach the cached instance through the resolver, in place.
@@ -2558,6 +2572,7 @@ std::uint64_t RenderEngine::setInputLayout(std::span<const std::uint32_t> channe
 std::uint64_t RenderEngine::setMasterGain(float gain){checked(gain,0,2,"Invalid master gain");Impl::Command c;c.kind=Impl::Kind::Master;c.value=gain;return impl_->enqueue(c);}
 std::uint64_t RenderEngine::setInputChannels(int left,int right){require(left>=0&&left<64&&right>=-1&&right<64,"Invalid native input channel");Impl::Command c;c.kind=Impl::Kind::Input;c.pitch=left;c.frame=right;impl_->controlLeft=left;impl_->controlRight=right;return impl_->enqueue(c);}
 void RenderEngine::setOffline(bool value)noexcept{impl_->offline=value;}
+void RenderEngine::setMasterBypass(bool value)noexcept{impl_->masterBypass=value;}
 std::uint32_t autoProcessingThreads()noexcept {
   const auto hardware=std::thread::hardware_concurrency();
   return hardware>1?std::min(hardware-1,8u):0u;
@@ -2624,12 +2639,14 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
         else for(std::uint32_t k=0;k<size;++k)e.renderTrack(p.levelOrder[begin+k],0);
       }
       for(auto&t:p.tracks) {
-        for(std::size_t sample=0;sample<static_cast<std::size_t>(count)*2;++sample)out[sample]+=t.mix[sample];
+        if(t.timeline.directOut)for(std::size_t sample=0;sample<static_cast<std::size_t>(count)*2;++sample)out[sample]+=t.mix[sample];
         e.voiceOverflows+=t.taskOverflows;e.invalidSamples+=t.taskInvalid;e.aheadResyncs+=t.taskResyncs;t.taskResyncs=0;
       }
       const float smoothing=static_cast<float>(1-std::exp(-1/(e.rate*.012)));
-      for(std::uint32_t i=0;i<count;++i){e.masterGain+=(e.targetMasterGain-e.masterGain)*smoothing;out[2*i]*=e.masterGain;out[2*i+1]*=e.masterGain;}
-      p.master.process(out,count);
+      if(!(e.offline&&e.masterBypass)) {
+        for(std::uint32_t i=0;i<count;++i){e.masterGain+=(e.targetMasterGain-e.masterGain)*smoothing;out[2*i]*=e.masterGain;out[2*i+1]*=e.masterGain;}
+        p.master.process(out,count);
+      }
     }
     if(e.recording&&e.capture) {
       // Every take shares one frame clock: the same callback frames, written together. Written after the

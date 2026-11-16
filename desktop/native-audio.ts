@@ -22,7 +22,7 @@ const MAX_PCM_BYTES = 512 * 1024 * 1024
 const MAX_TAKES = 64
 /** Several takes reach the renderer in one reply; larger ones stay in the recovery folder. */
 const MAX_TAKES_BYTES = 2 * 1024 * 1024 * 1024
-const METHODS = new Set(['devices.list', 'devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor', 'latency.measure', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'note.control', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'metronome.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
+const METHODS = new Set(['devices.list', 'devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor', 'latency.measure', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'note.control', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'render.tail', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'metronome.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
 
 function record(value: unknown, label = 'request'): Json {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid native audio ${label}.`)
@@ -379,6 +379,7 @@ export class NativeAudioService {
         return { ...metadata, data: new Uint8Array(await readFile(path)) }
       } finally { await rm(path, { force: true }).catch(() => {}) }
     }
+    if (method === 'render.tail') return this.send(method, { timeline: await this.resolveTimeline(params.timeline) }, 10 * 60_000)
     // Native host paths are supplied exclusively above, not by the renderer.
     return this.send(method, params)
   }

@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { assetRelativePath, desktopMcpStartupErrorMessage, isAppUrl, isBundledLicenseUrl, isExternalUrl, safeSuggestedName, validateSaveRequest } from './policy'
+import { assetRelativePath, desktopMcpStartupErrorMessage, isAppUrl, isBundledLicenseUrl, isExternalUrl, safeFolderName, safeSuggestedName, validateFolderFile, validateSaveRequest } from './policy'
+
+describe('stem export folder boundary', () => {
+  const token = '01234567-89ab-cdef-0123-456789abcdef'
+  const wav = new Uint8Array(44)
+  it('names one safe subfolder', () => {
+    expect(safeFolderName('../Song 스템')).toBe('Song 스템')
+    expect(safeFolderName('a:b*c. ')).toBe('a_b_c')
+    expect(safeFolderName('nul')).toBe('가락이음 스템')
+  })
+  it('writes only plain .wav names with a valid handle', () => {
+    expect(validateFolderFile({ token, name: '01 Keys.wav', data: wav }).name).toBe('01 Keys.wav')
+    for (const name of ['../x.wav', 'a/b.wav', 'a\\b.wav', 'x.exe', 'con.wav', ' x.wav', 'x .wav', 'C:x.wav']) expect(() => validateFolderFile({ token, name, data: wav })).toThrow()
+    expect(() => validateFolderFile({ token: 'nope', name: 'a.wav', data: wav })).toThrow()
+    expect(() => validateFolderFile({ token, name: 'a.wav', data: new Uint8Array(10) })).toThrow()
+  })
+})
 
 describe('packaged asset boundary', () => {
   it('accepts only the local app authority', () => {

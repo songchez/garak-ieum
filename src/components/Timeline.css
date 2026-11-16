@@ -125,3 +125,6 @@
 .meter-editor-actions button{padding:0 10px}
 .meter-editor-actions button.primary{background:var(--brass);border-color:var(--brass);color:var(--on-brass)}
 .meter-editor-actions button:disabled{opacity:.5}
+/* A frozen track's regions are locked: shown through a cool tint, not editable (docs/BOUNCE_FREEZE_STEMS.md). */
+.track-lane.frozen-lane{background-image:linear-gradient(color-mix(in srgb,#5fb8e8 7%,transparent),color-mix(in srgb,#5fb8e8 7%,transparent))}
+.track-lane.frozen-lane .timeline-clip,.track-lane.frozen-lane [class*="clip"]{filter:saturate(.55)}
