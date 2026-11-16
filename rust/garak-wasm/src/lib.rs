@@ -20,6 +20,8 @@ use garak_dsp::{Biquad, Coefficients, FilterType, Utility, UtilityParams};
 mod arena;
 /// Built-in effects (`garak_fx_*`).
 pub mod fx;
+/// Built-in instruments (`garak_instrument_*`).
+pub mod instruments;
 
 /// Host unit tests share the static pools; they serialise through this lock.
 #[cfg(test)]

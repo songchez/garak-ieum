@@ -52,7 +52,8 @@ set(garak_rust_target_dir "${CMAKE_BINARY_DIR}/rust-target")
 # Always the optimised profile: audio-thread code is never shipped or parity-tested unoptimised.
 set(garak_rust_lib "${garak_rust_target_dir}/${garak_rust_target}/release/${garak_rust_lib_name}")
 file(GLOB_RECURSE garak_rust_sources CONFIGURE_DEPENDS
-  "${GARAK_RUST_ROOT}/garak-dsp/src/*.rs" "${GARAK_RUST_ROOT}/garak-engine/src/*.rs" "${GARAK_RUST_ROOT}/garak-ffi/src/*.rs")
+  "${GARAK_RUST_ROOT}/garak-dsp/src/*.rs" "${GARAK_RUST_ROOT}/garak-dsp/src/*.golden"
+  "${GARAK_RUST_ROOT}/garak-engine/src/*.rs" "${GARAK_RUST_ROOT}/garak-ffi/src/*.rs")
 set(garak_rust_manifests
   "${GARAK_RUST_ROOT}/Cargo.toml" "${GARAK_RUST_ROOT}/Cargo.lock" "${GARAK_RUST_ROOT}/rust-toolchain.toml"
   "${GARAK_RUST_ROOT}/garak-dsp/Cargo.toml" "${GARAK_RUST_ROOT}/garak-engine/Cargo.toml" "${GARAK_RUST_ROOT}/garak-ffi/Cargo.toml")
@@ -123,4 +124,16 @@ if(GARAK_BUILD_TESTS)
     endif()
   endforeach()
   add_test(NAME native-rust-engine-parity COMMAND garak-rust-engine-parity-test)
+
+  # 옥구슬 EP / 한밤 106: checksum parity with the WASM build (parity.golden), CPU budget, engine use.
+  add_executable(garak-rust-instrument-test tests/rust_instrument_test.cpp)
+  target_link_libraries(garak-rust-instrument-test PRIVATE garak_core garak_rust)
+  target_compile_definitions(garak-rust-instrument-test PRIVATE
+    "GARAK_INSTRUMENT_GOLDEN=\"${GARAK_RUST_ROOT}/garak-dsp/src/instruments/parity.golden\"")
+  if(MSVC)
+    target_compile_options(garak-rust-instrument-test PRIVATE /W4 /utf-8)
+  else()
+    target_compile_options(garak-rust-instrument-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME native-rust-instruments COMMAND garak-rust-instrument-test)
 endif()

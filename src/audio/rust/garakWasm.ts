@@ -310,6 +310,16 @@ export function instantiateGarakWasm(source: WebAssembly.Module | BufferSource):
  * Main thread: fetch + compile the module. Resolves to null (never throws) when the artifact was
  * not built or fails to compile, so callers keep the existing TypeScript / C++ paths.
  */
+let sharedModule: Promise<WebAssembly.Module | null> | null = null
+/**
+ * The page's garak-dsp module: fetched and compiled once and shared by the 시김새 kernels
+ * (devices/effects/sigimsae.ts) and the vintage instruments (devices/vintage/availability.ts).
+ */
+export function sharedGarakWasmModule(baseUrl = '/'): Promise<WebAssembly.Module | null> {
+  sharedModule ??= loadGarakWasmModule(baseUrl)
+  return sharedModule
+}
+
 export async function loadGarakWasmModule(baseUrl = '/', fetchImpl: typeof fetch = fetch): Promise<WebAssembly.Module | null> {
   try {
     const response = await fetchImpl(new URL(GARAK_WASM_PATH, new URL(baseUrl, globalThis.location?.href ?? 'http://localhost/')).href)

@@ -4,7 +4,7 @@ import { KERNEL_DEFS, type KernelType } from './sigimsaeDefs.js'
 import type { DynamicsMeterSource, DynamicsReading } from './dynamicsMeter.js'
 import { createAnalysisTap, createStereoScopeTap, unbindDeviceAnalysis, type DeviceAnalysisTap } from './analysis.js'
 import { rustDspRequested } from '../../audio/rust/flag.js'
-import { instantiateGarakWasm, loadGarakWasmModule, type GarakWasm, type RustEffectType } from '../../audio/rust/garakWasm.js'
+import { instantiateGarakWasm, sharedGarakWasmModule, type GarakWasm, type RustEffectType } from '../../audio/rust/garakWasm.js'
 import { clamp } from '../../audio/math.js'
 
 /** Kernels that report input level and gain reduction to the device views. */
@@ -20,7 +20,7 @@ const baseUrl = () => (import.meta as { env?: { BASE_URL?: string } }).env?.BASE
 let moduleLoad: Promise<WebAssembly.Module | null> | null = null
 function garakModule(): Promise<WebAssembly.Module | null> {
   if (!rustDspRequested()) return Promise.resolve(null)
-  moduleLoad ??= loadGarakWasmModule(baseUrl()).then(module => {
+  moduleLoad ??= sharedGarakWasmModule(baseUrl()).then(module => {
     if (!module) console.info('[가락이음] Rust DSP 모듈(wasm/garak-dsp.wasm)이 없거나 불러오지 못해 TypeScript 커널과 Web Audio 노드로 처리합니다. 만들려면: pnpm rust:wasm (docs/RUST.md)')
     return module
   })

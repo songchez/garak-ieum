@@ -26,6 +26,9 @@ on:
       - 'native/src/protocol.hpp'
       - 'native/include/garak/engine.hpp'
       - 'native/include/garak/tempo.hpp'
+      - 'native/tests/rust_instrument_test.cpp'
+      - 'native/src/rust_instrument.hpp'
+      - 'src/devices/vintage/**'
       - 'src/audio/rust/**'
       - 'src/devices/effects/kernels.ts'
       - 'src/devices/effects/sigimsae.ts'
@@ -95,7 +98,7 @@ jobs:
           node scripts/rust.mjs wasm
           size=$(stat -c %s public/wasm/garak-dsp.wasm)
           gzip=$(gzip -9 -c public/wasm/garak-dsp.wasm | wc -c)
-          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 128 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
+          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 160 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
 
       # The render engine for the worklet (docs/RUST_ENGINE.md 5): not shipped yet, size reported.
       - name: Build the engine WASM module
@@ -180,7 +183,7 @@ jobs:
       - name: Build garak-ffi, the parity tests, the benchmarks and the engine test
         run: >
           cmake --build build/native-rust --config Release --parallel 4
-          --target garak-rust-parity-test garak-rust-bench garak-engine-test
+          --target garak-rust-parity-test garak-rust-bench garak-engine-test garak-rust-instrument-test
           garak-rust-engine-parity-test garak-rust-engine-bench
 
       # Every ported effect through C++ and Rust (param sweeps, automation, tempo, resets,
@@ -192,6 +195,11 @@ jobs:
       # rust/garak-engine (offline exports at several blocks/rates, live diffs): residual <= -90 dBFS.
       - name: Run the render-engine parity test (C++ vs Rust engine)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-parity --output-on-failure
+
+      # 옥구슬 EP / 한밤 106 through garak-ffi: checksum parity with the WASM build (parity.golden),
+      # 8 voices < 3 % of one core at 48 kHz, and engine use (timeline, live pedal, edits).
+      - name: Run the vintage instrument test (parity, CPU budget, engine)
+        run: ctest --test-dir build/native-rust -C Release -R native-rust-instruments --output-on-failure
 
       # The whole engine regression suite with every built-in effect switched to Rust.
       - name: Engine tests with the Rust effects (GARAK_RUST_EFFECTS=all)
@@ -216,4 +224,7 @@ jobs:
             echo
             echo "### Render engine CPU, 16/32 tracks (${{ matrix.name }})"
             "$dir/garak-rust-engine-bench" 10 3 128
+            echo
+            echo "### Vintage instruments (${{ matrix.name }})"
+            "$dir/garak-rust-instrument-test" | grep '^|'
           } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -83,7 +83,7 @@ sh scripts/setup-rust.sh
 |---|---|
 | `pnpm rust:test` | `cargo test --workspace` (커널 단위 테스트, FFI 헤더 누락 검사) |
 | `pnpm rust:check` | `cargo fmt --check` + clippy(호스트, wasm32) `-D warnings` |
-| `pnpm rust:wasm` | `garak-wasm`을 빌드해 `public/wasm/garak-dsp.wasm`에 복사, 크기 예산(128 KiB, gzip 80 KB) 확인. `pnpm build`도 먼저 실행 |
+| `pnpm rust:wasm` | `garak-wasm`을 빌드해 `public/wasm/garak-dsp.wasm`에 복사, 크기 예산(160 KiB, gzip 80 KB) 확인. `pnpm build`도 먼저 실행 |
 | `pnpm rust:build` | 네이티브 `garak-ffi` 정적 라이브러리(release) |
 | `pnpm exec vitest run src/audio/rust` | WASM ↔ TS 패리티 |
 | CMake `-DGARAK_RUST=ON` 후 `ctest -R native-rust-parity` | Rust ↔ C++ 패리티(표 출력). 인자로 이펙트 하나만: `garak-rust-parity-test delay` |
@@ -368,6 +368,54 @@ WASM 쪽 개선(1단계)은 위의 구조 변경(블록 루프, settled, 캐시)
 - **이전 웹 소리와는 다릅니다**(의도한 변화). `node scripts/rust-dsp-smoke.mjs`의 같은 7이펙트 체인 내보내기에서 Rust 경로와 끈 경로(Web Audio 노드)의 차이는 -1.8 dB(신호 대비)로, 주로 `DynamicsCompressorNode`의 자동 메이크업 게인(Rust 쪽 RMS 0.021 vs 0.034)과 리버브 IR 구성 차이입니다. 청취 확인 전까지는 `garak.rustDsp=0`으로 이전 소리를 들을 수 있습니다.
 - **브라우저 확인**(`scripts/rust-dsp-smoke.mjs`, 로컬 Chrome): 앱 로드 → 새 프로젝트 → 오디오 트랙에 EQ·필터·컴프·드라이브·페이저·딜레이·리버브 → 내보내기 + 실시간 재생. Rust 워크릿 21개, 대체 0개, 내보내기 RMS 0.021(최대 0.23), 실시간 트랙 레벨 0.106·마스터 0.087, 콘솔 오류 없음. 끈 경우 Rust 0개(TS 워크릿 6개). `GARAK_CHROMIUM_EXECUTABLE`로 설치된 Chrome을 쓸 수 있습니다.
 - 남은 일: 청취 확인 후 `kernels.ts`·`sigimsae_effects.inc`·C++ EQ/컴프/드라이브/리버브 삭제와 내장 노드 대체 경로 정리, 웹 PDC(드라이브 8프레임), 기타 랙(2단계).
+
+## 빈티지 악기: Rust가 유일한 구현
+
+옥구슬 EP(`okgu-ep`)와 한밤 106(`hanbam-106`)은 C++·TS 원본 없이 **처음부터 Rust 한 벌로** 쓴 내장 악기입니다(라이브러리 악기 › 빈티지). 샘플 없이 합성하고, 타사 소스는 쓰지 않았습니다(공개된 DSP 기법만 참고: 모달 합성, 비대칭 픽업 포화, PolyBLEP, ZDF 래더, 2탭 BBD식 코러스). 그래서 `THIRD_PARTY_NOTICES`에 더할 것이 없습니다.
+
+| | 옥구슬 EP | 한밤 106 |
+|---|---|---|
+| 음원 | 건반마다 복소 회전자 모드 3개: 기본음, 살짝 어긋난 톤바 모드(느린 맥놀이), 타인의 2차 굽힘 모드(약 6.27배, 세게 칠수록 큼) | 보이스마다 DCO 하나: PolyBLEP 톱니, 펄스(PWM: 수동/LFO/ENV), 한 옥타브 아래 사각 서브, 노이즈 |
+| 성격 | 비대칭 포화 픽업(작은 신호 이득 1로 정규화, 벨로시티 × `bark`로 구동 → 짝수 배음 바크), 해머 노이즈, 댐퍼(맨 위 옥타브는 댐퍼 없음)와 댐퍼 소리 | HPF 4단(부스트/0/1/2), 레조넌스 4폴 ZDF 래더(입력 포화, 자기 발진), ADSR(필터·VCA 공용) 또는 GATE VCA, 지연 LFO(비브라토·PWM·필터), 포르타멘토 |
+| 뒤 단 | 틸트 톤, 앰프 드라이브 + 스피커 롤오프, 트레몰로 → 스테레오 오토팬, DC 차단 | 코러스 I(0.513 Hz) / II(0.863 Hz) / I+II(9.75 Hz): 한 지연선의 두 탭을 반대 위상 삼각 LFO로 흔들어 좌우 |
+| 보이스 | 16 (같은 건반은 같은 타인을 다시 침), 조용한 릴리즈 보이스부터 훔침 | 1/4/6/8 (1 = 레가토 모노, 마지막 음 우선), 빈 보이스 라운드로빈 → 가장 오래 릴리즈된 보이스 → 가장 오래 누른 보이스, 엔벨로프는 현재 값에서 다시 시작(클릭 없음) |
+
+구조:
+
+```
+rust/garak-dsp/src/instruments/
+  mod.rs      Instrument(종류별 엔진 enum), 파라미터 카탈로그, 이벤트(24바이트 #[repr(C)]), CC7/11/64·벤드·모드 처리, 패리티 장면
+  dmath.rs    결정적 수학: sin/cos/exp2/log2/tanh/tan을 + - * / 다항식과 비트 조작으로만
+  ep.rs       옥구슬 EP
+  poly.rs     한밤 106
+  parity.golden  패리티 장면 체크섬(Rust 테스트·C++ 테스트·WASM 테스트가 모두 읽음)
+rust/garak-ffi/src/instruments.rs   garak_rs_instrument_* (호출자 소유 상태, 소멸자 없음)
+rust/garak-wasm/src/instruments.rs  garak_instrument_* (슬롯 4개, 정적 이벤트 버퍼 512개, .bss에 놓이도록 MaybeUninit)
+native/src/rust_instrument.hpp      RustInstrumentProcessor: PluginProcessor(IEUM WAVE처럼 샘플 정확한 이벤트)
+src/audio/rust/vintageWasm.ts       워크릿용 로더
+src/devices/vintage/                카탈로그(params.ts), 프리셋, 사용자 프리셋, 워크릿, 웹 연결(web.ts), 편집기 UI
+```
+
+**한 구현, 두 엔진.** 효과 커널은 네이티브에서 플랫폼 libm을, wasm32에서 `libm` 크레이트를 써서 마지막 비트가 다를 수 있지만, 악기는 `dmath.rs`의 함수만 씁니다. IEEE-754 사칙연산과 `sqrt`는 모든 타깃에서 같은 값을 내고 Rust는 부동소수점 연산을 스스로 합치거나(FMA) 재배열하지 않으므로, **C++ 엔진과 브라우저 워크릿이 비트 단위로 같은 샘플**을 냅니다. 제어 틱(EP 32프레임, 106 4프레임)은 블록과 무관한 프레임 카운터로 돌고 노이즈는 보이스마다 따로라서, 호스트가 블록을 어떻게 자르든 출력이 같습니다. 서브노멀 직전 값은 직접 0으로 내려 호스트의 FTZ/DAZ 설정과도 무관합니다.
+
+**네이티브.** 타임라인 컴파일러는 이 악기들을 `builtin-synth` 소스로 보내고, `engine.cpp`가 `GARAK_RUST=ON`(0.3.0부터 데스크톱 빌드 기본)이면 `RustInstrumentProcessor`를 만듭니다. 라이브 노트오프는 IEUM WAVE처럼 서스테인 페달 동안 미뤄지고(타임라인 페달은 노트오프에 이미 반영됨), 벤드 범위(131) 메타 컨트롤러도 받습니다. 파라미터 편집으로 트랙이 다시 만들어져도 `take_state`로 울리던 보이스·코러스 지연선을 이어받고, 악기 파라미터 자동화는 블록마다 값을 넣어 DSP 안에서 글라이드합니다. 호스트는 `hello.vintage.available`로 지원 여부를 알리고, Rust 없이 빌드한 호스트는 명확한 오류를 냅니다.
+
+**웹.** `prepareVintage()`가 시김새 커널과 **같은** `garak-dsp.wasm` 모듈(`sharedGarakWasmModule`, 페이지당 한 번 받아 컴파일)을 쓰고 워크릿을 등록합니다. 3단계(웹)부터 `pnpm build`가 이 모듈을 함께 만들므로 웹 배포에서도 악기가 소리를 냅니다. 모듈은 `Math.*` 초월 함수를 임포트하므로 악기 워크릿도 `MATH_IMPORTS`로 인스턴스를 만듭니다(악기 자체는 `dmath.rs`만 써서 샘플은 호스트 `Math`와 무관). `garak.rustDsp=0`은 이펙트만 TS로 돌리고 악기는 끄지 않습니다. 트랙 입력·악기마다 첫 음에서 `AudioWorkletNode`를 하나 만들고, 음표·컨트롤러·파라미터를 AudioContext 시각이 붙은 이벤트로 보내 렌더 퀀텀 안에서 샘플 단위로 적용합니다(`queue.ts`: 노트오프 이동, 아직 시작 안 한 음 취소). 오프라인 내보내기는 포트 메시지 도착 시점에 기대지 않도록 모든 이벤트를 모았다가 노드를 만들 때 `processorOptions`로 넘깁니다(`flushVintage`). TS 대체 경로는 없습니다: 모듈을 못 불러오면(Rust 없이 `pnpm dev`, AudioWorklet 없음) 악기는 라이브러리에 보이고 편집·저장되지만 회색으로 소리가 나지 않습니다(재생 시 이유를 알림).
+
+**테스트.**
+
+| 검사 | 위치 | 결과 (로컬, Windows MinGW / Node 24) |
+|---|---|---|
+| 단위: 감쇠·릴리즈·페달·벨로시티 밝기·오토팬·훔치기·레가토·자기 발진·블록 독립 | `cargo test -p garak-dsp instruments` | 통과 |
+| C++(FFI) 패리티 장면 = `parity.golden` | `native-rust-instruments` (`rust_instrument_test.cpp`) | 두 악기 비트 동일, 블록 크기(128/97) 독립 |
+| WASM 패리티 장면 = `parity.golden`, 카탈로그 = `params.ts`, 프리셋 전부 재생 | `src/audio/rust/vintage.test.ts` | 두 악기 비트 동일, 블록 크기(128/71) 독립 |
+| CPU: 8보이스 @ 48 kHz < 한 코어의 3 % | `native-rust-instruments` (CI 게이트) | EP 0.44 %, 106 1.31 %(최악 설정: 모든 오실레이터·레조넌스·코러스 I+II) |
+| 워크릿 CPU(참고) | `vintage.test.ts` | EP 0.53 %, 106 1.46 % |
+| 엔진: 타임라인 음, 라이브 페달, 파라미터 편집 중 울림 유지, 알 수 없는 파라미터 거부 | `native-rust-instruments` | 통과 |
+
+DSP를 바꾸면 체크섬이 바뀝니다. `cargo test -p garak-dsp parity_scene -- --nocapture`가 새 값을 출력하면 `parity.golden`을 고치고, C++·WASM 테스트가 같은 값에 닿는지 확인합니다.
+
+**크기.** 두 악기로 `garak-dsp.wasm`이 커져 원시 크기 예산을 128 KiB에서 160 KiB로 올렸습니다(gzip 80 KB 예산은 그대로). 3단계(웹)의 수학 함수 임포트와 합친 빌드는 **148,879 바이트(145.4 KiB), gzip 52,556 바이트**입니다(3단계만 105.3 KiB). 차가운 경로(노트온·핸들러·계수 계산)는 `#[inline(never)]`로, 패닉 메시지가 부동소수점 포매터를 끌고 오지 않도록 `f64::clamp` 대신 `clampf`를 씁니다.
 
 ## WASM을 wasm-bindgen 없이 쓰는 이유
 

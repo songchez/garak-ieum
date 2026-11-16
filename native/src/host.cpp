@@ -2,6 +2,7 @@
 #include "midi_input.hpp"
 #include "midi_routing.hpp"
 #include "garak/device.hpp"
+#include "garak/dsp.hpp"
 #include "garak/vst3.hpp"
 #include "ieum_wave/patch.hpp"
 #include <algorithm>
@@ -208,7 +209,9 @@ class Host {
   }
   Json request(const std::string& method,const Json& a,std::string_view blob={}) {
     if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"midiInput",true},{"midiDevices",midi::MidiInputManager::supported()},{"backends",DeviceHost::availableBackends()},
-      {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}}};
+      {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}},
+      // 옥구슬 EP / 한밤 106 (native/src/rust_instrument.hpp) need the Rust DSP core (GARAK_RUST=ON).
+      {"vintage",{{"protocolVersion",1},{"available",garak::dsp::rustEffectsAvailable()},{"instruments",Json::array({"okgu-ep","hanbam-106"})}}}};
     if (method=="engine.snapshot") { auto result=snapshot(); drainMidi(result); return result; }
     if (method.rfind("midi.",0)==0) return midiRequest(method,a);
     if (method=="devices.list") {

@@ -14,7 +14,10 @@ import { Knob } from './Knob'
 import { MiniMeter } from './Timeline'
 import { InstrumentOptions } from './InstrumentOptions'
 import { combineWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
-import { WAVETABLE_HOST_REQUIRED } from '../audio/instrumentSupport'
+import { instrumentUnavailableReason } from '../audio/instrumentSupport'
+import { isVintageInstrument, OKGU_EP_ID } from '../devices/vintage/params'
+import { loadUserPresets } from '../devices/vintage/userPresets'
+import { currentPreset, VINTAGE_NAMES } from '../devices/vintage/ui/presetActions'
 import { useInstrumentAvailability } from './useInstrumentAvailability'
 import { deviceView } from './sigimsae/views'
 import { PluginControls, type PluginEngine } from './PluginControls'
@@ -27,6 +30,9 @@ import './DeviceChain.css'
 const GuitarRigEditor = lazy(() => import('./GuitarRig').then(module => ({ default: module.GuitarRigEditor })))
 const GuitarRigSummary = lazy(() => import('./GuitarRig').then(module => ({ default: module.GuitarRigSummary })))
 const WavetableSynth = lazy(() => import('../devices/wavetable-synth/WavetableSynth').then(module => ({ default: module.WavetableSynth })))
+const VintageEditor = lazy(() => import('../devices/vintage/ui/VintageEditor').then(module => ({ default: module.VintageEditor })))
+/** The vintage source card keeps a compact subset; the rest lives in the editor overlay. */
+const VINTAGE_CARD_PARAMS:Record<string,readonly string[]>={[OKGU_EP_ID]:['tone','bark','bell','tremDepth','drive','level'],'hanbam-106':['cutoff','resonance','envAmount','attack','release','level']}
 
 const VOLUME:ParamDef={id:'volume',label:'볼륨',min:0,max:1.5,default:.7,unit:'gain'}
 const PAN:ParamDef={id:'pan',label:'팬',min:-1,max:1,default:0,unit:'pan'}
@@ -41,6 +47,8 @@ interface Props {
   track:Track; engine:DeviceAudioEngine
   onInstrumentChange:(instrument:InstrumentId)=>void
   onInstrumentParam:(key:string,value:number)=>void
+  /** Several instrument parameters as one undo step (vintage presets). */
+  onInstrumentParams?:(params:Record<string,number>,label:string)=>void
   onWavetablePatch:(patch:WavetablePatch,label:string,mergeKey?:string)=>void
   onSave?:()=>void
   bpm?:number
@@ -117,9 +125,13 @@ export function DeviceChain({track:liveTrack,engine,scale=1,onScaleChange,zoomRe
   const def=instrumentDef(track.instrument)
   const defs=def.params
   const [waveEditorTrackId,setWaveEditorTrackId]=useState<string|null>(null)
-  useEffect(()=>setWaveEditorTrackId(null),[track.id,track.instrument,track.pluginInstrument?.id])
+  const [vintageEditorTrackId,setVintageEditorTrackId]=useState<string|null>(null)
+  useEffect(()=>{setWaveEditorTrackId(null);setVintageEditorTrackId(null)},[track.id,track.instrument,track.pluginInstrument?.id])
   const wavePatch=useMemo(()=>track.kind==='instrument'&&!track.pluginInstrument&&track.instrument==='wavetable'?combineWavetablePatch(track.instrumentParams,track.instrumentState):null,[track.kind,track.pluginInstrument,track.instrument,track.instrumentParams,track.instrumentState])
-  const cardDefs=wavePatch?defs.filter(param=>/^macro[1-4]$/.test(param.id)):defs
+  const vintage=track.kind==='instrument'&&!track.pluginInstrument&&isVintageInstrument(track.instrument)?track.instrument:null
+  const vintagePreset=useMemo(()=>vintage?currentPreset(vintage,track.instrumentParams,loadUserPresets(vintage)):null,[vintage,track.instrumentParams])
+  const cardDefs=wavePatch?defs.filter(param=>/^macro[1-4]$/.test(param.id)):vintage?defs.filter(param=>VINTAGE_CARD_PARAMS[vintage].includes(param.id)):defs
+  const unavailable=canPlay(track.instrument)?'':instrumentUnavailableReason(engine,track.instrument)
   const rackRef=useRef<HTMLDivElement>(null),chainRef=useRef<HTMLDivElement>(null)
   const anchor=useRef<{pos:number;px:number}|null>(null)
   const [libraryOver,setLibraryOver]=useState(false)
@@ -140,9 +152,10 @@ export function DeviceChain({track:liveTrack,engine,scale=1,onScaleChange,zoomRe
   useLayoutEffect(()=>{const a=anchor.current;anchor.current=null;const el=chainRef.current;if(a&&el)el.scrollLeft=Math.max(0,a.pos*scale-a.px)})
   return <div className={`dc-rack${libraryOver?' library-drop':''}`} ref={rackRef} onDragOver={e=>{if(!acceptsDrop(e.dataTransfer))return;e.preventDefault();e.dataTransfer.dropEffect='copy';if(!libraryOver)setLibraryOver(true)}} onDragLeave={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node))setLibraryOver(false)}} onDrop={libraryDrop} data-keyboard-scope="devices" tabIndex={-1} aria-label="시김새 체인 랙" style={{'--device-scale':scale} as React.CSSProperties} onPointerDown={e=>{if(e.target instanceof Element&&!e.target.closest('button,input,textarea,select,a[href],[data-selectable-text],[role="slider"]'))e.currentTarget.focus({preventScroll:true})}}><div className="device-chain" ref={chainRef} role="list" aria-label={`${track.name} 시김새 체인`} style={{'--track-color':track.color} as React.CSSProperties}>
     {track.kind==='instrument'&&track.pluginInstrument?<section className={`dc-card dc-source dc-plugin ${track.pluginInstrument.enabled?'':'bypassed'}`} role="listitem" aria-label={`VST3 악기 ${track.pluginInstrument.name}`}><header className="dc-head"><button className={`dc-power ${track.pluginInstrument.enabled?'on':''}`} aria-pressed={track.pluginInstrument.enabled} aria-label={`${track.pluginInstrument.name} 켜기/끄기`} title="켜기/끄기" onClick={()=>on.onPluginChange?.(track.pluginInstrument!.id,plugin=>({...plugin,enabled:!plugin.enabled}),'VST3 켬/끔')}><Icon name="power" size={11}/></button>{sourceSelect}<button className="dc-preview" onClick={on.onPreview} disabled={!track.pluginInstrument.enabled} title="VST3 악기 미리 듣기"><Icon name="play" size={10}/>미리 듣기</button></header><p className="dc-note"><span className="dc-format">VST3</span> 이 트랙의 MIDI 음표를 연주합니다.</p>{pluginBody(track.pluginInstrument)}</section>:track.kind==='instrument'?<section className="dc-card dc-source" role="listitem" aria-label={`악기 ${def.name}`}>
-      <header className="dc-head"><span className="dc-icon"><Icon name={def.icon} size={14}/></span>{sourceSelect}<button className="dc-preview" onClick={on.onPreview} disabled={!canPlay(track.instrument)} title={canPlay(track.instrument)?'현재 설정으로 미리 듣기':WAVETABLE_HOST_REQUIRED}><Icon name="play" size={10}/>미리 듣기</button></header>
+      <header className="dc-head"><span className="dc-icon"><Icon name={def.icon} size={14}/></span>{sourceSelect}<button className="dc-preview" onClick={on.onPreview} disabled={!canPlay(track.instrument)} title={unavailable||'현재 설정으로 미리 듣기'}><Icon name="play" size={10}/>미리 듣기</button></header>
       <AutomationScope.Provider value={{trackId:track.id,kind:'instrument'}}><div className="dc-knobs" style={{'--cols':Math.ceil(cardDefs.length/2)} as React.CSSProperties}>{cardDefs.map(d=><Knob key={d.id} def={d} value={paramValue(defs,track.instrumentParams,d.id)} color={track.color} onChange={v=>on.onInstrumentParam(d.id,v)}/>)}</div></AutomationScope.Provider>
       {wavePatch&&<div className="dc-wave-entry"><span>{wavePatch.metadata.name}</span><button onClick={()=>setWaveEditorTrackId(track.id)} aria-label="IEUM WAVE 편집기 열기"><Icon name="synth" size={14}/> IEUM WAVE 열기 <Icon name="right" size={12}/></button><small>{canPlay(track.instrument)?'네이티브 음원 연결됨':'음색 편집 · 저장 가능 / 엔진 연결 대기'}</small></div>}
+      {vintage&&vintagePreset&&<div className="dc-wave-entry dc-vintage-entry"><span title={vintagePreset.detail}>{vintagePreset.name}</span><button onClick={()=>setVintageEditorTrackId(track.id)} aria-label={`${VINTAGE_NAMES[vintage]} 편집기 열기`}><Icon name={def.icon} size={14}/> {VINTAGE_NAMES[vintage]} 열기 <Icon name="right" size={12}/></button><small title={unavailable||undefined}>{unavailable?'음색 편집 · 저장 가능 / 엔진 연결 대기':'Rust 음원 연결됨'}</small></div>}
       {def.set&&<SampleCredit engine={engine} setId={def.set}/>}
     </section>:<section className="dc-card dc-source" role="listitem" aria-label="오디오 입력">
       <header className="dc-head"><span className="dc-icon"><Icon name="wave" size={14}/></span><strong>오디오 입력</strong></header>
@@ -165,5 +178,6 @@ export function DeviceChain({track:liveTrack,engine,scale=1,onScaleChange,zoomRe
       <div className="dc-output-body"><div className="dc-output-knobs"><AutomationScope.Provider value={{trackId:track.id,kind:'track'}}><Knob def={VOLUME} value={track.volume} color={track.color} onChange={volume=>on.onTrackChange({volume})}/><Knob def={PAN} value={track.pan} color={track.color} onChange={pan=>on.onTrackChange({pan})}/></AutomationScope.Provider></div><MiniMeter engine={engine} trackId={track.id} vertical color={track.color}/></div>
     </section>
   </div>{waveEditorTrackId===track.id&&wavePatch&&<Suspense fallback={<div className="dc-wave-loading" role="status">IEUM WAVE를 여는 중…</div>}><WavetableSynth key={track.id} trackId={track.id} trackName={track.name} patch={wavePatch} onPatchChange={on.onWavetablePatch} onClose={()=>setWaveEditorTrackId(null)} nativeBridge={engine.kind==='native'?engine.wavetable:undefined} onSave={on.onSave} bpm={on.bpm}/></Suspense>}
+  {vintage&&vintageEditorTrackId===track.id&&<AutomationScope.Provider value={{trackId:track.id,kind:'instrument'}}><Suspense fallback={<div className="dc-wave-loading" role="status">{VINTAGE_NAMES[vintage]} 편집기를 여는 중…</div>}><VintageEditor key={`${track.id}:${vintage}`} instrument={vintage} trackName={track.name} params={track.instrumentParams} color={track.color} onParam={on.onInstrumentParam} onParams={(params,label)=>{if(on.onInstrumentParams)on.onInstrumentParams(params,label);else for(const [key,value] of Object.entries(params))on.onInstrumentParam(key,value)}} onClose={()=>setVintageEditorTrackId(null)} unavailableReason={unavailable} onPreview={on.onPreview}/></Suspense></AutomationScope.Provider>}
   {rig&&<AutomationScope.Provider value={{trackId:track.id,kind:'device',deviceId:rig.id}}><Suspense fallback={null}><GuitarRigEditor key={rig.id} device={rig} track={track} audioState={audioState} onParam={(key,value)=>on.onDeviceParam(rig.id,key,value)} onParams={params=>on.onDeviceParams(rig.id,params,{label:'기타 앰프 프리셋 변경'})} onToggle={()=>on.onToggleDevice(rig.id)} onTrackChange={on.onTrackChange} onOpenAudioSettings={on.onOpenAudioSettings} onClose={()=>setRigEditor(null)}/></Suspense></AutomationScope.Provider>}</div>
 }

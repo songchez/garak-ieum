@@ -1,6 +1,7 @@
 #include "garak/engine.hpp"
 #include "garak/dsp.hpp"
 #include "wavetable.hpp"
+#include "rust_instrument.hpp"
 #include "metronome.hpp"
 
 #include <algorithm>
@@ -364,6 +365,7 @@ struct LaneRuntime {
   std::uint32_t pluginParam=0;     // VST3 ParamID (VST3 insert or instrument).
   bool plugin=false;
   double Synth::* synthField=nullptr; // Built-in instrument parameter (member, so moving the track is safe).
+  std::int32_t rustParam=-1;        // Rust instrument parameter index (옥구슬 EP, 한밤 106).
   std::size_t hint=0;
   float lastSent=-1;               // Last VST3 value queued (avoids repeating flat values).
 };
@@ -426,6 +428,8 @@ struct TrackRuntime {
   std::vector<InsertRuntime> inserts;
   std::shared_ptr<PluginProcessor> instrument;
   std::shared_ptr<WavetableProcessor> wavetable;
+  // 옥구슬 EP / 한밤 106 (rust_instrument.hpp): the same object as `instrument`, a built-in plug-in like IEUM WAVE.
+  std::shared_ptr<PluginProcessor> rust;
   std::vector<TimedPluginEvent> events;
   std::array<PluginEvent,maxPluginEvents> blockEvents{};
   std::array<PluginEvent,maxVoices> pendingEvents{};
@@ -439,7 +443,7 @@ struct TrackRuntime {
   struct DeferredOff { std::int32_t id=-1; std::uint8_t pitch=60; };
   std::array<DeferredOff,maxVoices> deferredOffs{};
   std::size_t deferredCount=0;
-  [[nodiscard]] bool vst3()const noexcept{return instrument&&!wavetable;}
+  [[nodiscard]] bool vst3()const noexcept{return instrument&&!wavetable&&!rust;}
   // Built-in voices' MIDI controller state (docs/MIDI_CONTROLLERS.md): the latest values from the timeline
   // or live input, and the smoothed pitch offset, vibrato depth (cents) and level they lead to.
   struct Controllers { int bend=0,range=2,mod=0,pressure=0,volume=100,expression=127; };
@@ -549,7 +553,8 @@ struct TrackRuntime {
       releaseAudition=previous.releaseAudition;
       if(reuseInstrument){instrument.swap(previous.instrument);wavetable.swap(previous.wavetable);}
       else if(wavetable&&previous.wavetable)wavetable->takeStateFrom(*previous.wavetable);
-      else if(instrument&&previous.instrument&&!wavetable&&!previous.wavetable)instrument.swap(previous.instrument);
+      else if(rust&&previous.rust)rustTakeState(*rust,*previous.rust); // New parameters, old voices.
+      else if(instrument&&previous.instrument&&!wavetable&&!previous.wavetable&&!rust&&!previous.rust)instrument.swap(previous.instrument);
     } else if(instrument&&instrument==previous.instrument)instrument->requestReset();
     for(std::size_t i=0;i<inserts.size()&&i<insertOrigin.size();++i) {
       const auto from=insertOrigin[i];
@@ -671,7 +676,7 @@ struct TrackRuntime {
     v.endFrames=static_cast<std::int64_t>(std::max(0.0,(zone->asset->frames()-v.samplePosition)/v.sampleStep));
   }
   void retriggerSustained(int pitch,std::uint64_t& overflows)noexcept {
-    if(wavetable){
+    if(wavetable||rust){
       for(std::size_t i=0;i<deferredCount;){
         if(deferredOffs[i].pitch==pitch){const auto off=deferredOffs[i];deferredOffs[i]=deferredOffs[--deferredCount];noteOff(off.pitch,off.id,overflows,true);}
         else ++i;
@@ -689,7 +694,7 @@ struct TrackRuntime {
   // every one but the pedal; built-in voices follow bend/mod/pressure/CC7/CC11. CC64 defers live note-offs.
   void controlChange(int controller,int value,std::uint64_t& overflows)noexcept {
     if(instrument&&(vst3()||controller!=sustainController)){
-      if(controller==bendRangeController)return; // Meta controller of the built-in voices only.
+      if(controller==bendRangeController&&!rust)return; // Meta controller of the built-in sources only.
       if(pendingCount<pendingEvents.size()){PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=static_cast<std::uint32_t>(controller);e.value=normalizedControllerValue(controller,value);e.audition=true;pendingEvents[pendingCount++]=e;}
       else ++overflows;
       if(controller==sustainController)livePedal=pedalDown(value);
@@ -708,7 +713,7 @@ struct TrackRuntime {
   }
   void noteOff(int pitch,std::int32_t id,std::uint64_t& overflows,bool force=false)noexcept {
     if(livePedal&&!force&&!vst3()&&!timeline.source.isKit) {
-      if(wavetable){
+      if(wavetable||rust){
         if(deferredCount<deferredOffs.size())deferredOffs[deferredCount++]={id,static_cast<std::uint8_t>(pitch)};
         else noteOff(pitch,id,overflows,true);
         return;
@@ -873,7 +878,7 @@ struct TrackRuntime {
       for(const auto&c:timeline.controls){present[c.controller]=true;if(chase&&c.frame<frame){values[c.controller]=c.value;known[c.controller]=true;}}
       for(int controller=0;controller<controllerCount;++controller){
         const auto index=static_cast<std::size_t>(controller);
-        if(!present[index]||controller==bendRangeController)continue;
+        if(!present[index]||(controller==bendRangeController&&!rust))continue;
         int value=0;
         if(chase&&timeline.enabled&&known[index])value=values[index];
         else if(!resetController(controller,value))continue;
@@ -914,6 +919,7 @@ struct TrackRuntime {
       }
     }
     for(auto& l:lanes)if(l.synthField)synth.*l.synthField=laneValue(l,static_cast<double>(frame));
+    if(rust)for(auto& l:lanes)if(l.rustParam>=0)rustSetParameter(*rust,l.rustParam,laneValue(l,static_cast<double>(frame)));
     std::size_t eventCount=0;
     if(releaseAudition) {
       blockEvents[eventCount++]={PluginEvent::Type::AllNotesOff,0,-1,60,0,0,0,true};
@@ -924,7 +930,7 @@ struct TrackRuntime {
     if(instrument) {
       // A note ending exactly at the project boundary releases in the first
       // tail block. This applies to live WAVE playback and offline export.
-      if(playing||(wavetable&&frame>=projectLength))while(nextEvent<events.size()&&events[nextEvent].frame<frame+frames){const auto& e=events[nextEvent++];if(e.frame>=frame){if(eventCount<blockEvents.size()){blockEvents[eventCount]=e.event;blockEvents[eventCount++].offset=static_cast<std::uint32_t>(e.frame-frame);}else ++overflows;}}
+      if(playing||((wavetable||rust)&&frame>=projectLength))while(nextEvent<events.size()&&events[nextEvent].frame<frame+frames){const auto& e=events[nextEvent++];if(e.frame>=frame){if(eventCount<blockEvents.size()){blockEvents[eventCount]=e.event;blockEvents[eventCount++].offset=static_cast<std::uint32_t>(e.frame-frame);}else ++overflows;}}
       if(vst3())for(auto& l:lanes)if(l.plugin&&l.insert<0)pluginPoints(l,frame,frames,[&](const PluginEvent& e){if(eventCount<blockEvents.size())blockEvents[eventCount++]=e;else ++overflows;});
       for(auto& n:pluginNotes)if(n.active){if(n.remaining<frames){if(eventCount<blockEvents.size())blockEvents[eventCount++]={PluginEvent::Type::NoteOff,static_cast<std::uint32_t>(std::max<std::int64_t>(0,n.remaining)),n.id,n.pitch,0,0,0,true};else ++overflows;n.active=false;}else n.remaining-=frames;}
       std::sort(blockEvents.begin(),blockEvents.begin()+static_cast<std::ptrdiff_t>(eventCount),[](const PluginEvent&a,const PluginEvent&b){
@@ -1055,8 +1061,9 @@ void prepareAutomation(TrackRuntime& track,const TrackTimeline& t){
       case AutomationLane::Target::Send:continue; // Evaluated by the fed return (TrackRuntime::Feed::lane).
       case AutomationLane::Target::Instrument:
         if(track.vst3()){l.plugin=true;l.pluginParam=static_cast<std::uint32_t>(std::stoul(lane.param));}
+        else if(track.rust)l.rustParam=rustParameterIndex(*track.rust,lane.param);
         else if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)l.synthField=synthField(lane.param);
-        if(!l.plugin&&!l.synthField)continue;
+        if(!l.plugin&&!l.synthField&&l.rustParam<0)continue;
         break;
       case AutomationLane::Target::Insert:{
         const auto found=std::find_if(t.inserts.begin(),t.inserts.end(),[&](const BuiltinInsert& e){return e.id==lane.insertId;});
@@ -2099,7 +2106,8 @@ TrackBuild buildTrack(const ProjectTimeline& p,const TrackTimeline& t,const Asse
   track.buffer.resize(static_cast<std::size_t>(maxBlock)*2);
   require(t.source.kind!=TrackSource::Kind::Audio||t.notes.empty(),"Audio tracks cannot contain instrument notes");
   require(t.source.kind==TrackSource::Kind::Audio||t.audio.empty(),"Instrument tracks cannot contain audio windows");
-  if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)track.synth=compileSynth(t.source);
+  const bool rustSource=t.source.kind==TrackSource::Kind::BuiltinSynth&&rustInstrumentId(t.source.instrumentId);
+  if((t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)&&!rustSource)track.synth=compileSynth(t.source);
   // An explicitly disabled source is retained in the immutable recipe but
   // needs neither its sample library nor a loadable third-party plug-in.
   if(!t.enabled)return build;
@@ -2122,6 +2130,13 @@ TrackBuild buildTrack(const ProjectTimeline& p,const TrackTimeline& t,const Asse
     }
     info.memory+=info.wavetableMemory;
   }
+  if(rustSource) {
+    // 옥구슬 EP / 한밤 106: one Rust implementation shared with the web worklet (rust_instrument.hpp).
+    require(!t.source.isKit,"Invalid built-in instrument source");
+    track.rust=makeRustInstrument(t.source.instrumentId,t.source.params,p.sampleRate,maxBlock);
+    track.instrument=track.rust;track.stereoSource=true;trackTail=track.rust->tailSeconds();info.instrumentTail=trackTail;
+    info.memory+=rustInstrumentMemory(maxBlock);
+  }
   if(t.source.kind==TrackSource::Kind::BuiltinSampled){const auto set=sets.find(t.source.sampleSetId);require(set!=sets.end(),"Required native sample set is not registered");require(set->second.isKit==t.source.isKit,"Sample kind differs from instrument");track.samples=resolveSet(set->second,assets);info.set=set->second;
     for(const auto&z:track.samples.zones){info.assets.push_back(z.asset);track.stereoSource|=z.asset->channels>1;
       if(t.source.isKit)trackTail=std::max(trackTail,(static_cast<double>(z.asset->frames())/z.asset->sampleRate-track.samples.startOffset)/std::pow(2,z.zone.tune/1200+track.synth.tune/12)*track.synth.decay+.014);
@@ -2131,7 +2146,7 @@ TrackBuild buildTrack(const ProjectTimeline& p,const TrackTimeline& t,const Asse
     }
   }
   if(t.source.kind==TrackSource::Kind::Vst3){require(static_cast<bool>(resolvePlugin),"No native VST3 host is available");track.instrument=resolvePlugin(t.source.plugin,p.sampleRate,maxBlock);require(static_cast<bool>(track.instrument),"VST3 instrument could not be prepared");track.latency=track.instrument->latencyFrames();track.stereoSource=true;trackTail=checked(track.instrument->tailSeconds(),0,3600,"Invalid plugin tail time");require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");}
-  if(t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)trackTail=std::max(trackTail,t.source.isKit?(track.synth.kind==Synth::Kind::Drums?.62*track.synth.decay+.004:0):track.synth.release*1.5+.02);
+  if((t.source.kind==TrackSource::Kind::BuiltinSynth||t.source.kind==TrackSource::Kind::BuiltinSampled)&&!rustSource)trackTail=std::max(trackTail,t.source.isKit?(track.synth.kind==Synth::Kind::Drums?.62*track.synth.decay+.004:0):track.synth.release*1.5+.02);
   // Plug-in instruments (VST3, IEUM WAVE) take notes and controllers as sample-accurate events.
   const bool pluginSource=track.instrument!=nullptr||track.reuseInstrument;
   std::set<std::int32_t>noteIds;
@@ -2143,7 +2158,7 @@ TrackBuild buildTrack(const ProjectTimeline& p,const TrackTimeline& t,const Asse
     const auto&c=t.controls[i];
     require(c.frame>=0&&c.frame<=p.lengthFrames&&validControllerValue(c.controller,c.value)&&(!i||t.controls[i-1].frame<=c.frame),"Invalid native control event");
     // Built-in voices read timeline.controls while rendering. The bend range is a built-in meta controller.
-    if(!pluginSource||c.controller==bendRangeController)continue;
+    if(!pluginSource||(c.controller==bendRangeController&&!track.rust))continue;
     PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=c.controller;e.value=normalizedControllerValue(c.controller,c.value);
     track.events.push_back({c.frame,e});
   }
@@ -2186,7 +2201,7 @@ std::size_t sharedMemory(const std::vector<const ControlTrack*>& tracks) {
   return total;
 }
 bool aheadCandidate(const TrackRuntime& t) {
-  const bool vst3=(t.instrument&&!t.wavetable)||std::any_of(t.inserts.begin(),t.inserts.end(),[](const InsertRuntime&i){return i.plugin!=nullptr;});
+  const bool vst3=(t.instrument&&!t.wavetable&&!t.rust)||std::any_of(t.inserts.begin(),t.inserts.end(),[](const InsertRuntime&i){return i.plugin!=nullptr;});
   return t.timeline.enabled&&!vst3;
 }
 bool routingTrack(const TrackRuntime& t) {

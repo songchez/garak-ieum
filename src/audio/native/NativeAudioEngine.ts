@@ -6,8 +6,9 @@ import { defaultInstrumentParams } from '../../core/project'
 import { validateNativePluginState } from '../../core/nativePlugins'
 import { instrumentDef } from '../../core/instruments'
 import { isRouted } from '../../core/trackRouting'
-import { isPluginDevice, type AudioAsset, type AudioEngine, type InputChoice, type InstrumentId, type Project, type RenderOptions, type RenderedAudio, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot } from '../../core/types'
+import { isPluginDevice, type AudioAsset, type AudioEngine, type InputChoice, type InstrumentId, type Project, type RenderOptions, type RenderedAudio, type SampleAttribution, type SampleStatus, type Track, type TransportSnapshot, type VintageBridge } from '../../core/types'
 import { freezeStatus, playbackProject } from '../../core/freeze'
+import { VINTAGE_NATIVE_UNAVAILABLE } from '../../devices/vintage/availability'
 import type { AudioRecordingCallbacks } from '../AudioRecording'
 import { SampleLibrary } from '../samples'
 import { packAudioBuffer } from './pcmTransfer'
@@ -129,6 +130,9 @@ export class NativeAudioEngine implements AudioEngine {
   private monitorRequest = 0
   private configurationEpoch = 0
   private waveCapability: boolean | undefined
+  /** 옥구슬 EP / 한밤 106: the host links the Rust core (hello.vintage, rust_instrument.hpp). Read with the WAVE capability. */
+  private vintageCapability: boolean | undefined
+  private readonly vintageListeners = new Set<() => void>()
   private waveCapabilityTask: Promise<void> | null = null
   private waveCapabilityReason = WAVETABLE_UNAVAILABLE_STATUS.reason!
   private waveStatus: WavetableBridgeStatus = WAVETABLE_UNAVAILABLE_STATUS
@@ -141,6 +145,16 @@ export class NativeAudioEngine implements AudioEngine {
 
   /** Live MIDI: the host opens devices and plays notes on its audio thread (docs/MIDI_RECORDING.md). */
   readonly liveMidi = new NativeLiveMidi((method, params) => this.request(method, params), () => this.configured, () => this.project ? tempoMapOf(this.project) : 120)
+
+  readonly vintage: VintageBridge = {
+    available: () => this.vintageCapability === true,
+    reason: () => this.vintageCapability === true ? '' : this.vintageCapability === false ? VINTAGE_NATIVE_UNAVAILABLE : '네이티브 오디오 엔진의 빈티지 악기 지원을 확인하는 중입니다.',
+    subscribe: listener => {
+      this.vintageListeners.add(listener)
+      void this.ensureWaveCapability().catch(() => undefined)
+      return () => { this.vintageListeners.delete(listener) }
+    },
+  }
 
   readonly wavetable: WavetableNativeBridge = {
     protocolVersion: 1,
@@ -211,6 +225,7 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   private publishWaveStatus(): void {
+    for (const listener of [...this.vintageListeners]) listener()
     const usable = this.audioSnapshot.status !== 'error' && this.audioSnapshot.status !== 'configuring'
     const backend = this.nativeDevice?.backend
     const next: WavetableBridgeStatus = Object.freeze({
@@ -235,6 +250,7 @@ export class NativeAudioEngine implements AudioEngine {
         const value = await this.request<NativeEngineCapabilities>('engine.capabilities')
         if (generation !== this.generation) throw abortError()
         this.waveCapability = value?.protocol === 1 && value.wavetable?.protocolVersion === 1 && value.wavetable.schemaFingerprint === WAVE_SCHEMA_FINGERPRINT
+        this.vintageCapability = value?.protocol === 1 && value.vintage?.protocolVersion === 1 && value.vintage.available === true
         this.waveCapabilityReason = value?.wavetable
           ? 'IEUM WAVE 엔진과 앱의 버전이 다릅니다. 앱을 업데이트해 주세요.'
           : '이 앱의 네이티브 오디오 엔진은 IEUM WAVE를 지원하지 않습니다. 앱을 업데이트해 주세요.'
@@ -243,6 +259,7 @@ export class NativeAudioEngine implements AudioEngine {
         // Older installed hosts remain usable for their supported instruments.
         // They must never acquire WAVE support merely by being a native process.
         this.waveCapability = false
+        this.vintageCapability = false
         this.waveCapabilityReason = `IEUM WAVE 엔진을 확인하지 못했습니다. ${message(error)}`
       }
       this.publishWaveStatus()
@@ -353,7 +370,7 @@ export class NativeAudioEngine implements AudioEngine {
     this.uploaded.clear(); this.uploadTasks.clear(); this.registeredSets.clear(); this.sampleTasks.clear(); this.sampleErrors.clear()
     this.appliedRevision = -1; this.configured = false; this.syncTask = null; this.deviceSuspended = false
     this.clearWaveAudition(false); this.wavePatchRequests.clear(); this.wavePayloads.clear()
-    this.waveCapability = undefined; this.waveCapabilityTask = null
+    this.waveCapability = undefined; this.waveCapabilityTask = null; this.vintageCapability = undefined
     this.waveCapabilityReason = '네이티브 오디오 엔진 연결을 다시 확인해야 합니다. 오디오 설정을 다시 적용해 주세요.'
     this.publishWaveStatus()
     this.updateTransport({ playing: false, ready: false })
@@ -369,7 +386,7 @@ export class NativeAudioEngine implements AudioEngine {
       else if (this.hostGeneration !== null && this.waveCapability !== undefined) {
         // A replacement can announce itself during explicit recovery. Keep
         // that configure request alive, but rediscover its actual DSP module.
-        this.waveCapability = undefined; this.waveCapabilityTask = null
+        this.waveCapability = undefined; this.waveCapabilityTask = null; this.vintageCapability = undefined
         this.waveCapabilityReason = WAVETABLE_UNAVAILABLE_STATUS.reason!
         this.publishWaveStatus()
       }
@@ -880,6 +897,7 @@ export class NativeAudioEngine implements AudioEngine {
     const requestedTrack = trackId ? this.project?.tracks.find(item => item.id === trackId) : undefined
     if (!requestedTrack?.pluginInstrument && (requestedTrack?.instrument ?? instrument) === 'wavetable' && this.waveCapability !== true) throw new Error(WAVETABLE_HOST_REQUIRED)
     if (!requestedTrack && instrument === 'wavetable') throw new Error('IEUM WAVE 미리듣기에는 프로젝트의 악기 트랙이 필요합니다.')
+    if (!requestedTrack?.pluginInstrument && instrumentDef(requestedTrack?.instrument ?? instrument).kind === 'vintage' && this.vintageCapability !== true) throw new Error(this.vintage.reason())
     await this.resume()
     const def = instrumentDef(instrument)
     const track = trackId ? this.project?.tracks.find(item => item.id === trackId) : undefined

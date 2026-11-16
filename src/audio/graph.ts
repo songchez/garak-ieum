@@ -17,6 +17,8 @@ import { EFFECT_MODULES } from '../devices/effects/registry'
 import { bindGuitarRigDevice, createGuitarRigMaster } from '../devices/guitar-rig'
 import { bindDeviceAnalysis } from '../devices/effects/analysis'
 import { bindDynamicsMeter } from '../devices/effects/dynamicsMeter'
+import { forwardVintageControl, scheduleVintage, updateVintageParams } from '../devices/vintage/web'
+import { isVintageInstrument, vintageTailSeconds } from '../devices/vintage/params'
 import { dbToGain, randomGenerator, setParameter } from '../devices/effects/shared'
 import { automationValue, evaluateLane, isActiveLane, isDiscrete, targetDef, trackAt } from '../core/automation'
 import type { AutomationLane } from '../core/types'
@@ -154,6 +156,8 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true,
     for (const device of track.devices) {
       if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, bpm, now, smooth)
     }
+    // Vintage instruments (Rust worklet) take knob edits now; their parameters glide inside the DSP.
+    if (track.kind === 'instrument' && isVintageInstrument(track.instrument)) updateVintageParams(channel.controls?.input ?? channel.input, track.instrument, track.instrumentParams)
   }
 }
 
@@ -298,7 +302,9 @@ function trackTails(project: Project): Map<string, number> {
     let tail = 0
     if (track.render?.frozen) { tails.set(track.id, track.render.frozen.tailSeconds); continue }
     const def = instrumentDef(track.instrument)
-    if (track.kind === 'instrument' && !def.isKit) {
+    if (track.kind === 'instrument' && isVintageInstrument(track.instrument)) {
+      tail = Math.max(tail, vintageTailSeconds(track.instrument, track.instrumentParams) + 0.2)
+    } else if (track.kind === 'instrument' && !def.isKit) {
       tail = Math.max(tail, clamp(paramValue(def.params, track.instrumentParams, 'release'), 0, 30) + 0.2)
     } else if (track.kind === 'instrument' && def.kind === 'sampled') tail = Math.max(tail, 2)
     for (const device of track.devices) {
@@ -473,6 +479,8 @@ function createTrackControls(context: BaseAudioContext, destination: AudioNode, 
 
 /** Applies one controller value at `time`. Other controllers (pan, other CCs, program) have no built-in meaning. */
 export function applyControl(controls: TrackControls, key: ControllerKey, value: number, time: number, range = DEFAULT_BEND_RANGE): void {
+  // Vintage instruments render pitch bend and modulation themselves (no detune input on a worklet).
+  forwardVintageControl(controls.input, key, value, time, range)
   const state = controls.state
   if (key === 'pitchBend') {
     state.bend = value / 8192 * range * 100
@@ -648,6 +656,32 @@ export function stopTrackVoices(graph: EngineGraph, trackId: string, from: numbe
   return stopped
 }
 
+/** A voice rendered elsewhere (a vintage instrument's worklet): filed and released like registerVoice's. */
+function adoptVoice(graph: EngineGraph, base: { stop(at: number): void; release(at: number, seconds: number): void; dispose(): void }): Voice {
+  let disconnected = false
+  const owner = voiceOwner
+  const voice: Voice = {
+    stop(at) { if (!disconnected) base.stop(at) },
+    release(at, seconds) { if (!disconnected) base.release(at, seconds) },
+    disconnect() {
+      if (disconnected) return
+      disconnected = true
+      base.dispose()
+      graph.voices.delete(voice)
+      if (owner) trackVoices.get(graph)?.get(owner.trackId)?.delete(voice)
+    },
+  }
+  if (owner) {
+    let byTrack = trackVoices.get(graph)
+    if (!byTrack) trackVoices.set(graph, byTrack = new Map())
+    let owned = byTrack.get(owner.trackId)
+    if (!owned) byTrack.set(owner.trackId, owned = new Map())
+    owned.set(voice, { onset: owner.onset, audio: owner.audio })
+  }
+  graph.voices.add(voice)
+  return voice
+}
+
 function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNode[], envelope: GainNode, pitchBus?: AudioNode): Voice {
   let disconnected = false
   // Pitch bend and vibrato reach every source of a pitched voice through its detune (cents).
@@ -734,6 +768,8 @@ export function scheduleInstrument(
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
   // Native instruments are rendered by their host; never use the browser's keys fallback.
   if (instrumentDef(instrument).kind === 'native') return
+  // Vintage instruments: the Rust core in a worklet (silent while garak-dsp.wasm is unavailable).
+  if (isVintageInstrument(instrument)) return scheduleVintage(graph, destination, instrument, pitch, when, duration, clamp(velocity, 0, 1), params, base => adoptVoice(graph, base))
   const context = graph.context
   const strength = clamp(velocity, 0, 2)
   const p = (id: string): number => paramValue(instrumentDef(instrument).params, params, id)
