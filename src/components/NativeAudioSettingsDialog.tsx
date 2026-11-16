@@ -4,6 +4,7 @@ import type { NativeAudioEngine } from '../audio/native/NativeAudioEngine'
 import { nativeBackendForPlatform } from '../audio/native/NativeAudioEngine'
 import type { NativeBackend, NativeDevice, NativeDeviceProbe } from '../audio/native/contracts'
 import { describeNativeError, NATIVE_ACTION_LABELS, type NativeErrorAction, type NativeErrorAdvice } from '../audio/native/deviceErrors'
+import type { NativeStartupReport } from '../audio/native/deviceStartup'
 import { bufferPlan, driverChannelName, inputChoices, namesByIndex, nearestSampleRate, snapshotInputNames } from '../audio/native/deviceProfile'
 import {
   DEFAULT_AUDIO_SETTINGS, MAX_PROCESSING_THREADS, MAX_RECORDING_OFFSET_FRAMES, SAMPLE_RATES, nativeInputDeviceId, nativeInputProfile, nativeOutputProfile,
@@ -53,6 +54,22 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   return <div className="audio-setting-row"><div><strong>{label}</strong>{hint && <p>{hint}</p>}</div><div className="audio-setting-control">{children}</div></div>
 }
 function Fact({ name, value }: { name: string; value: ReactNode }) { return <><dt>{name}</dt><dd>{value}</dd></> }
+const STARTUP_STATE: Record<NativeStartupReport['state'], string> = { running: '연결 중', ready: '저장된 설정으로 연결됨', fallback: '대체 장치로 연결됨', failed: '연결하지 못함', cancelled: '직접 적용한 설정으로 대체됨' }
+/** The launch connection's steps for 진단 복사 (names only; device IDs stay out of copied text). */
+const startupLines = (report: NativeStartupReport | null | undefined): string[] => !report ? [] : [
+  `시작 연결: ${STARTUP_STATE[report.state]} · 저장된 설정 ${report.preferred}${report.used ? ` · 사용 중 ${report.used}` : ''}${report.reason ? ` · 이유: ${report.reason}` : ''}`,
+  ...report.log.map(entry => `  +${entry.ms} ms ${entry.step}${entry.ok === false ? ' ✗' : entry.ok ? ' ✓' : ''} ${entry.detail}`),
+]
+function StartupLog({ report }: { report: NativeStartupReport }) {
+  return <>
+    <h3>시작할 때 장치 연결</h3>
+    <dl className="audio-settings-facts" data-selectable-text="" tabIndex={0}>
+      <Fact name="결과" value={STARTUP_STATE[report.state]}/><Fact name="저장된 설정" value={report.preferred}/><Fact name="사용 중" value={report.used ?? '없음'}/>
+      {report.reason && <Fact name="바꾼 이유" value={report.reason}/>}
+    </dl>
+    <ol className="audio-startup-log" aria-label="시작 연결 기록" data-selectable-text="">{report.log.map((entry, index) => <li key={index} data-ok={entry.ok === undefined ? undefined : String(entry.ok)}><span>+{entry.ms} ms</span> {entry.detail}</li>)}</ol>
+  </>
+}
 /** 자동, 끔, then 2..16 worker threads; a stored value outside that list (1) stays selectable. */
 const threadOptions = (current: AudioSettings['processingThreads']): AudioSettings['processingThreads'][] => {
   const values: AudioSettings['processingThreads'][] = ['auto', 0, ...Array.from({ length: MAX_PROCESSING_THREADS - 1 }, (_, index) => index + 2)]
@@ -224,6 +241,7 @@ export default function NativeAudioSettingsDialog({ engine, settings, project, b
       `과부하: ${actual?.overloads ?? '확인되지 않음'}`, `콜백 부하: ${actual?.lastCallbackLoad == null ? '확인되지 않음' : `${Math.round(actual.lastCallbackLoad * 100)}%`}`,
       `장치 복구: ${actual?.recovering ? '다시 연결하는 중' : '정상'} · ${actual?.recoveries ?? 0}회`, `드라이버 해제: ${actual?.suspended ? '예' : '아니요'}`,
       `명령 큐 초과: ${audio.commandOverflows ?? 0}`, `음성 수 초과: ${audio.voiceOverflows ?? 0}`,
+      ...startupLines(audio.startup),
     ].join('\n')
     try { await navigator.clipboard.writeText(text); setFeedback({ error: false, text: '장치 ID와 파일 경로를 제외한 진단 정보를 복사했습니다.' }) }
     catch { setFeedback({ error: true, text: '클립보드에 접근하지 못했습니다.' }) }
@@ -243,6 +261,7 @@ export default function NativeAudioSettingsDialog({ engine, settings, project, b
           {tab === 'appearance' && <AppearanceSettings disabled={applying}/>}
           {tab === 'plugins' && <PluginSettings engine={engine}/>}
           {tab === 'devices' && <>
+            {audio.startup?.state === 'fallback' && <p className="audio-settings-note" role="status">시작할 때 저장된 장치({audio.startup.preferred})를 열지 못해 {audio.startup.used}를 임시로 사용 중입니다 — {audio.startup.reason}. 저장된 설정은 바꾸지 않았으며, 적용을 누르면 지금 고른 설정이 저장됩니다.</p>}
             <div className="audio-settings-section-title"><h3>드라이버와 장치</h3><button className="audio-small-button" disabled={locked || loading} onClick={() => setRefreshId(value => value + 1)}>{loading ? '확인 중…' : '목록 새로고침'}</button></div>
             <Row label="오디오 드라이버" hint={engine.platform === 'darwin' ? 'Apple Silicon Mac의 Core Audio 장치를 사용합니다.' : '오디오 인터페이스의 ASIO 드라이버 또는 Windows WASAPI를 선택합니다.'}>
               <select aria-label="오디오 드라이버" value={backend} disabled={locked} onChange={event => patch({ nativeBackend: event.target.value as NativeBackend, inputDeviceId: '', outputDeviceId: '', nativeInputChannel: 0, clockSource: undefined })}>
@@ -330,6 +349,7 @@ export default function NativeAudioSettingsDialog({ engine, settings, project, b
             <div className="audio-settings-section-title"><h3>네이티브 엔진 상태</h3><button className="audio-small-button" onClick={() => void copyStatus()}>진단 복사</button></div>
             <dl className="audio-settings-facts" data-selectable-text="" tabIndex={0}><Fact name="상태" value={audio.status}/><Fact name="드라이버" value={actual ? backendName(actual.backend) : '아직 열지 않음'}/><Fact name="출력 장치" value={actual?.outputName ?? '확인되지 않음'}/><Fact name="입력 장치" value={actual?.inputChannels ? actual.inputName ?? '선택한 입력' : '열지 않음'}/><Fact name="열린 입력 채널" value={actual?.inputChannelList?.length ? actual.inputChannelList.map(channel => channel + 1).join(', ') : actual?.inputChannels ? `${actual.inputChannels}개` : '없음'}/><Fact name="프로젝트 레이트" value={rateText(project.sampleRate)}/><Fact name="실제 레이트" value={rateText(actual?.sampleRate)}/><Fact name="입력 장치 레이트" value={rateText(actual?.inputDeviceSampleRate)}/><Fact name="출력 장치 레이트" value={rateText(actual?.outputDeviceSampleRate)}/><Fact name="장치 레이트 변환" value={actual?.resampling ? '사용 중' : actual ? '없음' : '확인되지 않음'}/><Fact name="실제 I/O 버퍼" value={actual ? `${actual.bufferFrames} 프레임${actual.bufferAdjusted ? ' · 드라이버가 맞춤' : ''}` : '확인되지 않음'}/><Fact name="입력 지연 · 드라이버 보고" value={latency(actualInputLatency)}/><Fact name="출력 지연 · 드라이버 보고" value={latency(actualOutputLatency)}/><Fact name="플러그인 지연" value={`${audio.pluginLatencyFrames ?? 0} 프레임`}/><Fact name="과부하" value={actual?.overloads ?? '확인되지 않음'}/><Fact name="최근 콜백 부하" value={actual?.lastCallbackLoad == null ? '확인되지 않음' : `${Math.round(actual.lastCallbackLoad * 100)}%`}/><Fact name="장치 복구" value={actual?.recovering ? '장치를 다시 연결하는 중…' : actual ? `정상 · 자동 복구 ${actual.recoveries ?? 0}회` : '확인되지 않음'}/><Fact name="드라이버 해제" value={actual?.suspended ? '백그라운드에서 해제됨' : '사용 중'}/><Fact name="언더런" value={audio.underruns ?? '드라이버에서 보고하지 않음'}/><Fact name="명령 큐 초과" value={audio.commandOverflows ?? 0}/><Fact name="음성 수 초과" value={audio.voiceOverflows ?? 0}/></dl>
             {audio.error && <p role="alert">{audio.error}</p>}
+            {audio.startup && <StartupLog report={audio.startup}/>}
           </>}
           {blockedReason && <p className="audio-settings-note">{blockedReason}</p>}
           {advice && <div className="audio-problem" role="alert">

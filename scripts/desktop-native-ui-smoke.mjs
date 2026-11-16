@@ -6,7 +6,78 @@ import { verifyMidiImportUI } from './desktop-midi-ui-smoke.mjs'
  * GARAK_NATIVE_TEST_CLOCK=1; this does not validate physical WASAPI/ASIO/Core Audio.
  * No bridge, output API, file picker, or plugin processor is mocked here.
  */
+/** An open project reaches a running native device by itself (NativeAudioEngine.autoStart), without 설정 › 적용. */
+export async function waitForLaunchConnection(page, timeout = 20_000) {
+  await page.waitForFunction(async () => (await window.garakDesktop.audio.request('engine.snapshot')).ready === true, null, { timeout, polling: 250 })
+  await page.locator('button.audio-status', { hasText: 'kHz' }).waitFor({ timeout })
+}
+
+export const MISSING_DEVICE_ID = 'garak-smoke-missing-device'
+const AUDIO_SETTINGS_KEY = 'garak-ieum:audio-settings:v1'
+
+/** Saves an output device that no driver reports, as if the interface had been unplugged since the last run. */
+export async function saveMissingAudioDevice(page) {
+  await page.evaluate(({ key, id }) => {
+    const saved = JSON.parse(localStorage.getItem(key) ?? '{}')
+    localStorage.setItem(key, JSON.stringify({ ...saved, nativeBackend: 'auto', outputDeviceId: id, inputDeviceId: '' }))
+  }, { key: AUDIO_SETTINGS_KEY, id: MISSING_DEVICE_ID })
+}
+
+/** Records each separate appearance of the launch audio notice from now on (call right after opening the project). */
+export async function watchLaunchNotices(page) {
+  await page.evaluate(() => {
+    const seen = window.__garakLaunchNotices = []
+    let present = false
+    const check = () => {
+      const toast = [...document.querySelectorAll('.toast')].find(node => node.textContent.includes('오디오 장치'))
+      if (toast && !present) seen.push(toast.textContent)
+      present = !!toast
+    }
+    check()
+    new MutationObserver(check).observe(document.body, { childList: true, subtree: true, characterData: true })
+  })
+}
+
+/**
+ * Next launch with that missing device: the default device starts by itself, one toast explains the
+ * change with a link to 설정, 상태·진단 records why, and the saved preference is kept for the next run.
+ */
+export async function verifyMissingDeviceFallback(page) {
+  await page.waitForFunction(() => (window.__garakLaunchNotices?.length ?? 0) > 0, null, { timeout: 20_000, polling: 100 })
+  const [text] = await page.evaluate(() => window.__garakLaunchNotices)
+  assert.match(text, /기본 장치로 연결했습니다/, `Unexpected fallback notice: ${text}`)
+  assert.match(text, /장치를 찾지 못했습니다/, `The fallback notice does not say why: ${text}`)
+  assert.match(text, /설정 열기/, 'The fallback notice has no link to 설정')
+  await waitForLaunchConnection(page)
+  const state = await page.evaluate(() => window.garakDesktop.audio.request('engine.snapshot'))
+  assert.equal(state.device?.testClock, true)
+  // Shown once: still a single appearance well after the 7 s auto-hide.
+  await page.waitForTimeout(9000)
+  const appearances = await page.evaluate(() => window.__garakLaunchNotices.length)
+  assert.equal(appearances, 1, 'The launch fallback notice appeared more than once')
+  const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? '{}'), AUDIO_SETTINGS_KEY)
+  assert.equal(saved.outputDeviceId, MISSING_DEVICE_ID, 'The fallback overwrote the saved device preference')
+
+  await page.locator('button.audio-status').click()
+  const dialog = page.getByRole('dialog', { name: '설정', exact: true })
+  await dialog.waitFor()
+  assert.ok(await dialog.getByText(/임시로 사용 중입니다/).isVisible(), '오디오 장치 tab does not say a temporary device is in use')
+  await dialog.getByRole('button', { name: '상태·진단', exact: true }).click()
+  const startup = await dialog.locator('.audio-settings-facts').nth(1).innerText()
+  assert.ok(startup.includes('대체 장치로 연결됨') && startup.includes('장치를 찾지 못했습니다'), `상태·진단 lacks the fallback reason: ${startup}`)
+  await dialog.getByRole('button', { name: '설정 닫기', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  // Leave the next run with ordinary settings.
+  await page.evaluate(key => {
+    const saved = JSON.parse(localStorage.getItem(key) ?? '{}')
+    localStorage.setItem(key, JSON.stringify({ ...saved, outputDeviceId: '' }))
+  }, AUDIO_SETTINGS_KEY)
+  return { notice: text, appearances }
+}
+
 export async function verifyNativeAudioUI(page, { screenshot } = {}) {
+  // The launch connection opens the saved device by itself: nothing here clicks 적용.
+  await waitForLaunchConnection(page)
   const before = await page.evaluate(async () => ({
     platform: window.garakDesktop.platform,
     state: await window.garakDesktop.audio.request('engine.snapshot'),
@@ -20,14 +91,9 @@ export async function verifyNativeAudioUI(page, { screenshot } = {}) {
   const choices = await backend.locator('option').evaluateAll(options => options.map(option => option.value))
   assert.deepEqual(choices, before.platform === 'darwin' ? ['coreaudio'] : ['wasapi', 'asio'])
   assert.equal(await backend.inputValue(), before.platform === 'darwin' ? 'coreaudio' : 'wasapi')
-  if (!before.state.ready) {
-    await dialog.getByRole('button', { name: '적용', exact: true }).click()
-    await page.waitForFunction(async () => (await window.garakDesktop.audio.request('engine.snapshot')).ready === true)
-    before.state = await page.evaluate(() => window.garakDesktop.audio.request('engine.snapshot'))
-  }
   assert.equal(before.state.device?.backend, 'test')
   assert.equal(before.state.device?.testClock, true)
-  assert.ok(before.state.ready, 'Native device settings did not start the real host')
+  assert.ok(before.state.ready, 'The saved audio settings did not start the real host at launch')
   // The buffer list comes from the driver probe: its recommended value plus allowed sizes only.
   const buffer = dialog.getByRole('combobox', { name: '오디오 I/O 버퍼 크기', exact: true })
   assert.ok(await buffer.isVisible(), 'Native I/O buffer control is missing')
@@ -39,10 +105,12 @@ export async function verifyNativeAudioUI(page, { screenshot } = {}) {
 
   await dialog.getByRole('button', { name: '상태·진단', exact: true }).click()
   await dialog.getByText('테스트 클록 · 하드웨어 미사용', { exact: true }).waitFor()
-  const facts = await dialog.locator('.audio-settings-facts').innerText()
+  const facts = await dialog.locator('.audio-settings-facts').first().innerText()
   assert.ok(facts.includes(`${before.state.device.bufferFrames} 프레임`), 'Actual native buffer was not displayed')
   assert.ok(facts.includes('드라이버 보고'), 'Driver latency was presented as a measured round trip')
   assert.ok(facts.includes('실제 레이트'))
+  await dialog.getByRole('heading', { name: '시작할 때 장치 연결', exact: true }).waitFor()
+  assert.ok((await dialog.locator('.audio-settings-facts').nth(1).innerText()).includes('저장된 설정으로 연결됨'), 'The launch connection result is not shown in 상태·진단')
 
   await dialog.getByRole('button', { name: '녹음·모니터링', exact: true }).click()
   assert.ok(await dialog.getByRole('checkbox', { name: /^저지연 모니터링/ }).isVisible())

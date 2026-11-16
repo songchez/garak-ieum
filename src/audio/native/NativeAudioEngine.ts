@@ -27,6 +27,7 @@ import type { NativeEngineCapabilities, NativeProjectApplied } from './contracts
 import { ownAudioBytes } from '../assetBytes'
 import { dynamicsReadingFrom, type DynamicsReading } from '../../devices/effects/dynamicsMeter'
 import { nativeRequestError, withNativeCode } from './deviceErrors'
+import { backendLabel, candidateLabel, decideStartup, missingDevice, startupCandidates, startupNotice, startupReason, type NativeStartupReport } from './deviceStartup'
 import { inputChoices, namesByIndex, parseDeviceProbe, snapshotInputNames } from './deviceProfile'
 import { countInBeats, DEFAULT_METRONOME_PREFS, type MetronomeEngineState, type PlayOptions } from '../../core/metronome'
 import { metronomeStrokes } from '../metronomeSounds'
@@ -101,6 +102,11 @@ export class NativeAudioEngine implements AudioEngine {
   private syncTask: Promise<void> | null = null
   private syncTimer: ReturnType<typeof setTimeout> | null = null
   private configurationTask: Promise<void> | null = null
+  /** autoStart run counter: an explicit configure() or dispose() cancels the launch connection. */
+  private startupRun = 0
+  private startupTask: Promise<NativeStartupReport> | null = null
+  /** The run whose report AudioState.startup currently shows. */
+  private startupReportRun = 0
   private closingTask: Promise<void> | null = null
   private configured = false
   private metronomeState: MetronomeEngineState = { enabled: false, sound: DEFAULT_METRONOME_PREFS.sound, volume: DEFAULT_METRONOME_PREFS.volume, accent: true }
@@ -449,9 +455,119 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   configure(settings: AudioSettings, sampleRate: SampleRate): Promise<void> {
+    // An explicit configuration (적용, rollback, project rate) supersedes a launch connection in progress.
+    this.startupRun++
     this.transportRequest++
     this.pendingPlayRequest = null
     return this.beginConfiguration(settings, sampleRate)
+  }
+
+  /** The launch connection in progress, if any (play/resume wait for it instead of racing it). */
+  get startupPending(): boolean { return this.startupTask !== null }
+
+  /**
+   * Launch-time connection (deviceStartup.ts): the saved settings first, with backoff for transient
+   * driver failures, then the fallback chain. Every attempt is the same beginConfiguration that
+   * 적용 runs. The saved preference is not changed here; a fallback is only this.settings for the session.
+   */
+  autoStart(preferred: AudioSettings, sampleRate: SampleRate, options: { sleep?: (ms: number) => Promise<void> } = {}): Promise<NativeStartupReport> {
+    const run = ++this.startupRun
+    this.transportRequest++
+    this.pendingPlayRequest = null
+    const task = this.runStartup(run, normalizeAudioSettings(preferred), projectSampleRate(sampleRate), options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))
+    this.startupTask = task
+    void task.finally(() => { if (this.startupTask === task) this.startupTask = null }).catch(() => undefined)
+    return task
+  }
+
+  private async runStartup(run: number, preferred: AudioSettings, rate: SampleRate, sleep: (ms: number) => Promise<void>): Promise<NativeStartupReport> {
+    const began = performance.now()
+    const candidates = startupCandidates(preferred, this.platform)
+    const report: NativeStartupReport = {
+      state: 'running', startedAt: Date.now(), preferred: candidates[0] ? candidateLabel(candidates[0]) : backendLabel(preferred.nativeBackend),
+      used: null, reason: null, preferredMissing: false, notice: null, log: [],
+    }
+    const publish = () => { this.startupReportRun = run; this.updateAudio({ startup: { ...report, log: [...report.log] } }) }
+    const log = (step: string, detail: string, ok?: boolean) => {
+      report.log.push({ ms: Math.round(performance.now() - began), step, detail, ...(ok === undefined ? {} : { ok }) })
+      if (run === this.startupRun) publish()
+    }
+    const cancelled = () => run !== this.startupRun
+    const finish = (state: NativeStartupReport['state']) => {
+      report.state = state
+      // A cancelled run (적용 pressed meanwhile) still closes its own diagnostics entry, never a newer run's.
+      if (state !== 'cancelled' || this.startupReportRun === run) { if (state === 'cancelled') report.log.push({ ms: Math.round(performance.now() - began), step: 'cancel', detail: '직접 적용한 설정이 시작 연결을 대신함' }); publish() }
+      return { ...report, log: [...report.log] }
+    }
+    log('start', `저장된 설정 ${report.preferred} · ${rate} Hz`)
+    if (!this.bridge || !candidates.length) {
+      report.reason = !this.bridge ? this.audioSnapshot.error ?? '네이티브 오디오 연결부가 없습니다.' : '이 운영체제에서 쓸 수 있는 오디오 드라이버가 없습니다.'
+      report.notice = startupNotice({ preferred: { step: 'preferred', backend: 'wasapi', settings: preferred }, used: null, error: new Error(report.reason) })
+      log('fail', report.reason, false)
+      return finish('failed')
+    }
+    // The first request spawns the host and completes its handshake (desktop/native-audio.ts start()).
+    await this.ensureWaveCapability().catch(() => undefined)
+    if (cancelled()) return finish('cancelled')
+    log('host', '오디오 엔진 프로세스 응답', true)
+    const lists = new Map<NativeBackend, NativeDevice[] | null>()
+    const names = new Map<string, string>()
+    let index = 0, attempt = 1, preferredError: unknown = null
+    for (;;) {
+      const candidate = candidates[index]
+      const label = candidateLabel(candidate, names.get(`${candidate.backend}:${candidate.settings.outputDeviceId}`))
+      if (!lists.has(candidate.backend)) {
+        try {
+          const devices = await this.listDevices(candidate.backend)
+          lists.set(candidate.backend, devices)
+          for (const device of devices) names.set(`${candidate.backend}:${device.id}`, device.name)
+          log('devices', `${backendLabel(candidate.backend)} 장치 ${devices.length}개`, true)
+        } catch (error) {
+          // A failed list must not block the attempt itself; the driver open reports the real problem.
+          lists.set(candidate.backend, null)
+          log('devices', `${backendLabel(candidate.backend)} 장치 목록을 읽지 못함 — ${startupReason(error)}`, false)
+        }
+        if (cancelled()) return finish('cancelled')
+      }
+      let failure: unknown = null
+      if (missingDevice(candidate, lists.get(candidate.backend) ?? null)) {
+        failure = withNativeCode(new Error(candidate.settings.outputDeviceId ? '저장된 장치가 장치 목록에 없습니다.' : 'ASIO 드라이버가 선택되지 않았습니다.'), 'DEVICE_NOT_FOUND')
+        if (index === 0) report.preferredMissing = true
+      } else {
+        log('configure', `${candidateLabel(candidate, names.get(`${candidate.backend}:${candidate.settings.outputDeviceId}`))} 열기${attempt > 1 ? ` · 시도 ${attempt}` : ''}`)
+        try {
+          await this.beginConfiguration(candidate.settings, rate)
+          if (cancelled()) return finish('cancelled')
+          const device = this.nativeDevice
+          report.used = device ? `${backendLabel(device.backend)} · ${device.outputName || (candidate.settings.outputDeviceId ? names.get(`${candidate.backend}:${candidate.settings.outputDeviceId}`) ?? '저장된 출력 장치' : '기본 장치')}` : candidateLabel(candidate)
+          log('ready', `${report.used} · ${device?.sampleRate ?? rate} Hz · ${device?.bufferFrames ?? '?'} 프레임`, true)
+          if (index > 0) {
+            report.reason = startupReason(preferredError)
+            report.notice = startupNotice({ preferred: candidates[0], used: candidate, error: preferredError, preferredName: names.get(`${candidates[0].backend}:${candidates[0].settings.outputDeviceId}`) })
+          }
+          return finish(index === 0 ? 'ready' : 'fallback')
+        } catch (error) { failure = error }
+      }
+      if (cancelled()) return finish('cancelled')
+      if (index === 0) preferredError = failure
+      log('error', `${label} — ${startupReason(failure)}`, false)
+      const decision = decideStartup(candidates, index, attempt, failure)
+      if (decision.kind === 'retry') {
+        log('retry', `${decision.delayMs} ms 뒤 다시 시도`)
+        await sleep(decision.delayMs)
+        if (cancelled()) return finish('cancelled')
+        attempt++
+      } else if (decision.kind === 'next') {
+        index = decision.index; attempt = 1
+        log('fallback', `${candidateLabel(candidates[index])}로 전환`)
+      } else {
+        report.reason = startupReason(preferredError ?? failure)
+        report.notice = startupNotice({ preferred: candidates[0], used: null, error: preferredError ?? failure })
+        // The failure stays visible as the engine error, with the saved settings' reason.
+        if (preferredError && preferredError !== failure) this.fail(preferredError)
+        return finish('failed')
+      }
+    }
   }
 
   private beginConfiguration(settings: AudioSettings, sampleRate: SampleRate): Promise<void> {
@@ -660,14 +776,18 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   async resume(): Promise<void> {
+    if (!this.bridge) throw new Error(this.audioSnapshot.error ?? '네이티브 오디오 연결부가 없습니다.')
+    // Play during the launch connection waits for it rather than opening the device a second time.
+    if (this.startupTask) await this.startupTask
     const generation = this.generation
     await this.ensureWaveCapability()
     if (generation !== this.generation) throw abortError()
     if (this.configurationTask) await this.configurationTask
     if (generation !== this.generation) throw abortError()
-    if (this.audioSnapshot.status === 'error') throw new Error(this.audioSnapshot.error ?? '오디오 장치를 다시 적용해 주세요.')
-    if (this.deviceSuspended) await this.resumeDevice()
-    if (!this.configured || this.nativeDevice?.sampleRate !== this.desiredSampleRate) await this.beginConfiguration(this.settings, this.desiredSampleRate)
+    if (this.deviceSuspended && this.audioSnapshot.status !== 'error') await this.resumeDevice()
+    // An earlier failure (busy driver, restarted host) is retried with the current settings on this explicit
+    // user action, exactly as 적용 would; the user no longer has to open 설정 to clear it.
+    if (this.audioSnapshot.status === 'error' || !this.configured || this.nativeDevice?.sampleRate !== this.desiredSampleRate) await this.beginConfiguration(this.settings, this.desiredSampleRate)
     else await this.syncProject()
   }
 
@@ -1032,6 +1152,7 @@ export class NativeAudioEngine implements AudioEngine {
 
   dispose(): void {
     this.clearWaveAudition(true)
+    this.startupRun++; this.startupTask = null
     this.generation++; this.transportRequest++; this.monitorRequest++
     this.pendingPlayRequest = null
     if (this.syncTimer !== null) clearTimeout(this.syncTimer)

@@ -114,7 +114,11 @@ export class NativeAudioService {
       child.stderr.on('data', (chunk: string) => { if (this.child === child) this.diagnostics = (this.diagnostics + chunk).slice(-8192) })
       child.stdin.on('error', error => { this.failed(child, error); child.kill() })
       child.on('error', error => this.failed(child, error))
-      child.on('exit', (code, signal) => this.failed(child, new Error(`네이티브 오디오 엔진이 종료되었습니다 (${signal ?? code ?? 'unknown'}). 장치 설정에서 다시 연결해주세요.`)))
+      // The host's last stderr line is the only trace of why it exited (a driver crash, a missing DLL); keep it in the error.
+      child.on('exit', (code, signal) => {
+        const reason = this.diagnostics.trim().split(/\r?\n/).at(-1)?.slice(0, 300)
+        this.failed(child, new Error(`네이티브 오디오 엔진이 종료되었습니다 (${signal ?? code ?? 'unknown'}). 재생하면 다시 연결합니다.${reason ? ` 엔진 메시지: ${reason}` : ''}`))
+      })
       const hello = record(await this.send('hello', {}, 15_000), 'handshake')
       if (hello.protocol !== 1) { child.kill(); throw new Error('네이티브 엔진과 앱의 프로토콜 버전이 다릅니다.') }
       this.options.onState({ type: 'state', ready: false, playing: false, generation: this.generation })

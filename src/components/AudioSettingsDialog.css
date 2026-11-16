@@ -47,6 +47,9 @@
 .audio-settings-facts dt { color:var(--text-muted); }
 .audio-settings-facts dd { color:var(--text-secondary); font-variant-numeric: tabular-nums; }
 .audio-settings-facts dt:last-of-type, .audio-settings-facts dd:last-of-type { border-bottom: 0; }
+.audio-startup-log { margin: 0 0 14px; padding: 8px 12px 8px 28px; border: 1px solid var(--border-subtle); border-radius: 5px; font-size: 10px; line-height: 1.6; color: var(--text-secondary); overflow-wrap: anywhere; }
+.audio-startup-log span { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.audio-startup-log li[data-ok="false"] { color: var(--danger); }
 .audio-settings-feedback { padding: 10px 12px; margin-top: 14px; border: 1px solid color-mix(in srgb,var(--success) 35%,transparent); border-radius: 4px; background: color-mix(in srgb,var(--success) 5%,transparent); color: var(--success); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 .audio-settings-feedback.error { border-color: color-mix(in srgb,var(--danger) 35%,transparent); background: color-mix(in srgb,var(--danger) 5%,transparent); color: var(--danger); }
 .audio-settings-footer { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 12px 16px; border-top: 1px solid var(--border-default); background: var(--surface-panel-soft); flex-shrink: 0; }
