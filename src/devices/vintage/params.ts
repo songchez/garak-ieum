@@ -1,7 +1,7 @@
 import type { ParamDef } from '../contracts'
 
 /**
- * Parameter catalogs of the built-in vintage instruments (docs/VINTAGE_INSTRUMENTS.md). The DSP is
+ * Parameter catalogs of the built-in vintage instruments (docs/RUST.md "빈티지 악기"). The DSP is
  * Rust (rust/garak-dsp/src/instruments): ids, order, defaults and ranges here must equal its
  * `PARAMS` tables — the WASM test (src/audio/rust/vintage.test.ts) compares them, and the native
  * engine rejects unknown ids. Ids persist in projects: append only.

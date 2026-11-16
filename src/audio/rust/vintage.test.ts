@@ -133,6 +133,46 @@ describe.skipIf(!built)('vintage instruments in garak-dsp.wasm', () => {
   })
 })
 
+// Listening material: GARAK_VINTAGE_DEMO=<dir> pnpm exec vitest run src/audio/rust/vintage.test.ts
+// writes one 16-bit WAV per factory preset (a short phrase played through the WASM build).
+const demoDir = process.env.GARAK_VINTAGE_DEMO
+describe.skipIf(!built || !demoDir)('vintage demo renders', () => {
+  it('writes a WAV per factory preset', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { encodePcm16Wav } = await import('../math')
+    mkdirSync(demoDir!, { recursive: true })
+    const phrase = (id: VintageInstrumentId): Timed[] => {
+      const out: Timed[] = []
+      const chords = id === OKGU_EP_ID ? [[50, 57, 60, 65], [48, 55, 59, 64], [45, 52, 55, 60], [53, 60, 64, 69]] : [[45, 52, 57, 60], [41, 48, 53, 57], [43, 50, 55, 59], [40, 47, 52, 56]]
+      chords.forEach((chord, c) => chord.forEach((pitch, i) => {
+        const on = Math.round((c * 1.0 + i * 0.012) * RATE), off = Math.round((c * 1.0 + 0.9) * RATE)
+        const velocity = 0.45 + 0.13 * ((i + c) % 4)
+        out.push({ frame: on, e: { offset: 0, kind: VINTAGE_EVENT.noteOn, id: c * 10 + i, pitch, value: velocity, param: 0 } })
+        out.push({ frame: off, e: { offset: 0, kind: VINTAGE_EVENT.noteOff, id: c * 10 + i, pitch, value: 0, param: 0 } })
+      }))
+      ;[72, 74, 76, 79, 81, 79, 76, 74].forEach((pitch, n) => {
+        const on = Math.round((4.2 + n * 0.22) * RATE)
+        out.push({ frame: on, e: { offset: 0, kind: VINTAGE_EVENT.noteOn, id: 100 + n, pitch: id === HANBAM_106_ID ? pitch - 12 : pitch, value: 0.35 + 0.08 * (n % 5), param: 0 } })
+        out.push({ frame: on + Math.round(0.2 * RATE), e: { offset: 0, kind: VINTAGE_EVENT.noteOff, id: 100 + n, pitch: id === HANBAM_106_ID ? pitch - 12 : pitch, value: 0, param: 0 } })
+      })
+      return out.sort((a, b) => a.frame - b.frame)
+    }
+    for (const id of [OKGU_EP_ID, HANBAM_106_ID] as const) {
+      for (const preset of VINTAGE_PRESETS[id]) {
+        const full = presetParams(id, preset)
+        const inst = dsp!.create(VINTAGE_KIND[id], RATE, VINTAGE_PARAMS[id].map(def => full[def.id]))!
+        const frames = 8 * RATE
+        const l = new Float32Array(frames), r = new Float32Array(frames)
+        const events = phrase(id).map(item => ({ ...item.e, offset: item.frame }))
+        inst.process(l, r, frames, events)
+        writeFileSync(join(demoDir!, `${id}-${preset.id}.wav`), new Uint8Array(encodePcm16Wav([l, r], RATE)))
+        inst.free()
+      }
+    }
+  })
+})
+
 describe('vintage event queue', () => {
   it('moves a note-off, cancels a note that has not started, and drains block offsets in order', () => {
     const q = new EventQueue()

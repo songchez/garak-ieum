@@ -20,6 +20,10 @@ on:
       - 'native/tests/rust_bench.cpp'
       - 'native/tests/engine_test.cpp'
       - 'native/tests/rust_parity_test.cpp'
+      - 'native/tests/rust_instrument_test.cpp'
+      - 'native/src/rust_instrument.hpp'
+      - 'native/src/engine.cpp'
+      - 'src/devices/vintage/**'
       - 'src/audio/rust/**'
       - 'src/devices/effects/kernels.ts'
       - 'src/devices/effects/sigimsae.ts'
@@ -162,12 +166,17 @@ jobs:
       - name: Build garak-ffi, the parity test, the benchmark and the engine test
         run: >
           cmake --build build/native-rust --config Release --parallel 4
-          --target garak-rust-parity-test garak-rust-bench garak-engine-test
+          --target garak-rust-parity-test garak-rust-bench garak-engine-test garak-rust-instrument-test
 
       # Every ported effect through C++ and Rust (param sweeps, automation, tempo, resets,
       # hand-overs, other sample rates): residual <= -90 dBFS, identical latency / tail / meters.
       - name: Run the Rust vs C++ parity test
         run: ctest --test-dir build/native-rust -C Release -R native-rust-parity --output-on-failure
+
+      # 옥구슬 EP / 한밤 106 through garak-ffi: checksum parity with the WASM build (parity.golden),
+      # 8 voices < 3 % of one core at 48 kHz, and engine use (timeline, live pedal, edits).
+      - name: Run the vintage instrument test (parity, CPU budget, engine)
+        run: ctest --test-dir build/native-rust -C Release -R native-rust-instruments --output-on-failure
 
       # The whole engine regression suite with every built-in effect switched to Rust.
       - name: Engine tests with the Rust effects (GARAK_RUST_EFFECTS=all)
@@ -186,4 +195,7 @@ jobs:
             echo
             echo "### CPU baseline (${{ matrix.name }})"
             "$dir/garak-rust-bench" 3
+            echo
+            echo "### Vintage instruments (${{ matrix.name }})"
+            "$dir/garak-rust-instrument-test" | grep '^|'
           } | tee -a "$GITHUB_STEP_SUMMARY"

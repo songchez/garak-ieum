@@ -497,7 +497,7 @@ impl Ep {
         let drive_g = 1.0 + drive * 8.0;
         let drive_bias = 0.15 * drive;
         let drive_origin = dmath::tanh(drive_bias);
-        let drive_norm = 1.0 / dmath::powf(drive_g, 0.75);
+        let drive_norm = 1.0 / dmath::powf(drive_g, 0.5);
         let speaker_k =
             dmath::one_pole(1.0 / (core::f64::consts::TAU * (16_000.0 - 11_000.0 * drive)), self.rate);
         let trem_step = self.p[TREM_RATE] / self.rate;
@@ -505,7 +505,7 @@ impl Ep {
         let pan = self.p[AUTOPAN];
         let gain_target = self.controls.gain_target();
         let gain_k = 1.0 / (0.005 * self.rate).max(1.0);
-        let out_level = self.level * 0.55;
+        let out_level = self.level * 0.32;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let mut sum = 0.0;
             for v in self.voices.iter_mut() {
