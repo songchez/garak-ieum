@@ -8,17 +8,19 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::delay::CompensationDelay;
 use crate::error::{Error, require};
+use crate::external::{Io, Stage};
 use crate::insert::{KernelCache, live_parameter, validated_values};
 use crate::json::Json;
 use crate::master::Master;
 use crate::math;
-use crate::plan::{LaneTarget, PcmAsset, Plan, TrackPlan};
+use crate::plan::{LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, TrackPlan};
 use crate::protocol;
 use crate::queue::{Consumer, Producer, channel};
+use crate::routes::{self, Levels};
 use crate::tempo::TempoMap;
 use crate::track::{Feed, Track, TrackInfo};
 
@@ -90,8 +92,9 @@ pub(crate) struct Graph {
     /// Boxed: a track replacement is a pointer swap and a retired track never moves.
     #[allow(clippy::vec_box)]
     tracks: Vec<Box<Track>>,
-    /// Render order: senders first, then returns (the C++ processing levels without routes).
-    order: Vec<usize>,
+    /// Processing levels: route sources and senders before the tracks that read them (engine.cpp
+    /// `levelOrder`/`levelStart`/`masterLevel`).
+    levels: Levels,
     master: Master,
     latency: u32,
     sender_latency: u32,
@@ -167,6 +170,10 @@ pub struct Renderer {
     target_master_gain: f32,
     last_ticket: u64,
     leaked: u64,
+    /// The master feed of the current block for master-resampling routes.
+    master_feed: Vec<f32>,
+    /// The active graph for render-ahead producers on the host's workers (`ahead.rs`).
+    shared: Arc<AtomicPtr<Graph>>,
 }
 
 impl core::fmt::Debug for Renderer {
@@ -212,6 +219,8 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             target_master_gain: 1.0,
             last_ticket: 0,
             leaked: 0,
+            master_feed: vec![0.0; config.max_block as usize * 2],
+            shared: Arc::new(AtomicPtr::new(core::ptr::null_mut())),
         },
     ))
 }
@@ -438,12 +447,14 @@ impl Controller {
         }
         estimated += (sender_latency + return_latency) as usize * p.tracks.len() * 16;
         require(estimated <= MEMORY_LIMIT, "Plugin compensation exceeds native memory budget")?;
-        for t in &mut tracks {
+        for (i, t) in tracks.iter_mut().enumerate() {
+            t.index = i;
             if t.is_return {
                 t.compensation = CompensationDelay::new(return_latency.saturating_sub(t.latency));
             } else {
                 t.compensation = CompensationDelay::new(sender_latency - t.latency);
                 t.output_delay = CompensationDelay::new(return_latency);
+                t.output_delay_frames = return_latency;
             }
         }
         // Sends: each feeds an existing return (never itself; returns never send).
@@ -486,9 +497,7 @@ impl Controller {
                 t.return_input = vec![0.0; block];
             }
         }
-        let mut order: Vec<usize> =
-            (0..tracks.len()).filter(|&i| !p.tracks.get(i).is_some_and(|t| t.is_return)).collect();
-        order.extend((0..tracks.len()).filter(|&i| p.tracks.get(i).is_some_and(|t| t.is_return)));
+        let levels = routes::prepare(&mut tracks, self.config.max_block);
         let graph = Graph {
             project_id: p.project_id.clone(),
             revision: p.revision,
@@ -497,7 +506,7 @@ impl Controller {
             master_gain: p.master_gain,
             tempo: if p.tempo_map.is_empty() { None } else { Some(TempoMap::new(p.bpm, &p.tempo_map)) },
             tracks,
-            order,
+            levels,
             master: Master::new(sr),
             latency: sender_latency + return_latency,
             sender_latency,
@@ -605,6 +614,7 @@ impl Controller {
                     || a.kind != b.kind
                     || a.enabled != b.enabled
                     || a.plugin_instance != b.plugin_instance
+                    || a.host != b.host
                 {
                     replace = true;
                     break;
@@ -669,6 +679,7 @@ impl Controller {
                 return self.full(p);
             }
             t.predecessor = Some(i);
+            t.index = i;
             t.insert_origin = insert_origins(old, neu);
             if old.is_return {
                 t.compensation = CompensationDelay::new(return_latency.saturating_sub(t.latency));
@@ -882,6 +893,7 @@ impl Renderer {
                         .as_mut()
                         .and_then(|g| g.tracks.get_mut(track as usize))
                         .and_then(|t| t.inserts.get_mut(insert as usize))
+                        .and_then(Stage::fx_mut)
                     {
                         i.set_param(index as usize, value);
                         i.commit();
@@ -907,6 +919,8 @@ impl Renderer {
             }
             self.last_ticket = ticket;
         }
+        let active = self.active.as_deref_mut().map_or(core::ptr::null_mut(), |g| g as *mut Graph);
+        self.shared.store(active, Ordering::Release);
     }
 
     /// A return's input for this block: every feeding send's tap times its gain, smoothed like
@@ -961,9 +975,63 @@ impl Renderer {
         }
     }
 
-    /// Every track of one block in render order, summed into `block` in track order (the master
-    /// is applied by the caller). With `parallel`, independent tracks render on the host's workers
-    /// (`host.rs`); the sum is the same either way.
+    /// A routed track's input for this block (engine.cpp `fillRouteInput`): its source's tap (rendered in an
+    /// earlier level) or the master feed. Same frames as the source: an internal route adds no latency.
+    fn fill_route_input(g: &mut Graph, i: usize, count: u32, feed: &[f32], io: &Io) {
+        let n = count as usize * 2;
+        let Some(t) = g.tracks.get_mut(i) else { return };
+        let mut input = core::mem::take(&mut t.route_input);
+        let (kind, tap, src) = (t.route_kind, t.route_tap, t.route_source);
+        if let Some(dst) = input.get_mut(..n) {
+            let from: Option<&[f32]> = match kind {
+                RouteKind::Track => {
+                    src.and_then(|x| g.tracks.get(x).map(|s| (x, s))).map(|(x, s)| match tap {
+                        RouteTap::PreFx => s.pre_tap.as_slice(),
+                        RouteTap::PostFx => s.post_tap.as_slice(),
+                        // Without a return delay the output is the tap (a track rendering ahead: its ring's).
+                        RouteTap::PostFader if s.fader_tap.is_empty() => {
+                            io.ahead_mix(x, count).unwrap_or(&s.buffer)
+                        }
+                        RouteTap::PostFader => s.fader_tap.as_slice(),
+                    })
+                }
+                RouteKind::Master => Some(feed),
+                RouteKind::None => None,
+            };
+            match from.and_then(|f| f.get(..n)) {
+                Some(f) => dst.copy_from_slice(f),
+                None => dst.fill(0.0),
+            }
+        }
+        if let Some(t) = g.tracks.get_mut(i) {
+            t.route_input = input;
+        }
+    }
+
+    /// The master feed before the master-resampling level (engine.cpp `fillMasterFeed`): the master gain over
+    /// the tracks in the feed (before the master processor), smoothed exactly as the output mix of this block.
+    fn fill_master_feed(g: &Graph, feed: &mut [f32], count: u32, rate: f64, gain: (f32, f32), io: &Io) {
+        let Some(feed) = feed.get_mut(..count as usize * 2) else { return };
+        feed.fill(0.0);
+        for (i, t) in g.tracks.iter().enumerate().filter(|(_, t)| t.in_master_feed) {
+            for (f, x) in feed.iter_mut().zip(io.ahead_mix(i, count).unwrap_or(t.mix(count))) {
+                *f += *x;
+            }
+        }
+        let s = math::smoothing(rate, 0.012) as f32;
+        let (mut current, target) = gain;
+        for pair in feed.as_chunks_mut::<2>().0 {
+            current = math::mul_add_f32(target - current, s, current);
+            for x in pair {
+                *x *= current;
+            }
+        }
+    }
+
+    /// Every track of one block level by level, summed into `block` in track order (the master is applied by
+    /// the caller). With `parallel`, the tracks of a level render on the host's workers (`host.rs`); the sum
+    /// is the same either way. `gain`: the shell's master gain (current, target) for the master feed.
+    #[allow(clippy::too_many_arguments)]
     fn render_tracks(
         g: &mut Graph,
         block: &mut [f32],
@@ -972,23 +1040,41 @@ impl Renderer {
         playing: bool,
         rate: f64,
         parallel: Option<&host::Parallel>,
+        io: &Io,
+        feed: &mut [f32],
+        gain: (f32, f32),
     ) {
         let tempo = g.tempo.as_ref().map(|t| t.bpm_at(t.beat_at_frame(position as f64, rate)));
         let smoothing = math::smoothing(rate, 0.012);
-        let senders = parallel.map_or(0, |p| host::render_parallel(g, p, position, count, playing, tempo));
-        {
-            for k in senders..g.order.len() {
-                let Some(&index) = g.order.get(k) else { continue };
-                if g.tracks.get(index).is_some_and(|t| t.is_return) {
-                    Self::fill_return_input(g, index, position, count, smoothing);
+        for level in 0..g.levels.count() {
+            if g.levels.master == Some(level) {
+                Self::fill_master_feed(g, feed, count, rate, gain, io);
+            }
+            let size = g.levels.level(level).len();
+            for k in 0..size {
+                let Some(&index) = g.levels.level(level).get(k) else { continue };
+                match g.tracks.get(index) {
+                    Some(t) if t.is_return => Self::fill_return_input(g, index, position, count, smoothing),
+                    Some(t) if t.routed => Self::fill_route_input(g, index, count, feed, io),
+                    _ => {}
+                }
+            }
+            if parallel.is_some_and(|p| host::render_level(g, p, level, position, count, playing, tempo, io))
+            {
+                continue;
+            }
+            for k in 0..size {
+                let Some(&index) = g.levels.level(level).get(k) else { continue };
+                if io.ahead_mix(index, count).is_some() {
+                    continue; // The host renders it ahead.
                 }
                 if let Some(t) = g.tracks.get_mut(index) {
-                    t.render(position, count, playing, tempo);
+                    t.render(position, count, playing, tempo, io);
                 }
             }
         }
-        for t in g.tracks.iter().filter(|t| t.direct_out()) {
-            for (o, x) in block.iter_mut().zip(t.mix(count)) {
+        for (i, t) in g.tracks.iter().enumerate().filter(|(_, t)| t.direct_out()) {
+            for (o, x) in block.iter_mut().zip(io.ahead_mix(i, count).unwrap_or(t.mix(count))) {
                 *o += *x;
             }
         }
@@ -1029,7 +1115,20 @@ impl Renderer {
             let position = self.position;
             if let Some(g) = &mut self.active {
                 let playing = self.playing && position < g.length_frames;
-                Self::render_tracks(g, block, position, count, playing, rate, None);
+                let io = Io { offline, ..Io::default() };
+                let gain = (self.master_gain, self.target_master_gain);
+                Self::render_tracks(
+                    g,
+                    block,
+                    position,
+                    count,
+                    playing,
+                    rate,
+                    None,
+                    &io,
+                    &mut self.master_feed,
+                    gain,
+                );
                 let s = math::smoothing(rate, 0.012) as f32;
                 for pair in block.as_chunks_mut::<2>().0 {
                     self.master_gain =
@@ -1102,5 +1201,7 @@ impl Renderer {
     }
 }
 
+mod ahead;
 mod host;
-pub use host::{DynamicsReading, HostTask, Parallel};
+pub use ahead::Ahead;
+pub use host::{BlockInfo, DynamicsReading, HostTask, Parallel};

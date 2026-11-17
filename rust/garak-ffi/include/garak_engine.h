@@ -64,6 +64,47 @@ typedef void (*GarakRsParallelRun)(void* host, uint32_t count, GarakRsTask task,
 void garak_rs_engine_render_block(GarakRsEngine* engine, float* out, uint32_t frames, int64_t position, int32_t playing,
                                   uint64_t allowed, float* peaks, uint32_t peak_capacity, GarakRsParallelRun run,
                                   void* host);
+/* VST3 / IEUM WAVE and device input stay in the host (docs/RUST_ENGINE.md 4): the graph calls these back at the
+ * node's place in each chain, on any render thread (concurrently for different tracks, never twice at once for
+ * one track). source: fill the zeroed `stereo` (interleaved, `frames`) with track `track`'s instrument. insert:
+ * process `stereo` in place through plan insert `insert`. input: add a monitored track's device input into
+ * `stereo`; return 1 for a stereo pair, 0 for mono (duplicated) or an unopened input (nothing added). */
+typedef struct GarakRsHostNodes {
+  void* user;
+  void (*source)(void* user, uint32_t track, float* stereo, uint32_t frames);
+  void (*insert)(void* user, uint32_t track, uint32_t insert, float* stereo, uint32_t frames);
+  int32_t (*input)(void* user, uint32_t track, float* stereo, uint32_t frames);
+} GarakRsHostNodes;
+/* One shell block: position, transport, the ticket to apply up to, the shell's master gain at the block start and
+ * its target (master-resampling routes hear the tracks through it), monitored tracks (bit i of word i/64) and the
+ * host nodes (null: sources render silence, inserts pass through). */
+typedef struct GarakRsBlock {
+  int64_t position;
+  int32_t playing;
+  uint64_t allowed;
+  float master_gain, target_master_gain;
+  uint64_t monitor[4];
+  const GarakRsHostNodes* nodes;
+  /* `ahead_count` per-track pointers (null entries allowed): the block's output of tracks the shell renders ahead
+   * (garak_rs_engine_render_ahead); the graph skips those tracks and mixes these. */
+  const float* const* ahead;
+  uint32_t ahead_count;
+} GarakRsBlock;
+/* Audio thread: render_block with a GarakRsBlock (routes, monitoring, host nodes). */
+void garak_rs_engine_render_host(GarakRsEngine* engine, float* out, uint32_t frames, const GarakRsBlock* block,
+                                 float* peaks, uint32_t peak_capacity, GarakRsParallelRun run, void* host);
+/* Render-ahead (the shell's rings): a worker renders track `track` of the active graph at `frame` exactly as the
+ * graph would; returns its output (valid until it renders again) or null; `peak` gets the block peak. The shell
+ * keeps that track out of render_host (in `ahead`) and its resets, renders it on one thread at a time, and keeps
+ * its workers out while the renderer applies commands. reset_track: the shell takes a track back out of sync.
+ * reset_skip: the transport reset that leaves ahead tracks alone (bit i of word i/64). */
+const float* garak_rs_engine_render_ahead(GarakRsEngine* engine, uint32_t track, int64_t frame, uint32_t frames,
+                                          int32_t playing, const GarakRsHostNodes* nodes, float* peak);
+void garak_rs_engine_reset_track(GarakRsEngine* engine, uint32_t track, int32_t effects);
+void garak_rs_engine_reset_skip(GarakRsEngine* engine, int32_t effects, const uint64_t* skip);
+/* Audio thread, after render_host: routed track `track`'s input of the last block (what a recording of it
+ * captures; interleaved stereo), or null when it has no internal route. Valid until the next render/reset. */
+const float* garak_rs_engine_route_input(GarakRsEngine* engine, uint32_t track);
 /* Audio thread, after render_block: compressor/limiter/gate detector peak and lowest gain since the last
  * call, in track then chain order (`insert` indexes the track plan's inserts). Returns the count. */
 typedef struct GarakRsDynamicsReading { uint16_t track, insert; float input, gain; } GarakRsDynamicsReading;

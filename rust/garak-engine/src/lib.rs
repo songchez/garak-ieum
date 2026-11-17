@@ -28,6 +28,7 @@ mod clip;
 mod delay;
 pub mod engine;
 pub mod error;
+pub mod external;
 mod insert;
 pub mod json;
 mod master;
@@ -37,13 +38,16 @@ pub mod offline;
 pub mod plan;
 pub mod protocol;
 pub mod queue;
+mod routes;
 pub mod tempo;
 pub mod testkit;
 mod track;
 
 pub use engine::{
-    Applied, Controller, DynamicsReading, EngineConfig, HostTask, Parallel, Renderer, Snapshot, engine,
+    Ahead, Applied, BlockInfo, Controller, DynamicsReading, EngineConfig, HostTask, Parallel, Renderer,
+    Snapshot, engine,
 };
 pub use error::Error;
+pub use external::HostCallbacks;
 pub use offline::{OfflineRender, render_offline};
 pub use plan::{PcmAsset, Plan};

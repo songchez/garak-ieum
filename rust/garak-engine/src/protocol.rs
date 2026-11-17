@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use crate::error::Error;
 use crate::json::Json;
 use crate::plan::{
-    AudioWindow, AutomationLane, AutomationPoint, ControlEvent, InsertPlan, LaneTarget, Note, Plan,
+    AudioWindow, AutomationLane, AutomationPoint, ControlEvent, HostNode, InsertPlan, LaneTarget, Note, Plan,
     RouteKind, RoutePlan, RouteTap, SendPlan, Source, SourceKind, TempoPoint, TrackPlan,
 };
 
@@ -91,6 +91,20 @@ fn plugin_instance(value: &Json) -> Result<String, Error> {
     string(plugin, "instanceId", 512, false)
 }
 
+/// `"host": {"latencyFrames", "tailSeconds"}`: a node the desktop host processes (docs/RUST_ENGINE.md 4). Only
+/// the C++ shell writes it; the limits are its own (30 s of latency, an hour of tail).
+fn host_node(value: &Json) -> Result<Option<HostNode>, Error> {
+    let Some(host) = value.get("host").filter(|v| !v.is_null()) else { return Ok(None) };
+    if host.as_object().is_none() {
+        return Err(err("Invalid host node"));
+    }
+    Ok(Some(HostNode {
+        latency: integer(host, "latencyFrames", 0, 192_000 * 30, 0)? as u32,
+        tail: number(host, "tailSeconds", 0.0, 3600.0, 0.0)?,
+        stereo: boolean(host, "stereo", true)?,
+    }))
+}
+
 fn source(value: &Json) -> Result<Source, Error> {
     let kind = string(value, "kind", 32, false)?;
     let mut s = Source::default();
@@ -119,6 +133,9 @@ fn source(value: &Json) -> Result<Source, Error> {
         if s.kind == SourceKind::BuiltinSampled {
             s.sample_set_id = id_string(value, "sampleSetId")?;
         }
+    }
+    if s.kind != SourceKind::Audio {
+        s.host = host_node(value)?;
     }
     Ok(s)
 }
@@ -436,9 +453,11 @@ pub fn parse_track(
             enabled: boolean(insert, "enabled", true)?,
             params: Vec::new(),
             plugin_instance: String::new(),
+            host: None,
         };
         if b.kind == "vst3" {
             b.plugin_instance = plugin_instance(insert)?;
+            b.host = host_node(insert)?;
         } else {
             b.params = parameters(insert.get("params"))?;
         }
@@ -524,12 +543,12 @@ pub fn parse_track(
     };
     let rate = i64::from(p.sample_rate);
     for a in audio {
-        // Frozen windows (no click guard, may run into the export tail) are not ported yet.
-        if a.get("freeze").is_some() {
-            return Err(err("Unsupported frozen audio window"));
-        }
+        // Frozen windows: no click guard, and they may run 31 s into the export tail (protocol.hpp).
+        let freeze = boolean(a, "freeze", false)?;
+        let tail_seconds = if freeze { number(a, "tailSeconds", 0.0, 3600.0, 0.0)? } else { 0.0 };
         let start = integer(a, "startFrame", 0, length, 0)?;
-        let end = integer(a, "endFrame", start + 1, length, start + 1)?;
+        let end_limit = if freeze { length + rate * 31 } else { length };
+        let end = integer(a, "endFrame", start + 1, end_limit, start + 1)?;
         let clip_length = integer(a, "clipLengthFrames", 1, rate * 3600, end - start)?;
         // Same fields, ranges and defaults as protocol.hpp (the clip length bounds the fades).
         let id = integer(a, "id", 0, 2_000_000_000, 0)?;
@@ -551,6 +570,8 @@ pub fn parse_track(
             fade_out_frames: integer(a, "fadeOutFrames", 0, clip_length, 0)?,
             fade_in_curve: integer(a, "fadeInCurve", 0, 4, 0)? as i32,
             fade_out_curve: integer(a, "fadeOutCurve", 0, 4, 0)? as i32,
+            freeze,
+            tail_seconds,
         });
     }
     Ok(t)

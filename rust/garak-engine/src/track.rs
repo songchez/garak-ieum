@@ -1,8 +1,10 @@
 //! One track at runtime (engine.cpp `TrackRuntime`) and its control-thread construction
-//! (`buildTrack` + `prepareAutomation`). Audio sources only in this milestone: windows ->
-//! (return input) -> inserts -> plug-in delay compensation -> fader/pan/mute (smoothed or
-//! automated per sample) -> output delay, with the post-FX and post-fader taps sends read.
+//! (`buildTrack` + `prepareAutomation`): windows (frozen ones included) -> host source (VST3 / IEUM WAVE
+//! through the host callback) -> monitored input (device input, route input or a return's send mix) ->
+//! inserts (built-in or host VST3) -> plug-in delay compensation -> fader/pan/mute (smoothed or automated
+//! per sample) -> output delay, with the pre-FX, post-FX and post-fader taps sends and routes read.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -13,9 +15,12 @@ use crate::automation;
 use crate::clip::Window;
 use crate::delay::CompensationDelay;
 use crate::error::{Error, require};
+use crate::external::{Io, Stage};
 use crate::insert::{Insert, KernelCache, estimate_memory, widens};
 use crate::math;
-use crate::plan::{AutomationLane, LaneTarget, PcmAsset, Plan, SourceKind, TrackPlan};
+use crate::plan::{
+    AutomationLane, HostNode, LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, SourceKind, TrackPlan,
+};
 
 /// Built-in insert parameters follow automation every 32 frames, then glide (engine.cpp).
 pub(crate) const AUTOMATION_CHUNK: u32 = 32;
@@ -55,8 +60,12 @@ pub(crate) struct TrackInfo {
 #[derive(Debug)]
 pub(crate) struct Track {
     pub plan: TrackPlan,
+    /// Index in the graph (the host callbacks name tracks by it).
+    pub index: usize,
     pub windows: Vec<Window>,
-    pub inserts: Vec<Insert>,
+    pub inserts: Vec<Stage>,
+    /// The host renders this track's instrument (VST3, IEUM WAVE).
+    host_source: Option<HostNode>,
     pub lanes: Vec<LaneRuntime>,
     volume_lane: Option<usize>,
     pan_lane: Option<usize>,
@@ -65,6 +74,7 @@ pub(crate) struct Track {
     pub compensation: CompensationDelay,
     pub output_delay: CompensationDelay,
     pub buffer: Vec<f32>,
+    pub pre_tap: Vec<f32>,
     pub post_tap: Vec<f32>,
     pub fader_tap: Vec<f32>,
     pub return_input: Vec<f32>,
@@ -77,6 +87,17 @@ pub(crate) struct Track {
     stereo_effects: bool,
     pub is_return: bool,
     sample_rate: f64,
+    project_length: i64,
+    low_latency: bool,
+    /// Track-input routing (docs/TRACK_INPUT_ROUTING.md), resolved by the graph (engine.cpp `prepareRoutes`).
+    /// `route_input` exists only on routed tracks and is filled every block (recordings read it).
+    pub routed: bool,
+    pub route_kind: RouteKind,
+    pub route_tap: RouteTap,
+    pub route_source: Option<usize>,
+    pub in_master_feed: bool,
+    pub route_input: Vec<f32>,
+    pub output_delay_frames: u32,
     /// Continuation (filled on the control thread, consumed by `adopt`): per runtime insert, the
     /// predecessor's runtime insert with the same id and type.
     pub insert_origin: Vec<Option<usize>>,
@@ -146,7 +167,9 @@ impl Track {
         let mut track = Track {
             plan: t.clone(),
             windows: Vec::new(),
+            index: 0,
             inserts: Vec::new(),
+            host_source: None,
             lanes: Vec::new(),
             volume_lane: None,
             pan_lane: None,
@@ -155,6 +178,7 @@ impl Track {
             compensation: CompensationDelay::default(),
             output_delay: CompensationDelay::default(),
             buffer: vec![0.0; max_block as usize * 2],
+            pre_tap: Vec::new(),
             post_tap: Vec::new(),
             fader_tap: Vec::new(),
             return_input: Vec::new(),
@@ -167,6 +191,15 @@ impl Track {
             stereo_effects: false,
             is_return: t.is_return,
             sample_rate,
+            project_length: p.length_frames,
+            low_latency: p.low_latency_monitoring,
+            routed: false,
+            route_kind: RouteKind::None,
+            route_tap: RouteTap::PostFx,
+            route_source: None,
+            in_master_feed: true,
+            route_input: Vec::new(),
+            output_delay_frames: 0,
             insert_origin: Vec::new(),
             predecessor: None,
         };
@@ -174,20 +207,31 @@ impl Track {
         if !t.enabled {
             return Ok((track, info));
         }
+        let mut tail = 0.0;
         if t.source.kind != SourceKind::Audio {
-            return Err(Error::new(
-                "garak-engine renders audio tracks only (instrument sources: docs/RUST_ENGINE.md 6)",
-            ));
+            // Instruments the host renders (VST3, IEUM WAVE): its processor's delay and tail come with the plan.
+            let Some(host) = t.source.host else {
+                return Err(Error::new(
+                    "garak-engine renders audio tracks and host-rendered instruments only (built-in instruments: docs/RUST_ENGINE.md 6)",
+                ));
+            };
+            require(
+                f64::from(host.latency) <= sample_rate * 30.0,
+                "Plugin latency exceeds native memory budget",
+            )?;
+            track.host_source = Some(host);
+            track.latency = host.latency;
+            track.stereo_source = host.stereo;
+            tail = host.tail;
         }
         for e in t.inserts.iter().filter(|e| e.enabled) {
             info.memory += estimate_memory(&e.kind, sample_rate);
         }
-        let mut tail = 0.0;
         for w in &t.audio {
             require(
                 w.start_frame >= 0
                     && w.end_frame > w.start_frame
-                    && w.end_frame <= p.length_frames
+                    && (w.end_frame <= p.length_frames || w.freeze)
                     && w.clip_length_frames > 0
                     && w.clip_offset_frames >= 0
                     && w.fade_in_frames >= 0
@@ -206,6 +250,10 @@ impl Track {
                 "Audio window does not match registered PCM",
             )?;
             track.stereo_source |= asset.channels > 1;
+            // A frozen render already carries its track's release and effect tails: the window states that tail.
+            if w.freeze {
+                tail = math::std_max(tail, w.tail_seconds);
+            }
             info.assets.push(Arc::as_ptr(&asset) as usize);
             track.windows.push(Window { w: w.clone(), asset });
         }
@@ -218,13 +266,19 @@ impl Track {
             if !e.enabled {
                 continue;
             }
-            if e.kind == "vst3" {
-                return Err(Error::new("VST3 inserts stay in the C++ host (docs/RUST_ENGINE.md 4)"));
-            }
-            let insert = Insert::new(e, index as u16, sample_rate, p.bpm, cache)?;
+            let insert = if e.kind == "vst3" {
+                // The host processes the plug-in (docs/RUST_ENGINE.md 4) and reported its delay and tail.
+                let Some(host) = e.host else {
+                    return Err(Error::new("VST3 inserts need the desktop host's plug-in callback"));
+                };
+                track.stereo_effects = true;
+                Stage::Host { source: index as u16, latency: host.latency, tail: host.tail }
+            } else {
+                track.stereo_effects |= widens(e);
+                Stage::Fx(Box::new(Insert::new(e, index as u16, sample_rate, p.bpm, cache)?))
+            };
             track.latency += insert.latency();
             tail += insert.tail();
-            track.stereo_effects |= widens(e);
             require(
                 f64::from(track.latency) <= sample_rate * 30.0,
                 "Plugin latency exceeds native memory budget",
@@ -275,11 +329,14 @@ impl Track {
                     let Some(source) = self.plan.inserts.iter().position(|e| e.id == lane.insert_id) else {
                         continue;
                     };
-                    let Some(runtime) = self.inserts.iter().position(|i| usize::from(i.source) == source)
+                    let Some(runtime) = self.inserts.iter().position(|i| usize::from(i.source()) == source)
                     else {
                         continue;
                     };
-                    let Some(insert) = self.inserts.get_mut(runtime) else { continue };
+                    // A host VST3 insert takes its automation as parameter events from the host.
+                    let Some(insert) = self.inserts.get_mut(runtime).and_then(Stage::fx_mut) else {
+                        continue;
+                    };
                     let Some(control) = insert.param_index(&lane.param) else { continue };
                     insert.automated = true;
                     l.insert = Some(runtime);
@@ -320,6 +377,15 @@ impl Track {
         self.output_delay.take_state_from(&mut previous.output_delay);
         if routing {
             self.is_return = previous.is_return;
+            self.index = previous.index;
+            self.routed = previous.routed;
+            self.route_kind = previous.route_kind;
+            self.route_tap = previous.route_tap;
+            self.route_source = previous.route_source;
+            self.in_master_feed = previous.in_master_feed;
+            self.output_delay_frames = previous.output_delay_frames;
+            core::mem::swap(&mut self.pre_tap, &mut previous.pre_tap);
+            core::mem::swap(&mut self.route_input, &mut previous.route_input);
             core::mem::swap(&mut self.post_tap, &mut previous.post_tap);
             core::mem::swap(&mut self.fader_tap, &mut previous.fader_tap);
             core::mem::swap(&mut self.return_input, &mut previous.return_input);
@@ -333,20 +399,23 @@ impl Track {
         }
     }
 
-    /// One block of `count` frames at project frame `frame` (engine.cpp `TrackRuntime::render`,
-    /// offline/not-monitored path). `return_input` must be filled first on returns. `tempo`: the
-    /// tempo at the block start when the project has a tempo map (synced effects follow it).
-    pub fn render(&mut self, frame: i64, count: u32, playing: bool, tempo: Option<f64>) {
+    /// One block of `count` frames at project frame `frame` (engine.cpp `TrackRuntime::render`). The graph
+    /// fills `return_input` (returns) and `route_input` (routed tracks) first. `tempo`: the tempo at the block
+    /// start when the project has a tempo map (synced effects follow it). `io`: host callbacks, monitoring.
+    pub fn render(&mut self, frame: i64, count: u32, playing: bool, tempo: Option<f64>, io: &Io) {
         let n = count as usize * 2;
+        let index = self.index;
         let Track {
             plan,
             windows,
             inserts,
             lanes,
             buffer,
+            pre_tap,
             post_tap,
             fader_tap,
             return_input,
+            route_input,
             compensation,
             output_delay,
             ..
@@ -355,32 +424,65 @@ impl Track {
         buf.fill(0.0);
         if !plan.enabled {
             self.peak = 0.0;
-            for tap in [post_tap, fader_tap] {
+            for tap in [pre_tap, post_tap, fader_tap] {
                 if let Some(t) = tap.get_mut(..n) {
                     t.fill(0.0);
                 }
             }
             return;
         }
-        if playing {
+        // Offline engines keep reading frozen windows after the project end: that part is the frozen tail.
+        let freeze_tail = !playing && io.offline && frame >= self.project_length;
+        if playing || freeze_tail {
             let end = frame + i64::from(count);
             for w in windows.iter() {
                 if w.w.start_frame >= end {
                     break;
                 }
-                if w.w.end_frame <= frame {
+                if w.w.end_frame <= frame || (freeze_tail && !w.w.freeze) {
                     continue;
                 }
                 w.render(buf, frame, count, self.sample_rate);
             }
         }
-        if self.is_return {
-            // A return's "monitor" input is its send mix (always compensated, never low latency).
+        if self.host_source.is_some()
+            && let Some(host) = io.host
+        {
+            host.source(index, buf);
+        }
+        // The monitored input: a return's send mix (always "monitored", stereo), a routed track's route input,
+        // or the device input the host adds.
+        let monitored = io.monitored(index);
+        let (monitor, stereo_input) = if self.is_return {
             for (b, x) in buf.iter_mut().zip(return_input.iter()) {
                 *b += *x;
             }
+            (true, true)
+        } else if self.routed {
+            if monitored {
+                for (b, x) in buf.iter_mut().zip(route_input.iter()) {
+                    *b += *x;
+                }
+            }
+            (monitored, monitored)
+        } else if monitored {
+            (true, io.host.is_some_and(|h| h.input(index, buf)))
+        } else {
+            (false, false)
+        };
+        if let Some(t) = pre_tap.get_mut(..n) {
+            t.copy_from_slice(buf);
         }
-        for (index, insert) in inserts.iter_mut().enumerate() {
+        for (stage_index, stage) in inserts.iter_mut().enumerate() {
+            let insert = match stage {
+                Stage::Fx(insert) => insert,
+                Stage::Host { source, .. } => {
+                    if let Some(host) = io.host {
+                        host.insert(index, *source, buf);
+                    }
+                    continue;
+                }
+            };
             if let Some(bpm) = tempo {
                 insert.set_tempo(bpm);
             }
@@ -393,7 +495,7 @@ impl Track {
                 let chunk = AUTOMATION_CHUNK.min(count - offset);
                 let at = (frame + i64::from(offset)) as f64;
                 for l in lanes.iter_mut() {
-                    if l.insert == Some(index)
+                    if l.insert == Some(stage_index)
                         && let Some(control) = l.control
                     {
                         let v = lane_value(&plan.automation, l, at);
@@ -407,7 +509,12 @@ impl Track {
                 offset += chunk;
             }
         }
-        compensation.process(buf);
+        // A reduced-latency monitor deliberately avoids waiting for unrelated tracks. A return's input is its
+        // sends, never a live input: it always stays compensated.
+        let low_latency_monitor = monitor && !self.is_return && playing && !io.offline && self.low_latency;
+        if !low_latency_monitor {
+            compensation.process(buf);
+        }
         if let Some(t) = post_tap.get_mut(..n) {
             t.copy_from_slice(buf);
         }
@@ -416,7 +523,9 @@ impl Track {
             if let Some(t) = fader_tap.get_mut(..n) {
                 t.copy_from_slice(buf);
             }
-            output_delay.process(buf);
+            if !low_latency_monitor {
+                output_delay.process(buf);
+            }
             return;
         }
         let target_pan = f64::from(plan.pan);
@@ -424,7 +533,7 @@ impl Track {
         let smoothing = math::smoothing(self.sample_rate, 0.012);
         let automated = self.volume_lane.is_some() || self.pan_lane.is_some() || self.mute_lane.is_some();
         let mute_smoothing = math::smoothing(self.sample_rate, 0.003);
-        let mono = !(self.stereo_source || self.stereo_effects || self.is_return);
+        let mono = !(self.stereo_source || self.stereo_effects || (monitor && stereo_input));
         let mut peak = 0.0f32;
         let (mut fader, mut pan_value, mut mute_gain) = (self.fader, self.pan_value, self.mute_gain);
         for (i, [lo, ro]) in buf.as_chunks_mut::<2>().0.iter_mut().enumerate() {
@@ -500,7 +609,9 @@ impl Track {
         if let Some(t) = fader_tap.get_mut(..n) {
             t.copy_from_slice(buf);
         }
-        output_delay.process(buf);
+        if !low_latency_monitor {
+            output_delay.process(buf);
+        }
     }
 
     /// Whether this track joins the master sum (C++ `TrackTimeline::directOut`).
