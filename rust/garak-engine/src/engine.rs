@@ -149,6 +149,8 @@ pub struct Controller {
     assets: BTreeMap<String, Arc<PcmAsset>>,
     sets: BTreeMap<String, Arc<SampleSet>>,
     cache: KernelCache,
+    /// Prepared IEUM WAVE table sets, shared by patches with the same user banks.
+    wave: crate::wave::WaveCache,
     recipe: Option<Recipe>,
     /// The host's merged copy of the project (what `project.patch` applies to).
     current: Option<Plan>,
@@ -171,6 +173,9 @@ pub struct Renderer {
     retired: Producer<Retired>,
     published: Arc<Published>,
     active: Option<Box<Graph>>,
+    /// A graph swap waiting for an IEUM WAVE table crossfade of the running graph (engine.cpp
+    /// `deferred`): retried at the next render, before any later command.
+    deferred: Option<Ticketed>,
     playing: bool,
     position: i64,
     master_gain: f32,
@@ -204,6 +209,7 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             assets: BTreeMap::new(),
             sets: BTreeMap::new(),
             cache: KernelCache::default(),
+            wave: crate::wave::WaveCache::default(),
             recipe: None,
             current: None,
             commands: cp,
@@ -217,6 +223,7 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             retired: rp,
             published,
             active: None,
+            deferred: None,
             playing: false,
             position: 0,
             master_gain: 1.0,
@@ -500,8 +507,16 @@ impl Controller {
         let mut tracks = Vec::with_capacity(p.tracks.len());
         let mut infos = Vec::with_capacity(p.tracks.len());
         for t in &p.tracks {
-            let (track, info) =
-                Track::build(p, t, &self.assets, self.config.max_block, &self.sets, &mut self.cache)?;
+            let (track, info) = Track::build(
+                p,
+                t,
+                &self.assets,
+                self.config.max_block,
+                &self.sets,
+                &mut self.cache,
+                &mut self.wave,
+                None,
+            )?;
             tracks.push(Box::new(track));
             infos.push(info);
         }
@@ -802,10 +817,27 @@ impl Controller {
             else {
                 continue;
             };
+            // IEUM WAVE patch changes keep their table crossfade on the graph path; the same patch
+            // keeps the running processor (engine.cpp `update`).
+            let wave = neu.source.kind == SourceKind::NativeWavetable
+                || old.source.kind == SourceKind::NativeWavetable;
+            let same_wave = neu.source == old.source && neu.enabled && old.enabled;
+            if wave && !same_wave {
+                return self.full(p);
+            }
+            let reuse = if wave { Some(info.instrument_tail) } else { None };
             let mut neu = neu.clone();
             let removed = renumber_notes(&old.notes, &mut neu.notes);
-            let (mut t, new_info) =
-                Track::build(&p, &neu, &self.assets, self.config.max_block, &self.sets, &mut self.cache)?;
+            let (mut t, new_info) = Track::build(
+                &p,
+                &neu,
+                &self.assets,
+                self.config.max_block,
+                &self.sets,
+                &mut self.cache,
+                &mut self.wave,
+                reuse,
+            )?;
             if new_info.latency != info.latency {
                 return self.full(p);
             }
@@ -944,9 +976,18 @@ impl Renderer {
     }
 
     fn consume(&mut self) {
-        while let Some(Ticketed { ticket, command }) = self.commands.pop() {
+        while let Some(Ticketed { ticket, command }) = self.deferred.take().or_else(|| self.commands.pop()) {
             match command {
                 Command::Graph(mut next) => {
+                    let continues = next.continues
+                        && self.active.as_ref().is_some_and(|p| p.project_id == next.project_id);
+                    if continues
+                        && let Some(prev) = &mut self.active
+                        && !prev.tracks.iter_mut().all(|t| t.source.ready_to_transfer())
+                    {
+                        self.deferred = Some(Ticketed { ticket, command: Command::Graph(next) });
+                        return;
+                    }
                     let previous = self.active.take();
                     let project_changed = previous.as_ref().is_none_or(|p| p.project_id != next.project_id);
                     let preserve = next.continues && !project_changed;

@@ -124,7 +124,7 @@ pub extern "C" fn garak_rs_testkit_instruments_create(
     seconds: f64,
     sample_rate: u32,
 ) -> *mut GarakRsTestProject {
-    if case > 3 || !(0.05..=600.0).contains(&seconds) || !(8000..=192_000).contains(&sample_rate) {
+    if case > 4 || !(0.05..=600.0).contains(&seconds) || !(8000..=192_000).contains(&sample_rate) {
         return core::ptr::null_mut();
     }
     Box::into_raw(Box::new(GarakRsTestProject { project: instrument_project(case, seconds, sample_rate) }))
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn renders_the_instrument_projects_through_the_c_abi() {
         unsafe {
-            for case in 0..4 {
+            for case in 0..5 {
                 let p = garak_rs_testkit_instruments_create(case, 1.0, 48_000);
                 let e = garak_rs_engine_create(48_000, 256, 1);
                 assert!(!p.is_null() && !e.is_null());

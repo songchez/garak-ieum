@@ -22,6 +22,7 @@ pub const SYNTHS: u32 = 0;
 pub const SAMPLES: u32 = 1;
 pub const VINTAGE: u32 = 2;
 pub const ALL: u32 = 3;
+pub const WAVE: u32 = 4;
 
 struct Rng(u32);
 
@@ -380,6 +381,121 @@ fn pow2(x: f64) -> f64 {
     sum * scale
 }
 
+fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let digit = |v: u32| char::from(DIGITS.get((v & 63) as usize).copied().unwrap_or(b'A'));
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = |i: usize| u32::from(chunk.get(i).copied().unwrap_or(0));
+        let n = (b(0) << 16) | (b(1) << 8) | b(2);
+        out.push(digit(n >> 18));
+        out.push(digit(n >> 12));
+        out.push(if chunk.len() > 1 { digit(n >> 6) } else { '=' });
+        out.push(if chunk.len() > 2 { digit(n) } else { '=' });
+    }
+    out
+}
+
+/// An IEUM WAVE patch as the renderer sends it (base64 IEWAVE01 pack, native/devices/
+/// wavetable-synth patch.cpp). `rich`: unison, three oscillators, a user bank in slot 4, sub,
+/// noise, both filters, LFO / envelope / velocity routes, drive, chorus and delay; otherwise the
+/// default patch.
+pub fn wave_patch(rich: bool) -> String {
+    let mut params: Vec<f32> = crate::wave::schema::DEFAULTS.to_vec();
+    let mut routes: Vec<(u32, u32, u32, u32, f32, f32)> = Vec::new();
+    let mut bank: Vec<f32> = Vec::new();
+    if rich {
+        for (index, value) in [
+            (1usize, 4.0f32), // osc1 bank: user slot 4
+            (2, 0.3),
+            (7, 3.0),  // osc1 unison 3
+            (8, 18.0), // detune
+            (12, 1.0), // osc2 on
+            (13, 2.0),
+            (15, 0.5),
+            (17, 7.0),
+            (19, 2.0),
+            (24, 1.0), // osc3 on
+            (25, 1.0),
+            (27, 0.3),
+            (29, -12.0),
+            (36, 0.3),  // sub
+            (39, 0.04), // noise
+            (42, 3000.0),
+            (43, 0.4),
+            (44, 1.0), // filter 2 on (high-pass)
+            (45, 1.0),
+            (46, 200.0),
+            (48, 1.0),
+            (50, 0.01),
+            (52, 0.4),
+            (53, 0.6),
+            (54, 0.3),
+            (70, 3.0),
+            (86, 0.2),
+            (87, 0.3),
+            (90, 0.3),
+            (91, 0.25),
+            (92, 0.3),
+            (93, 0.2),
+            (94, 0.6),
+        ] {
+            if let Some(p) = params.get_mut(index) {
+                *p = value;
+            }
+        }
+        // LFO1 -> osc1 position, Env2 -> filter1 cutoff (curved), velocity -> osc2 level (bipolar).
+        routes.push((4, 2, 0xffff_ffff, 2, 0.3, 0.0));
+        routes.push((1, 42, 0xffff_ffff, 2, 0.5, 0.3));
+        routes.push((16, 15, 0xffff_ffff, 3, 0.2, 0.0));
+        // Two frames: a saw-like ramp and a folded triangle, in [-1, 1].
+        for frame in 0..2 {
+            for i in 0..crate::wave::schema::WAVETABLE_SIZE {
+                let x = i as f32 / crate::wave::schema::WAVETABLE_SIZE as f32;
+                bank.push(if frame == 0 {
+                    2.0 * x - 1.0
+                } else {
+                    1.0 - 4.0 * (x - 0.5).abs() * (1.0 - x * 0.5)
+                });
+            }
+        }
+    }
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"IEWAVE01");
+    let banks = u32::from(rich);
+    for v in [
+        1u32,
+        crate::wave::schema::SCHEMA_FINGERPRINT,
+        crate::wave::schema::PARAM_COUNT as u32,
+        banks,
+        routes.len() as u32,
+        0,
+    ] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    for p in &params {
+        bytes.extend_from_slice(&p.to_bits().to_le_bytes());
+    }
+    let curves = crate::wave::patch::Patch::default().lfo_curves;
+    for v in curves.iter().flatten() {
+        bytes.extend_from_slice(&v.to_bits().to_le_bytes());
+    }
+    for (source, dest, aux, flags, amount, curve) in &routes {
+        for v in [*source, *dest, *aux, *flags, amount.to_bits(), curve.to_bits()] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    if rich {
+        for v in [4u32, 2] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for s in &bank {
+            bytes.extend_from_slice(&s.to_bits().to_le_bytes());
+        }
+    }
+    base64(&bytes)
+}
+
 /// Instrument test project `case` of `seconds` at `sample_rate`.
 pub fn instrument_project(case: u32, seconds: f64, sample_rate: u32) -> TestProject {
     let rate = f64::from(sample_rate);
@@ -503,6 +619,32 @@ pub fn instrument_project(case: u32, seconds: f64, sample_rate: u32) -> TestProj
             &extra,
         );
     }
+    if case == WAVE || case == ALL {
+        let lead = phrase(81, length, rate, 48, 84, dense);
+        b.track(
+            "wave-lead",
+            &format!(
+                r#"{{"kind":"native-wavetable","instrumentId":"wavetable","isKit":false,"patchData":"{}"}}"#,
+                wave_patch(true)
+            ),
+            &lead,
+            &controls(83, length, false),
+            &format!(r#","gain":0.5,"pan":-0.2{send}"#),
+        );
+    }
+    if case == WAVE {
+        let pad = phrase(87, length, rate, 40, 72, 3);
+        b.track(
+            "wave-default",
+            &format!(
+                r#"{{"kind":"native-wavetable","instrumentId":"wavetable","isKit":false,"patchData":"{}"}}"#,
+                wave_patch(false)
+            ),
+            &pad,
+            &controls(89, length, false),
+            r#","gain":0.5,"pan":0.3"#,
+        );
+    }
     let _ = write!(
         b.json,
         r#"{}{{"id":"ret","return":true,"source":{{"kind":"audio"}},"gain":0.8,"notes":[],"audio":[],
@@ -519,7 +661,7 @@ mod tests {
 
     #[test]
     fn instrument_projects_parse() {
-        for case in [SYNTHS, SAMPLES, VINTAGE, ALL] {
+        for case in [SYNTHS, SAMPLES, VINTAGE, ALL, WAVE] {
             let p = instrument_project(case, 2.0, 48_000);
             let plan = timeline_from_bytes(p.json.as_bytes(), &[]).unwrap();
             assert!(plan.tracks.len() >= 3, "case {case}");

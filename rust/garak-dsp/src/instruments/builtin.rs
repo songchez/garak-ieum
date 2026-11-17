@@ -915,7 +915,10 @@ impl Voices {
             let ratio = if pitched && cents != 0.0 { math::exp2(cents / 1200.0) } else { 1.0 };
             let level = self.control_gain;
             if releases {
-                for i in 0..limit {
+                // A release voice started here has no release zone itself: scanning the voices
+                // active before it is the C++ scan over every voice.
+                let scan = limit;
+                for i in 0..scan {
                     if self.voices.get(i).is_some_and(|v| {
                         v.active && v.release_zone != NONE && !v.release_spawned && v.age >= v.note_frames
                     }) && let Some(slot) = self.spawn_release(sr, bank, i, overflows)

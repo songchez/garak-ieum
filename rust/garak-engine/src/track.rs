@@ -58,6 +58,8 @@ pub(crate) struct TrackInfo {
     pub assets: Vec<usize>,
     /// The sample set the track resolved (a re-registered set rebuilds it).
     pub set: Option<Arc<SampleSet>>,
+    /// The instrument's own tail (IEUM WAVE: a rebuilt track that keeps its processor reuses it).
+    pub instrument_tail: f64,
 }
 
 #[derive(Debug)]
@@ -99,6 +101,8 @@ pub(crate) struct Track {
     pub source: Source,
     pub cursors: Cursors,
     project_length: i64,
+    /// Constant tempo (IEUM WAVE LFO sync without a tempo map).
+    bpm: f64,
     /// Voice / event overflows (diagnostics).
     pub overflows: u64,
 }
@@ -139,6 +143,8 @@ impl Track {
         max_block: u32,
         sets: &BTreeMap<String, Arc<SampleSet>>,
         cache: &mut KernelCache,
+        wave: &mut crate::wave::WaveCache,
+        reuse: Option<f64>,
     ) -> Result<(Track, TrackInfo), Error> {
         let mut info = TrackInfo::default();
         require(
@@ -196,9 +202,10 @@ impl Track {
             source: Source::Audio,
             cursors: Cursors::default(),
             project_length: p.length_frames,
+            bpm: p.bpm,
             overflows: 0,
         };
-        let built = instrument::build(p, &mut track.plan, assets, sets, max_block)?;
+        let built = instrument::build(p, &mut track.plan, assets, sets, max_block, wave, reuse)?;
         track.source = built.source;
         // A disabled source needs neither its PCM nor its effects.
         if !t.enabled {
@@ -210,6 +217,7 @@ impl Track {
         track.stereo_source |= built.stereo;
         info.assets = built.assets;
         info.set = built.set;
+        info.instrument_tail = built.instrument_tail;
         let mut tail = built.tail;
         for w in &t.audio {
             require(
@@ -504,6 +512,7 @@ impl Track {
                 playing,
                 self.project_length,
                 self.sample_rate,
+                tempo.unwrap_or(self.bpm),
                 &mut overflows,
             );
             self.overflows += overflows;

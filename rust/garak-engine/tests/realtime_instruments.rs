@@ -91,6 +91,18 @@ fn instruments_never_touch_the_heap() {
     }
     assert_eq!(c.update(edit.clone()).unwrap(), Applied::Tracks);
     render(&mut r, &mut out, 40);
+    // An IEUM WAVE patch change (new table set: the running synth crossfades), and an edit right
+    // behind it that waits for the crossfade to finish.
+    edit.revision = 20;
+    let lead = edit.tracks.iter().position(|t| t.id == "wave-lead").unwrap();
+    edit.tracks[lead].source.patch = garak_engine::testkit::instruments::wave_patch(false);
+    assert_eq!(c.update(edit.clone()).unwrap(), Applied::Full);
+    render(&mut r, &mut out, 1);
+    edit.revision = 21;
+    edit.master_gain = 0.6;
+    edit.bpm = 101.0;
+    assert_eq!(c.update(edit.clone()).unwrap(), Applied::Full);
+    render(&mut r, &mut out, 10);
     // A tempo change: a new graph whose tracks continue.
     edit.revision = 3;
     edit.bpm = 120.0;

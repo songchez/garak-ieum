@@ -36,7 +36,7 @@ void check(bool ok, const std::string& what, double detail = 0) {
   if (!ok) { ++failures; std::fprintf(stderr, "FAIL %s (%.6g)\n", what.c_str(), detail); }
 }
 double dbfs(double v) { return v > 0 ? 20 * std::log10(v) : -400; }
-const char* caseName(std::uint32_t c) { return c == 0 ? "synths + drums" : c == 1 ? "samples (grand, bowed, kit)" : c == 2 ? "vintage (EP, 106)" : "all instruments"; }
+const char* caseName(std::uint32_t c) { return c == 0 ? "synths + drums" : c == 1 ? "samples (grand, bowed, kit)" : c == 2 ? "vintage (EP, 106)" : c == 4 ? "IEUM WAVE (user bank + routes, default)" : "all instruments"; }
 
 struct Project {
   std::string json;
@@ -229,6 +229,13 @@ void liveCase(bool rustEffects) {
   auto project = instrumentProject(3, 6, rate);
   // Cycle 1.0 s .. 4.0 s: wraps chase notes, controllers and the pedal.
   project.json = edit(project.json, "\"lengthFrames\":288000,", "\"lengthFrames\":288000,\"cycle\":{\"startFrame\":48000,\"endFrame\":192000},");
+  // The default IEUM WAVE patch (from the WAVE project) for the patch-change edit.
+  std::string defaultWave;
+  {
+    const auto waveProject = instrumentProject(4, 1, rate);
+    const auto at = waveProject.json.find("\"patchData\":\"", trackStart(waveProject.json, "wave-default")) + 13;
+    defaultWave = waveProject.json.substr(at, waveProject.json.find('"', at) - at);
+  }
   garak::RenderEngine cpp(rate, block);
   auto* rust = rustEngine(project, rate, block, false);
   check(cpp.update(parse(project.json), project.assets, project.store).kind == garak::UpdateResult::Kind::Full, "live: c++ initial graph");
@@ -264,7 +271,7 @@ void liveCase(bool rustEffects) {
       // Delete notes that sound right now (they release); move a later note; add a note across
       // the playhead (heard from the next cycle pass) and one ahead of it.
       auto next = withRevision(current, revision, revision + 1); ++revision;
-      for (const char* track : {"grand", "synth-pad", "okgu-ep", "hanbam-106", "synth-rhodes"}) {
+      for (const char* track : {"grand", "synth-pad", "okgu-ep", "hanbam-106", "synth-rhodes", "wave-lead"}) {
         const auto id = soundingNote(next, track, position);
         if (id >= 0) { next = removeNote(next, track, id); ++deleted; }
       }
@@ -304,26 +311,37 @@ void liveCase(bool rustEffects) {
       next = edit(next, "\"instrumentId\":\"bass\",\"isKit\":false,\"params\":{\"level\":0.7,\"sub\":0.5,\"tone\":-0.3}", "\"instrumentId\":\"pluck\",\"isKit\":false,\"params\":{\"level\":0.5}");
       next = edit(next, "{\"target\":{\"kind\":\"instrument\",\"param\":\"sub\"}", "{\"target\":{\"kind\":\"instrument\",\"param\":\"sweep\"}");
       apply(next, "instrument change"); ++stage;
-    } else if (stage == 6 && seconds >= 5.2) {
+    } else if (stage == 6 && seconds >= 4.6) {
+      // IEUM WAVE patch change: a new graph; the running synth crossfades to the new table set.
+      auto next = withRevision(current, revision, revision + 1); ++revision;
+      const auto lead = next.find("\"patchData\":\"", trackStart(next, "wave-lead")) + 13;
+      next.replace(lead, next.find('"', lead) - lead, defaultWave);
+      apply(next, "IEUM WAVE patch"); ++stage;
+    } else if (stage == 7 && seconds >= 4.62) {
+      // An edit right after it (the swap waits for the 20 ms crossfade).
+      auto next = withRevision(current, revision, revision + 1); ++revision;
+      next = edit(next, "\"bpm\":100", "\"bpm\":104");
+      apply(next, "tempo during WAVE crossfade"); ++stage;
+    } else if (stage == 8 && seconds >= 5.2) {
       // A tempo change: a new graph whose tracks continue (cursors re-found at the playhead).
       auto next = withRevision(current, revision, revision + 1); ++revision;
-      next = edit(next, "\"bpm\":100", "\"bpm\":112");
+      next = edit(next, "\"bpm\":104", "\"bpm\":112");
       apply(next, "tempo"); ++stage;
-    } else if (stage == 7 && seconds >= 5.9) {
+    } else if (stage == 9 && seconds >= 5.9) {
       (void)cpp.pause(); garak_rs_engine_transport(rust, GARAK_RS_PAUSE, 0);
       ++stage;
-    } else if (stage == 8 && seconds >= 6.1) {
+    } else if (stage == 10 && seconds >= 6.1) {
       (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
       ++stage;
-    } else if (stage == 9 && seconds >= 6.5) {
+    } else if (stage == 11 && seconds >= 6.5) {
       (void)cpp.allNotesOff(0); garak_rs_engine_all_notes_off(rust, 0);
       (void)cpp.allNotesOff(10); garak_rs_engine_all_notes_off(rust, 10);
       (void)cpp.stop(); garak_rs_engine_transport(rust, GARAK_RS_STOP, 0); position = 0;
       ++stage;
-    } else if (stage == 10 && seconds >= 7.0) {
+    } else if (stage == 12 && seconds >= 7.0) {
       (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
       ++stage;
-    } else if (stage == 11 && seconds >= 7.6) {
+    } else if (stage == 13 && seconds >= 7.6) {
       // Removing a track rebuilds the graph; every other track keeps sounding.
       auto next = withRevision(current, revision, revision + 1); ++revision;
       const auto start = trackStart(next, "kit");
@@ -395,6 +413,9 @@ int main(int argc, char** argv) {
       offlineCase(2, 4, 48000, 4096, rustEffects);
       offlineCase(2, 3, 48000, 128, rustEffects);
       offlineCase(3, 3, 48000, 1024, rustEffects);
+      offlineCase(4, 4, 48000, 4096, rustEffects);
+      offlineCase(4, 3, 48000, 128, rustEffects);
+      offlineCase(4, 3, 44100, 512, rustEffects);
       liveCase(rustEffects);
     }
   } catch (const std::exception& error) {

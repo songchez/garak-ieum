@@ -40,6 +40,7 @@ pub mod queue;
 pub mod tempo;
 pub mod testkit;
 mod track;
+pub(crate) mod wave;
 
 pub use engine::{Applied, Controller, EngineConfig, Renderer, Snapshot, engine};
 pub use error::Error;

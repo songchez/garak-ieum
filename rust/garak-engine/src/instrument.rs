@@ -24,6 +24,7 @@ use garak_dsp::instruments::{Instrument, InstrumentEvent, InstrumentKind, event}
 
 use crate::error::{Error, require};
 use crate::plan::{ControlEvent, Note, PcmAsset, Plan, SampleSet, SourceKind, TrackPlan};
+use crate::wave::{HostEvent, HostKind, Processor, WaveCache};
 
 /// Events per block of a plug-in style instrument (engine.cpp `maxPluginEvents`).
 pub(crate) const MAX_PLUGIN_EVENTS: usize = 2048;
@@ -34,6 +35,7 @@ pub const UNLIMITED_FRAME: i64 = i64::MAX / 4;
 enum EventType {
     NoteOn,
     NoteOff,
+    AllNotesOff,
     Controller,
 }
 
@@ -41,6 +43,7 @@ enum EventType {
 /// then note-offs, then note-ons (engine.cpp `eventOrder`).
 const fn event_order(kind: EventType) -> u8 {
     match kind {
+        EventType::AllNotesOff => 0,
         EventType::Controller => 1,
         EventType::NoteOff => 2,
         EventType::NoteOn => 3,
@@ -174,10 +177,22 @@ pub(crate) struct Builtin {
     voices: Box<Voices>,
 }
 
-/// 옥구슬 EP / 한밤 106 behind the plug-in event path (engine.cpp + rust_instrument.hpp).
+/// What renders a plug-in style source's events.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+enum PluginEngine {
+    /// 옥구슬 EP / 한밤 106 (rust_instrument.hpp `RustInstrumentProcessor`).
+    Vintage { instrument: Box<Instrument>, converted: Vec<InstrumentEvent>, left: Vec<f32>, right: Vec<f32> },
+    /// IEUM WAVE (native/src/wavetable.cpp `WavetableProcessor`). None until a rebuilt track takes
+    /// its predecessor's processor (engine.cpp `reuseInstrument`: the same patch is not rebuilt).
+    Wave { processor: Option<Box<Processor>>, host: Vec<HostEvent> },
+}
+
+/// Plug-in style sources: 옥구슬 EP / 한밤 106 and IEUM WAVE take notes and controllers as
+/// sample-accurate events (engine.cpp's plug-in instrument path).
 #[derive(Debug)]
 pub(crate) struct Vintage {
-    instrument: Box<Instrument>,
+    engine: PluginEngine,
     events: Vec<TimedEvent>,
     pending: [PluginEvent; MAX_VOICES],
     pending_count: usize,
@@ -185,12 +200,11 @@ pub(crate) struct Vintage {
     deferred: [DeferredOff; MAX_VOICES],
     deferred_count: usize,
     live_pedal: bool,
-    /// `RustInstrumentProcessor::requestReset`: release everything and rest the controllers next block.
+    /// `requestReset`: release everything and rest the controllers next block.
     reset: bool,
+    /// IEUM WAVE: a live panic releases every audition note next block.
+    release_audition: bool,
     block: Vec<PluginEvent>,
-    converted: Vec<InstrumentEvent>,
-    left: Vec<f32>,
-    right: Vec<f32>,
 }
 
 #[derive(Debug, Default)]
@@ -218,6 +232,8 @@ pub(crate) struct Built {
     pub stereo: bool,
     pub assets: Vec<usize>,
     pub set: Option<Arc<SampleSet>>,
+    /// The instrument's own tail (IEUM WAVE: reused by a rebuilt track that keeps the processor).
+    pub instrument_tail: f64,
 }
 
 fn checked(value: f64, minimum: f64, maximum: f64, message: &str) -> Result<f64, Error> {
@@ -393,6 +409,8 @@ pub(crate) fn build(
     assets: &BTreeMap<String, Arc<PcmAsset>>,
     sets: &BTreeMap<String, Arc<SampleSet>>,
     max_block: u32,
+    wave: &mut WaveCache,
+    reuse: Option<f64>,
 ) -> Result<Built, Error> {
     let mut built = Built::default();
     let kind = t.source.kind;
@@ -412,19 +430,31 @@ pub(crate) fn build(
         return Ok(built);
     }
     let rate = f64::from(p.sample_rate);
-    match kind {
-        SourceKind::NativeWavetable => {
-            return Err(Error::new(
-                "IEUM WAVE sources are not ported to the Rust engine yet (docs/RUST_ENGINE.md 6)",
-            ));
-        }
-        SourceKind::Vst3 => {
-            return Err(Error::new("VST3 instruments stay in the C++ host (docs/RUST_ENGINE.md 4)"));
-        }
-        _ => {}
+    if kind == SourceKind::Vst3 {
+        return Err(Error::new("VST3 instruments stay in the C++ host (docs/RUST_ENGINE.md 4)"));
     }
     let mut tail = 0.0f64;
-    let mut instrument = None;
+    let mut engine: Option<PluginEngine> = None;
+    let is_wave = kind == SourceKind::NativeWavetable;
+    if is_wave {
+        require(p.sample_rate >= 22_050, "IEUM WAVE requires a sample rate of 22050..192000 Hz")?;
+        require(t.source.instrument_id == "wavetable" && !t.source.is_kit, "Invalid IEUM WAVE source")?;
+        let processor = match reuse {
+            Some(reused) => {
+                tail = reused;
+                None
+            }
+            None => {
+                let (patch, tables) = wave.prepare(&t.source.patch)?;
+                let processor = Processor::new(patch, tables, rate, max_block)?;
+                tail = processor.tail_seconds();
+                Some(processor)
+            }
+        };
+        built.instrument_tail = tail;
+        built.stereo = true;
+        engine = Some(PluginEngine::Wave { processor, host: Vec::with_capacity(MAX_PLUGIN_EVENTS) });
+    }
     if let Some(k) = vintage {
         require(!t.source.is_kit, "Invalid built-in instrument source")?;
         let mut inst = Box::new(Instrument::new(k, rate));
@@ -440,8 +470,14 @@ pub(crate) fn build(
         }
         inst.set_params(&values);
         tail = inst.tail_seconds();
+        built.instrument_tail = tail;
         built.stereo = true;
-        instrument = Some(inst);
+        engine = Some(PluginEngine::Vintage {
+            instrument: inst,
+            converted: Vec::with_capacity(MAX_PLUGIN_EVENTS + 8),
+            left: vec![0.0; max_block.max(1) as usize],
+            right: vec![0.0; max_block.max(1) as usize],
+        });
     }
     let mut samples = ResolvedSet::default();
     if kind == SourceKind::BuiltinSampled {
@@ -495,11 +531,13 @@ pub(crate) fn build(
             "Invalid native note event",
         )?;
         checked(f64::from(n.velocity), 0.0, 2.0, "Invalid native note velocity")?;
-        if instrument.is_some() && n.velocity > 0.0 {
+        if engine.is_some() && n.velocity > 0.0 {
             let pitch = n.pitch as u8;
+            // IEUM WAVE keeps velocity x clip gain up to 2; the vintage instruments clamp to 1.
+            let velocity = if is_wave { n.velocity } else { n.velocity.min(1.0) };
             events.push(TimedEvent {
                 frame: n.on_frame,
-                event: PluginEvent::new(EventType::NoteOn, n.id, pitch, n.velocity.min(1.0), 0, false),
+                event: PluginEvent::new(EventType::NoteOn, n.id, pitch, velocity, 0, false),
             });
             events.push(TimedEvent {
                 frame: n.off_frame,
@@ -522,7 +560,8 @@ pub(crate) fn build(
             "Invalid native control event",
         )?;
         previous = c.frame;
-        if instrument.is_some() {
+        // The bend range is a meta controller of the built-in sources (the vintage ones read it).
+        if engine.is_some() && !(is_wave && i32::from(c.controller) == controller::BEND_RANGE) {
             let number = i32::from(c.controller);
             events.push(TimedEvent {
                 frame: c.frame,
@@ -557,9 +596,9 @@ pub(crate) fn build(
         )?;
     }
     built.tail = tail;
-    built.source = match (instrument, synth) {
-        (Some(instrument), _) => Source::Vintage(Vintage {
-            instrument,
+    built.source = match (engine, synth) {
+        (Some(engine), _) => Source::Vintage(Vintage {
+            engine,
             events,
             pending: [PluginEvent::new(EventType::NoteOn, -1, 60, 0.0, 0, false); MAX_VOICES],
             pending_count: 0,
@@ -568,10 +607,8 @@ pub(crate) fn build(
             deferred_count: 0,
             live_pedal: false,
             reset: false,
+            release_audition: false,
             block: Vec::with_capacity(MAX_PLUGIN_EVENTS),
-            converted: Vec::with_capacity(MAX_PLUGIN_EVENTS + 8),
-            left: vec![0.0; max_block.max(1) as usize],
-            right: vec![0.0; max_block.max(1) as usize],
         }),
         (None, Some(synth)) => Source::Builtin(Builtin {
             synth,
@@ -593,6 +630,10 @@ fn lower_bound_controls(controls: &[ControlEvent], frame: i64) -> usize {
 }
 
 impl Vintage {
+    fn is_wave(&self) -> bool {
+        matches!(self.engine, PluginEngine::Wave { .. })
+    }
+
     fn lower_bound_events(&self, frame: i64) -> usize {
         self.events.partition_point(|e| e.frame < frame)
     }
@@ -686,6 +727,9 @@ impl Vintage {
     }
 
     fn control_change(&mut self, number: i32, value: i32, kit: bool, overflows: &mut u64) {
+        if number == controller::BEND_RANGE && self.is_wave() {
+            return; // Meta controller of the built-in sources only.
+        }
         if number != controller::SUSTAIN {
             let e = PluginEvent::new(
                 EventType::Controller,
@@ -709,7 +753,8 @@ impl Vintage {
     }
 
     /// One block: pending + timeline + live auto-off events, sorted, through the instrument
-    /// (rust_instrument.hpp `RustInstrumentProcessor::process`). Overwrites `buf`.
+    /// (rust_instrument.hpp `RustInstrumentProcessor::process`, wavetable.cpp
+    /// `WavetableProcessor::process`). Overwrites `buf`. `context`: tempo, transport playing.
     fn render(
         &mut self,
         buf: &mut [f32],
@@ -717,9 +762,14 @@ impl Vintage {
         frame: i64,
         frames: u32,
         timeline: bool,
+        context: (f64, bool, f64),
         overflows: &mut u64,
     ) {
         self.block.clear();
+        if self.release_audition {
+            self.block.push(PluginEvent::new(EventType::AllNotesOff, -1, 60, 0.0, 0, true));
+            self.release_audition = false;
+        }
         for e in self.pending.iter().take(self.pending_count) {
             if self.block.len() < MAX_PLUGIN_EVENTS {
                 self.block.push(*e);
@@ -768,12 +818,42 @@ impl Vintage {
                 j -= 1;
             }
         }
+        let (converted, instrument, left, right) = match &mut self.engine {
+            PluginEngine::Vintage { instrument, converted, left, right } => {
+                (converted, instrument, left, right)
+            }
+            PluginEngine::Wave { processor, host } => {
+                let Some(processor) = processor else { return };
+                if self.reset {
+                    self.reset = false;
+                    processor.request_reset();
+                }
+                host.clear();
+                host.extend(self.block.iter().map(|e| HostEvent {
+                    kind: match e.kind {
+                        EventType::NoteOn => HostKind::NoteOn,
+                        EventType::NoteOff => HostKind::NoteOff,
+                        EventType::AllNotesOff => HostKind::AllNotesOff,
+                        EventType::Controller => HostKind::Controller,
+                    },
+                    offset: e.offset,
+                    note_id: e.note_id,
+                    pitch: e.pitch,
+                    value: e.value,
+                    parameter: e.parameter,
+                    audition: e.audition,
+                }));
+                let (bpm, playing, sample_rate) = context;
+                processor.process(buf, frames, host, bpm, frame, sample_rate, playing);
+                return;
+            }
+        };
         // RustInstrumentProcessor::process.
-        self.converted.clear();
+        converted.clear();
         if self.reset {
             self.reset = false;
             // Transport stop / seek: release (not cut) every voice and rest the controllers.
-            self.converted.push(InstrumentEvent {
+            converted.push(InstrumentEvent {
                 offset: 0,
                 kind: event::ALL_NOTES_OFF,
                 id: -1,
@@ -787,7 +867,7 @@ impl Vintage {
                 (controller::CHANNEL_PRESSURE, 0.0),
                 (controller::EXPRESSION, 1.0),
             ] {
-                self.converted.push(InstrumentEvent {
+                converted.push(InstrumentEvent {
                     offset: 0,
                     kind: event::CONTROLLER,
                     id: -1,
@@ -799,7 +879,7 @@ impl Vintage {
         }
         let last = frames.saturating_sub(1);
         for e in &self.block {
-            if self.converted.len() >= MAX_PLUGIN_EVENTS + 8 {
+            if converted.len() >= MAX_PLUGIN_EVENTS + 8 {
                 break;
             }
             let mut out = InstrumentEvent {
@@ -824,6 +904,7 @@ impl Vintage {
                     out.value = e.value.clamp(0.0, 1.0);
                 }
                 EventType::NoteOff => out.kind = event::NOTE_OFF,
+                EventType::AllNotesOff => out.kind = event::ALL_NOTES_OFF,
                 EventType::Controller => {
                     out.kind = event::CONTROLLER;
                     // The host normalises every controller by 127; Rust reads the bend range / 48.
@@ -832,11 +913,11 @@ impl Vintage {
                     }
                 }
             }
-            self.converted.push(out);
+            converted.push(out);
         }
         let n = frames as usize;
-        if let (Some(l), Some(r)) = (self.left.get_mut(..n), self.right.get_mut(..n)) {
-            self.instrument.process(l, r, &self.converted);
+        if let (Some(l), Some(r)) = (left.get_mut(..n), right.get_mut(..n)) {
+            instrument.process(l, r, converted);
             for (([o0, o1], a), b) in buf.as_chunks_mut::<2>().0.iter_mut().zip(l.iter()).zip(r.iter()) {
                 *o0 = *a;
                 *o1 = *b;
@@ -860,23 +941,39 @@ impl Source {
 
     /// Instrument parameter automation of a vintage instrument (glides inside the instrument).
     pub fn set_vintage_param(&mut self, index: usize, value: f64) {
-        if let Source::Vintage(v) = self {
-            v.instrument.set_param(index, value);
+        if let Source::Vintage(Vintage { engine: PluginEngine::Vintage { instrument, .. }, .. }) = self {
+            instrument.set_param(index, value);
         }
     }
 
     /// Catalog index of a vintage instrument parameter.
     pub fn vintage_param(&self, name: &str) -> Option<usize> {
         match self {
-            Source::Vintage(v) => v.instrument.kind().param_index(name.as_bytes()),
+            Source::Vintage(Vintage { engine: PluginEngine::Vintage { instrument, .. }, .. }) => {
+                instrument.kind().param_index(name.as_bytes())
+            }
             _ => None,
         }
     }
 
-    /// The transport stopped at the project end: plug-in style instruments release next block.
+    /// The transport stopped at the project end: the vintage instruments release next block (IEUM
+    /// WAVE and the built-in voices ring on, engine.cpp `render`).
     pub fn request_reset(&mut self) {
-        if let Source::Vintage(v) = self {
+        if let Source::Vintage(v) = self
+            && !v.is_wave()
+        {
             v.reset = true;
+        }
+    }
+
+    /// Callback, before a graph swap that continues this track: false while an IEUM WAVE table
+    /// crossfade still reads its previous set (engine.cpp `readyToPreserve`).
+    pub fn ready_to_transfer(&mut self) -> bool {
+        match self {
+            Source::Vintage(Vintage { engine: PluginEngine::Wave { processor: Some(p), .. }, .. }) => {
+                p.ready_to_transfer()
+            }
+            _ => true,
         }
     }
 
@@ -889,8 +986,28 @@ impl Source {
                 core::mem::swap(&mut a.samples, &mut b.samples);
             }
             (Source::Vintage(a), Source::Vintage(b)) => {
-                a.instrument.take_state(&b.instrument);
+                match (&mut a.engine, &mut b.engine) {
+                    (
+                        PluginEngine::Vintage { instrument: x, .. },
+                        PluginEngine::Vintage { instrument: y, .. },
+                    ) => {
+                        x.take_state(y);
+                    }
+                    (PluginEngine::Wave { processor: x, .. }, PluginEngine::Wave { processor: y, .. }) => {
+                        match x {
+                            // A rebuilt track with the same patch takes the running processor itself.
+                            None => core::mem::swap(x, y),
+                            Some(x) => {
+                                if let Some(y) = y {
+                                    x.take_state_from(y);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 a.reset = b.reset;
+                a.release_audition = b.release_audition;
                 a.pending = b.pending;
                 a.pending_count = b.pending_count;
                 a.live_notes = b.live_notes;
@@ -975,6 +1092,8 @@ impl Source {
                 v.pending_count = 0;
                 v.deferred_count = 0;
                 v.reset = true;
+                v.release_audition = false;
+                let wave = v.is_wave();
                 if !plan.controls.is_empty() {
                     let mut values = [0i32; controller::COUNT as usize];
                     let mut present = [false; controller::COUNT as usize];
@@ -995,7 +1114,9 @@ impl Source {
                     }
                     for number in 0..controller::COUNT {
                         let i = number as usize;
-                        if !present.get(i).copied().unwrap_or(false) {
+                        if !present.get(i).copied().unwrap_or(false)
+                            || (wave && number == controller::BEND_RANGE)
+                        {
                             continue;
                         }
                         let value = if chase && plan.enabled && known.get(i).copied().unwrap_or(false) {
@@ -1088,7 +1209,8 @@ impl Source {
                     };
                     *slot = LiveNote { active: true, id, pitch: pitch as u8, remaining: duration };
                 }
-                let on = PluginEvent::new(EventType::NoteOn, id, pitch as u8, velocity.min(1.0), 0, live);
+                let velocity = if v.is_wave() { velocity } else { velocity.min(1.0) };
+                let on = PluginEvent::new(EventType::NoteOn, id, pitch as u8, velocity, 0, live);
                 v.push_pending(on, overflows);
             }
         }
@@ -1139,10 +1261,30 @@ impl Source {
             Source::Vintage(v) => {
                 v.live_pedal = false;
                 v.deferred_count = 0;
-                for i in 0..MAX_VOICES {
-                    let Some(n) = v.live_notes.get(i).copied() else { break };
-                    if n.active {
-                        v.note_off(i32::from(n.pitch), n.id, kit, true, overflows);
+                if v.is_wave() {
+                    // Reserve no per-note queue slots: drop queued audition events, then release
+                    // every audition note with one event next block.
+                    let mut kept = 0;
+                    for i in 0..v.pending_count {
+                        let Some(e) = v.pending.get(i).copied() else { break };
+                        if !e.audition {
+                            if let Some(slot) = v.pending.get_mut(kept) {
+                                *slot = e;
+                            }
+                            kept += 1;
+                        }
+                    }
+                    v.pending_count = kept;
+                    for n in &mut v.live_notes {
+                        n.active = false;
+                    }
+                    v.release_audition = true;
+                } else {
+                    for i in 0..MAX_VOICES {
+                        let Some(n) = v.live_notes.get(i).copied() else { break };
+                        if n.active {
+                            v.note_off(i32::from(n.pitch), n.id, kit, true, overflows);
+                        }
                     }
                 }
                 v.control_change(controller::PITCH_BEND, 0, kit, overflows);
@@ -1164,12 +1306,14 @@ impl Source {
         playing: bool,
         project_length: i64,
         sample_rate: f64,
+        bpm: f64,
         overflows: &mut u64,
     ) {
         match self {
             Source::Audio => {}
             Source::Vintage(v) => {
-                v.render(buf, cursors, frame, frames, playing || frame >= project_length, overflows);
+                let context = (bpm, playing, sample_rate);
+                v.render(buf, cursors, frame, frames, playing || frame >= project_length, context, overflows);
             }
             Source::Builtin(b) => {
                 let kit = plan.source.is_kit;
@@ -1242,7 +1386,10 @@ impl Source {
         match self {
             Source::Audio => 0,
             Source::Builtin(b) => b.voices.active(),
-            Source::Vintage(v) => v.instrument.active_voices(),
+            Source::Vintage(Vintage { engine: PluginEngine::Vintage { instrument, .. }, .. }) => {
+                instrument.active_voices()
+            }
+            Source::Vintage(_) => 0,
         }
     }
 }

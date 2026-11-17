@@ -850,3 +850,43 @@ fn instrument_automation_shapes_new_notes() {
     );
     let _ = UNLIMITED_FRAME;
 }
+
+#[test]
+fn ieum_wave_renders_live_and_refuses_bad_patches() {
+    use garak_engine::testkit::instruments::wave_patch;
+    let mut p = project(48_000, 48_000);
+    let mut t = TrackPlan { id: "wave".into(), ..TrackPlan::default() };
+    t.source.kind = SourceKind::NativeWavetable;
+    t.source.instrument_id = "wavetable".into();
+    t.source.patch = wave_patch(true);
+    t.notes = vec![note(1, 0, 24_000, 48_000, 60, 0.8), note(2, 12_000, 30_000, 48_000, 67, 1.6)];
+    p.tracks.push(t);
+    let (mut c, mut r) = eng(48_000, 256);
+    started(&mut c, &p);
+    let out = render(&mut r, 36_000, 256);
+    assert!(energy(&out[..24_000 * 2]) > 1e-2, "IEUM WAVE rendered silence");
+    // Same patch, edited notes: the track is rebuilt and keeps its running synth.
+    let mut edited = p.clone();
+    edited.revision = 1;
+    edited.tracks[0].notes[1].pitch = 69;
+    assert_eq!(c.update(edited.clone()).unwrap(), Applied::Tracks);
+    // Another patch: a new graph (the synth crossfades to the new tables).
+    edited.revision = 2;
+    edited.tracks[0].source.patch = wave_patch(false);
+    assert_eq!(c.update(edited).unwrap(), Applied::Full);
+    let _ = render(&mut r, 4800, 256);
+    c.note_on(0, 72, 0.9, 5).unwrap();
+    assert!(energy(&render(&mut r, 4800, 256)) > 1e-4, "a live IEUM WAVE note was silent");
+    c.note_off(0, 72, 5).unwrap();
+    c.all_notes_off(0).unwrap();
+    let _ = render(&mut r, 4800, 256);
+    // Refusals: broken encoding, wrong magic, a rate below 22.05 kHz.
+    for patch in ["@@@@", "QUJDRA=="] {
+        let mut bad = p.clone();
+        bad.tracks[0].source.patch = patch.into();
+        assert!(eng(48_000, 256).0.update(bad).is_err(), "a broken IEUM WAVE patch was accepted");
+    }
+    let mut low = p;
+    low.sample_rate = 16_000;
+    assert!(eng(16_000, 256).0.update(low).is_err(), "IEUM WAVE accepted 16 kHz");
+}

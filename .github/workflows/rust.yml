@@ -29,6 +29,8 @@ on:
       - 'native/include/garak/tempo.hpp'
       - 'native/tests/rust_instrument_test.cpp'
       - 'native/src/rust_instrument.hpp'
+      - 'native/src/wavetable.cpp'
+      - 'native/devices/wavetable-synth/**'
       - 'src/devices/vintage/**'
       - 'src/audio/rust/**'
       - 'src/devices/effects/kernels.ts'
