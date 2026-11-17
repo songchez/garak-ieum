@@ -16,7 +16,7 @@ function recordedProject(name: string, data: number[]): { stored: StoredProject;
   track.clips = [clip]
   project.tracks = [track]
   const asset = { id: clip.assetId, name: `${name}.wav`, blob: new Blob([new Uint8Array(data)], { type: 'audio/wav' }) }
-  return { stored: { project, assets: [asset] }, assets: new Map([[asset.id, { ...asset, buffer: {} as AudioBuffer, peaks: [] }]]) }
+  return { stored: { project, assets: [asset] }, assets: new Map([[asset.id, { ...asset, sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [] }]]) }
 }
 
 function opened(version?: number): Promise<IDBDatabase> {

@@ -1,4 +1,5 @@
 import { useContext, useId, useRef, useState } from 'react'
+import { assetChannels } from '../audio/assetPcm'
 import { spanSeconds, type Tempo } from '../core/tempoMap'
 import type { AudioAsset, AudioClip, Clip, FadeCurve } from '../core/types'
 import { HistoryGestureContext } from '../core/historyGesture'
@@ -40,7 +41,7 @@ export function ClipEnvelope({ clip, widthPx, tempo, asset, showFades, readOnly 
   const gestureId = useId()
   const drag = useRef<Drag | null>(null)
   const [readout, setReadout] = useState<{ kind: Drag['kind']; text: string } | null>(null)
-  const regionSeconds = clipSeconds(clip, tempo, asset?.buffer.duration)
+  const regionSeconds = clipSeconds(clip, tempo, asset?.duration)
   // Across a tempo change the region's pixels per second vary; fades use the region's average.
   const pxPerSecond = widthPx / Math.max(1e-6, spanSeconds(tempo, clip.startBeat, clip.startBeat + clip.lengthBeats))
   const [fadeIn, fadeOut] = fadeLengths(regionSeconds, clip.fadeIn, clip.fadeOut)
@@ -75,7 +76,7 @@ export function ClipEnvelope({ clip, widthPx, tempo, asset, showFades, readOnly 
       const base = d.start.get(clip.id) ?? 0
       const seconds = Math.max(0, base + (d.kind === 'in' ? dx : -dx) / pxPerSecond * (e.shiftKey ? 0.1 : 1))
       const edge = d.kind
-      act.edit(d.ids, c => c.kind === 'audio' ? withFade(c, edge, seconds, clipSeconds(c, tempo, c.id === clip.id ? asset?.buffer.duration : undefined)) : c, label(edge))
+      act.edit(d.ids, c => c.kind === 'audio' ? withFade(c, edge, seconds, clipSeconds(c, tempo, c.id === clip.id ? asset?.duration : undefined)) : c, label(edge))
       setReadout({ kind: edge, text: formatFadeSeconds(Math.min(seconds, regionSeconds - (edge === 'in' ? clip.fadeOut : clip.fadeIn))) })
     }
   }
@@ -146,12 +147,13 @@ export function envelopeMenuItems(clip: AudioClip, targets: AudioClip[], assets:
     label: FADE_CURVE_LABELS[curve], checked: fadeCurveOf(edge === 'in' ? clip.fadeInCurve : clip.fadeOutCurve) === curve,
     onSelect: () => edit(ids, c => c.kind === 'audio' ? withFadeCurve(c, edge, curve) : c, edge === 'in' ? '페이드 인 곡선 변경' : '페이드 아웃 곡선 변경'),
   }))
-  const normalize = () => {
+  // The exact region peak needs samples: each source is decoded on demand (src/audio/assetPcm.ts), one at a time.
+  const normalize = async () => {
     const gains = new Map<string, number>()
     for (const c of targets) {
       const asset = assets.get(c.assetId); if (!asset) continue
-      const channels = Array.from({ length: asset.buffer.numberOfChannels }, (_, i) => asset.buffer.getChannelData(i))
-      const gain = normalizeGain(regionPeak(channels, asset.buffer.sampleRate, c.offsetSeconds, clipSeconds(c, tempo, asset.buffer.duration)))
+      const { channels, sampleRate } = await assetChannels(asset)
+      const gain = normalizeGain(regionPeak(channels, sampleRate, c.offsetSeconds, clipSeconds(c, tempo, asset.duration)))
       if (gain !== null) gains.set(c.id, gain)
     }
     if (gains.size) edit([...gains.keys()], c => gains.has(c.id) ? { ...c, gain: gains.get(c.id)! } : c, '리전 노멀라이즈')
@@ -160,7 +162,7 @@ export function envelopeMenuItems(clip: AudioClip, targets: AudioClip[], assets:
     { label: '페이드 인 곡선', icon: 'wave', items: curveItems('in') },
     { label: '페이드 아웃 곡선', icon: 'wave', items: curveItems('out') },
     { label: '크로스페이드 만들기', icon: 'merge', disabled: !onCrossfade || targets.length < 2, onSelect: onCrossfade },
-    { label: `노멀라이즈 (${NORMALIZE_TARGET_DB} dBFS 피크)`, icon: 'volume', disabled: !targets.some(c => assets.has(c.assetId)), onSelect: normalize },
+    { label: `노멀라이즈 (${NORMALIZE_TARGET_DB} dBFS 피크)`, icon: 'volume', disabled: !targets.some(c => assets.has(c.assetId)), onSelect: () => { void normalize().catch(error => console.error('[가락이음] 노멀라이즈 실패:', error)) } },
     { label: '게인 초기화 (0 dB)', disabled: targets.every(c => Math.abs(c.gain - 1) < 1e-9), onSelect: () => edit(ids, c => c.kind === 'audio' ? withClipGainDb(c, 0) : c, '리전 게인 초기화') },
     { label: '페이드 제거', disabled: targets.every(c => c.fadeIn <= 0 && c.fadeOut <= 0), onSelect: () => edit(ids, c => c.kind === 'audio' ? { ...c, fadeIn: 0, fadeOut: 0 } : c, '페이드 제거') },
   ]

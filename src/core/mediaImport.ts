@@ -74,14 +74,14 @@ export function planMediaImport(project: Project, media: readonly ImportedMedia[
   for (const item of media) {
     const name = filename(item.name)
     if (item.kind === 'audio') {
-      if (!Number.isFinite(item.asset.buffer.duration) || item.asset.buffer.duration <= 0) throw new Error(`${item.name}: 오디오 길이가 유효하지 않습니다.`)
+      if (!Number.isFinite(item.asset.duration) || item.asset.duration <= 0) throw new Error(`${item.name}: 오디오 길이가 유효하지 않습니다.`)
       const existing = !targetUsed && target.trackId ? next.tracks.find(track => track.id === target.trackId && track.kind === 'audio') : undefined
       if (existing) targetUsed = true
       const track = existing ?? { ...createTrack('audio'), name }
-      const plain: AudioClip = { id: uid(), kind: 'audio', name, startBeat: beat, lengthBeats: spanBeats(tempoMapOf(next), beat, item.asset.buffer.duration), gain: 1,
+      const plain: AudioClip = { id: uid(), kind: 'audio', name, startBeat: beat, lengthBeats: spanBeats(tempoMapOf(next), beat, item.asset.duration), gain: 1,
         assetId: item.asset.id, offsetSeconds: 0, fadeIn: .005, fadeOut: .01 }
       // Short loops with a clear tempo fit the project tempo; long files only remember theirs.
-      const decision = decideWarp({ name: item.name, durationSeconds: item.asset.buffer.duration, beatsPerBar: next.beatsPerBar, analysis: item.tempo ?? null })
+      const decision = decideWarp({ name: item.name, durationSeconds: item.asset.duration, beatsPerBar: next.beatsPerBar, analysis: item.tempo ?? null })
       const clip = decision ? clipWithWarpDecision(plain, decision, tempoMapOf(next).bpmAt(beat)) : plain
       if (clip.warp) tempos.push({ clipId: clip.id, name, bpm: clip.warp.sourceBpm, warped: clip.warp.enabled })
       assets.push(item.asset); audioFiles++

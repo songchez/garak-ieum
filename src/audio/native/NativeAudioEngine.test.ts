@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { assetPcmCache } from '../assetPcm'
+import { fakePcm, testAsset } from '../testAssets'
 import { createEmptyProject, createTrack } from '../../core/project'
 import { DEFAULT_AUDIO_SETTINGS } from '../../core/audioSettings'
 import type { AudioAsset, AudioClip, Project, Track } from '../../core/types'
@@ -18,9 +20,10 @@ function deferred<T = unknown>() {
 }
 const project = (): Project => ({ ...createEmptyProject(), id: 'project', sampleRate: 48000, bpm: 120, tracks: [{ ...createTrack('instrument', 'keys'), id: 'keys' }] })
 const plugin = (): NativePluginInstance => ({ id: 'vst', pluginId: 'approved-catalog-id', classId: '0123456789ABCDEF0123456789ABCDEF', name: 'Instrument', enabled: true, parameters: { '1': .2 } })
+const samplePcm = () => fakePcm([[.25, -.25, .1, 0]])
+/** An asset whose PCM is cached (src/audio/assetPcm.ts), as right after a decode. */
 function asset(id = 'pcm'): AudioAsset {
-  const values = new Float32Array([.25, -.25, .1, 0])
-  return { id, name: id, blob: new Blob(['original']), peaks: [.25], buffer: { sampleRate: 48000, numberOfChannels: 1, length: values.length, duration: values.length / 48000, getChannelData: () => values } as unknown as AudioBuffer }
+  return testAsset(id, samplePcm())
 }
 function audioProject(): Project {
   const clip: AudioClip = { id: 'clip', kind: 'audio', name: 'Take', assetId: 'pcm', startBeat: 0, lengthBeats: 1, offsetSeconds: 0, gain: 1, fadeIn: 0, fadeOut: 0 }
@@ -685,7 +688,7 @@ describe('unsupported native host coexistence with the WAVE editor', () => {
 
 describe('offline file decoding and sample transfer', () => {
   it('uses a tiny offline decoder and transfers sample/release PCM once, without a realtime graph', async () => {
-    const pcm = asset(), decode = vi.fn(async () => pcm.buffer), constructed: number[][] = []
+    const buffer = samplePcm(), decode = vi.fn(async () => buffer), constructed: number[][] = []
     vi.stubGlobal('AudioContext', vi.fn(() => { throw new Error('realtime output is forbidden') }))
     vi.stubGlobal('OfflineAudioContext', class {
       sampleRate = 48000
@@ -695,13 +698,15 @@ describe('offline file decoding and sample transfer', () => {
     const loaded = { set: { id: 'sample-set', kind: 'pitched', formats: ['webm'], gainDb: -4, release: .3,
       zones: [{ file: 'sustain', root: 60, lo: 0, hi: 127, vlo: 0, vhi: 1, loop: [1, 3] }],
       releaseZones: [{ file: 'release', root: 60, lo: 0, hi: 127, vlo: 0, vhi: 1 }], attribution: { title: 'Test', author: 'Test', license: 'CC0' } },
-      startOffset: .044, buffers: new Map([['sustain', pcm.buffer], ['release', pcm.buffer]]) }
+      startOffset: .044, buffers: new Map([['sustain', buffer], ['release', buffer]]) }
     const release = vi.fn()
     const samples = { load: vi.fn(async () => loaded), get: () => loaded, release, manifest: () => loaded.set } as unknown as SampleLibrary
     const h = managed(project(), samples)
     const original = new Blob(['compressed bytes'], { type: 'audio/webm' })
     const decoded = await h.engine.decodeAsset(original, 'Imported', 'import-id')
-    expect(decoded).toMatchObject({ id: 'import-id', name: 'Imported', buffer: pcm.buffer, blob: original })
+    expect(decoded).toMatchObject({ id: 'import-id', name: 'Imported', sampleRate: 48000, numberOfChannels: 1, length: 4, blob: original })
+    expect(decoded).not.toHaveProperty('buffer')
+    expect(assetPcmCache.peek(decoded)).toBe(buffer)
     expect(decoded.peaks).toEqual([.25, .25, expect.closeTo(.1), 0])
     expect(h.calls('asset.put')).toHaveLength(0)
     await h.engine.preloadSamples('sample-set'); await h.engine.preloadSamples('sample-set')
@@ -727,7 +732,7 @@ describe('offline file decoding and sample transfer', () => {
     const loading = deferred(), samples = { load: () => loading.promise, get: () => undefined } as unknown as SampleLibrary
     const h = managed(project(), samples), preloading = h.engine.preloadSamples('old-project')
     const canceled = expect(preloading).rejects.toMatchObject({ name: 'AbortError' })
-    h.engine.dispose(); loading.resolve({ set: {}, buffers: new Map([['sample', asset().buffer]]) })
+    h.engine.dispose(); loading.resolve({ set: {}, buffers: new Map([['sample', samplePcm()]]) })
     await canceled
     expect(h.calls('asset.put')).toHaveLength(0)
     expect(h.calls('samples.register')).toHaveLength(0)

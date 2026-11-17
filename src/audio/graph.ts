@@ -4,7 +4,7 @@ import { audibleTrackIds, audioWindows, isTrackEnabled, midiControllerEvents, mi
 import type { AudioWindow, PlaybackController, PlaybackNote } from '../core/playback'
 import { DEFAULT_BEND_RANGE, controllerSpec } from '../core/controllers'
 import type { ControllerKey } from '../core/types'
-import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
+import { isEffectDevice, type PlayableAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
 import { masterFeedExcluded, reconcileTrackRoutes, routeOf } from '../core/trackRouting'
 import { isReturnTrack, sendLayoutKey, sendsOf } from '../core/sends'
 import { clamp, loopRange } from './math'
@@ -1032,7 +1032,7 @@ export function scheduleSampled(
 
 /** localSeconds is the position inside the clip content; maxSeconds caps playback at the window or range end;
  * regionSeconds is the occurrence's real duration through the tempo map. */
-function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: AudioClip, asset: AudioAsset, localSeconds: number, when: number, maxSeconds: number, regionSeconds: number): void {
+function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: AudioClip, asset: PlayableAsset, localSeconds: number, when: number, maxSeconds: number, regionSeconds: number): void {
   const context = graph.context
   const offset = Math.max(0, clip.offsetSeconds) + localSeconds
   const clipDuration = Math.min(regionSeconds, asset.buffer.duration - Math.max(0, clip.offsetSeconds))
@@ -1065,7 +1065,7 @@ function scheduleAudioClip(graph: EngineGraph, destination: AudioNode, clip: Aud
 export function scheduleRange(
   graph: EngineGraph,
   project: Project,
-  assets: Map<string, AudioAsset>,
+  assets: ReadonlyMap<string, PlayableAsset>,
   startBeat: number,
   endBeat: number,
   startTime: number,
@@ -1081,7 +1081,7 @@ export function scheduleRange(
 }
 
 function scheduleTracks(
-  graph: EngineGraph, project: Project, assets: Map<string, AudioAsset>, startBeat: number, endBeat: number, startTime: number,
+  graph: EngineGraph, project: Project, assets: ReadonlyMap<string, PlayableAsset>, startBeat: number, endBeat: number, startTime: number,
   boundary: number, chase: boolean, realtime: boolean, library: SampleLibrary | undefined, only: ReadonlyMap<string, boolean> | undefined,
 ): void {
   // Every beat→time conversion goes through the tempo map (docs/TEMPO_MAP.md).

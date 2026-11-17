@@ -100,6 +100,8 @@ try {
     const rig = await import('/src/devices/guitar-rig/index.ts')
     const { WebAudioEngine } = await import('/src/audio/WebAudioEngine.ts')
     const { createEmptyProject, createGuitarTrack } = await import('/src/core/project.ts')
+    const { createAudioAsset } = await import('/src/audio/assetPcm.ts')
+    const { encodeWav } = await import('/src/audio/wavEncode.ts')
     const stats = values => {
       let peak = 0, sum = 0, finite = true
       for (const value of values) { peak = Math.max(peak, Math.abs(value)); sum += value * value; finite &&= Number.isFinite(value) }
@@ -139,7 +141,7 @@ try {
     track.clips = [{ id: 'test-di', name: 'Synthetic guitar input', kind: 'audio', assetId: 'test-source', startBeat: 0, lengthBeats: 2, gain: 1, offsetSeconds: 0, fadeIn: 0, fadeOut: 0 }]
     project.tracks = [track]
     const engine = new WebAudioEngine(project)
-    engine.setAssets(new Map([['test-source', { id: 'test-source', name: 'Synthetic guitar input', blob: new Blob(['test']), buffer: clean.buffer, peaks: [] }]]))
+    engine.setAssets(new Map([['test-source', createAudioAsset('test-source', 'Synthetic guitar input', encodeWav([clean.buffer.getChannelData(0)], clean.buffer.sampleRate, 32), clean.buffer)]]))
     const wav = new Uint8Array(await (await engine.exportWav()).arrayBuffer())
     engine.dispose()
     return {

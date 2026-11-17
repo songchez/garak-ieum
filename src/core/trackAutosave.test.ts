@@ -29,7 +29,7 @@ function fixture(): { project: Project; assets: Map<string, AudioAsset> } {
     const clip: AudioClip = { id: uid(), kind: 'audio', name: `take ${index}`, startBeat: index * 8, lengthBeats: 8, gain: 1, assetId, offsetSeconds: 0, fadeIn: 0, fadeOut: 0 }
     track.clips = [clip, { ...clip, id: uid(), startBeat: 16 + index * 8 }]
     tracks.push(track)
-    assets.set(assetId, { id: assetId, name: `${assetId}.wav`, blob: new Blob([new Uint8Array(4096).map((_, i) => (i * 7 + index) & 255)], { type: 'audio/wav' }), buffer: {} as AudioBuffer, peaks: [] })
+    assets.set(assetId, { id: assetId, name: `${assetId}.wav`, blob: new Blob([new Uint8Array(4096).map((_, i) => (i * 7 + index) & 255)], { type: 'audio/wav' }), sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [] })
   }
   return { project: validateProject({ ...demo, tracks }), assets }
 }

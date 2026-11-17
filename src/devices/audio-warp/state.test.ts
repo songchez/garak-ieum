@@ -130,7 +130,7 @@ describe('warp validation', () => {
 
   it('refuses to save without the warp original', async () => {
     const warped = withWarpRender(enableWarp(detected(), 120), 120, 'render')
-    const asset = (id: string) => ({ id, name: id, blob: new Blob(['x']), buffer: {} as AudioBuffer, peaks: [] })
+    const asset = (id: string) => ({ id, name: id, blob: new Blob(['x']), sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [] })
     await expect(exportProjectBundle(project(warped), new Map([['render', asset('render')]]))).rejects.toThrow(/warped/)
     const bundle = await exportProjectBundle(project(warped), new Map([['render', asset('render')], ['orig', asset('orig')]]))
     const stored = await importProjectBundle(bundle)

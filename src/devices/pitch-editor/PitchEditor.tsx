@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { assetChannels } from '../../audio/assetPcm'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import type { AudioAsset, AudioClip } from '../../core/types'
 import { pitchName } from '../../core/pitch'
@@ -34,7 +35,7 @@ const FORMANT_COMBINATION_PROBLEM = '피치와 포먼트 조합의 내부 보정
 const sourceIdFor = (clip: AudioClip) => clip.pitch?.sourceAssetId ?? clip.assetId
 const centsLabel = (cents: number) => `${cents > 0 ? '+' : ''}${Number(cents.toFixed(1))} ct`
 const timeLabel = (seconds: number) => seconds >= 60 ? `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, '0')}` : `${Number(seconds.toFixed(2))} s`
-const durationFor = (asset: AudioAsset | undefined, clip: AudioClip) => asset?.buffer.duration ?? (clip.pitch ? clip.pitch.analysis.sourceFrames / clip.pitch.analysis.sampleRate : 0)
+const durationFor = (asset: AudioAsset | undefined, clip: AudioClip) => asset?.duration ?? (clip.pitch ? clip.pitch.analysis.sourceFrames / clip.pitch.analysis.sampleRate : 0)
 const isAbort = (error: unknown) => error instanceof Error && error.name === 'AbortError'
 
 async function digest(asset: AudioAsset): Promise<string> {
@@ -45,9 +46,9 @@ async function digest(asset: AudioAsset): Promise<string> {
 
 function problemFor(asset: AudioAsset | undefined): string | null {
   if (!asset) return '편집할 원본 오디오를 찾을 수 없습니다.'
-  if (asset.buffer.duration > PITCH_LIMITS.maxDurationSeconds) return `첫 버전은 원본 파일 ${PITCH_LIMITS.maxDurationSeconds}초까지 분석할 수 있습니다. 짧은 오디오 파일을 가져와 주세요.`
-  if (asset.buffer.numberOfChannels < 1 || asset.buffer.numberOfChannels > PITCH_LIMITS.maxChannels) return '모노 또는 스테레오 원본을 선택해 주세요.'
-  if (asset.buffer.sampleRate < PITCH_LIMITS.minSampleRate || asset.buffer.sampleRate > PITCH_LIMITS.maxSampleRate) return '이 원본의 샘플레이트는 아직 지원하지 않습니다.'
+  if (asset.duration > PITCH_LIMITS.maxDurationSeconds) return `첫 버전은 원본 파일 ${PITCH_LIMITS.maxDurationSeconds}초까지 분석할 수 있습니다. 짧은 오디오 파일을 가져와 주세요.`
+  if (asset.numberOfChannels < 1 || asset.numberOfChannels > PITCH_LIMITS.maxChannels) return '모노 또는 스테레오 원본을 선택해 주세요.'
+  if (asset.sampleRate < PITCH_LIMITS.minSampleRate || asset.sampleRate > PITCH_LIMITS.maxSampleRate) return '이 원본의 샘플레이트는 아직 지원하지 않습니다.'
   return null
 }
 
@@ -274,8 +275,10 @@ export function PitchEditor({ clip, sourceAsset, projectId, bpm, projectClipIds,
       const sourceHash = await digest(sourceAsset)
       if (id !== generation.current || controller.signal.aborted) return
       if (clip.pitch && sourceHash !== clip.pitch.sourceHash) throw new Error('원본 파일이 저장된 피치 분석과 다릅니다. 원본을 확인한 뒤 다시 열어 주세요.')
-      const channels = Array.from({ length: sourceAsset.buffer.numberOfChannels }, (_, channel) => sourceAsset.buffer.getChannelData(channel))
-      const analysis = await analyzePitchInWorker(channels, sourceAsset.buffer.sampleRate, { signal: controller.signal, onProgress: value => { if (id === generation.current) setProgress(value) } })
+      // Decoded from the source's bytes for this analysis only (src/audio/assetPcm.ts).
+      const { channels, sampleRate } = await assetChannels(sourceAsset)
+      if (id !== generation.current || controller.signal.aborted) return
+      const analysis = await analyzePitchInWorker(channels, sampleRate, { signal: controller.signal, onProgress: value => { if (id === generation.current) setProgress(value) } })
       if (id !== generation.current || controller.signal.aborted) return
       const next = scopeSegments({ version: 2, sourceAssetId: sourceAsset.id, sourceHash, rendererId: PITCH_RENDERER_ID, analysis, segments: analysis.notes.map(note => ({ ...note })), shifts: {}, preserveFormants: false, formantShifts: {} }, rangeStart, rangeEnd, uid)
       update(next, true)
@@ -300,10 +303,11 @@ export function PitchEditor({ clip, sourceAsset, projectId, bpm, projectClipIds,
     try {
       if (await digest(sourceAsset) !== current.document.sourceHash) throw new Error('원본 파일이 분석 당시와 다릅니다. 편집을 적용하지 않았습니다.')
       if (id !== generation.current || controller.signal.aborted) return
-      const channels = Array.from({ length: sourceAsset.buffer.numberOfChannels }, (_, channel) => sourceAsset.buffer.getChannelData(channel))
-      const rendered = await renderPitchInWorker(channels, sourceAsset.buffer.sampleRate, current.document.segments, current.document.shifts, { signal: controller.signal, settings: { preserveFormants: current.document.preserveFormants, formantShifts: current.document.formantShifts }, onProgress: value => { if (id === generation.current) setProgress(value) } })
+      const { channels, sampleRate } = await assetChannels(sourceAsset)
       if (id !== generation.current || controller.signal.aborted) return
-      await onApply({ document: { ...current.document, rendererId: PITCH_RENDERER_ID }, channels: rendered, sampleRate: sourceAsset.buffer.sampleRate }, expectedClip, controller.signal)
+      const rendered = await renderPitchInWorker(channels, sampleRate, current.document.segments, current.document.shifts, { signal: controller.signal, settings: { preserveFormants: current.document.preserveFormants, formantShifts: current.document.formantShifts }, onProgress: value => { if (id === generation.current) setProgress(value) } })
+      if (id !== generation.current || controller.signal.aborted) return
+      await onApply({ document: { ...current.document, rendererId: PITCH_RENDERER_ID }, channels: rendered, sampleRate }, expectedClip, controller.signal)
       if (id !== generation.current || controller.signal.aborted) return
       history.current = { past: [], future: [] }
       update(current.document, false, false)

@@ -359,8 +359,8 @@ async function bundleFixture(formantOnly = false) {
   edit.sourceHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await sourceBlob.arrayBuffer())), byte => byte.toString(16).padStart(2, '0')).join('')
   const clip = applyPitchDocument(originalClip(sourceId), edit, renderId)
   const assets = new Map<string, AudioAsset>([
-    [sourceId, { id: sourceId, name: '원본.wav', blob: sourceBlob, buffer: {} as AudioBuffer, peaks: [0.125] }],
-    [renderId, { id: renderId, name: '수정.wav', blob: renderBlob, buffer: {} as AudioBuffer, peaks: [0.25] }],
+    [sourceId, { id: sourceId, name: '원본.wav', blob: sourceBlob, sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [0.125] }],
+    [renderId, { id: renderId, name: '수정.wav', blob: renderBlob, sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [0.25] }],
   ])
   return { project: projectFor(clip), assets, sourceId, renderId }
 }
