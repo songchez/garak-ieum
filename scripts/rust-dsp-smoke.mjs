@@ -28,6 +28,8 @@ try {
   const run = () => page.evaluate(async () => {
     const { WebAudioEngine } = await import('/src/audio/WebAudioEngine.ts')
     const { createEmptyProject, createTrack, createDevice } = await import('/src/core/project.ts')
+    const { createAudioAsset } = await import('/src/audio/assetPcm.ts')
+    const { encodeWav } = await import('/src/audio/wavEncode.ts')
     const stats = values => {
       let peak = 0, sum = 0, finite = true
       for (const value of values) { peak = Math.max(peak, Math.abs(value)); sum += value * value; finite &&= Number.isFinite(value) }
@@ -58,7 +60,7 @@ try {
     ]
     project.tracks = [track]
     const engine = new WebAudioEngine(project)
-    engine.setAssets(new Map([['src', { id: 'src', name: 'Synthetic', blob: new Blob(['x']), buffer: source, peaks: [] }]]))
+    engine.setAssets(new Map([['src', createAudioAsset('src', 'Synthetic', encodeWav([source.getChannelData(0), source.getChannelData(1)], rate, 32), source)]]))
     const wav = new DataView(await (await engine.exportWav()).arrayBuffer())
     // 16-bit PCM after a 44-byte header (exportWav); left channel only.
     const samples = []

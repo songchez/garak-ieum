@@ -17,7 +17,7 @@ function audioFixture(): { project: Project; assets: Map<string, AudioAsset>; by
   const bytes = Uint8Array.from({ length: 73_733 }, (_, index) => (index * 53 + 17) % 256)
   const asset: AudioAsset = {
     id: 'audio-source', name: '녹음 take.wav', blob: new Blob([bytes], { type: 'audio/wav' }),
-    buffer: {} as AudioBuffer, peaks: [0.2, 0.5],
+    sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [0.2, 0.5],
   }
   return { project, assets: new Map([[asset.id, asset]]), bytes }
 }

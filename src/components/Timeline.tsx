@@ -523,7 +523,7 @@ export function Timeline(props:TimelineProps){
   }
   function trimEndLength(clip:Clip,dBeat:number){
     const asset=clip.kind==='audio'?assets.get(clip.assetId):undefined
-    const max=asset&&clip.kind==='audio'?Math.max(MIN_CLIP_BEATS,spanBeats(tempoMapOf(project),clip.startBeat,asset.buffer.duration-clip.offsetSeconds)):Infinity
+    const max=asset&&clip.kind==='audio'?Math.max(MIN_CLIP_BEATS,spanBeats(tempoMapOf(project),clip.startBeat,asset.duration-clip.offsetSeconds)):Infinity
     return Math.min(max,Math.max(MIN_CLIP_BEATS,clip.lengthBeats+dBeat))
   }
 

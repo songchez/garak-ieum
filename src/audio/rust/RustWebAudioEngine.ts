@@ -29,6 +29,7 @@ import type { LoadedSet } from '../samples'
 import { WAVETABLE_HOST_REQUIRED } from '../instrumentSupport'
 import { encodeWavetablePatch, wavetablePatchData, WAVETABLE_UNAVAILABLE_STATUS, type WavetableBridgeStatus, type WavetableNativeBridge } from '../../devices/wavetable-synth/bridge'
 import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
+import { assetPcm } from '../assetPcm'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 /** A superseded IEUM WAVE patch request (the editor ignores it; a newer one follows). */
@@ -63,7 +64,7 @@ function referencedAssets(project: Project): Set<string> {
   return new Set(project.tracks.flatMap(track => [...track.clips.flatMap(clip => clip.kind === 'audio' ? [clip.assetId] : []), ...(track.render?.frozen ? [track.render.frozen.assetId] : [])]))
 }
 
-const pcmMetadata = (id: string, buffer: AudioBuffer): NativePcmAsset => ({ id, sampleRate: buffer.sampleRate, frames: buffer.length, channels: buffer.numberOfChannels })
+const pcmMetadata = (id: string, buffer: Pick<AudioBuffer, 'sampleRate' | 'length' | 'numberOfChannels'>): NativePcmAsset => ({ id, sampleRate: buffer.sampleRate, frames: buffer.length, channels: buffer.numberOfChannels })
 
 /** The engine asset id of one decoded sample file (the desktop host uses the same scheme). */
 const sampleAssetId = (setId: string, file: string): string => `sample:${setId}:${file}`
@@ -132,7 +133,8 @@ export class RustWebAudioEngine extends WebAudioEngine {
   private syncTask: Promise<void> | null = null
   private syncTimer: ReturnType<typeof setTimeout> | null = null
   private verdict = { accepted: false, reason: '아직 Rust 엔진에 프로젝트를 보내지 않았습니다.' }
-  private uploaded = new Map<string, WeakRef<AudioBuffer>>()
+  /** What each engine asset was uploaded from: a project asset (its PCM decoded on demand) or a sample file's buffer. */
+  private uploaded = new Map<string, WeakRef<object>>()
   /** Sample sets registered with the engine on this bridge (the decoded set each was built from). */
   private readonly registeredSets = new Map<string, LoadedSet>()
   private rustPlaying = false
@@ -404,11 +406,13 @@ export class RustWebAudioEngine extends WebAudioEngine {
       for (const id of referenced) {
         const asset = this.assets.get(id)
         if (!asset) return reject(`오디오 자산을 찾을 수 없습니다: ${id}`)
-        if (this.uploaded.get(id)?.deref() !== asset.buffer) {
-          await bridge.putAsset(id, asset.buffer)
-          this.uploaded.set(id, new WeakRef(asset.buffer))
+        if (this.uploaded.get(id)?.deref() !== asset) {
+          // Decoded from the asset's bytes for this upload (src/audio/assetPcm.ts); the worklet keeps the only lasting copy.
+          await bridge.putAsset(id, await assetPcm(asset))
+          if (bridge !== this.bridge) return
+          this.uploaded.set(id, new WeakRef(asset))
         }
-        metadata.set(id, pcmMetadata(id, asset.buffer))
+        metadata.set(id, pcmMetadata(id, asset))
       }
       // Sampled instruments: the decoded sets' PCM (chunked into the worklet like any asset), then each set as the
       // same samples.register JSON the desktop host sends. The Web Audio engine's library decodes them.
@@ -914,9 +918,9 @@ export class RustWebAudioEngine extends WebAudioEngine {
     for (const id of referencedAssets(project)) {
       const asset = this.assets.get(id)
       if (!asset) return fallback(`오디오 자산을 찾을 수 없습니다: ${id}`)
-      metadata.set(id, pcmMetadata(id, asset.buffer))
+      metadata.set(id, pcmMetadata(id, asset))
       // One interleaved copy per export, transferred to the worker (which frees it once the module has it).
-      const pcm = packAudioBuffer(asset.buffer)
+      const pcm = packAudioBuffer(await assetPcm(asset))
       assets.push({ id, sampleRate: pcm.sampleRate, channels: pcm.channels, samples: new Float32Array(pcm.data.buffer, pcm.data.byteOffset, pcm.frames * pcm.channels) })
     }
     let timeline: NativeProjectTimeline

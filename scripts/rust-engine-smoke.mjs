@@ -68,13 +68,16 @@ const TASK = async ({ name, arg }) => {
       const { DEFAULT_AUDIO_SETTINGS } = await import('/src/core/audioSettings.ts')
       const fixtures = await import('/src/audio/rust/engineTestProjects.ts')
       const { combineWavetablePatch } = await import('/src/devices/wavetable-synth/model.ts')
+      const { createAudioAsset } = await import('/src/audio/assetPcm.ts')
+      const { encodeWav } = await import('/src/audio/wavEncode.ts')
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
       const factoryPicksRust = (() => { const e = createAudioEngine(DEFAULT_AUDIO_SETTINGS); const ok = e instanceof RustWebAudioEngine; e.dispose(); return ok })()
 
       const assetsOf = test => new Map([...test.pcm].map(([id, pcm]) => {
         const buffer = new AudioBuffer({ length: pcm.channels[0].length, numberOfChannels: pcm.channels.length, sampleRate: pcm.sampleRate })
         pcm.channels.forEach((data, c) => buffer.copyToChannel(data, c))
-        return [id, { id, name: id, blob: new Blob(['x']), buffer, peaks: [] }]
+        // Float WAV bytes: an asset keeps only its bytes and peaks; the engine decodes them on demand (src/audio/assetPcm.ts).
+        return [id, createAudioAsset(id, id, encodeWav(pcm.channels, pcm.sampleRate, 32), buffer)]
       }))
       const decode = async blob => {
         const view = new DataView(await blob.arrayBuffer())

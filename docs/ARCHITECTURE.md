@@ -81,7 +81,8 @@ flowchart TD
 | [`src/components/DeviceChain.tsx`](../src/components/DeviceChain.tsx) | 시김새 체인 UI: 공통 카드·노브, 악기 선택, 시김새 추가(라이브러리 드롭)·삭제·순서·바이패스 조작 |
 | [`src/components/GuitarRig.tsx`](../src/components/GuitarRig.tsx), [`src/devices/guitar-rig`](../src/devices/guitar-rig) | 기타 앰프 전용 편집기, 수치형 설정·프리셋, 컴프·페달·앰프·캐비닛/마이크 모델, causal 마스터. [사용법과 범위](GUITAR_RIG.md) |
 | [`src/audio/effectPreparation.ts`](../src/audio/effectPreparation.ts) | 실시간/오프라인 컨텍스트별 효과 프로세서 등록, 중복 준비 합치기와 오류 전달 |
-| [`src/components/Waveform.tsx`](../src/components/Waveform.tsx), [`src/core/waveform.ts`](../src/core/waveform.ts) | 원본 구간에 맞춘 파형 표시. 확대 수준과 처리량에 따라 캐시 피크 또는 실제 PCM 사용 |
+| [`src/components/Waveform.tsx`](../src/components/Waveform.tsx), [`src/core/waveform.ts`](../src/core/waveform.ts), [`src/core/waveformPyramid.ts`](../src/core/waveformPyramid.ts) | 원본 구간에 맞춘 파형 표시. 확대 수준에 따라 320점 개요, 파형 피라미드, (블록보다 좁은 열에서만) 필요할 때 디코드한 PCM 사용 |
+| [`src/audio/assetPcm.ts`](../src/audio/assetPcm.ts) | 오디오 자산의 PCM을 원본 바이트에서 필요할 때 디코드하는 작은 LRU 캐시, 디코드 직후의 자산 생성(메타데이터·개요·피라미드) |
 | [`src/components/AudioSettingsDialog.tsx`](../src/components/AudioSettingsDialog.tsx), [`src/components/useAudioDevices.ts`](../src/components/useAudioDevices.ts) | 장치·녹음·프로젝트·진단 설정 초안, 적용/취소 UI, 수동 권한·장치 목록·테스트 연결 |
 
 ## 3. 프로젝트 모델과 편집
@@ -115,7 +116,7 @@ flowchart TD
 
 박자 변경은 기존 음표·리전·마커·루프·프로젝트 길이의 4분음표 좌표를 이동하거나 늘이지 않습니다. BPM도 4분음표/분 기준을 유지합니다. 타임라인·피아노롤 격자와 마디/박 스냅, 재생 위치 표시, 새 리전 길이와 마디 이동, 루프 길이 선택, 프로젝트 목록·내보내기의 마디 수가 새 박자를 사용합니다. 6/8의 마디는 3 quarter-note beats, 한 박은 0.5 quarter-note beats입니다. 프로젝트 전체의 단일 박자표를 지원하며 곡 중간 박자표 변경 맵은 없습니다.
 
-`loopLengthBeats`는 리전 시작부터의 전체 반복 범위이며 이동·복제 시 함께 이동합니다. 값이 없으면 기존 연속 루프입니다. 재생·고스트 표시·미리보기는 수동 끝/다음 리전/프로젝트 끝 중 가장 이른 위치를 공유하고, 마지막 일부 반복도 같은 규칙으로 자릅니다. 원본 리전 자체는 반복 경계보다 짧게 자르지 않습니다. 파형은 오디오 소스의 `offsetSeconds`·길이를 사용하며, 가까운 확대에서는 읽기 비용 한도 안에서 실제 샘플을 표시합니다.
+`loopLengthBeats`는 리전 시작부터의 전체 반복 범위이며 이동·복제 시 함께 이동합니다. 값이 없으면 기존 연속 루프입니다. 재생·고스트 표시·미리보기는 수동 끝/다음 리전/프로젝트 끝 중 가장 이른 위치를 공유하고, 마지막 일부 반복도 같은 규칙으로 자릅니다. 원본 리전 자체는 반복 경계보다 짧게 자르지 않습니다. 파형은 오디오 소스의 `offsetSeconds`·길이를 사용하며, 가까운 확대에서는 파형 피라미드를, 열 하나가 피라미드 블록보다 좁으면 필요할 때 디코드한 샘플을 표시합니다([오디오 자산 메모리](#오디오-자산-메모리)).
 
 포먼트 확장은 프로젝트 스키마를 올리지 않고 **내부 피치 문서 버전 2**로 구분합니다. `preserveFormants: boolean`과 음표 ID별 `formantShifts` 맵을 필수로 저장하며, `analysis.version`은 1입니다. v1 문서는 보존 꺼짐·빈 포먼트 맵으로 이전하고 기존 `rendererId`, 피치 이동값, 원본과 렌더 자산을 유지합니다. 이 마이그레이션은 오디오를 다시 만들지 않습니다. v1이라고 선언하면서 새 포먼트 필드를 담은 문서는 거부합니다. v2를 모르는 구버전 앱은 내부 문서 버전 검사에서 거부하므로 새 편집을 조용히 버리지 않습니다.
 
@@ -197,7 +198,17 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 
 ## 5. 가져오기와 녹음
 
-오디오 파일 가져오기는 원본 Blob을 보관하고 전체 디코딩한 PCM을 자산으로 등록합니다. 화면의 `AudioBuffer`·파형 피크는 편집 도구를 위한 표현이며, 데스크톱에서는 Float32 PCM을 native host에 준비해 재생합니다. 프로젝트 목록은 원본 Blob과 요약만 읽고 오디오 장치를 열지 않습니다. 편집기를 열 때 자산을 준비합니다.
+오디오 파일 가져오기는 원본 Blob을 보관하고 전체를 한 번 디코딩해 자산의 메타데이터와 파형(개요·피라미드)을 만듭니다. 재생할 PCM은 엔진이 갖습니다(웹은 AudioWorklet의 Rust 엔진, 데스크톱은 native host). 프로젝트 목록은 원본 Blob과 요약만 읽고 오디오 장치를 열지 않습니다. 편집기를 열 때 자산을 준비합니다.
+
+### 오디오 자산 메모리
+
+`AudioAsset`(`src/core/types.ts`)은 원본 바이트(`blob`, `src/audio/assetBytes.ts`), 메타데이터(`sampleRate`·`numberOfChannels`·`length`·`duration`), 320점 개요(`peaks`), 파형 피라미드(`pyramid`)만 갖고 `AudioBuffer`를 참조하지 않습니다. 메인 스레드가 모든 자산의 전체 PCM을 계속 들고 있지 않으므로 엔진 쪽 사본이 유일한 상시 사본입니다.
+
+- **파형 피라미드**(`src/core/waveformPyramid.ts`): 0단은 32프레임 블록마다 모든 채널의 절대값 최대(정확값), 위 단은 아래 4블록의 최대입니다. 모노 float32 신호의 약 1/24(스테레오의 1/48)입니다. 열이 개요보다 촘촘하면 피라미드로 그리며, 열이 걸친 블록 전체를 읽습니다(블록 경계에 맞는 열은 샘플과 같은 값). 열 하나가 32프레임보다 좁은 확대(짧은 구간)에서만 `Waveform`이 PCM을 요청해 샘플 그대로 그립니다. 바운스의 피크는 피라미드 꼭대기(전체 최대, 정확값)입니다.
+- **필요할 때 디코드**(`src/audio/assetPcm.ts`): 샘플이 필요한 곳은 `assetPcm(asset)`을 기다립니다. 원본 바이트를 자산의 샘플레이트로 다시 디코드하고(`OfflineAudioContext`, 출력 장치를 열지 않음) 길이·채널·레이트가 처음과 같은지 확인합니다. 결과는 작은 LRU 캐시(192 MiB, 가장 최근 항목은 그보다 커도 유지, 20초 동안 쓰지 않으면 해제)에 두고 동시 요청은 디코드 하나를 공유합니다. 새로 디코드한 자산은 캐시에 미리 넣으므로 가져오기 직후의 엔진 업로드·템포 분석·녹음 채널 고르기는 다시 디코드하지 않습니다. 버리는 중간 디코드(스테레오 렌더의 모노 변환, 녹음 스트림 전체)는 바로 해제합니다.
+- **사용처**: 엔진 업로드(웹 Rust 엔진 `putAsset`, 데스크톱 `asset.put`, 업로드한 자산을 WeakRef로 기억), 웹 오프라인 렌더, 피치 분석·렌더, 워프·리전 피치 렌더, 템포 분석, 리전 노멀라이즈, 엔진이 거부한 프로젝트를 재생하는 Web Audio 그래프(재생·렌더 전에 `PlayableAsset`으로 풀고 일시정지·정지에서 버림). 리전 길이·크로스페이드·피치 검증·브라우저 목록은 메타데이터만 읽습니다.
+- **측정**(Chrome, cross-origin isolated, `performance.measureUserAgentSpecificMemory`, 5분 스테레오 48 kHz 16-bit WAV 4개를 디코드·설치·재생 후 정지, GC 후): 빈 프로젝트 47.8 MB → 이전 509 MB(자산 `AudioBuffer` 460.8 MB), 지금 재생 직후 172.7 MB(캐시에 가장 최근 파일 하나) → 25초 뒤 57.5 MB(피라미드 9.6 MB). 원본 바이트(230 MB)는 두 경우 같고 JS 힙 밖(Blob 저장소)에 있습니다.
+- **비용**: 캐시 밖의 자산은 쓸 때 다시 디코드합니다(긴 MP3는 수백 ms). 큰 파일 여러 개를 복원하면 엔진 업로드에서 자산마다 한 번 더 디코드할 수 있습니다.
 
 데스크톱 입력은 `DeviceHost`의 선택 채널을 사용합니다. 장치 callback이 녹음 링 버퍼에 PCM을 넣고 파일 스레드가 Float32 WAV를 기록합니다. `NativeRecording`이 실제 녹음 시작 frame·rate·수신 frame 수·파일 결과를 받아 기존 임시 리전/최종 자산 흐름에 연결합니다. 큐 포화·디스크 오류·프로세스 종료는 성공한 녹음으로 보고하지 않습니다. 브라우저에서는 기존 `InputCapture`의 `getUserMedia()`와 `AudioRecording`/`MediaRecorder` 경로를 유지합니다.
 
@@ -296,6 +307,7 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 | `src/audio/samples.test.ts` | 존·레이어 선택, 매니페스트 해석, 로더의 요청·캐시·상태·오류 처리(네트워크와 디코딩은 모의) |
 | `src/core/audioSettings.test.ts`, `src/core/recordingOffset.test.ts` | 로컬 설정·입력 요청·수동 녹음 정렬과 0 경계 |
 | `src/audio/InputCapture.test.ts`, `src/audio/AudioDeviceProbe.test.ts` | 입력 준비·권한·취소·전환과 테스트 자원 수명 |
+| `src/core/waveformPyramid.test.ts`, `src/audio/assetPcm.test.ts` | 피라미드 블록 최대·범위 질의·메모리, 피라미드로 그린 파형과 샘플 비교, 자산 생성(PCM 비참조), 필요할 때 디코드·동시 요청 합치기·LRU 예산·유휴 해제·불일치 거부 |
 | `src/audio/WebAudioEngine.test.ts`, `src/audio/OutputTest.test.ts` | 컨텍스트 교체·복구·프로젝트 레이트·WAV·출력 장치 오류와 테스트음 취소 |
 
 이 테스트들은 실제 브라우저의 오디오 장치, 마이크 지연, 모든 타사 네이티브 플러그인의 호환성, 장시간 재생 성능을 측정하지 않습니다. 실제 fixture를 사용하는 검사는 별도로 위 표에 표시했습니다. fake-indexeddb 저장소 검사와 실제 브라우저의 IndexedDB 실행도 구분합니다. 실제 화면에서의 URL 직접 열기·뒤로/앞으로·새로고침·저장 복원·녹음·내보내기와 세 샘플의 청음·최종 음량 확인은 별도 검증 항목입니다.

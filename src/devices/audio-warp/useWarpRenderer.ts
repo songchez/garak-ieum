@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { assetPcm } from '../../audio/assetPcm'
 import type { MutableRefObject } from 'react'
 import type { AudioAsset, Project } from '../../core/types'
 import type { ProjectSessionSnapshot, SessionAction } from '../../core/ProjectSession'
@@ -107,8 +108,8 @@ export function useWarpRenderer(options: WarpRendererOptions): { rendering: bool
           try {
             if (!source) throw new Error('원본 음원이 없습니다.')
             if (group.tempoDependent && !warpRatioSupported(group.sourceBpm, group.bpm)) throw new Error('원본과 프로젝트의 템포 차이가 너무 큽니다. 워프는 원래 길이의 1/4~4배까지 지원합니다.')
-            const channels = await renderInWorker(source.buffer, renderJob(group), { signal: controller.signal })
-            const asset = await decodeAsset(encodeFloatWav(channels, source.buffer.sampleRate), renderName(source.name, group))
+            const channels = await renderInWorker(await assetPcm(source), renderJob(group), { signal: controller.signal })
+            const asset = await decodeAsset(encodeFloatWav(channels, source.sampleRate), renderName(source.name, group))
             if (controller.signal.aborted || latest.current.epoch() !== epoch) break
             const next = new Map(latest.current.assetsRef.current)
             next.set(asset.id, asset)

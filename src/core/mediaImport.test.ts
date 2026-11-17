@@ -15,7 +15,7 @@ const midi = (overrides: Partial<MidiImportResult> = {}): MidiImportResult => ({
   lengthBeats: 4, bpm: 120, timeSignature: { numerator: 4, denominator: 4 }, warnings: [], ...overrides,
 })
 const midiFile = (data = midi(), name = 'phrase.mid'): ImportedMedia => ({ kind: 'midi', name, midi: data })
-const audio = (): AudioAsset => ({ id: 'pcm', name: 'take.wav', blob: new Blob(['wave']), peaks: [], buffer: { duration: 2 } as AudioBuffer })
+const audio = (): AudioAsset => ({ id: 'pcm', name: 'take.wav', blob: new Blob(['wave']), peaks: [], sampleRate: 48000, numberOfChannels: 1, length: 96000, duration: 2 })
 const audioFile = (): ImportedMedia => ({ kind: 'audio', name: 'take.wav', asset: audio() })
 
 describe('media file routing', () => {
@@ -145,7 +145,7 @@ describe('atomic MIDI and audio project import', () => {
 })
 
 describe('audio import tempo', () => {
-  const asset = (id: string, duration: number): AudioAsset => ({ id, name: `${id}.wav`, blob: new Blob(['wave']), peaks: [], buffer: { duration } as AudioBuffer })
+  const asset = (id: string, duration: number): AudioAsset => ({ id, name: `${id}.wav`, blob: new Blob(['wave']), peaks: [], sampleRate: 48000, numberOfChannels: 1, length: Math.round(duration * 48000), duration })
   const tempo = (bpm: number, confidence = .7) => ({ bpm, confidence, firstBeatSeconds: .01 })
 
   it('fits a confident short loop to the project tempo, keeping the original asset for the renderer', () => {

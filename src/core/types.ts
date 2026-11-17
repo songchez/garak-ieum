@@ -1,4 +1,5 @@
 import type { SampleRate } from './audioSettings'
+import type { WaveformPyramid } from './waveformPyramid'
 import type { PitchEditDocument } from '../devices/pitch-editor/model'
 import type { WavetableState } from '../devices/wavetable-synth/model'
 import type { WavetableNativeBridge } from '../devices/wavetable-synth/bridge'
@@ -381,12 +382,31 @@ export interface Project {
 }
 /** Playback quantize grids in beats (0 = off). Triplets are 2/3, 1/3, 1/6, 1/12. */
 export const QUANTIZE_VALUES: readonly number[] = [0, 4, 2, 1, 0.5, 0.25, 0.125, 0.0625, 2 / 3, 1 / 3, 1 / 6, 1 / 12]
+/**
+ * An imported, recorded or rendered sound. The main thread keeps its metadata, the owned original bytes and
+ * peaks for drawing, not its PCM: code that needs samples asks `assetPcm(asset)` (src/audio/assetPcm.ts),
+ * which decodes `blob` on demand into a small LRU cache (docs/ARCHITECTURE.md "오디오 자산 메모리").
+ */
 export interface AudioAsset {
   id: string
   name: string
+  /** The owned original bytes (src/audio/assetBytes.ts); autosave and `.garak` store them. */
   blob: Blob
-  buffer: AudioBuffer
+  /** Of the decoded PCM (the project rate it was decoded at). */
+  sampleRate: number
+  numberOfChannels: number
+  /** Frames of the decoded PCM. */
+  length: number
+  /** Seconds (`length / sampleRate`). */
+  duration: number
+  /** A 320-point overview. */
   peaks: number[]
+  /** Multi-resolution peaks for close zoom; without it a waveform draws the overview only. */
+  pyramid?: WaveformPyramid
+}
+/** An asset with its PCM resolved (the legacy Web Audio graph schedules AudioBufferSourceNodes from it). */
+export interface PlayableAsset extends AudioAsset {
+  buffer: AudioBuffer
 }
 export type RenderBitDepth = 16 | 24 | 32
 export interface RenderOptions {

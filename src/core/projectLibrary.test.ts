@@ -19,7 +19,7 @@ function recording(name: string, bytes: readonly number[]): { stored: StoredProj
   track.clips = [clip]
   project.tracks = [track]
   const asset = { id: clip.assetId, name: `${name}.wav`, blob: new Blob([new Uint8Array(bytes)], { type: 'audio/wav' }) }
-  return { stored: { project, assets: [asset] }, exportAssets: new Map([[asset.id, { ...asset, buffer: {} as AudioBuffer, peaks: [] }]]) }
+  return { stored: { project, assets: [asset] }, exportAssets: new Map([[asset.id, { ...asset, sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [] }]]) }
 }
 
 describe('project launcher creation and import', () => {

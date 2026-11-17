@@ -149,7 +149,7 @@ ${module.name} 모듈 · 끌어서 트랙이나 시김새 체인에 놓을 수 �
         <button type="button" className="lib-card-main" onClick={() => onUse({ kind: 'asset', assetId: asset.id })} title="클릭하여 추가 · 타임라인으로 끌어 원하는 위치에 놓기">
           <span className="lib-audio-head"><Icon name="wave" size={12} /><strong>{asset.name}</strong></span>
           <Waveform peaks={asset.peaks} />
-          <small>{asset.buffer.duration.toFixed(1)} s · {asset.buffer.numberOfChannels === 2 ? '스테레오' : '모노'}</small>
+          <small>{asset.duration.toFixed(1)} s · {asset.numberOfChannels === 2 ? '스테레오' : '모노'}</small>
         </button>
       </li>)}</ul>
       {!audio.length && <div className="file-browser-empty"><Icon name="folder" size={22} /><p>{originals.length ? '일치하는 파일이 없습니다' : '아직 가져온 오디오가 없습니다'}</p><button type="button" onClick={onImport}><Icon name="upload" size={13} />오디오·MIDI 가져오기</button></div>}

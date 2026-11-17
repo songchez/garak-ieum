@@ -167,7 +167,7 @@ engine.worklet.ts (AudioWorkletProcessor 'garak-engine', 노드 1개 = 엔진 1�
 ### 5.3 규칙
 
 - **입력은 데스크톱과 같습니다.** `NativeTimelineCompiler`가 만든 timeline과 바이너리 프레임, `planNativeSync`의 `project.set`/`project.patch`를 그대로 보냅니다. 편집은 16 ms로 묶어 patch 한 번(페이더 드래그 = `Diff`)이 됩니다. 거부된 patch 뒤에는 다음 동기화가 `project.set`입니다.
-- **PCM 전달:** 메인 스레드는 `AudioBuffer`를 한 번 인터리브해 그 사본을 **transfer**합니다(메인 스레드에 남는 사본 없음). 워크릿은 `alloc_f32` 버퍼에 한 번 복사하고 `put_asset_owned`가 그 버퍼를 그대로 소유합니다(이전 로더는 모듈 안에서 한 번 더 `to_vec()`). 같은 `AudioBuffer`는 다시 보내지 않고(WeakRef), 더 이상 참조되지 않는 PCM은 `remove_asset`.
+- **PCM 전달:** 자산은 PCM을 갖지 않습니다(메타데이터·원본 바이트·파형 피라미드, [ARCHITECTURE "오디오 자산 메모리"](ARCHITECTURE.md#오디오-자산-메모리)). 업로드할 때 `assetPcm(asset)`이 원본 바이트를 디코드하고(가져오기 직후면 캐시에서), 메인 스레드는 그것을 한 번 인터리브해 그 사본을 **transfer**합니다. 디코드한 `AudioBuffer`는 작은 캐시에 잠시 있다가 해제되므로 워크릿 쪽이 유일한 상시 사본입니다(5분 스테레오 파일 4개: 메인 스레드 509 MB → 57.5 MB). 워크릿은 `alloc_f32` 버퍼에 한 번 복사하고 `put_asset_owned`가 그 버퍼를 그대로 소유합니다(이전 로더는 모듈 안에서 한 번 더 `to_vec()`). 같은 자산은 다시 보내지 않고(WeakRef), 더 이상 참조되지 않는 PCM은 `remove_asset`. 데스크톱(`NativeAudioEngine`의 `asset.put`)도 같은 방식이라 렌더러에 남는 사본이 없습니다.
 - **채널:** 페이지가 cross-origin isolated면 전송 명령은 SharedArrayBuffer 링으로 다음 퀀텀에 바로 적용되고, 상태(프레임, 재생 여부, 마스터 피크, 렌더 시간 통계, 적용된 순번)는 매 퀀텀 seqlock 블록에 씁니다. 아니면 같은 명령을 postMessage로 보내고 상태는 약 37 ms마다 게시합니다. 링 명령은 "앞 메시지의 순번"을 갖고 있어 그 메시지(예: `project.set`)가 적용될 때까지 기다립니다.
 - **전송:** 재생은 `seek(frame)` + `play`(카운트인이 있으면 `countIn(frames)`). 비트 위치는 엔진이 게시한 프레임을 템포 맵으로 바꾼 값입니다(명령이 적용되기 전에는 시작 비트). 사이클은 엔진이 돌고, 사이클이 없으면 엔진이 프로젝트 끝에서 멈추고 꼬리는 울립니다. 메트로놈과 카운트인은 엔진이 마스터 뒤에 섞습니다([5.7](#57-웹-호스트-2차-엔진-안에서-끝나는-일)).
 - **Web Audio 그래프:** 엔진이 들리는 동안(재생 중이거나, 멈춰 있어도 트랙을 모니터링 중) Web Audio 그래프(와 이펙트 워크릿들)를 두지 않고, 그 밖에는 다시 만듭니다(멈춘 프로젝트의 미리 듣기, 대체 재생용). 재생 중에 편집으로 엔진이 거부하게 되면 들리던 비트부터 Web Audio로 이어서 재생합니다.
@@ -222,7 +222,6 @@ LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다
 
 ### 5.6 남은 일 (기본값 전환 전)
 
-- PCM이 메인 스레드(`AudioBuffer`)와 워크릿 모듈에 두 벌 있습니다. 앱 전체가 `AudioAsset.buffer`를 동기적으로 읽습니다(파형 상세 그리기, 리전 길이, 정규화, 피치/워프 편집, 녹음 채널 고르기 등 20여 곳). 엔진 쪽 경로에는 남는 사본이 없습니다([5.7](#57-웹-호스트-2차-엔진-안에서-끝나는-일)). 메인 스레드 사본을 없애려면 `AudioAsset`을 "메타데이터 + 파형 피라미드 + 필요할 때 blob 디코드"로 바꾸는 앱 단위 작업이 필요합니다.
 - 악기(G2, `rust/engine-instruments`): 들어오면 `Track::live_event`가 라이브 노트를 받고, 미리 듣기·라이브 MIDI가 같은 경로로 엔진에서 소리 납니다(웹 쪽 배선은 끝남).
 - PCM 업로드(`asset`)는 아직 한 번에 복사합니다(긴 오디오는 업로드 퀀텀에서 수 ms).
 

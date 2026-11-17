@@ -1,7 +1,7 @@
 import { instrumentDef } from '../core/instruments'
 import { DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, normalizeAudioSettings, projectSampleRate, type AudioSettings, type AudioState, type RenderSizeHint, type SampleRate } from '../core/audioSettings'
 import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
-import type { AudioAsset, AudioEngine, ControllerKey, InputChoice, InstrumentId, Project, RenderOptions, RenderedAudio, SampleAttribution, SampleStatus, TransportSnapshot, VintageBridge } from '../core/types'
+import type { AudioAsset, AudioEngine, PlayableAsset, ControllerKey, InputChoice, InstrumentId, Project, RenderOptions, RenderedAudio, SampleAttribution, SampleStatus, TransportSnapshot, VintageBridge } from '../core/types'
 import { playbackProject } from '../core/freeze'
 import { encodeWav } from './wavEncode'
 import { numberedInputChoices } from '../core/trackInputs'
@@ -16,6 +16,7 @@ import { clamp, loopRange, normalizedStart, positionAfter } from './math'
 import { tempoMapOf } from '../core/tempoMap'
 import { SampleLibrary } from './samples'
 import { ownAudioBytes } from './assetBytes'
+import { assetPcm, createAudioAsset, referencedAssetIds } from './assetPcm'
 import { playOutputTest } from './OutputTest'
 import { assertWebAudioProjectSupported, unsupportedWebAudioInstruments, WAVETABLE_HOST_REQUIRED } from './instrumentSupport'
 import { prepareEffects } from './effectPreparation'
@@ -67,6 +68,10 @@ export class WebAudioEngine implements AudioEngine {
   readonly samples = new SampleLibrary()
   protected project: Project | null = null
   protected assets = new Map<string, AudioAsset>()
+  /** PCM of the assets the Web Audio graph is playing: resolved before Play, dropped on pause/stop (src/audio/assetPcm.ts). */
+  private playable = new Map<string, PlayableAsset>()
+  private playableReload: Promise<void> | null = null
+  private playableStale = false
   protected context: AudioContext | null = null
   private decodeContext: OfflineAudioContext | null = null
   private graph: EngineGraph | null = null
@@ -431,19 +436,50 @@ export class WebAudioEngine implements AudioEngine {
       }
       if (this.graph && this.monitorStream && JSON.stringify([...this.monitorInputs()]) !== this.monitorRoutes) this.wireMonitor()
     }
+    // A live edit that places an asset the graph has no PCM for yet restarts once it is decoded.
+    if (this.playing && [...referencedAssetIds(project)].some(id => this.assets.has(id) && !this.playable.has(id))) this.reloadPlayable()
     this.publishSnapshot()
   }
 
   setAssets(assets: Map<string, AudioAsset>): void {
-    const changed = assets.size !== this.assets.size || [...assets].some(([id, asset]) => this.assets.get(id)?.buffer !== asset.buffer)
+    const changed = assets.size !== this.assets.size || [...assets].some(([id, asset]) => this.assets.get(id) !== asset)
     this.assets = new Map(assets)
+    for (const [id, playable] of [...this.playable]) if (this.assets.get(id)?.blob !== playable.blob) this.playable.delete(id)
     // A freeze cache arriving or leaving switches its track between the cached render and live playback.
     if (changed && this.sourceProject?.tracks.some(track => track.freeze)) {
       const before = this.project
       this.setProject(this.sourceProject)
       if (before !== this.project) return
     }
-    if (changed && this.playing) this.restartAt(this.currentBeat())
+    if (changed && this.playing) this.reloadPlayable()
+  }
+
+  /** Resolves the PCM the graph needs for `project` into `into` (decoded from each asset's bytes, src/audio/assetPcm.ts). */
+  private async loadPlayable(project: Project, into: Map<string, PlayableAsset>): Promise<Map<string, PlayableAsset>> {
+    for (const id of referencedAssetIds(project)) {
+      const asset = this.assets.get(id)
+      if (!asset || into.get(id)?.blob === asset.blob) continue
+      const buffer = await assetPcm(asset)
+      if (this.assets.get(id) === asset) into.set(id, { ...asset, buffer })
+    }
+    return into
+  }
+
+  /** While playing: decodes what the graph lacks, then restarts at the heard beat. */
+  private reloadPlayable(): void {
+    // Edits during a reload only mark it stale: one more pass runs after it (no decode or restart per edit).
+    if (this.playableReload) { this.playableStale = true; return }
+    const request = this.transportRequest
+    const task = (async () => {
+      do {
+        this.playableStale = false
+        if (this.project) await this.loadPlayable(this.project, this.playable)
+      } while (this.playableStale && request === this.transportRequest)
+      if (this.playing && request === this.transportRequest && this.project) this.restartAt(this.currentBeat())
+    })()
+    this.playableReload = task
+    void task.catch(error => console.warn('[가락이음] 오디오 자산을 디코드하지 못했습니다:', error))
+      .finally(() => { if (this.playableReload === task) this.playableReload = null })
   }
   private sourceProject: Project | null = null
 
@@ -493,6 +529,8 @@ export class WebAudioEngine implements AudioEngine {
       await this.resume()
       if (request !== this.transportRequest || lifecycle !== this.lifecycle || !this.context || !this.project) return
       if (this.playing) return
+      await this.loadPlayable(this.project, this.playable)
+      if (request !== this.transportRequest || lifecycle !== this.lifecycle || !this.context || !this.project || this.playing) return
       // Project edits may land while a device permission/configuration promise is pending.
       assertWebAudioProjectSupported(this.project, this.vintage)
       let beat = normalizedStart(this.project, this.position)
@@ -518,6 +556,7 @@ export class WebAudioEngine implements AudioEngine {
     this.playing = false
     this.metronome.cancel(this.context?.currentTime ?? 0)
     this.replaceGraph()
+    this.playable.clear()
     this.publishSnapshot()
   }
 
@@ -528,6 +567,7 @@ export class WebAudioEngine implements AudioEngine {
     this.position = 0
     this.cursorBeat = 0
     this.replaceGraph()
+    this.playable.clear()
     this.publishSnapshot()
   }
 
@@ -721,23 +761,7 @@ export class WebAudioEngine implements AudioEngine {
       throw new Error('이 오디오 파일을 읽을 수 없습니다. 브라우저에서 지원하는 WAV, MP3, OGG 등의 파일을 사용해 주세요.')
     }
     if (buffer.length === 0 || !Number.isFinite(buffer.duration)) throw new Error('오디오 파일에 재생할 데이터가 없습니다.')
-    const peaks: number[] = []
-    const count = Math.min(320, buffer.length)
-    const channels = Array.from({ length: buffer.numberOfChannels }, (_, channel) => buffer.getChannelData(channel))
-    for (let point = 0; point < count; point += 1) {
-      const start = Math.floor(point * buffer.length / count)
-      const end = Math.floor((point + 1) * buffer.length / count)
-      const stride = Math.max(1, Math.floor((end - start) / 256))
-      let peak = 0
-      for (const channel of channels) {
-        for (let frame = start; frame < end; frame += stride) peak = Math.max(peak, Math.abs(channel[frame]))
-      }
-      peaks.push(Math.min(1, peak))
-    }
-    return {
-      id: id ?? globalThis.crypto.randomUUID(),
-      name, blob: owned.blob, buffer, peaks,
-    }
+    return createAudioAsset(id ?? globalThis.crypto.randomUUID(), name, owned.blob, buffer)
   }
 
   /** Exports the entire arrangement once; the audition loop is deliberately ignored. */
@@ -771,9 +795,10 @@ export class WebAudioEngine implements AudioEngine {
     const offline = new OfflineAudioContext(2, frames, sampleRate)
     await prepareEffects(offline)
     await prepareVintage(offline)
+    const playable = await this.loadPlayable(project, new Map())
     const graph = createGraph(offline, project, { preMaster: options.preMaster })
     try {
-      scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
+      scheduleRange(graph, project, playable, 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
       // Automation is scheduled for the whole render before it starts, so worklet events are queued first.
       if (hasActiveAutomation(project)) {
         const tempo = tempoMapOf(project)
@@ -962,7 +987,7 @@ export class WebAudioEngine implements AudioEngine {
       const segmentSeconds = Math.min(this.cursorTime - time, remainingSeconds)
       if (segmentSeconds <= 0.00000001) break
       const endBeat = segmentSeconds >= remainingSeconds ? boundary : Math.min(boundary, tempo.beatAfter(beat, segmentSeconds))
-      scheduleRange(graph, project, this.assets, beat, endBeat, time, boundary, chase, true, this.samples, only)
+      scheduleRange(graph, project, this.playable, beat, endBeat, time, boundary, chase, true, this.samples, only)
       time += segmentSeconds
       beat = endBeat
       chase = false
@@ -1000,7 +1025,7 @@ export class WebAudioEngine implements AudioEngine {
       const segmentSeconds = Math.min(horizon - this.cursorTime, remainingSeconds)
       if (segmentSeconds <= 0.00000001) break
       const endBeat = segmentSeconds >= remainingSeconds ? boundary : Math.min(boundary, tempo.beatAfter(this.cursorBeat, segmentSeconds))
-      scheduleRange(this.graph, project, this.assets, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true, this.samples)
+      scheduleRange(this.graph, project, this.playable, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true, this.samples)
       const segmentBeat = this.cursorBeat, segmentTime = this.cursorTime
       scheduleAutomation(this.graph, project, segmentTime, segmentTime + segmentSeconds, time => tempo.beatAfter(segmentBeat, time - segmentTime))
       if (!this.outputFault) this.metronome.scheduleSegment(this.context, project, this.cursorBeat, endBeat, this.cursorTime)

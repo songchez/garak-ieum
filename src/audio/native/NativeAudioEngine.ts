@@ -28,6 +28,7 @@ import { combineWavetablePatch, type WavetablePatch } from '../../devices/waveta
 import { WAVE_SCHEMA_FINGERPRINT } from '../../devices/wavetable-synth/schema.generated'
 import type { NativeEngineCapabilities, NativeProjectApplied } from './contracts'
 import { ownAudioBytes } from '../assetBytes'
+import { assetPcm, createAudioAsset } from '../assetPcm'
 import { dynamicsReadingFrom, type DynamicsReading } from '../../devices/effects/dynamicsMeter'
 import { nativeRequestError, withNativeCode } from './deviceErrors'
 import { backendLabel, candidateLabel, decideStartup, missingDevice, startupCandidates, startupNotice, startupReason, type NativeStartupReport } from './deviceStartup'
@@ -76,8 +77,11 @@ export class NativeAudioEngine implements AudioEngine {
   private settings: AudioSettings
   private desiredSampleRate: SampleRate = DEFAULT_SAMPLE_RATE
   private decodeContext: OfflineAudioContext | null = null
-  /** Weak: an uploaded buffer the renderer no longer needs (released sample sets) must not be kept alive here. */
-  private uploaded = new Map<string, WeakRef<AudioBuffer>>()
+  /**
+   * What each host asset was uploaded from: a project asset (its PCM is decoded for the upload and then dropped,
+   * src/audio/assetPcm.ts) or a sample file's buffer. Weak: a source the renderer no longer needs must not be kept alive here.
+   */
+  private uploaded = new Map<string, WeakRef<object>>()
   private uploadTasks = new Map<string, Promise<void>>()
   private registeredSets = new Set<string>()
   private sampleTasks = new Map<string, Promise<void>>()
@@ -674,7 +678,7 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   setAssets(assets: Map<string, AudioAsset>): void {
-    if (assets.size === this.assets.size && [...assets].every(([id, value]) => this.assets.get(id)?.buffer === value.buffer)) return
+    if (assets.size === this.assets.size && [...assets].every(([id, value]) => this.assets.get(id) === value)) return
     this.assets = new Map(assets); this.revision++
     if (this.configured) this.scheduleSync()
   }
@@ -692,17 +696,20 @@ export class NativeAudioEngine implements AudioEngine {
     }, 16)
   }
 
-  private async putPcm(id: string, buffer: AudioBuffer): Promise<void> {
-    if (this.uploaded.get(id)?.deref() === buffer) return
+  /** Uploads `source`'s PCM as host asset `id` unless it already is; `pcm` resolves it (an asset decodes on demand). */
+  private async putPcm(id: string, source: object, pcm: () => AudioBuffer | Promise<AudioBuffer>): Promise<void> {
+    if (this.uploaded.get(id)?.deref() === source) return
     const pending = this.uploadTasks.get(id)
-    if (pending) { await pending; if (this.uploaded.get(id)?.deref() === buffer) return }
+    if (pending) { await pending; if (this.uploaded.get(id)?.deref() === source) return }
     const generation = this.generation
     const task = (async () => {
       // The bridge writes a private PCM asset, not a path supplied by project JSON.
       // One interleaved float32 attachment (pcmTransfer.ts); the main process writes it without per-sample work.
+      const buffer = await pcm()
+      if (generation !== this.generation) throw abortError()
       await this.request('asset.put', { id, ...packAudioBuffer(buffer) })
       if (generation !== this.generation) throw abortError()
-      this.uploaded.set(id, new WeakRef(buffer))
+      this.uploaded.set(id, new WeakRef(source))
     })()
     this.uploadTasks.set(id, task)
     try { await task } finally { if (this.uploadTasks.get(id) === task) this.uploadTasks.delete(id) }
@@ -720,7 +727,7 @@ export class NativeAudioEngine implements AudioEngine {
       // Bound IPC memory and disk work; each decoded buffer is transferred only once.
       for (const [file, buffer] of decoded.buffers) {
         const id = `sample:${setId}:${file}`
-        await this.putPcm(id, buffer); files[file] = id
+        await this.putPcm(id, buffer, () => buffer); files[file] = id
         if (generation !== this.generation) throw abortError()
       }
       await this.request('samples.register', { id: setId, manifest: decoded.set, startOffset: decoded.startOffset, files })
@@ -753,8 +760,8 @@ export class NativeAudioEngine implements AudioEngine {
     for (const id of referenced) {
       const asset = this.assets.get(id)
       if (!asset) throw new Error(`오디오 자산을 찾을 수 없습니다: ${id}`)
-      await this.putPcm(id, asset.buffer)
-      metadata.set(id, { id, sampleRate: asset.buffer.sampleRate, frames: asset.buffer.length, channels: asset.buffer.numberOfChannels })
+      await this.putPcm(id, asset, () => assetPcm(asset))
+      metadata.set(id, { id, sampleRate: asset.sampleRate, frames: asset.length, channels: asset.numberOfChannels })
     }
     const timeline = this.compiler.compile(project, metadata, revision)
     // Native DSP receives the bounded binary schema. Unsupported older hosts
@@ -1046,17 +1053,7 @@ export class NativeAudioEngine implements AudioEngine {
     try { buffer = await this.codec().decodeAudioData(owned.bytes) }
     catch { throw new Error('이 오디오 파일을 읽을 수 없습니다. 지원되는 WAV, MP3, AAC, OGG 또는 WebM 파일을 사용해 주세요.') }
     if (!buffer.length || !Number.isFinite(buffer.duration)) throw new Error('오디오 파일에 재생할 데이터가 없습니다.')
-    const count = Math.min(320, buffer.length), peaks: number[] = []
-    for (let point = 0; point < count; point++) {
-      const start = Math.floor(point * buffer.length / count), end = Math.floor((point + 1) * buffer.length / count)
-      const stride = Math.max(1, Math.floor((end - start) / 256)); let peak = 0
-      for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-        const values = buffer.getChannelData(channel)
-        for (let frame = start; frame < end; frame += stride) peak = Math.max(peak, Math.abs(values[frame]))
-      }
-      peaks.push(Math.min(1, peak))
-    }
-    return { id, name, blob: owned.blob, buffer, peaks }
+    return createAudioAsset(id, name, owned.blob, buffer)
   }
 
   async exportWav(project = this.requireProject()): Promise<Blob> {
