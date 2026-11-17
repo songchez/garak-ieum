@@ -68,6 +68,112 @@ impl LiveEvent {
             LiveEvent::AllNotesOff => true,
         }
     }
+
+    /// The C form (`GarakRsLiveEvent`, garak_engine.h): `kind` 0 note on (`a` = note id), 1 note off (`a` = note
+    /// id), 2 all notes off, 3 controller (`pitch` = controller number, `a` = value), 4 preview (`a` = frames).
+    pub fn encode(self, offset: u32) -> TimedLiveEvent {
+        let (kind, pitch, a, velocity) = match self {
+            LiveEvent::NoteOn { pitch, velocity, id } => (0, i32::from(pitch), id, velocity),
+            LiveEvent::NoteOff { pitch, id } => (1, i32::from(pitch), id, 0.0),
+            LiveEvent::AllNotesOff => (2, 0, 0, 0.0),
+            LiveEvent::Control { controller, value } => (3, i32::from(controller), value, 0.0),
+            LiveEvent::Preview { pitch, velocity, frames } => {
+                (4, i32::from(pitch), i32::try_from(frames).unwrap_or(i32::MAX), velocity)
+            }
+        };
+        TimedLiveEvent { offset, kind, pitch, a, velocity }
+    }
+
+    /// The event of a C form (`encode`), or None for an unknown kind or a field out of its type's range
+    /// (`is_valid` checks the musical ranges).
+    pub fn decode(kind: u32, pitch: i32, a: i32, velocity: f32) -> Option<LiveEvent> {
+        let note = u8::try_from(pitch).ok();
+        Some(match kind {
+            0 => LiveEvent::NoteOn { pitch: note?, velocity, id: a },
+            1 => LiveEvent::NoteOff { pitch: note?, id: a },
+            2 => LiveEvent::AllNotesOff,
+            3 => LiveEvent::Control { controller: u16::try_from(pitch).ok()?, value: a },
+            4 => LiveEvent::Preview { pitch: note?, velocity, frames: u32::try_from(a).ok()? },
+            _ => return None,
+        })
+    }
+}
+
+/// Live events one track holds for its coming blocks (docs/RUST_ENGINE.md 5.8); a full queue refuses more.
+pub const LIVE_QUEUE: usize = 128;
+/// The latest a live event may be scheduled: frames after the start of the next render call.
+pub const MAX_LIVE_OFFSET: u32 = 1 << 16;
+
+/// A live event with its frame offset, in the C layout (`GarakRsLiveEvent` in garak_engine.h): what a track's
+/// queue holds and what a host node receives. `offset` counts frames from the start of the next render call
+/// (queued) or of the block (host callback).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TimedLiveEvent {
+    pub offset: u32,
+    pub kind: u32,
+    pub pitch: i32,
+    pub a: i32,
+    pub velocity: f32,
+}
+
+impl TimedLiveEvent {
+    pub fn event(&self) -> Option<LiveEvent> {
+        LiveEvent::decode(self.kind, self.pitch, self.a, self.velocity)
+    }
+}
+
+/// A track's pending live events, sorted by offset (equal offsets keep arrival order). Fixed storage, allocated
+/// with the track on the control thread (on the heap: the worklet's stack is 64 KiB): queueing, rendering and
+/// dropping events never allocate, and a successor takes the queue by swapping the pointer.
+#[derive(Clone, Debug)]
+pub(crate) struct LiveQueue {
+    events: Box<[TimedLiveEvent]>,
+    len: usize,
+}
+
+impl Default for LiveQueue {
+    fn default() -> Self {
+        Self { events: vec![TimedLiveEvent::default(); LIVE_QUEUE].into_boxed_slice(), len: 0 }
+    }
+}
+
+impl LiveQueue {
+    /// Queues `e` after every queued event at or before its offset. False when full.
+    pub fn push(&mut self, e: TimedLiveEvent) -> bool {
+        let len = self.len;
+        let Some(queued) = self.events.get_mut(..=len) else { return false };
+        let at = queued.get(..len).map_or(0, |q| q.partition_point(|x| x.offset <= e.offset));
+        queued.copy_within(at..len, at + 1);
+        if let Some(slot) = queued.get_mut(at) {
+            *slot = e;
+        }
+        self.len += 1;
+        true
+    }
+
+    /// The events due in a block of `count` frames (offset < count), in order.
+    pub fn due(&self, count: u32) -> &[TimedLiveEvent] {
+        let queued = self.events.get(..self.len).unwrap_or(&[]);
+        queued.get(..queued.partition_point(|x| x.offset < count)).unwrap_or(&[])
+    }
+
+    /// After a block of `count` frames: its events are done, the rest move `count` frames closer.
+    pub fn advance(&mut self, count: u32) {
+        if self.len == 0 {
+            return;
+        }
+        let due = self.due(count).len();
+        self.events.copy_within(due..self.len, 0);
+        self.len -= due;
+        for e in self.events.iter_mut().take(self.len) {
+            e.offset -= count;
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
 }
 
 /// Built-in insert parameters follow automation every 32 frames, then glide (engine.cpp).
@@ -172,6 +278,8 @@ pub(crate) struct Track {
     bpm: f64,
     /// Voice / event overflows (diagnostics).
     pub overflows: u64,
+    /// Live events for the coming blocks, at their sample offsets (`queue_live`).
+    live: LiveQueue,
 }
 
 /// Value of a lane (in its units) at a project frame.
@@ -282,6 +390,7 @@ impl Track {
             cursors: Cursors::default(),
             bpm: p.bpm,
             overflows: 0,
+            live: LiveQueue::default(),
         };
         // A host-rendered source (the plan carries its node) needs no instrument here.
         let hosted = if t.source.kind == SourceKind::Audio { None } else { t.source.host };
@@ -487,6 +596,10 @@ impl Track {
         if self.same_source {
             self.source.take_from(&mut previous.source);
         }
+        // Live events still waiting for their offset play on the successor.
+        if previous.live.len() > 0 {
+            core::mem::swap(&mut self.live, &mut previous.live);
+        }
         for (i, origin) in self.insert_origin.iter().enumerate() {
             let (Some(from), Some(insert)) = (origin, self.inserts.get_mut(i)) else { continue };
             if let Some(old) = previous.inserts.get_mut(*from) {
@@ -525,39 +638,23 @@ impl Track {
         self.source.release_removed(&self.plan, &self.removed, frame, self.sample_rate);
     }
 
-    /// Live note-on (`duration` frames; UNLIMITED_FRAME until its note-off). Audio thread.
-    pub fn live_note_on(&mut self, pitch: i32, velocity: f32, duration: i64, id: i32) {
-        let mut overflows = 0;
-        self.source.spawn(
-            &self.plan,
-            pitch,
-            velocity,
-            duration,
-            duration,
-            id,
-            true,
-            self.sample_rate,
-            &mut overflows,
-        );
-        self.overflows += overflows;
-    }
-
-    pub fn live_note_off(&mut self, pitch: i32, id: i32) {
-        let mut overflows = 0;
-        self.source.note_off(&self.plan, pitch, id, self.sample_rate, &mut overflows);
-        self.overflows += overflows;
-    }
-
-    pub fn live_control(&mut self, controller: i32, value: i32) {
-        let mut overflows = 0;
-        self.source.control_change(&self.plan, controller, value, self.sample_rate, &mut overflows);
-        self.overflows += overflows;
-    }
-
-    pub fn live_all_notes_off(&mut self) {
-        let mut overflows = 0;
-        self.source.all_notes_off(&self.plan, self.sample_rate, &mut overflows);
-        self.overflows += overflows;
+    /// A live event `offset` frames after the start of this track's next render (audio thread): a built-in
+    /// instrument plays it at that sample (the source renders up to it, takes the event, renders on), a host
+    /// node (VST3, IEUM WAVE on the desktop) receives it with that offset through the host's `live` callback.
+    /// Returns false for tracks that play no live events (audio tracks, returns) and when the queue is full.
+    pub fn queue_live(&mut self, event: LiveEvent, offset: u32) -> bool {
+        if !self.source.is_instrument() && self.host_source.is_none() {
+            return false;
+        }
+        // A block-start event with nothing waiting plays now, in command order: before a replacement, reset or
+        // seek queued behind it, exactly like a block-boundary live event of the C++ engine.
+        if offset == 0 && self.live.len() == 0 && self.source.is_instrument() {
+            let mut overflows = 0;
+            apply_live(&mut self.source, &self.plan, event, self.sample_rate, &mut overflows);
+            self.overflows += overflows;
+            return true;
+        }
+        self.live.push(event.encode(offset.min(MAX_LIVE_OFFSET)))
     }
 
     /// One block of `count` frames at project frame `frame` (engine.cpp `TrackRuntime::render`). The graph
@@ -581,6 +678,7 @@ impl Track {
             output_delay,
             source,
             cursors,
+            live,
             ..
         } = self;
         let Some(buf) = buffer.get_mut(..n) else { return };
@@ -592,6 +690,15 @@ impl Track {
                     t.fill(0.0);
                 }
             }
+            // A disabled instrument still follows its live notes' ends and controllers (it plays nothing).
+            let mut overflows = 0;
+            for e in live.due(count) {
+                if let Some(event) = e.event() {
+                    apply_live(source, plan, event, self.sample_rate, &mut overflows);
+                }
+            }
+            live.advance(count);
+            self.overflows += overflows;
             return;
         }
         // Offline engines keep reading frozen windows after the project end: that part is the frozen tail.
@@ -611,6 +718,8 @@ impl Track {
         if self.host_source.is_some()
             && let Some(host) = io.host
         {
+            // The host node takes this block's live events at their sample offsets (VST3 `sampleOffset`).
+            host.live(index, live.due(count));
             host.source(index, buf);
         }
         if source.is_instrument() {
@@ -630,20 +739,49 @@ impl Track {
                 }
             }
             let mut overflows = 0;
-            source.render(
-                plan,
-                cursors,
-                buf,
-                frame,
-                count,
-                playing,
-                self.project_length,
-                self.sample_rate,
-                tempo.unwrap_or(self.bpm),
-                &mut overflows,
-            );
+            let bpm = tempo.unwrap_or(self.bpm);
+            // Live events split the source's block at their offsets: each lands on its exact sample, with
+            // the same voice code a block-start event uses (a block without live events renders in one piece).
+            let mut cursor = 0u32;
+            for e in live.due(count) {
+                if e.offset > cursor
+                    && let Some(part) = buf.get_mut(cursor as usize * 2..e.offset as usize * 2)
+                {
+                    source.render(
+                        plan,
+                        cursors,
+                        part,
+                        frame + i64::from(cursor),
+                        e.offset - cursor,
+                        playing,
+                        self.project_length,
+                        self.sample_rate,
+                        bpm,
+                        &mut overflows,
+                    );
+                    cursor = e.offset;
+                }
+                if let Some(event) = e.event() {
+                    apply_live(source, plan, event, self.sample_rate, &mut overflows);
+                }
+            }
+            if let Some(part) = buf.get_mut(cursor as usize * 2..n) {
+                source.render(
+                    plan,
+                    cursors,
+                    part,
+                    frame + i64::from(cursor),
+                    count - cursor,
+                    playing,
+                    self.project_length,
+                    self.sample_rate,
+                    bpm,
+                    &mut overflows,
+                );
+            }
             self.overflows += overflows;
         }
+        live.advance(count);
         // The monitored input: a return's send mix (always "monitored", stereo), a routed track's route input,
         // or the device input the host adds.
         let monitored = io.monitored(index);
@@ -826,26 +964,6 @@ impl Track {
         }
     }
 
-    /// A live event for this track (audio thread): a built-in instrument plays it through its voices
-    /// (instrument.rs). Audio tracks and host-rendered instruments (the host plays those) return false.
-    pub fn live_event(&mut self, event: LiveEvent) -> bool {
-        if !self.source.is_instrument() {
-            return false;
-        }
-        match event {
-            LiveEvent::NoteOn { pitch, velocity, id } => {
-                self.live_note_on(i32::from(pitch), velocity, instrument::UNLIMITED_FRAME, id);
-            }
-            LiveEvent::Preview { pitch, velocity, frames } => {
-                self.live_note_on(i32::from(pitch), velocity, i64::from(frames), -2);
-            }
-            LiveEvent::NoteOff { pitch, id } => self.live_note_off(i32::from(pitch), id),
-            LiveEvent::Control { controller, value } => self.live_control(i32::from(controller), value),
-            LiveEvent::AllNotesOff => self.live_all_notes_off(),
-        }
-        true
-    }
-
     /// Whether this track joins the master sum (C++ `TrackTimeline::directOut`).
     pub fn direct_out(&self) -> bool {
         self.plan.direct_out
@@ -854,6 +972,34 @@ impl Track {
     /// This block's output (after `render`).
     pub fn mix(&self, count: u32) -> &[f32] {
         self.buffer.get(..count as usize * 2).unwrap_or(&[])
+    }
+}
+
+/// One live event into a built-in instrument now (instrument.rs; C++ `spawn` / `noteOff` / `controlChange` /
+/// `allNotesOff` of a live event): notes ring until their note-off (UNLIMITED_FRAME), previews for their frames.
+fn apply_live(
+    source: &mut Source,
+    plan: &TrackPlan,
+    event: LiveEvent,
+    sample_rate: f64,
+    overflows: &mut u64,
+) {
+    match event {
+        LiveEvent::NoteOn { pitch, velocity, id } => {
+            let length = instrument::UNLIMITED_FRAME;
+            source.spawn(plan, i32::from(pitch), velocity, length, length, id, true, sample_rate, overflows);
+        }
+        LiveEvent::Preview { pitch, velocity, frames } => {
+            let length = i64::from(frames);
+            source.spawn(plan, i32::from(pitch), velocity, length, length, -2, true, sample_rate, overflows);
+        }
+        LiveEvent::NoteOff { pitch, id } => {
+            source.note_off(plan, i32::from(pitch), id, sample_rate, overflows)
+        }
+        LiveEvent::Control { controller, value } => {
+            source.control_change(plan, i32::from(controller), value, sample_rate, overflows);
+        }
+        LiveEvent::AllNotesOff => source.all_notes_off(plan, sample_rate, overflows),
     }
 }
 

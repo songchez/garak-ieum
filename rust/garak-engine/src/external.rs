@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use core::ffi::c_void;
 
 use crate::insert::Insert;
+use crate::track::TimedLiveEvent;
 
 /// External source: fill `stereo` (interleaved, `frames` frames, zeroed) with track `track`'s instrument
 /// output for the current block (the host knows the block's position and transport).
@@ -17,6 +18,11 @@ pub type InsertFn =
 /// Monitored device input: add track `track`'s physical input into `stereo`. Returns 1 when the input is a
 /// stereo pair, 0 for mono (duplicated to both channels) or an unopened input (nothing added).
 pub type InputFn = unsafe extern "C" fn(user: *mut c_void, track: u32, stereo: *mut f32, frames: u32) -> i32;
+/// Live events for a host-rendered instrument (VST3, IEUM WAVE), called right before its `source` of the same
+/// block with the block's `count` events in offset order (`offset` < the block's frames: the plug-in's
+/// `sampleOffset`). Not called for a block without live events for that track.
+pub type LiveFn =
+    unsafe extern "C" fn(user: *mut c_void, track: u32, events: *const TimedLiveEvent, count: u32);
 
 /// The host's callbacks (`#[repr(C)]`, `GarakRsHostNodes` in garak_engine.h). Each callback may run on any
 /// render thread, concurrently for different tracks, never twice at once for one track.
@@ -27,6 +33,8 @@ pub struct HostCallbacks {
     pub source: Option<SourceFn>,
     pub insert: Option<InsertFn>,
     pub input: Option<InputFn>,
+    /// Null: host-rendered instruments get no live events from the graph.
+    pub live: Option<LiveFn>,
 }
 
 // SAFETY: the host contract above: the callbacks are thread-safe for distinct tracks, and `user` is only
@@ -49,6 +57,15 @@ impl HostCallbacks {
             unsafe {
                 f(self.user, track as u32, u32::from(insert), stereo.as_mut_ptr(), (stereo.len() / 2) as u32)
             }
+        }
+    }
+
+    pub(crate) fn live(&self, track: usize, events: &[TimedLiveEvent]) {
+        if let Some(f) = self.live
+            && !events.is_empty()
+        {
+            // SAFETY: `events` is live and unchanged for the duration of the call.
+            unsafe { f(self.user, track as u32, events.as_ptr(), events.len() as u32) }
         }
     }
 

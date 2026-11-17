@@ -78,6 +78,20 @@ fn instruments_never_touch_the_heap() {
         c.control_change(track, 64, 0).unwrap();
     }
     render(&mut r, &mut out, 10);
+    // Live events at sample offsets (docs/RUST_ENGINE.md 5.8): inside a render call, past it, many at once on every
+    // instrument track; some still waiting when the replacements below hand the queue over.
+    use garak_engine::LiveEvent;
+    for track in 0..11u32 {
+        for (k, offset) in [3u32, 77, 300, 511, 900, 2000].into_iter().enumerate() {
+            let pitch = 60 + k as u8;
+            c.live_at(track, LiveEvent::NoteOn { pitch, velocity: 0.7, id: 40 + k as i32 }, offset).unwrap();
+            c.live_at(track, LiveEvent::Control { controller: 129, value: offset as i32 }, offset + 1)
+                .unwrap();
+            c.live_at(track, LiveEvent::NoteOff { pitch, id: 40 + k as i32 }, offset + 600).unwrap();
+        }
+        c.live_at(track, LiveEvent::Preview { pitch: 72, velocity: 0.5, frames: 900 }, 4000).unwrap();
+    }
+    render(&mut r, &mut out, 3);
     // Knob edits and note edits: track replacements that keep their voices.
     let mut edit = plan.clone();
     edit.revision = 2;

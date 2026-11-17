@@ -70,12 +70,14 @@ class NoteRouter {
     } else if (type == 0xB0 && (data1 == 120 || data1 == 123)) {
       for (auto& a : active_) if (a.used && a.source == source && a.channel == channel) off(a, offset, emit);
       for (auto& down : pedal_) down = false;
-    } else if ((type == 0xB0 || type == 0xE0 || type == 0xD0 || type == 0xC0) && table) {
+    } else if ((type == 0xB0 || type == 0xE0 || type == 0xD0 || type == 0xA0 || type == 0xC0) && table) {
       // Controllers, pitch bend, channel pressure and program change go to every track hearing this input
       // (once per track). CC64 is the sustain pedal (docs/SUSTAIN_PEDAL.md): built-ins defer note-offs.
       // Pitch bend/pressure/mod wheel drive built-in voices; VST3 receives everything (docs/MIDI_CONTROLLERS.md).
-      const auto d1 = static_cast<std::uint8_t>(data1 & 0x7F), d2 = static_cast<std::uint8_t>(data2 & 0x7F);
-      const auto out = static_cast<std::uint8_t>(type);
+      // Poly key pressure plays as channel pressure (the instruments have one pressure per track).
+      const bool poly = type == 0xA0;
+      const auto d1 = static_cast<std::uint8_t>((poly ? data2 : data1) & 0x7F), d2 = static_cast<std::uint8_t>(data2 & 0x7F);
+      const auto out = static_cast<std::uint8_t>(poly ? 0xD0 : type);
       for (std::size_t i = 0; i < table->routes.size(); ++i) {
         const auto& route = table->routes[i];
         if (!route.accepts(source, channel)) continue;
@@ -86,7 +88,7 @@ class NoteRouter {
           if (type == 0xB0 && d1 == sustainCc) pedal_[route.track] = d2 >= 64;
           if (type == 0xE0) bent_[route.track] = !(d1 == 0 && d2 == 64);
         }
-        emit(LiveMidiEvent{offset, route.track, out, d1, type == 0xD0 || type == 0xC0 ? std::uint8_t(0) : d2, -1});
+        emit(LiveMidiEvent{offset, route.track, out, d1, out == 0xD0 || out == 0xC0 ? std::uint8_t(0) : d2, -1});
       }
     }
   }

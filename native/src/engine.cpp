@@ -295,6 +295,9 @@ struct HostTrack {
   std::array<LivePluginNote,maxVoices> pluginNotes{};
   // Live sustain pedal (CC64 from controlChange): the VST3 instrument gets the controller itself.
   bool livePedal=false;
+  // Sample offset of the live event being applied (the Rust graph's host live node; 0 otherwise): the plug-in
+  // events it queues land there in the next renderSource.
+  std::uint32_t liveOffset=0;
   [[nodiscard]] bool vst3()const noexcept{return instrument!=nullptr;}
   std::size_t nextNote=0,nextEvent=0;
   std::uint32_t latency=0; // VST3 instrument + VST3 inserts (host nodes only).
@@ -370,17 +373,17 @@ struct HostTrack {
     if(live){
       auto slot=std::find_if(pluginNotes.begin(),pluginNotes.end(),[](const LivePluginNote&n){return !n.active;});
       if(slot==pluginNotes.end()){++overflows;return;}
-      *slot={true,id,static_cast<std::uint8_t>(pitch),duration};
+      *slot={true,id,static_cast<std::uint8_t>(pitch),duration+liveOffset};
     }
     // Chased timeline notes already have an exact scheduled note-off. Only live/preview notes need a
     // callback-local countdown.
-    pendingEvents[pendingCount++]={PluginEvent::Type::NoteOn,0,id,static_cast<std::uint8_t>(pitch),0,std::min(1.f,velocity),0,live};
+    pendingEvents[pendingCount++]={PluginEvent::Type::NoteOn,liveOffset,id,static_cast<std::uint8_t>(pitch),0,std::min(1.f,velocity),0,live};
   }
   // Live MIDI controller (docs/MIDI_CONTROLLERS.md): the VST3 instrument receives every controller.
   void controlChange(int controller,int value,std::uint64_t& overflows)noexcept {
     if(!instrument)return;
     if(controller==bendRangeController)return; // Meta controller of the built-in sources only.
-    if(pendingCount<pendingEvents.size()){PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=static_cast<std::uint32_t>(controller);e.value=normalizedControllerValue(controller,value);e.audition=true;pendingEvents[pendingCount++]=e;}
+    if(pendingCount<pendingEvents.size()){PluginEvent e{};e.type=PluginEvent::Type::Controller;e.offset=liveOffset;e.parameterId=static_cast<std::uint32_t>(controller);e.value=normalizedControllerValue(controller,value);e.audition=true;pendingEvents[pendingCount++]=e;}
     else ++overflows;
     if(controller==sustainController)livePedal=pedalDown(value);
   }
@@ -389,13 +392,14 @@ struct HostTrack {
     bool cancelledPending=false;
     for(std::size_t i=0;i<pendingCount;){
       const auto&e=pendingEvents[i];
-      if(e.type==PluginEvent::Type::NoteOn&&e.audition&&(id>=0?e.noteId==id:e.pitch==pitch)){
+      // A note-off at the same sample as its still pending note-on cancels it; a later one follows it.
+      if(e.type==PluginEvent::Type::NoteOn&&e.audition&&e.offset>=liveOffset&&(id>=0?e.noteId==id:e.pitch==pitch)){
         std::move(pendingEvents.begin()+static_cast<std::ptrdiff_t>(i+1),pendingEvents.begin()+static_cast<std::ptrdiff_t>(pendingCount),pendingEvents.begin()+static_cast<std::ptrdiff_t>(i));
         --pendingCount;cancelledPending=true;
       }else ++i;
     }
     if(!cancelledPending){
-      if(pendingCount<pendingEvents.size())pendingEvents[pendingCount++]={PluginEvent::Type::NoteOff,0,id,static_cast<std::uint8_t>(pitch),0,0,0,true};
+      if(pendingCount<pendingEvents.size())pendingEvents[pendingCount++]={PluginEvent::Type::NoteOff,liveOffset,id,static_cast<std::uint8_t>(pitch),0,0,0,true};
       else{++overflows;instrument->requestReset();pendingCount=0;for(auto&n:pluginNotes)n.active=false;}
     }
     for(auto& n:pluginNotes)if(n.active&&(id>=0?n.id==id:n.pitch==pitch))n.active=false;
@@ -839,9 +843,12 @@ struct RenderEngine::Impl {
   std::array<LiveMidiEvent,maxLiveMidi>liveMidi{};std::uint32_t liveMidiCount=0,liveMidiNext=0;
   struct RenderedSpan{std::uint32_t cursor=0,count=0;std::int64_t position=0;bool playing=false;};
   std::array<RenderedSpan,maxRendered>rendered{};std::uint32_t renderedCount=0;
-  // Applies queued live events due at `cursor`; returns frames until the next one.
+  // Applies queued live events; returns frames until the next one. The Rust graph takes every event of the call at
+  // once, each at its sample offset from this sub-block (docs/RUST_ENGINE.md 5.8; one past the call lands on the
+  // next call's first frame), so blocks are not split while a graph renders.
   std::uint32_t applyLiveMidi(std::uint32_t cursor,std::uint32_t frames)noexcept {
-    while(liveMidiNext<liveMidiCount&&liveMidi[liveMidiNext].offset<=cursor) {
+    const bool viaRust=rustRenders();
+    while(liveMidiNext<liveMidiCount&&(viaRust||liveMidi[liveMidiNext].offset<=cursor)) {
       auto&ev=liveMidi[liveMidiNext];
       if(active&&ev.track<active->impl_->tracks.size()) {
         auto&t=active->impl_->tracks[ev.track];
@@ -849,21 +856,16 @@ struct RenderEngine::Impl {
         if(!own(t))break;
         markLive(t);
         const auto type=ev.status&0xF0;
-        if(type==0x90&&ev.data2>0)rustLive(ev.track,0,ev.data1&0x7F,ev.noteId,static_cast<float>(ev.data2&0x7F)/127.f);
-        else if(type==0x80||type==0x90)rustLive(ev.track,1,ev.data1&0x7F,ev.noteId,0);
-        else if(type==0xB0&&(ev.data1==120||ev.data1==123))rustLive(ev.track,2,0,0,0);
-        else if(type==0xB0)rustLive(ev.track,3,ev.data1&0x7F,ev.data2&0x7F,0);
-        else if(type==0xE0)rustLive(ev.track,3,pitchBendController,(((ev.data2&0x7F)<<7)|(ev.data1&0x7F))-8192,0);
-        else if(type==0xD0)rustLive(ev.track,3,channelPressureController,ev.data1&0x7F,0);
-        else if(type==0xC0)rustLive(ev.track,3,programChangeController,ev.data1&0x7F,0);
-        if(type==0x90&&ev.data2>0)t.spawn(ev.data1&0x7F,static_cast<float>(ev.data2&0x7F)/127.f,unlimitedFrame,unlimitedFrame,ev.noteId,true,voiceOverflows);
-        else if(type==0x80||type==0x90)t.noteOff(ev.data1&0x7F,ev.noteId,voiceOverflows);
-        else if(type==0xB0&&(ev.data1==120||ev.data1==123))t.allNotesOff(voiceOverflows);
+        // The Rust graph plays it: built-in instruments on that sample, a VST3 host node through rustLiveNode.
+        const auto at=std::min(ev.offset,frames),offset=at>cursor?at-cursor:0u;
+        if(type==0x90&&ev.data2>0)rustLive(ev.track,0,ev.data1&0x7F,ev.noteId,static_cast<float>(ev.data2&0x7F)/127.f,offset);
+        else if(type==0x80||type==0x90)rustLive(ev.track,1,ev.data1&0x7F,ev.noteId,0,offset);
+        else if(type==0xB0&&(ev.data1==120||ev.data1==123))rustLive(ev.track,2,0,0,0,offset);
         // Controllers, pitch bend, channel pressure, program change.
-        else if(type==0xB0)t.controlChange(ev.data1&0x7F,ev.data2&0x7F,voiceOverflows);
-        else if(type==0xE0)t.controlChange(pitchBendController,(((ev.data2&0x7F)<<7)|(ev.data1&0x7F))-8192,voiceOverflows);
-        else if(type==0xD0)t.controlChange(channelPressureController,ev.data1&0x7F,voiceOverflows);
-        else if(type==0xC0)t.controlChange(programChangeController,ev.data1&0x7F,voiceOverflows);
+        else if(type==0xB0)rustLive(ev.track,3,ev.data1&0x7F,ev.data2&0x7F,0,offset);
+        else if(type==0xE0)rustLive(ev.track,3,pitchBendController,(((ev.data2&0x7F)<<7)|(ev.data1&0x7F))-8192,0,offset);
+        else if(type==0xD0)rustLive(ev.track,3,channelPressureController,ev.data1&0x7F,0,offset);
+        else if(type==0xC0)rustLive(ev.track,3,programChangeController,ev.data1&0x7F,0,offset);
       }
       ++liveMidiNext;
     }
@@ -943,13 +945,14 @@ struct RenderEngine::Impl {
     Command c;c.kind=Kind::RustSync;c.frame=static_cast<std::int64_t>(rust?rust->ticket():0);
     return enqueue(c);
   }
-  // A live event for the Rust graph's track `track` (callback, after `own` of that track): its built-in instrument
-  // plays it (kind 0 note on (a = id), 1 note off (a = id), 2 all notes off, 3 controller (pitch = controller,
-  // a = value), 4 preview (a = frames)). The host track gets the event too: a VST3 instrument plays it.
-  void rustLive(std::uint32_t track,std::uint32_t kind,int pitch,int a,float velocity)noexcept {
+  // A live event for the Rust graph's track `track` (callback, after `own` of that track) `offset` frames into the
+  // block about to render: its built-in instrument plays it on that sample, a VST3 host node gets it through
+  // rustLiveNode with that offset (kind 0 note on (a = id), 1 note off (a = id), 2 all notes off, 3 controller
+  // (pitch = controller, a = value), 4 preview (a = frames)).
+  void rustLive(std::uint32_t track,std::uint32_t kind,int pitch,int a,float velocity,std::uint32_t offset=0)noexcept {
     if(!rustRenders())return;
     rustPrepare(); // The event lands on the Rust graph this block renders.
-    garak_rs_engine_live(rust->handle,track,kind,pitch,a,velocity);
+    garak_rs_engine_live_at(rust->handle,track,kind,pitch,a,velocity,offset);
   }
   // Callback: the Rust graph applied the commands this shell allowed and could take the next graph now (no
   // IEUM WAVE table crossfade running).
@@ -982,6 +985,25 @@ struct RenderEngine::Impl {
     if(track>=g.tracks.size())return;
     auto&t=g.tracks[track];
     t.renderSource(stereo,b.position,frames,b.playing,*b.context,t.taskOverflows);
+  }
+  // The block's live events of a host-rendered instrument, right before rustSourceNode: they enter its plug-in
+  // event queue at their sample offsets (the VST3 sampleOffset; docs/RUST_ENGINE.md 5.8).
+  static void rustLiveNode(void*self,std::uint32_t track,const GarakRsLiveEvent*events,std::uint32_t count)noexcept {
+    const auto&b=*static_cast<RustScope*>(self);auto&g=*b.graph;
+    if(track>=g.tracks.size()||!events)return;
+    auto&t=g.tracks[track];
+    for(std::uint32_t i=0;i<count;++i) {
+      const auto&ev=events[i];t.liveOffset=ev.offset;
+      switch(ev.kind) {
+        case 0:t.spawn(ev.pitch,ev.velocity,unlimitedFrame,unlimitedFrame,ev.a,true,t.taskOverflows);break;
+        case 1:t.noteOff(ev.pitch,ev.a,t.taskOverflows);break;
+        case 2:t.allNotesOff(t.taskOverflows);break;
+        case 3:t.controlChange(ev.pitch,ev.a,t.taskOverflows);break;
+        case 4:t.spawn(ev.pitch,ev.velocity,ev.a,ev.a,-2,true,t.taskOverflows);break;
+        default:break;
+      }
+    }
+    t.liveOffset=0;
   }
   static void rustInsertNode(void*self,std::uint32_t track,std::uint32_t insert,float*stereo,std::uint32_t frames)noexcept {
     const auto&b=*static_cast<RustScope*>(self);auto&g=*b.graph;
@@ -1043,7 +1065,7 @@ struct RenderEngine::Impl {
       t.reset(position,audible,true,t.taskOverflows);garak_rs_engine_reset_track(rust->handle,static_cast<std::uint32_t>(i),position,audible?1:0,1);++t.taskResyncs;
     }
     rustScope={this,&p,&context,input,position,cursor,channels,audible};
-    rustNodes.user=&rustScope;rustNodes.source=&rustSourceNode;rustNodes.insert=&rustInsertNode;rustNodes.input=&rustInputNode;
+    rustNodes.user=&rustScope;rustNodes.source=&rustSourceNode;rustNodes.insert=&rustInsertNode;rustNodes.input=&rustInputNode;rustNodes.live=&rustLiveNode;
     GarakRsBlock b{};b.position=position;b.playing=audible?1:0;b.allowed=rustAllowed;b.master=1;
     for(std::size_t i=0;i<monitor.size();++i)b.monitor[i]=monitor[i];
     b.nodes=&rustNodes;b.ahead=rustAhead.data();b.ahead_count=static_cast<std::uint32_t>(std::min<std::size_t>(p.tracks.size(),rustAhead.size()));
@@ -1074,7 +1096,7 @@ struct RenderEngine::Impl {
   float renderOwn(const PreparedProject::Impl&g,std::uint32_t index,std::int64_t frame,std::uint32_t count,bool playing,
                   const ProcessContext&context,float*out)noexcept {
     RustScope scope{this,const_cast<PreparedProject::Impl*>(&g),&context,nullptr,frame,0,0,playing};
-    const GarakRsHostNodes nodes{&scope,&rustSourceNode,&rustInsertNode,&rustInputNode};
+    const GarakRsHostNodes nodes{&scope,&rustSourceNode,&rustInsertNode,&rustInputNode,&rustLiveNode};
     float peak=0;const float*mix=garak_rs_engine_render_ahead(rust->handle,index,frame,count,playing?1:0,&nodes,&peak);
     if(mix)std::copy_n(mix,static_cast<std::size_t>(count)*2,out);else std::fill_n(out,static_cast<std::size_t>(count)*2,0.f);
     return peak;
@@ -1333,12 +1355,10 @@ struct RenderEngine::Impl {
           // live notes then start on time from the callback-owned state.
           if(!own(t)){deferred=c;return;}
           markLive(t);
+          // Live commands carry no device timestamp: they start the block (the Rust graph takes them, host nodes
+          // included).
           rustLive(c.track,c.kind==Kind::NoteOff?1:c.kind==Kind::AllNotesOff?2:c.kind==Kind::Control?3:c.kind==Kind::Preview?4:0,
                    c.pitch,c.kind==Kind::Control?static_cast<int>(c.value):c.kind==Kind::Preview?static_cast<int>(c.frame):c.noteId,c.value);
-          if(c.kind==Kind::NoteOff)t.noteOff(c.pitch,c.noteId,voiceOverflows);
-          else if(c.kind==Kind::AllNotesOff)t.allNotesOff(voiceOverflows);
-          else if(c.kind==Kind::Control)t.controlChange(c.pitch,static_cast<int>(c.value),voiceOverflows);
-          else t.spawn(c.pitch,c.value,c.frame,c.frame,c.noteId,true,voiceOverflows);
           break;
         }
         case Kind::Monitor: {

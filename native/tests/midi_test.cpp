@@ -115,6 +115,9 @@ void routingAndActiveNotes() {
   check(events.size() == 1 && events[0].track == 2 && events[0].status == 0xE0 && events[0].data1 == 0x7F && events[0].data2 == 0x7F && events[0].offset == 5 && router.bent(2), "Pitch bend not routed once per track");
   events.clear(); router.handle(1, 0xD1, 90, 0, &twice, 0, Collect{&events}); router.handle(1, 0xC0, 7, 0, &twice, 0, Collect{&events});
   check(events.size() == 2 && events[0].status == 0xD0 && events[0].data1 == 90 && events[1].status == 0xC0 && events[1].data1 == 7, "Channel pressure/program change not routed");
+  // Poly key pressure plays as the track's channel pressure, at its sample offset.
+  events.clear(); router.handle(1, 0xA1, 60, 77, &twice, 9, Collect{&events});
+  check(events.size() == 1 && events[0].track == 2 && events[0].status == 0xD0 && events[0].data1 == 77 && events[0].data2 == 0 && events[0].offset == 9, "Poly aftertouch not routed as pressure");
   events.clear(); router.handle(1, 0xE0, 0, 64, &twice, 0, Collect{&events}); check(events.size() == 1 && !router.bent(2), "Centred bend still marked bent");
   router.handle(1, 0xE0, 0, 0, &twice, 0, Collect{&events});
   // Losing the route re-centres a held bend on that track.

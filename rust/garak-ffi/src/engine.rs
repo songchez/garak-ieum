@@ -491,10 +491,11 @@ pub unsafe extern "C" fn garak_rs_engine_render_host(
     r.render_host(out, &info, peaks, parallel.as_ref());
 }
 
-/// Audio thread, at a block boundary: a live event for track `track` that the shell applies itself (its live
-/// MIDI ring and live commands). `kind`: 0 note on (`a` = note id), 1 note off (`a` = note id), 2 all notes off,
-/// 3 controller (`pitch` = controller number, `a` = value), 4 preview (`a` = frames). Returns 1 when a built-in
-/// instrument played it, 0 when no track did, -1 for an invalid event.
+/// Audio thread, between blocks: a live event for track `track` that the shell applies itself (its live MIDI
+/// ring and live commands) at the start of the track's next block. `kind`: 0 note on (`a` = note id), 1 note off
+/// (`a` = note id), 2 all notes off, 3 controller (`pitch` = controller number, `a` = value), 4 preview (`a` =
+/// frames). Returns 1 when a track takes it (a built-in instrument, or a host node through `nodes->live`), 0 when
+/// none does, -1 for an invalid event.
 ///
 /// # Safety
 /// As `garak_rs_engine_render`; the track is not rendering ahead.
@@ -507,21 +508,33 @@ pub unsafe extern "C" fn garak_rs_engine_live(
     a: i32,
     velocity: f32,
 ) -> i32 {
-    use garak_engine::LiveEvent;
+    // SAFETY: caller contract.
+    unsafe { garak_rs_engine_live_at(e, track, kind, pitch, a, velocity, 0) }
+}
+
+/// [`garak_rs_engine_live`] `offset` frames into the track's next block (the device MIDI's sample offset; an
+/// offset past that block lands in a later one, at the same distance from this block's start; at most
+/// `GARAK_RS_MAX_LIVE_OFFSET`). Built-in instruments start the event on that exact sample; host nodes get it with
+/// that offset through `nodes->live` (VST3 `sampleOffset`).
+///
+/// # Safety
+/// As `garak_rs_engine_render`; the track is not rendering ahead.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_live_at(
+    e: *mut GarakRsEngine,
+    track: u32,
+    kind: u32,
+    pitch: i32,
+    a: i32,
+    velocity: f32,
+    offset: u32,
+) -> i32 {
     let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return -1 };
-    let note = u8::try_from(pitch).unwrap_or(u8::MAX);
-    let event = match kind {
-        0 => LiveEvent::NoteOn { pitch: note, velocity, id: a },
-        1 => LiveEvent::NoteOff { pitch: note, id: a },
-        2 => LiveEvent::AllNotesOff,
-        3 => LiveEvent::Control { controller: u16::try_from(pitch).unwrap_or(u16::MAX), value: a },
-        4 => LiveEvent::Preview { pitch: note, velocity, frames: u32::try_from(a).unwrap_or(0) },
-        _ => return -1,
-    };
-    if !event.is_valid() {
+    let Some(event) = garak_engine::LiveEvent::decode(kind, pitch, a, velocity) else { return -1 };
+    if !event.is_valid() || offset > garak_engine::MAX_LIVE_OFFSET {
         return -1;
     }
-    i32::from(r.host_live(track as usize, event))
+    i32::from(r.host_live(track as usize, event, offset))
 }
 
 /// Audio thread, after `garak_rs_engine_render_host`: the last block's input of routed track `track`

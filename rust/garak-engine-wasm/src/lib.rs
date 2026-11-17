@@ -74,7 +74,8 @@ fn state() -> &'static mut State {
     unsafe { &mut *STATE.0.get() }
 }
 
-pub const ABI_VERSION: u32 = 4;
+/// 5: `garak_engine_live_at` (live events at a sample offset, docs/RUST_ENGINE.md 5.8).
+pub const ABI_VERSION: u32 = 5;
 const ERROR_CODE: i32 = -1;
 const NO_ENGINE: &str = "No engine; call garak_engine_create";
 
@@ -579,6 +580,21 @@ pub extern "C" fn garak_engine_max_taps() -> u32 {
 /// Returns 0 or -1 (control call; the worklet runs it between quanta).
 #[unsafe(no_mangle)]
 pub extern "C" fn garak_engine_live(track: u32, kind: u32, pitch: u32, value: f32, id: i32) -> i32 {
+    garak_engine_live_at(track, kind, pitch, value, id, 0)
+}
+
+/// `garak_engine_live` `offset` frames into the next render call (the worklet maps the main thread's target
+/// context frame to the quantum it renders; past that quantum the event lands in a later one at the same
+/// distance; at most `MAX_LIVE_OFFSET`): the event starts on that exact sample (docs/RUST_ENGINE.md 5.8).
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_engine_live_at(
+    track: u32,
+    kind: u32,
+    pitch: u32,
+    value: f32,
+    id: i32,
+    offset: u32,
+) -> i32 {
     let event = match kind {
         0 => LiveEvent::NoteOn { pitch: pitch.min(127) as u8, velocity: value.clamp(0.0, 1.0), id },
         1 => LiveEvent::NoteOff { pitch: pitch.min(127) as u8, id },
@@ -586,7 +602,8 @@ pub extern "C" fn garak_engine_live(track: u32, kind: u32, pitch: u32, value: f3
         3 => LiveEvent::Control { controller: pitch.min(u32::from(u16::MAX)) as u16, value: value as i32 },
         _ => return fail("Unknown live event"),
     };
-    status(with(|i| i.control.live(track, event).map(|_| ())))
+    let offset = offset.min(garak_engine::MAX_LIVE_OFFSET);
+    status(with(|i| i.control.live_at(track, event, offset).map(|_| ())))
 }
 
 /// The live input buffer of the next `garak_engine_render_planar_io` call (`max_block` frames of

@@ -237,16 +237,19 @@ impl Renderer {
         self.reset(chase, effects);
     }
 
-    /// A live event the shell applies itself (audio thread, at a block boundary; C++ live MIDI and its live
-    /// commands): the track's built-in instrument plays it now. Returns whether a track played it (the
-    /// snapshot counts it either way). The shell owns the track (it is not rendering ahead).
-    pub fn host_live(&mut self, track: usize, event: crate::track::LiveEvent) -> bool {
+    /// A live event the shell applies itself (audio thread, between blocks; C++ live MIDI and its live commands)
+    /// `offset` frames into the track's next block (its device-MIDI sample offset; later blocks when it is past
+    /// that one): the track's built-in instrument plays it on that sample, a host node gets it with that offset
+    /// through `HostCallbacks::live`. Returns whether a track takes it (the snapshot counts it either way). The
+    /// shell owns the track (it is not rendering ahead).
+    pub fn host_live(&mut self, track: usize, event: crate::track::LiveEvent, offset: u32) -> bool {
         let played = event.is_valid()
+            && offset <= crate::track::MAX_LIVE_OFFSET
             && self
                 .active
                 .as_mut()
                 .and_then(|g| g.tracks.get_mut(track))
-                .is_some_and(|t| t.live_event(event));
+                .is_some_and(|t| t.queue_live(event, offset));
         if played {
             self.live_played += 1;
         } else {

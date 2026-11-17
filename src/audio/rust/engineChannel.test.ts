@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AUDIO_SETTINGS } from '../../core/audioSettings'
 import { createAudioEngine } from '../engineFactory'
 import { WebAudioEngine } from '../WebAudioEngine'
-import { CommandRing, emptyStatus, METER_BYTES, MeterReader, MeterWriter, RING_BYTES, RING_LIVE, STATUS_BYTES, StatusReader, StatusWriter, type RingCommand } from './engineChannel'
+import { CommandRing, emptyStatus, liveControllerNumber, METER_BYTES, MeterReader, MeterWriter, RING_BYTES, RING_LIVE, STATUS_BYTES, StatusReader, StatusWriter, type RingCommand } from './engineChannel'
 import { RUST_ENGINE_STORAGE_KEY, rustEngineRequested } from './flag'
 import { RustWebAudioEngine } from './RustWebAudioEngine'
 
@@ -46,12 +46,26 @@ describe('engine worklet channel', () => {
     expect(next.peak).toBe(0) // the reader cleared it
   })
 
-  it('carries live note events in the ring with their track, kind, pitch and velocity', () => {
+  it('numbers live controllers the way the engine does: CCs, aftertouch, pitch bend, program', () => {
+    expect(liveControllerNumber('cc1')).toBe(1)
+    expect(liveControllerNumber('cc127')).toBe(127)
+    expect(liveControllerNumber('aftertouch')).toBe(128)
+    expect(liveControllerNumber('pitchBend')).toBe(129)
+    expect(liveControllerNumber('program')).toBe(130)
+    expect(liveControllerNumber('cc128')).toBeNull()
+    expect(liveControllerNumber('sustain')).toBeNull()
+  })
+
+  it('carries live note events in the ring with their track, kind, pitch, velocity and target context frame', () => {
     const r = ring()
-    expect(r.push({ command: RING_LIVE, frame: 42, afterSeq: 0, seq: 1, a: 3, b: 0, c: 60, d: 0.75 })).toBe(true)
+    expect(r.push({ command: RING_LIVE, frame: 42, afterSeq: 0, seq: 1, a: 3, b: 0, c: 60, d: 0.75, e: 9_000_123 })).toBe(true)
+    expect(r.push({ command: RING_LIVE, frame: 43, afterSeq: 1, seq: 2, a: 3, b: 1, c: 60 })).toBe(true)
     const seen: RingCommand[] = []
     r.drain(0, command => seen.push(command))
-    expect(seen).toEqual([{ command: RING_LIVE, frame: 42, afterSeq: 0, seq: 1, a: 3, b: 0, c: 60, d: 0.75 }])
+    expect(seen).toEqual([
+      { command: RING_LIVE, frame: 42, afterSeq: 0, seq: 1, a: 3, b: 0, c: 60, d: 0.75, e: 9_000_123 },
+      { command: RING_LIVE, frame: 43, afterSeq: 1, seq: 2, a: 3, b: 1, c: 60, d: 0, e: 0 },
+    ])
   })
 
   it('keeps unread meters (louder peak, lower gain) until the main thread reads them', () => {

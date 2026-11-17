@@ -157,6 +157,45 @@ describe.skipIf(!wasm)('web Rust engine host paths', () => {
     engine.destroy()
   })
 
+  it('starts a live note on its sample offset: inside the quantum or a later one (docs/RUST_ENGINE.md 5.8)', () => {
+    const onset = (offset: number) => {
+      const test = dryMixProject()
+      test.project.tracks = [{ ...createTrack('instrument', 'keys'), id: 'keys', clips: [] }]
+      const { engine } = realtime(test)
+      engine.live(0, 'noteOn', 60, 0.8, 1, offset)
+      const out = new Float32Array(BLOCK * 4)
+      for (let q = 0; q < 4; q += 1) out.set(engine.renderPlanar(BLOCK)[0], q * BLOCK)
+      expect(engine.liveCounts).toEqual({ played: 1, ignored: 0 })
+      engine.destroy()
+      return out.findIndex(v => v !== 0)
+    }
+    // The voice envelope starts from zero on the onset sample itself: the first sound is one frame later.
+    expect(onset(0)).toBe(1)
+    expect(onset(37)).toBe(38)
+    expect(onset(200)).toBe(201)
+  })
+
+  it('plays live pitch bend and aftertouch at their sample offsets', () => {
+    const run = (bend: boolean) => {
+      const test = dryMixProject()
+      test.project.tracks = [{ ...createTrack('instrument', 'keys'), id: 'keys', clips: [] }]
+      const { engine } = realtime(test)
+      engine.live(0, 'noteOn', 60, 0.8, 1)
+      if (bend) {
+        engine.live(0, 'control', 129, -4000, 0, 300) // pitch bend
+        engine.live(0, 'control', 128, 110, 0, 301) // channel aftertouch (vibrato)
+      }
+      const out = new Float32Array(BLOCK * 40)
+      for (let q = 0; q < 40; q += 1) out.set(engine.renderPlanar(BLOCK)[0], q * BLOCK)
+      expect(engine.liveCounts).toEqual({ played: bend ? 3 : 1, ignored: 0 })
+      engine.destroy()
+      return out
+    }
+    const plain = run(false), bent = run(true)
+    expect(bent.subarray(0, 300)).toEqual(plain.subarray(0, 300))
+    expect(bent.subarray(300)).not.toEqual(plain.subarray(300))
+  })
+
   it('applies a staged project.set (one track per step) like set, with kernels from a helper instance', () => {
     const test = effectsProject()
     const run = (staged: boolean) => {

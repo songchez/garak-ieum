@@ -25,11 +25,24 @@ const STATUS_SLOTS = 19
 export const STATUS_BYTES = 8 + STATUS_SLOTS * 8
 
 const RING_CAPACITY = 64
-const RING_RECORD = 8 // command, frame, afterSeq, seq, a, b, c, d
+const RING_RECORD = 9 // command, frame, afterSeq, seq, a, b, c, d, e
 export const RING_BYTES = 16 + RING_CAPACITY * RING_RECORD * 8
 
 /** Ring command codes: transport (garakEngineWasm ENGINE_TRANSPORT) and live events. */
 export const RING_LIVE = 16
+
+/**
+ * The engine's number for a live controller key (garak-engine ControlEvent numbering, docs/MIDI_CONTROLLERS.md):
+ * CC 0–127, 128 channel aftertouch, 129 pitch bend (-8192…8191), 130 program change; null for anything else.
+ */
+export function liveControllerNumber(key: string): number | null {
+  if (key === 'aftertouch') return 128
+  if (key === 'pitchBend') return 129
+  if (key === 'program') return 130
+  const cc = /^cc(\d{1,3})$/.exec(key)
+  const number = cc ? Number(cc[1]) : Number.NaN
+  return number >= 0 && number <= 127 ? number : null
+}
 
 /** Channels of the worklet's second output: route recording taps, stereo slots (garak_engine_max_taps). */
 export const TAP_CHANNELS = 16
@@ -211,7 +224,7 @@ export class MeterReader {
   }
 }
 
-export interface RingCommand { command: number; frame: number; afterSeq: number; seq: number; a?: number; b?: number; c?: number; d?: number }
+export interface RingCommand { command: number; frame: number; afterSeq: number; seq: number; a?: number; b?: number; c?: number; d?: number; e?: number }
 
 /** Single producer (main thread), single consumer (worklet). Indices only grow; capacity is a power of two. */
 export class CommandRing {
@@ -227,7 +240,7 @@ export class CommandRing {
     if (write - read >= RING_CAPACITY) return false
     const at = (write & (RING_CAPACITY - 1)) * RING_RECORD, r = this.records
     r[at] = command.command; r[at + 1] = command.frame; r[at + 2] = command.afterSeq; r[at + 3] = command.seq
-    r[at + 4] = command.a ?? 0; r[at + 5] = command.b ?? 0; r[at + 6] = command.c ?? 0; r[at + 7] = command.d ?? 0
+    r[at + 4] = command.a ?? 0; r[at + 5] = command.b ?? 0; r[at + 6] = command.c ?? 0; r[at + 7] = command.d ?? 0; r[at + 8] = command.e ?? 0
     Atomics.store(this.indices, 0, write + 1)
     return true
   }
@@ -238,7 +251,7 @@ export class CommandRing {
     const write = Atomics.load(this.indices, 0)
     while (read !== write) {
       const at = (read & (RING_CAPACITY - 1)) * RING_RECORD, r = this.records
-      const command = { command: r[at], frame: r[at + 1], afterSeq: r[at + 2], seq: r[at + 3], a: r[at + 4], b: r[at + 5], c: r[at + 6], d: r[at + 7] }
+      const command = { command: r[at], frame: r[at + 1], afterSeq: r[at + 2], seq: r[at + 3], a: r[at + 4], b: r[at + 5], c: r[at + 6], d: r[at + 7], e: r[at + 8] }
       if (command.afterSeq > applied) break
       apply(command)
       applied = Math.max(applied, command.seq)
@@ -255,7 +268,8 @@ export type EngineRequest =
   | { type: 'samples'; seq: number; json: Uint8Array }
   | { type: 'set' | 'patch'; seq: number; json: Uint8Array; binary: Uint8Array | null }
   | { type: 'transport'; seq: number; command: number; frame: number }
-  | { type: 'live'; seq: number; track: number; kind: number; pitch: number; value: number; id: number }
+  /** `at`: the context frame to sound at (0: the next quantum's first frame; liveTiming.ts). */
+  | { type: 'live'; seq: number; track: number; kind: number; pitch: number; value: number; id: number; at: number }
   | { type: 'kernels'; seq: number; kernels: { type: number; size: number; data: Float32Array }[] }
   | { type: 'metronome'; seq: number; on: boolean; gain: number; strokes: Float32Array[] | null }
   | { type: 'monitor'; seq: number; tracks: number[] }

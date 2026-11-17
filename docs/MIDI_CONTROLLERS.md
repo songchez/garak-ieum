@@ -101,6 +101,7 @@
 - `beat`는 음표 `start`와 같은 원본 박 좌표, 레인마다 박 순서대로 하나씩만 있어야 합니다. 레인당 최대 200,000개.
 - **서스테인은 마이그레이션하지 않았습니다.** CC64는 노트 오프를 미루는 특별한 의미가 있어 기존 `MidiClip.sustain`(스키마 13)에 그대로 두고, `controllers`에는 `cc64`를 넣을 수 없습니다. 피아노롤에서는 SUSTAIN 레인이 다른 레인과 같은 목록에 있고, 녹음·가져오기·내보내기는 CC64를 `sustain`으로 보냅니다. 따라서 스키마 13 파일은 바뀌지 않고 열리며, 스키마 15 이하 파일에 `controllers`나 `bendRange`가 있으면 거부합니다.
 - 네이티브 타임라인: 트랙의 `controls: [{frame, controller, value}]`(최대 100,000개). `controller` 0–127 CC, 128 채널 애프터터치, 129 피치 벤드(−8192…8191), 130 프로그램 체인지, 131 벤드 범위(반음, 내장 악기 전용). VST3는 CC64를 포함한 전부, 이음웨이브는 CC64·131을 뺀 전부, 내장 악기는 CC64·130을 뺀 전부와 131을 받습니다(페달은 노트 오프 위치에 이미 반영). 실시간 명령 `note.control`도 같은 번호와 값 범위를 받습니다.
+- **라이브 연주.** 장치 MIDI의 CC·피치 벤드·채널 애프터터치·프로그램 체인지는 노트와 같이 자기 샘플 오프셋에서 엔진 악기에 닿습니다(데스크톱 장치 시각, 웹 `timeStamp` → 컨텍스트 프레임; [RUST_ENGINE.md 5.8](RUST_ENGINE.md#58-라이브-midi-샘플-정확도)). 폴리 애프터터치(0xA0)는 그 키의 압력을 트랙의 채널 애프터터치로 연주하고, 녹음에는 받은 그대로 남습니다.
 
 ## 코드와 테스트
 
@@ -111,7 +112,7 @@
 - `rust/garak-engine/src/instrument.rs`, `rust/garak-dsp/src/instruments/`: 통합 Rust 엔진(0.3.2부터 데스크톱·웹 공통)의 내장 악기 벤드·비브라토·CC7/CC11 게인·chase
 - `src/audio/graph.ts`: Web Audio 대체 경로의 트랙별 컨트롤 노드(벤드 ConstantSource → 각 보이스 detune, 비브라토 LFO, CC7/CC11 게인), `src/audio/liveMidi.ts` 실시간 전달
 - `src/audio/native/timeline.ts`: 소스별 `controls` 컴파일
-- `native/src/engine.cpp`(셸: VST3/이음웨이브 호스트 노드 이벤트; 이전 C++ 경로의 내장 악기 벤드·비브라토·게인, chase), `native/src/vst3.cpp`(`IMidiMapping` 0–130), `rust/garak-engine/src/wave/processor.rs`(IEUM WAVE), `native/src/midi_routing.hpp`(0xE0·0xD0·0xC0 실시간 라우팅), `native/src/protocol.hpp`
+- `native/src/engine.cpp`(셸: VST3 호스트 노드 이벤트·라이브 MIDI 샘플 오프셋; 이전 C++ 경로의 내장 악기 벤드·비브라토·게인, chase), `native/src/vst3.cpp`(`IMidiMapping` 0–130), `rust/garak-engine/src/wave/processor.rs`(IEUM WAVE), `native/src/midi_routing.hpp`(0xE0·0xD0·0xA0(→ 채널 프레셔)·0xC0 실시간 라우팅, 샘플 오프셋), `native/src/protocol.hpp`
 - `src/components/ControllerLane.tsx`, `PianoRoll.tsx`: 레인 UI
 
 ```sh

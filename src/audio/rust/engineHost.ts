@@ -22,10 +22,11 @@ export async function loadGarakEngineModule(base = baseUrl(), fetchImpl: typeof 
     if (!response.ok) return null
     const module = await WebAssembly.compile(await response.arrayBuffer())
     // Checked without instantiating (every instance reserves its own memory): ABI 3 adds the count-in,
-    // meters, monitoring input, route taps, live events and staged updates; ABI 4 the built-in instruments.
+    // meters, monitoring input, route taps, live events and staged updates; ABI 4 the built-in instruments; ABI 5
+    // live events at sample offsets.
     // The worklet still verifies garak_engine_abi_version().
     const exports = new Set(WebAssembly.Module.exports(module).map(entry => entry.name))
-    return ENGINE_ABI_VERSION === 4 && exports.has('garak_engine_render_planar_io') && exports.has('garak_engine_stage') && exports.has('garak_engine_register_samples') ? module : null
+    return ENGINE_ABI_VERSION === 5 && exports.has('garak_engine_render_planar_io') && exports.has('garak_engine_stage') && exports.has('garak_engine_register_samples') && exports.has('garak_engine_live_at') ? module : null
   } catch {
     return null
   }
@@ -193,13 +194,17 @@ export class RustEngineNode {
     return this.send({ type: 'taps', seq: ++this.seq, tracks }).then(() => undefined)
   }
 
-  /** A live note/controller event for a track (graph index); next quantum through the shared ring. */
-  live(track: number, kind: LiveEventKind, pitch = 0, value = 0, id = 0): number {
+  /**
+   * A live note/controller event for a track (graph index) through the shared ring. `at`: the context frame it
+   * sounds at (liveTiming.ts; the worklet starts it on that sample of the quantum that holds it), 0 for the next
+   * quantum's first frame.
+   */
+  live(track: number, kind: LiveEventKind, pitch = 0, value = 0, id = 0, at = 0): number {
     const seq = ++this.seq
     if (this.disposed || this.fatal) return seq
     const code = LIVE_EVENT[kind]
-    if (this.ring?.push({ command: RING_LIVE, frame: id, afterSeq: seq - 1, seq, a: track, b: code, c: pitch, d: value })) return seq
-    void this.send({ type: 'live', seq, track, kind: code, pitch, value, id }).catch(() => undefined)
+    if (this.ring?.push({ command: RING_LIVE, frame: id, afterSeq: seq - 1, seq, a: track, b: code, c: pitch, d: value, e: at })) return seq
+    void this.send({ type: 'live', seq, track, kind: code, pitch, value, id, at }).catch(() => undefined)
     return seq
   }
 

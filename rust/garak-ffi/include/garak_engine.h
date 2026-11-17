@@ -76,12 +76,24 @@ int32_t garak_rs_engine_settled(GarakRsEngine* engine);
  * node's place in each chain, on any render thread (concurrently for different tracks, never twice at once for
  * one track). source: fill the zeroed `stereo` (interleaved, `frames`) with track `track`'s instrument. insert:
  * process `stereo` in place through plan insert `insert`. input: add a monitored track's device input into
- * `stereo`; return 1 for a stereo pair, 0 for mono (duplicated) or an unopened input (nothing added). */
+ * `stereo`; return 1 for a stereo pair, 0 for mono (duplicated) or an unopened input (nothing added).
+ * live (may be null): right before `source` of a host-rendered instrument, the block's live events for it in
+ * offset order (`offset` < the block's frames: the VST3 sampleOffset); not called for a block without any. */
+/* A live event (garak_rs_engine_live_at kinds): kind 0 note on (a = note id), 1 note off (a = note id), 2 all
+ * notes off, 3 controller (pitch = controller number, a = value), 4 preview (a = frames). */
+typedef struct GarakRsLiveEvent {
+  uint32_t offset;
+  uint32_t kind;
+  int32_t pitch;
+  int32_t a;
+  float velocity;
+} GarakRsLiveEvent;
 typedef struct GarakRsHostNodes {
   void* user;
   void (*source)(void* user, uint32_t track, float* stereo, uint32_t frames);
   void (*insert)(void* user, uint32_t track, uint32_t insert, float* stereo, uint32_t frames);
   int32_t (*input)(void* user, uint32_t track, float* stereo, uint32_t frames);
+  void (*live)(void* user, uint32_t track, const GarakRsLiveEvent* events, uint32_t count);
 } GarakRsHostNodes;
 /* One shell block: position, transport, the ticket to apply up to, whether to apply the master bus after the mix
  * (master gain gliding to its target, then the master processor; skipped offline with the master bypass),
@@ -123,11 +135,17 @@ uint32_t garak_rs_engine_take_dynamics(GarakRsEngine* engine, GarakRsDynamicsRea
  * cursors move there; chase != 0 chases controllers and restarts sounding notes; effects != 0 also clears tails
  * and delay lines (C++ Impl::reset(chase, effects)). */
 void garak_rs_engine_reset(GarakRsEngine* engine, int64_t frame, int32_t chase, int32_t effects);
-/* Audio thread, at a block boundary: a live event the shell applies itself (its live MIDI ring and live
- * commands) for track `track`: kind 0 note on (a = note id), 1 note off (a = note id), 2 all notes off,
- * 3 controller (pitch = controller number, a = value), 4 preview (a = frames). Returns 1 when a built-in
- * instrument played it, 0 when no track did, -1 for an invalid event. The track must not be rendering ahead. */
+/* Audio thread, between blocks: a live event the shell applies itself (its live MIDI ring and live commands) for
+ * track `track` at the start of its next block: kind 0 note on (a = note id), 1 note off (a = note id), 2 all
+ * notes off, 3 controller (pitch = controller number, a = value), 4 preview (a = frames). Returns 1 when a track
+ * takes it (a built-in instrument, or a host node through nodes->live), 0 when none does, -1 for an invalid
+ * event. The track must not be rendering ahead.
+ * live_at: the same `offset` frames into that block (the device MIDI sample offset; past the block it lands in a
+ * later one at the same distance; at most GARAK_RS_MAX_LIVE_OFFSET): sample-accurate. */
+#define GARAK_RS_MAX_LIVE_OFFSET 65536u
 int32_t garak_rs_engine_live(GarakRsEngine* engine, uint32_t track, uint32_t kind, int32_t pitch, int32_t a, float velocity);
+int32_t garak_rs_engine_live_at(GarakRsEngine* engine, uint32_t track, uint32_t kind, int32_t pitch, int32_t a, float velocity,
+                                uint32_t offset);
 /* Audio thread: the shell's transport stopped at the project end (no cycle): plug-in style Rust instruments
  * (vintage) release their notes next block. */
 void garak_rs_engine_stop_at_end(GarakRsEngine* engine);

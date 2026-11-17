@@ -25,7 +25,7 @@ use crate::protocol;
 use crate::queue::{Consumer, Producer, channel};
 use crate::routes::{self, Levels};
 use crate::tempo::TempoMap;
-use crate::track::{Feed, LiveEvent, Track, TrackInfo};
+use crate::track::{Feed, LiveEvent, MAX_LIVE_OFFSET, Track, TrackInfo};
 
 /// Route recording taps the renderer copies out per block (docs/RUST_ENGINE.md 5.7).
 pub const MAX_TAPS: usize = 8;
@@ -171,6 +171,7 @@ enum Command {
     Live {
         track: u32,
         event: LiveEvent,
+        offset: u32,
     },
 }
 
@@ -658,12 +659,19 @@ impl Controller {
         self.enqueue(Command::Taps(taps))
     }
 
-    /// A live note / controller event for the track at graph index `track` (applied at the next block):
-    /// what live MIDI, the computer keyboard and note previews send. Built-in instruments play it
-    /// (`Track::live_event`); other tracks count it as ignored.
+    /// A live note / controller event for the track at graph index `track`, at the start of the next render
+    /// call: what live MIDI, the computer keyboard and note previews send. Built-in instruments and host nodes
+    /// play it (`Track::queue_live`); other tracks count it as ignored.
     pub fn live(&mut self, track: u32, event: LiveEvent) -> Result<u64, Error> {
-        require(track < 256 && event.is_valid(), "Invalid live MIDI event")?;
-        self.enqueue(Command::Live { track, event })
+        self.live_at(track, event, 0)
+    }
+
+    /// [`live`](Self::live) `offset` frames into the next render call (up to [`MAX_LIVE_OFFSET`]; past that
+    /// call's frames it lands in a later one, at the same distance from the first call's start): the event
+    /// sounds on that exact sample (docs/RUST_ENGINE.md 5.8).
+    pub fn live_at(&mut self, track: u32, event: LiveEvent, offset: u32) -> Result<u64, Error> {
+        require(track < 256 && event.is_valid() && offset <= MAX_LIVE_OFFSET, "Invalid live MIDI event")?;
+        self.enqueue(Command::Live { track, event, offset })
     }
 
     pub fn pause(&mut self) -> Result<u64, Error> {
@@ -1502,12 +1510,12 @@ impl Renderer {
                     self.taps = taps;
                     self.tap_out.fill(0.0);
                 }
-                Command::Live { track, event } => {
+                Command::Live { track, event, offset } => {
                     let played = self
                         .active
                         .as_mut()
                         .and_then(|g| g.tracks.get_mut(track as usize))
-                        .is_some_and(|t| t.live_event(event));
+                        .is_some_and(|t| t.queue_live(event, offset));
                     if played {
                         self.live_played += 1;
                     } else {

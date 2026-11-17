@@ -16,7 +16,9 @@
 //      parameter automation and PDC, a latent return, track-input routes and a master resampler, monitored device
 //      input and routed/physical recording takes, live MIDI, seek, cycle, edits; frozen windows with tails; the
 //      shell's render-ahead rings (the same tracks at the same blocks as before, bit-identical to callback rendering);
-//   6. CPU (`--bench`): blocks per second on one thread and on N workers (table).
+//   6. live MIDI at sample offsets (queueLiveMidi) on a VST3 instrument and a built-in synth: the shell's offsets
+//      (garak_rs_engine_live_at, sampleOffset) vs the same events at the start of split render calls, same onset;
+//   7. CPU (`--bench`): blocks per second on one thread and on N workers (table).
 #include "garak/engine.hpp"
 #include "garak_engine.h"
 #include "golden.hpp"
@@ -515,6 +517,68 @@ void bench() {
     std::printf("| %u | %.1fx | %.1fx | %.2fx |\n", tracks, one, many, many / one);
   }
 }
+// Sample-accurate device MIDI (docs/RUST_ENGINE.md 5.8): queueLiveMidi offsets on a VST3 instrument (a stand-in
+// plug-in) and a built-in synth. The shell passes the offsets through (garak_rs_engine_live_at: the built-in voices
+// split their own render, the VST3 node gets sampleOffset). Reference: the same events, each queued at offset 0 of a
+// render call that starts on its sample (the host splitting its calls, as the former C++ engine split its blocks).
+// Both must start every event on the same sample.
+void liveOffsetCases() {
+  garak::ProjectTimeline p; p.projectId = "live-offsets"; p.sampleRate = 48000; p.lengthFrames = 96000; p.bpm = 120;
+  garak::TrackTimeline vst; vst.id = "vst"; vst.gain = .8f;
+  vst.source.kind = garak::TrackSource::Kind::Vst3; vst.source.plugin.instanceId = "synth"; vst.source.plugin.isInstrument = true;
+  garak::TrackTimeline keys; keys.id = "keys"; keys.gain = .7f; keys.source.kind = garak::TrackSource::Kind::BuiltinSynth; keys.source.instrumentId = "keys";
+  p.tracks = {vst, keys};
+  constexpr std::uint32_t call = 256, calls = 120;
+  // Events by render call (offsets inside that call).
+  std::vector<std::pair<std::uint32_t, garak::LiveMidiEvent>> events{
+    {3, {37, 0, 0x90, 60, 100, 11}}, {4, {10, 0, 0x80, 60, 0, 11}}, {5, {201, 1, 0x90, 64, 100, 12}},
+    {9, {3, 0, 0x90, 67, 90, 13}}, {9, {5, 0, 0xE0, 0, 80, -1}}, {9, {60, 1, 0xD0, 100, 0, -1}}, {9, {70, 1, 0xE0, 0, 100, -1}},
+    {9, {80, 0, 0xD0, 50, 0, -1}}, {9, {90, 1, 0xB0, 64, 127, -1}}, {9, {100, 0, 0xB0, 64, 127, -1}}, {9, {130, 0, 0x80, 67, 0, 13}},
+    {9, {131, 1, 0x80, 64, 0, 12}}, {9, {250, 1, 0xB0, 64, 0, -1}}, {11, {77, 0, 0xB0, 64, 0, -1}}};
+  const auto onsetOf = [](const std::vector<float>& all, std::size_t from) {
+    for (std::size_t i = from * 2; i < all.size() && i < (from + call) * 2; ++i) if (all[i] != 0) return i / 2 - from;
+    return std::size_t(call);
+  };
+  // `split`: render up to each event's sample, then queue it at offset 0 of the next call.
+  const auto run = [&](bool split) {
+    garak::RenderEngine e(48000, 128, 48000);
+    (void)e.update(p, {}, {}, standIns());
+    (void)e.play();
+    std::vector<float> all, out(call * 2);
+    std::size_t next = 0;
+    for (std::uint32_t k = 0; k < calls; ++k) {
+      if (!split) {
+        std::vector<garak::LiveMidiEvent> now;
+        while (next < events.size() && events[next].first == k) now.push_back(events[next++].second);
+        if (!now.empty()) (void)e.queueLiveMidi(now);
+        e.render(out.data(), nullptr, call, 0);
+        all.insert(all.end(), out.begin(), out.end());
+      } else {
+        std::uint32_t at = 0;
+        while (at < call) {
+          while (next < events.size() && events[next].first == k && events[next].second.offset == at) {
+            auto ev = events[next++].second; ev.offset = 0;
+            (void)e.queueLiveMidi(std::span<const garak::LiveMidiEvent>(&ev, 1));
+          }
+          const std::uint32_t end = next < events.size() && events[next].first == k ? events[next].second.offset : call;
+          e.render(out.data(), nullptr, end - at, 0);
+          all.insert(all.end(), out.begin(), out.begin() + std::ptrdiff_t(end - at) * 2);
+          at = end;
+        }
+      }
+      if (k % 16 == 0) e.collectRetired();
+    }
+    return all;
+  };
+  const auto offsets = run(false), split = run(true);
+  const double d = residual(offsets, split);
+  std::printf("| live MIDI at sample offsets: VST3 instrument + built-in synth | 2 | 0.6 s | 48000 Hz | 128 (256 calls) | — | %s (vs split calls) |\n", verdict(d).c_str());
+  check(peak(offsets) > .05, "live offsets: silent", peak(offsets));
+  check(dbfs(d) <= -90, "live offsets: offsets differ from split render calls", dbfs(d));
+  // The stand-in sounds on its note-on sample; the built-in envelope starts from zero there (first sound one later).
+  const auto a = onsetOf(offsets, 3 * call), b = onsetOf(offsets, 5 * call);
+  check(a == 37 && b == 202 && onsetOf(split, 3 * call) == a && onsetOf(split, 5 * call) == b, "live offsets: onset sample", double(a));
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -524,6 +588,7 @@ int main(int argc, char** argv) {
     offlineCases();
     liveCases();
     hostNodeCases();
+    liveOffsetCases();
     metronomeCases();
     shellMetronomeCase();
     if (argc > 1 && std::string(argv[1]) == "--bench") bench();

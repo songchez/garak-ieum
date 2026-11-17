@@ -67,6 +67,36 @@ describe('WebLiveMidi', () => {
     expect(started).toEqual([])
     expect(seen[0].data).toEqual([0xB0, 64, 127])
   })
+  it('hands each message’s stamp to the engine (sample-accurate playback) and records the same stamp', () => {
+    // docs/RUST_ENGINE.md 5.8: note-on, note-off, controllers and pedal releases carry the MIDI timeStamp, so the
+    // engine schedules them at that moment; the recording stamp stays the heard beat at that same time.
+    const startNote = vi.fn((_trackId: string, _pitch: number, _velocity: number, _time?: number) => ({ release }))
+    const release = vi.fn(), control = vi.fn()
+    const host = { startNote, beatAt: vi.fn((time: number) => time / 1000), control }
+    const live = new WebLiveMidi(host, () => 2000)
+    const seen: StampedMidi[] = []
+    live.subscribe(event => seen.push(event))
+    live.setRoutes([route('a')])
+    live.send('k', [0x90, 60, 100], 1990.25)
+    live.send('k', [0xE0, 0, 80], 1991)
+    live.send('k', [0xB0, 64, 127], 1992)
+    live.send('k', [0x80, 60, 0], 1993)
+    expect(release).not.toHaveBeenCalled() // held by the pedal
+    live.send('k', [0xB0, 64, 0], 1994.5)
+    expect(startNote).toHaveBeenCalledWith('a', 60, 100 / 127, 1990.25)
+    expect(control).toHaveBeenCalledWith('a', 'pitchBend', expect.any(Number), 1991)
+    expect(release).toHaveBeenCalledWith(1994.5)
+    expect(seen.map(event => [event.time, event.beat])).toEqual([[1990.25, 1.99025], [1991, 1.991], [1992, 1.992], [1993, 1.993], [1994.5, 1.9945]])
+    // Channel and poly aftertouch play as the track's aftertouch with their stamps (poly: the key's pressure).
+    live.send('k', [0xD0, 64], 1995)
+    live.send('k', [0xA0, 60, 99], 1996)
+    expect(control).toHaveBeenCalledWith('a', 'aftertouch', 64, 1995)
+    expect(control).toHaveBeenLastCalledWith('a', 'aftertouch', 99, 1996)
+    expect(seen.at(-1)?.data).toEqual([0xA0, 60, 99]) // recorded as sent
+    // Without a stamp (computer keyboard focus loss, panic) the engine plays it now.
+    live.send('k', [0x90, 62, 90])
+    expect(startNote).toHaveBeenLastCalledWith('a', 62, 90 / 127, 2000)
+  })
 })
 
 describe('NativeLiveMidi', () => {

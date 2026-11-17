@@ -74,7 +74,7 @@ native/tests/rust_engine_host_test.cpp    RenderEngine 셸(호스트 노드·멀
 | `project.patch` (헤더 + 순서 + 바뀐 트랙) | `Controller::patch_json` (호스트의 `patchTimeline` 병합과 같은 규칙) | `garak_rs_engine_patch` | `garak_engine_patch` |
 | `asset.put` (PCM, 프로토콜 밖) | `Controller::put_asset(id, PcmAsset)` | `garak_rs_engine_put_asset` | `garak_engine_put_asset` |
 | `samples.register` (샘플 악기·킷) | `Controller::put_sample_set` / `register_samples_json` | `garak_rs_engine_register_samples` | `garak_engine_register_samples` |
-| 라이브 노트 온/오프·미리 듣기·컨트롤러·패닉 | `note_on`/`note_off`/`preview_note`/`control_change`/`all_notes_off` | `garak_rs_engine_note_on` … `_all_notes_off` | `garak_engine_note_on` … |
+| 라이브 노트 온/오프·미리 듣기·컨트롤러·패닉 | `note_on`/`note_off`/`preview_note`/`control_change`/`all_notes_off`, 샘플 오프셋은 `live_at` | `garak_rs_engine_note_on` … `_all_notes_off`, 셸은 `garak_rs_engine_live_at` | `garak_engine_note_on` …, `garak_engine_live_at` |
 | 전송(play/pause/stop/seek) | `play`/`pause`/`stop`/`seek` | `garak_rs_engine_transport` | `garak_engine_transport` |
 | 응답의 `applied` | `Applied::{None, Diff, Tracks, Full}` | 0/1/2/3 | 같음 |
 
@@ -236,7 +236,7 @@ LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다
 | 마스터 바이패스 | `set_master_bypass`: 오프라인에서 마스터 게인·프로세서 생략(C++ `setMasterBypass`) | `renderAudio({ preMaster })`가 Worker 렌더에 `masterBypass`. 스템·프리즈도 엔진 |
 | 카운트인 | `play_count_in(frames)`: 예약 시작. 카운트인 동안 전송 프레임 고정, 끝난 다음 프레임에 시작. 클릭은 시작 지점의 템포·박자(박자 맵)로 | `play({ countInBars })` → `countIn`. 박자 맵 강박·국악 소리는 `metronomeStrokes`(데스크톱과 같은 PCM)로 한 번 전달. `play()`는 다운비트에서 끝남(녹음 시작 시점) |
 | 메트로놈 | `set_metronome` + `renderClicks` 포팅(마스터 뒤, 오프라인은 안 침) | 엔진 재생 중 클릭은 엔진이 침(`WebMetronome` 예약 없음) |
-| 라이브 노트·미리 듣기 | `Controller::live(track, LiveEvent)` → `Track::live_event`(오디오 트랙은 무시·집계) | 링 명령(`RING_LIVE`, 다음 퀀텀). 엔진이 렌더하는 악기 트랙이면 노트 온/오프·CC가 엔진으로, 라이브러리 미리 듣기(트랙 없음)는 엔진이 들리는 동안 미리 듣기 전용 작은 그래프로(프로젝트 그래프 아님) |
+| 라이브 노트·미리 듣기 | `Controller::live_at(track, LiveEvent, offset)` → `Track::queue_live`(오디오 트랙은 무시·집계; 샘플 오프셋은 [5.8](#58-라이브-midi-샘플-정확도)) | 링 명령(`RING_LIVE`, 목표 컨텍스트 프레임 → 퀀텀 안 오프셋). 엔진이 렌더하는 악기 트랙이면 노트 온/오프·CC가 엔진으로, 라이브러리 미리 듣기(트랙 없음)는 엔진이 들리는 동안 미리 듣기 전용 작은 그래프로(프로젝트 그래프 아님) |
 | 입력 모니터링 | `render_io(out, input, channels)` + `set_monitoring`: 트랙 입력 채널, 저지연 모니터는 PDC 생략, 스테레오 입력은 밸런스 팬 | MediaStream → 워크릿 입력 0. 엔진이 소유하면 Web Audio 모니터는 끔(둘 다 켜지지 않음). 캡처는 그대로 MediaRecorder |
 | 트랙 입력 라우트 | `prepareRoutes` 포팅: 레벨 순서, 루프 끊기, 마스터 피드·리샘플 트랙, pre/post-FX·post-fader 탭 | 라우트 모니터링은 같은 모니터 마스크 |
 | 라우트 녹음 | 블록마다 탭 트랙의 라우트 입력을 `tap_output`에(최대 8) | 워크릿 출력 1(16채널) → 분배기 → `RouteRecordings`. 테이크 위치는 상태의 (전송 프레임, 컨텍스트 프레임) |
@@ -255,7 +255,18 @@ LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다
 
 크기: 259 → 289 KiB raw / 105 → 118 KB gzip(예산 304 KiB / 124 KB로 올림, `scripts/rust.mjs`에 이유).
 
-크기(악기 통합 후, `rust/engine-integrate`): 291 → 460 KiB raw / 119 → 189 KB gzip, 기타 랙까지 512 KiB / 207 KB(예산 528 KiB / 212 KB, `scripts/rust.mjs`에 이유). 늘어난 대부분은 악기 코드 자체(IEUM WAVE 신스·테이블 준비와 팩토리 하모닉 표, 옥구슬 EP·한밤 106 커널, 내장 보이스, 샘플 세트 파서, 커서·승계 로직)입니다. ABI 4: 샘플 세트 등록(`garak_engine_register_samples`)과 라이브 MIDI 내보내기가 늘었고, `garak_engine_live`(라이브 링·미리 듣기)도 내장 악기를 연주합니다.
+크기(악기 통합 후, `rust/engine-integrate`): 291 → 460 KiB raw / 119 → 189 KB gzip, 기타 랙까지 512 KiB / 207 KB(예산 528 KiB / 212 KB, `scripts/rust.mjs`에 이유). 늘어난 대부분은 악기 코드 자체(IEUM WAVE 신스·테이블 준비와 팩토리 하모닉 표, 옥구슬 EP·한밤 106 커널, 내장 보이스, 샘플 세트 파서, 커서·승계 로직)입니다. ABI 4: 샘플 세트 등록(`garak_engine_register_samples`)과 라이브 MIDI 내보내기가 늘었고, `garak_engine_live`(라이브 링·미리 듣기)도 내장 악기를 연주합니다. ABI 5(라이브 샘플 오프셋, 5.8): `garak_engine_live_at`, 514.7 KiB / 208 KB.
+
+### 5.8 라이브 MIDI 샘플 정확도
+
+라이브 이벤트(노트 온/오프, 미리 듣기, CC, 피치 벤드, 채널·폴리 애프터터치, 패닉)는 **블록 경계가 아니라 자기 샘플에서** 시작합니다. 데스크톱과 웹이 같은 엔진 경로를 씁니다.
+
+- **엔진.** 이벤트는 오프셋(다음 렌더 호출 시작부터의 프레임, 최대 `MAX_LIVE_OFFSET` = 65536)을 갖습니다: `Controller::live_at`(명령 큐, 웹), `Renderer::host_live(track, event, offset)`(데스크톱 셸, 오디오 스레드). 트랙마다 고정 크기 큐(`LiveQueue`, `LIVE_QUEUE` = 128개, 트랙을 지을 때 힙에 한 번 할당 — 워크릿 스택은 64 KiB)에 오프셋 순으로 들어가고, `Track::render`가 소스 렌더를 이벤트 오프셋에서 나눠 그 사이에 이벤트를 적용합니다(내장 신스·드럼·샘플·옥구슬 EP·한밤 106·IEUM WAVE 모두 같은 보이스 코드). 그래프 전체가 아니라 그 트랙의 소스만 나누므로 이펙트·오토메이션 격자·다른 트랙은 그대로입니다. 블록보다 먼 오프셋은 다음 블록·다음 호출로 넘어가고(같은 절대 시점), 트랙 교체(`adopt`)는 큐를 포인터 교환으로 넘깁니다. 기다리는 이벤트가 없을 때의 오프셋 0 이벤트는 예전처럼 명령 순서대로 즉시 적용합니다(뒤따르는 교체·탐색보다 먼저). 큐가 가득 차면 거절하고 `live_ignored`로 셉니다. 오디오 스레드 할당 0(`tests/realtime_instruments.rs`).
+- **호스트 노드.** VST3(와 데스크톱 C++ IEUM WAVE) 트랙은 그 블록의 이벤트를 `HostCallbacks::live`(C: `GarakRsHostNodes::live`, `GarakRsLiveEvent { offset, kind, pitch, a, velocity }`)로 `source` 직전에 블록 기준 오프셋과 함께 받습니다. 셸은 이를 플러그인 이벤트 큐에 그 오프셋으로 넣어 VST3 `sampleOffset`이 됩니다.
+- **데스크톱 셸.** 장치 MIDI는 예전 `queueLiveMidi`와 같이 도착 시각에서 오프셋을 계산합니다(한 콜백의 고정 지연, `host.cpp routeMidi`). Rust 그래프가 렌더할 때는 블록을 쪼개지 않고 호출의 모든 이벤트를 현재 서브블록 기준 오프셋으로 `garak_rs_engine_live_at`에 넘깁니다(호출을 넘는 이벤트는 다음 호출 첫 프레임 — 기존 의미). 폴리 애프터터치는 채널 프레셔로 라우팅합니다(악기는 트랙당 프레셔 하나). 렌더러 명령(`note.on` 등)은 장치 시각이 없어 블록 시작에 적용합니다. 녹음 스탬프(`renderedTransportFrame`)는 렌더된 서브블록으로 그대로 계산됩니다.
+- **웹.** 메인 스레드가 MIDI `timeStamp`(performance.now 기준)를 컨텍스트 렌더 시계로 옮기고 고정 리드(기본 지연 = 렌더 콜백 하나, 최소 한 퀀텀, 최대 20 ms)를 더한 **목표 컨텍스트 프레임**을 링 레코드(9번째 슬롯)로 보냅니다(`src/audio/rust/liveTiming.ts`). 워크릿은 처리할 퀀텀의 `currentFrame` 기준 오프셋으로 바꿔 `garak_engine_live_at`(ABI 5)을 부릅니다. 늦게 온 이벤트는 퀀텀 첫 프레임. 스탬프 없는 이벤트(패닉, 타이머)도 지금 시각으로 같은 리드를 받아 순서가 유지됩니다. 피치 벤드·채널/폴리 애프터터치·프로그램도 CC처럼 엔진 악기로 갑니다(`liveControllerNumber`). 녹음 스탬프는 여전히 누른 순간 들린 박자(`heardBeatAt`)라 리드와 무관합니다.
+
+테스트: `rust/garak-engine/tests/live_offsets.rs`(오프셋 k의 미리 듣기 == 프레임 k의 타임라인 음표 비트 동일; 모든 악기에서 호출 안 오프셋 == 호스트가 k에서 나눈 블록 비트 동일, 벤드·프레셔 포함; 교체 승계·큐 한도; 호스트 콜백 오프셋), `native/tests/rust_engine_host_test.cpp` 7번(장치 MIDI 오프셋: C++ 엔진의 블록 분할 vs Rust 셸, VST3 대역 + 내장 신스 **비트 동일**, 같은 시작 샘플), `native/tests/midi_test.cpp`(Rust 기본 경로의 샘플 정확 이벤트·스탬프, 폴리 애프터터치 라우팅), `src/audio/rust/liveTiming.test.ts`·`engineChannel.test.ts`·`webHost.test.ts`(WASM에서 오프셋 시작·벤드), `src/audio/liveMidi.test.ts`(스탬프 전달).
 
 ## 6. 악기·보이스 (인벤토리와 지원 현황)
 
@@ -286,7 +297,7 @@ LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다
 - **웹:** `RustWebAudioEngine`이 `WavetableNativeBridge`를 구현합니다(상태 = garak-engine.wasm 사용 가능 여부, `applyPatch` = 그 패치를 담은 프로젝트가 엔진에 동기화·수락됨, 미리 듣기 = 엔진 라이브 이벤트). 타임라인은 `wireWave`가 `patch`를 `patchData`로 바꿔 보냅니다(트랙의 파라미터·상태 객체가 같으면 다시 인코딩하지 않음). 내보내기도 엔진 Worker입니다.
 - **스키마:** `generate-schema.mjs`가 schema.json에서 `schema.generated.ts`와 `wave/schema.rs`를 직접 만듭니다(C++ 헤더 단계 없음).
 - **패리티:** 삭제 전 C++ 엔진 렌더를 골든으로 보관(`rust/garak-engine/tests/golden/ieum-wave`, [IEUM_WAVE.md 골든 패리티](IEUM_WAVE.md#골든-패리티)). `native-rust-wave-golden`: Windows x86-64 비트 동일, 그 밖 ≤ -90 dBFS. `native-rust-engine-instruments`는 WAVE 트랙을 뺀 프로젝트로 C++ 엔진과 비교합니다.
-- **라이브 MIDI.** 노트 온/오프(id 또는 피치), 미리 듣기(길이 지정), 컨트롤러, 패닉(페달 해제 + 벤드/모드 중앙). 라이브 페달 중 노트 오프는 지연, 같은 키 재타격은 이전 음을 먼저 놓음. 명령 큐로 블록 경계에 적용합니다(호스트의 블록 내 오프셋 큐 `queueLiveMidi` 연결은 호스트 통합 몫).
+- **라이브 MIDI.** 노트 온/오프(id 또는 피치), 미리 듣기(길이 지정), 컨트롤러, 패닉(페달 해제 + 벤드/모드 중앙). 라이브 페달 중 노트 오프는 지연, 같은 키 재타격은 이전 음을 먼저 놓음. 이벤트는 자기 샘플 오프셋에서 적용합니다([5.8](#58-라이브-midi-샘플-정확도)).
 
 ## 7. 패리티 전략과 결과
 
@@ -407,13 +418,13 @@ CI 러너(같은 벤치): Windows MSVC x64 12트랙 1.0× / 1.0× / **1.3×**(1.
 
 **포함:** 오디오 클립(PCM, 게인, 페이드 5종, 크로스페이드, 클릭 가드, 리샘플, 다운믹스), 트랙 볼륨/팬(모노 등전력·스테레오 밸런스)/뮤트/솔로(`audible`/`unmutedAudible`), 내장 이펙트 15종 체인과 PDC, 프리/포스트 센드와 리턴(리턴 지연 보정 포함), 마스터 게인·마스터 프로세서, 볼륨·팬·뮤트·센드·인서트 파라미터 오토메이션(샘플 단위 / 32프레임 청크), 템포 맵(싱크 이펙트), 사이클·정지·탐색, project.set/patch 파싱과 diff 분류·상태 이전, 오프라인 렌더 API, C ABI, WASM 빌드.
 
-**악기 마일스톤에서 추가:** 내장 신스 5종·드럼·샘플 악기/킷·옥구슬 EP·한밤 106·IEUM WAVE(패치 교체 크로스페이드 포함), 음표/컨트롤러 커서, 페달·벤드·모드·프레셔·CC7/11, 릴리스 노이즈, 보이스 스틸·초크, 탐색·사이클 추적, 음표 id 재부여·지운 음표 릴리스, 악기 파라미터 오토메이션, 라이브 MIDI(엔진 API·C ABI·WASM, 웹의 `LiveEvent` 링과 데스크톱 셸의 라이브 MIDI·명령 모두 `Track::live_event`로), 샘플 세트 등록(데스크톱 셸이 `samples.register` JSON으로 넘김).
+**악기 마일스톤에서 추가:** 내장 신스 5종·드럼·샘플 악기/킷·옥구슬 EP·한밤 106·IEUM WAVE(패치 교체 크로스페이드 포함), 음표/컨트롤러 커서, 페달·벤드·모드·프레셔·CC7/11, 릴리스 노이즈, 보이스 스틸·초크, 탐색·사이클 추적, 음표 id 재부여·지운 음표 릴리스, 악기 파라미터 오토메이션, 라이브 MIDI(엔진 API·C ABI·WASM, 웹의 `LiveEvent` 링과 데스크톱 셸의 라이브 MIDI·명령 모두 `Track::queue_live`로, 샘플 오프셋 단위 — 5.8), 샘플 세트 등록(데스크톱 셸이 `samples.register` JSON으로 넘김).
 
 **0.3.2에서 추가:** 웹 호스트도 샘플 세트를 같은 JSON과 PCM으로 엔진에 등록합니다(내보내기·바운스·스템 포함). 데스크톱과 웹 모두 Rust 엔진이 기본이 됐습니다(0.3.2의 데스크톱 비상 경로 `GARAK_RUST_ENGINE=0`은 0.3.3에서 C++ 경로와 함께 삭제).
 
 **0.3.3에서 추가:** 데스크톱의 마스터 버스·메트로놈을 엔진으로(`GarakRsBlock::master`, `garak_rs_engine_clicks`), C++ 트랙 경로·이펙트 DSP 삭제, 골든 레퍼런스 패리티(7.1).
 
-**아직 아님:** 라이브 MIDI의 블록 내 오프셋(블록 경계에 적용). IEUM WAVE는 0.3.3부터 데스크톱·웹 모두 Rust 엔진입니다([6.2](#62-ieum-wave-033-rust-엔진-단일화)).
+라이브 MIDI는 블록 경계가 아니라 이벤트의 샘플 오프셋에서 적용합니다(5.8). IEUM WAVE는 0.3.3부터 데스크톱·웹 모두 Rust 엔진입니다([6.2](#62-ieum-wave-033-rust-엔진-단일화)).
 
 **다음 마일스톤 제안:**
 
@@ -456,6 +467,7 @@ RenderEngine (C++ 셸) ─ 전송(재생/정지/탐색·사이클·카운트인 
 | 테스트 | 내용 | 결과 (MinGW GCC 16, 이 PC) |
 |---|---|---|
 | `native/tests/rust_engine_host_test.cpp` (`ctest -R native-rust-engine-host`) | `RenderEngine` ↔ 0.3.2 C++ 엔진의 골든 레퍼런스: 오프라인 내보내기 3종, 마스터 바이패스, 프리페이더 트랙, 리턴 스템, 재생 중 diff·트랙 재준비·탐색·사이클·일시정지·`setMasterGain`; 호스트 노드(상태 있는 대역 플러그인의 VST3 악기·인서트, 지연 있는 리턴, 라우트·마스터 리샘플러·모니터링·녹음 테이크, 라이브 MIDI), 오프라인 내보내기, 꼬리 있는 얼린 윈도, render-ahead(Normal·High; 링에 든 트랙 수도 기록과 같아야 함); `garak_rs_metronome_render` 6가지 경우; **셸 메트로놈**(템포·박자 맵, 매핑된 위치의 카운트인, 탐색, 일시정지 후 3/4 카운트인, 클릭 세트 교체). 0 ↔ N 워커, render-ahead ↔ 콜백 렌더는 서로 비트 동일 | 전부 **비트 동일** |
+| 같은 테스트의 라이브 MIDI 오프셋 경우 | `queueLiveMidi` 샘플 오프셋(노트·벤드·프레셔·페달)을 VST3 대역 악기와 내장 신스에: 셸의 `garak_rs_engine_live_at`(소스 분할·`live` 콜백의 `sampleOffset`) ↔ 같은 이벤트를 렌더 호출 시작(오프셋 0)에 둔 분할 호출 | ≤ -90 dBFS, 시작 샘플 같음 |
 | `native/tests/engine_test.cpp` (`ctest -R native-engine`) | 엔진 회귀 43가지(모두 Rust 그래프로 렌더, 경우마다 Rust 블록 수 출력). 이펙트 단위 검사는 `native/tests/rust_fx.hpp`로 Rust 커널을 직접 | 43/43 |
 | `rust/garak-engine/tests/host.rs` | `render_block`: 엔진 자체 전송과 같은 진행, 티켓 게이트, 병렬 센더 비트 동일, 힙 사용 0 | 통과 |
 | rust.yml | Windows MSVC·macOS arm64에서 위 테스트와 7장 테스트(골든 레퍼런스: Windows 비트 동일, macOS ≤ -90 dBFS) | |
