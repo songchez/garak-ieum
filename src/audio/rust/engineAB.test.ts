@@ -59,7 +59,7 @@ function pan(left: number, right: number, mono: boolean, value: number): [number
   return [left * Math.cos(value * Math.PI / 2), right + left * Math.sin(value * Math.PI / 2)]
 }
 
-/** The Web Audio engine's mix of plain audio clips (graph.ts semantics), frame by frame. Region edges are returned for masking. */
+/** The former Web Audio engine's mix of plain audio clips (0.3.2 graph.ts semantics), frame by frame. Region edges are returned for masking. */
 function referenceMix(test: TestProject): { left: Float32Array; right: Float32Array; edges: number[] } {
   const project: Project = test.project, rate = project.sampleRate
   const tempo = tempoMapOf(project)

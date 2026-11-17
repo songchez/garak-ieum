@@ -4,7 +4,7 @@
 
 **현재 단계 (0.3.3):** IEUM WAVE는 **데스크톱과 브라우저 모두 통합 Rust 엔진에서만** 렌더합니다. 데스크톱은 C++ 셸(`RenderEngine`)이 garak-ffi로 Rust 그래프에 타임라인·라이브 MIDI·미리 듣기를 넘기고, 브라우저는 AudioWorklet의 garak-engine.wasm이 같은 코드를 돌립니다. 편집기 미리 듣기, 타임라인 재생, 프리셋·패치 변경(사용자 파형 교체 시 20 ms 테이블 크로스페이드), WAV 내보내기가 두 곳에서 같습니다. 원래의 C++ 신스(`native/devices/wavetable-synth`)와 그 호스트 래퍼(`native/src/wavetable.cpp`)는 0.3.3에서 삭제했습니다. Rust 신스는 그 C++ 신스의 비트 동일 포팅이고, 삭제 전에 C++ 신스로 렌더한 골든 데이터와 계속 비교합니다([골든 패리티](#골든-패리티)). Windows의 WASAPI(기본값)·ASIO와 macOS의 Core Audio가 같은 경로로 재생합니다. [RUST_ENGINE 6장](RUST_ENGINE.md#6-악기보이스-인벤토리와-지원-현황)
 
-WAVE의 패치와 음표는 프로젝트·타임라인에 보존합니다. 데스크톱 앱은 장치를 열기 전에 네이티브 호스트의 WAVE 프로토콜과 스키마를 확인하고(호스트는 Rust 엔진이 있을 때만 `wavetable` capability를 알립니다), 브라우저는 garak-engine.wasm을 불러올 수 있는지로 판단합니다. 편집기는 현재 패치가 엔진에 적용된 응답을 받은 뒤 건반을 활성화합니다. 엔진이 없거나(구버전 호스트, `GARAK_RUST_ENGINE=0` 비상 경로, WASM 모듈 없음) 프로젝트를 거부하면 이유를 표시하며 지원을 가장하지 않습니다. 같은 트랙에 VST3 악기를 지정하면 해당 VST3가 실제 음원이며 WAVE 패치는 프로젝트에 보관됩니다.
+WAVE의 패치와 음표는 프로젝트·타임라인에 보존합니다. 데스크톱 앱은 장치를 열기 전에 네이티브 호스트의 WAVE 프로토콜과 스키마를 확인하고(모든 네이티브 빌드가 Rust 엔진을 링크하므로 호스트는 항상 `wavetable` capability를 알립니다), 브라우저는 garak-engine.wasm을 불러올 수 있는지로 판단합니다. 편집기는 현재 패치가 엔진에 적용된 응답을 받은 뒤 건반을 활성화합니다. 엔진이 없거나(구버전 호스트, WASM 모듈 없음) 프로젝트를 거부하면 이유를 표시하며 지원을 가장하지 않습니다. 같은 트랙에 VST3 악기를 지정하면 해당 VST3가 실제 음원이며 WAVE 패치는 프로젝트에 보관됩니다.
 
 [구현·검증 기록](IEUM_WAVE_VALIDATION.md) · [Rust 엔진](RUST_ENGINE.md)
 
@@ -75,7 +75,7 @@ MCP의 `instrument.setParam`은 카탈로그에 있는 실제 단위의 값을 �
 flowchart TD
     UI["React 음색 편집기"] --> BR["WavetableNativeBridge"]
     BR --> D["데스크톱: NativeAudioEngine → 호스트(JSON IPC)"]
-    BR --> W["브라우저: RustWebAudioEngine"]
+    BR --> W["브라우저: WebAudioEngine"]
     D --> SH["C++ 셸 RenderEngine: 패치 검증(garak_rs_wave_check_patch)·트랜스포트·라이브 MIDI"]
     SH --> FFI["garak-ffi"]
     W --> WASM["garak-engine.wasm (AudioWorklet / 내보내기 Worker)"]
@@ -132,7 +132,7 @@ pnpm rust:engine-smoke     # Chromium: WAVE 재생·프리셋 변경·편집기 
 pnpm wavetable:smoke       # Chromium: 편집기 작업 흐름(엔진 적용 확인, 저장·다시 열기, 화면 크기)
 ```
 
-`native-wavetable-host`(ctest)는 `RenderEngine`을 셸로 두고 22.05–192 kHz의 정확한 시작 샘플, 콜백 분할·오프라인 일치, render-ahead, 1을 넘는 벨로시티, 오디션 음 소유, 정지 상태 미리 듣기, 누른 음의 패치 변경, 빠른 사용자 파형 교체와 그래프 회수, 프로젝트 끝 꼬리, 결정적 정지·탐색, 패치·레이트 검증(`GARAK_RUST_ENGINE=0`의 C++ 경로는 WAVE를 거부), 동시 준비 중 콜백 할당, MIDI 컨트롤러를 검사합니다. 기준은 garak_engine.h로 직접 돌린 Rust 엔진입니다. 데스크톱 스모크는 명시적인 테스트 클록을 쓰므로 물리 WASAPI·ASIO·Core Audio 출력이나 실제 지연 측정은 별도로 해야 합니다.
+`native-wavetable-host`(ctest)는 `RenderEngine`을 셸로 두고 22.05–192 kHz의 정확한 시작 샘플, 콜백 분할·오프라인 일치, render-ahead, 1을 넘는 벨로시티, 오디션 음 소유, 정지 상태 미리 듣기, 누른 음의 패치 변경, 빠른 사용자 파형 교체와 그래프 회수, 프로젝트 끝 꼬리, 결정적 정지·탐색, 패치·레이트 검증, 동시 준비 중 콜백 할당, MIDI 컨트롤러를 검사합니다. 기준은 garak_engine.h로 직접 돌린 Rust 엔진입니다. 데스크톱 스모크는 명시적인 테스트 클록을 쓰므로 물리 WASAPI·ASIO·Core Audio 출력이나 실제 지연 측정은 별도로 해야 합니다.
 
 `pnpm wavetable:smoke`와 `pnpm rust:engine-smoke`는 Playwright Chromium을 씁니다. 설치된 브라우저를 쓸 때는 `GARAK_CHROMIUM_EXECUTABLE`, 필요하면 JSON 배열의 `GARAK_CHROMIUM_ARGS`를 지정합니다.
 

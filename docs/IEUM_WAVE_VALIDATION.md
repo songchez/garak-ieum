@@ -10,7 +10,7 @@ C++ 신스(`native/devices/wavetable-synth`)와 호스트 래퍼(`native/src/wav
 | `native-wavetable-host`(셸 → Rust 그래프) | 13/13 통과(아래 2026-11-04의 C++ 호스트 회귀를 Rust 그래프 기준으로 옮김) |
 | `cargo test -p garak-engine --test wave_golden` | 오프라인 3/3 ≤ -90 dBFS(-138.5) |
 | `src/audio/rust/wave.test.ts`(garak-engine.wasm) | 오프라인 3/3 -137.9 dBFS, 프리셋 변경, 20 ms 사용자 파형 크로스페이드 |
-| `scripts/native-smoke.mjs` | WAVE capability·렌더·검증·미리 듣기·재설정 통과; `GARAK_RUST_ENGINE=0`은 capability 없음·WAVE 프로젝트 거부 |
+| `scripts/native-smoke.mjs` | WAVE capability·렌더·검증·미리 듣기·재설정 통과 |
 | `pnpm rust:engine-smoke`(Chromium) | WAVE 재생·재생 중 프리셋 변경·편집기 패치 적용과 미리 듣기·내보내기가 모두 Rust 엔진 |
 
 아래는 C++ 구현 당시의 기록입니다. 그 안의 `native/devices/wavetable-synth` 경로와 `wavetable:*` 명령은 0.3.3에서 없어졌습니다.

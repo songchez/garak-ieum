@@ -259,9 +259,6 @@ double checkWavetablePatch(std::uint32_t sampleRate, const std::vector<std::uint
   return tail;
 }
 
-bool hasWavetable(const ProjectTimeline& p) {
-  return std::any_of(p.tracks.begin(), p.tracks.end(), [](const TrackTimeline& t) { return t.enabled && t.source.kind == TrackSource::Kind::NativeWavetable; });
-}
 } // namespace
 
 std::uint32_t wavetableSchemaFingerprint() noexcept {

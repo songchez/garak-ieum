@@ -1,8 +1,8 @@
 // 옥구슬 EP / 한밤 106 through the C ABI and the engine (docs/RUST.md "빈티지 악기").
 //
 // 1. Parity: the scripted scene of rust/garak-dsp/src/instruments/mod.rs (parity_scene) rendered
-//    through garak-ffi must hash to the checksums in parity.golden, the same file the WASM test
-//    (src/audio/rust/vintage.test.ts) checks: native and web render bit-identical samples.
+//    through garak-ffi must hash to the checksums in parity.golden, the file garak-dsp's own test
+//    (instruments/mod.rs) checks; the web runs the same garak-dsp code inside garak-engine.wasm.
 // 2. CPU: 8 sustained voices of each instrument at 48 kHz must stay under 3 % of one core.
 // 3. Engine: a timeline track and live notes (sustain pedal deferral, automation, param edits that
 //    keep voices ringing) through RenderEngine.
