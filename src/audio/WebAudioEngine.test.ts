@@ -3,6 +3,8 @@ import { DEFAULT_AUDIO_SETTINGS } from '../core/audioSettings'
 import { createDevice, createEmptyProject, createTrack } from '../core/project'
 import type { Project } from '../core/types'
 import { ENGINE_LOAD_FAILED, resetEngineModuleForTests, WebAudioEngine } from './WebAudioEngine'
+import { deviceAnalysisTap } from '../devices/effects/analysis'
+import { guitarTunerTap } from '../devices/guitar-rig'
 import { renderInEngineWorker, RustEngineNode, sharedGarakEngineModule } from './rust/engineHost'
 import { emptyStatus } from './rust/engineChannel'
 import { GarakEngineError } from './rust/garakEngineWasm'
@@ -52,6 +54,9 @@ class FakeEngineNode {
   taps = vi.fn(async () => undefined)
   live = vi.fn(() => ++this.seq)
   readMeters = vi.fn(() => null)
+  analysis = vi.fn(async (_taps: { track: number; insert: number; tuner: boolean }[]) => undefined)
+  analysisVersion = 0
+  readAnalysis = vi.fn((_slot: number, out: Float32Array) => { out.fill(0.25); return true })
   transport = vi.fn((command: string, frame = 0) => {
     const seq = ++this.seq
     if (command === 'play' || command === 'countIn') this.state.playing = true
@@ -712,6 +717,36 @@ describe('the engine is the only renderer', () => {
     expect(rendered.trackTailSeconds).toBeGreaterThan(1)
     expect(await engine.renderTail(project)).toBeGreaterThan(1)
     expect(ContextSpy.instances).toHaveLength(0)
+  })
+})
+
+describe('engine analysis taps', () => {
+  it('stream what the open editors look up, and stop when they close', async () => {
+    const eq = { ...createDevice('eq'), id: 'eq' }, rig = { ...createDevice('guitar-rig', { tunerEnabled: 1 }), id: 'rig' }
+    const project = { ...createEmptyProject(), tracks: [{ ...createTrack('audio'), id: 'a', devices: [eq] }, { ...createTrack('audio'), id: 'g', devices: [createDevice('filter'), rig] }] }
+    const engine = engineFor(project)
+    await engine.resume()
+    await vi.advanceTimersByTimeAsync(20)
+    const bridge = FakeEngineNode.instances[0]
+    await vi.advanceTimersByTimeAsync(400)
+    expect(bridge.analysis).not.toHaveBeenCalled()
+    // The editors look their taps up (the spectrum every 800 ms, the tuner every frame).
+    expect(deviceAnalysisTap('eq')).toBeUndefined()
+    expect(guitarTunerTap('rig')).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bridge.analysis).toHaveBeenLastCalledWith([{ track: 0, insert: 0, tuner: false }, { track: 1, insert: 1, tuner: true }])
+    const spectrum = deviceAnalysisTap('eq')!, tuner = guitarTunerTap('rig')!
+    expect(spectrum.analyser.fftSize).toBe(4096)
+    expect(tuner.analyser.fftSize).toBe(4096)
+    expect(tuner.sampleRate).toBe(48000)
+    const samples = new Float32Array(16)
+    tuner.analyser.getFloatTimeDomainData(samples)
+    expect(samples.every(v => v === 0.25)).toBe(true)
+    expect(bridge.readAnalysis).toHaveBeenCalledWith(1, expect.any(Float32Array))
+    // Nobody looks any more: the taps go, and the engine stops copying them.
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(bridge.analysis).toHaveBeenLastCalledWith([])
+    expect(deviceAnalysisTap('eq')).toBeUndefined()
   })
 })
 

@@ -11,6 +11,9 @@ import { tempoMapOf } from '../core/tempoMap'
 import type { TakeCallbacks } from '../core/recording'
 import type { DynamicsReading } from '../devices/effects/dynamicsMeter'
 import { VINTAGE_WEB_UNAVAILABLE } from '../devices/vintage/availability'
+import { registerDeviceAnalysis, requestedDeviceAnalysis, type StereoScopeTap } from '../devices/effects/analysis'
+import { registerGuitarTunerTap, requestedGuitarTuners, unregisterGuitarTunerTap } from '../devices/guitar-rig/tuner'
+import { EngineAnalyser, type AnalysisSource } from './engineAnalyser'
 import { encodeWav } from './wavEncode'
 import { clamp, loopRange, normalizedStart } from './math'
 import { SampleLibrary, type LoadedSet } from './samples'
@@ -24,12 +27,14 @@ import { renderTailSeconds, trackTailSeconds } from './renderTail'
 import { packAudioBuffer } from './native/pcmTransfer'
 import { compileNativeTimeline, NativeTimelineCompiler, type NativePcmAsset, type NativeProjectTimeline } from './native/timeline'
 import { encodeTracks, planNativeSync, type SyncTimeline } from './native/timelineSync'
-import { emptyStatus, TAP_CHANNELS, type EngineMeters, type EngineStatus } from './rust/engineChannel'
+import { ANALYSIS_FRAMES, ANALYSIS_SLOTS, emptyStatus, TAP_CHANNELS, type EngineMeters, type EngineStatus } from './rust/engineChannel'
 import { ENGINE_WORKLET_UNSUPPORTED, KernelHelper, renderInEngineWorker, RustEngineNode, sharedGarakEngineModule } from './rust/engineHost'
 import type { EngineRenderAsset } from './rust/engineOffline'
 import { GarakEngineError, utf8Encode } from './rust/garakEngineWasm'
 
 const TICK_INTERVAL_MS = 25
+/** How often the analysis taps follow the editors that are open. */
+const ANALYSIS_SYNC_MS = 200
 const SNAPSHOT_INTERVAL_MS = 40
 /** Note previews: this long (pads and sampled instruments ring a little longer). */
 const PREVIEW_SECONDS = 0.3
@@ -141,6 +146,22 @@ function reverbParams(timeline: NativeProjectTimeline): Map<string, Record<strin
 
 /** The graph order of an applied timeline: track ids and each track's insert ids (meters map through it). */
 interface GraphOrder { ids: string[]; inserts: string[][] }
+
+/** One analysis tap's history, read from the bridge once per publication. */
+class BridgeAnalysisSource implements AnalysisSource {
+  private readonly data = new Float32Array(ANALYSIS_FRAMES * 2)
+  private version = -1
+  private filled = false
+  constructor(private readonly bridge: RustEngineNode, private readonly slot: number) {}
+  latest(): Float32Array | null {
+    const version = this.bridge.analysisVersion
+    if (version !== this.version) {
+      this.version = version
+      if (this.bridge.readAnalysis(this.slot, this.data)) this.filled = true
+    }
+    return this.filled ? this.data : null
+  }
+}
 
 /** PCM and sample sets already handed to one engine node (re-sent only when the decoded buffer changes). */
 class EngineUploads {
@@ -307,6 +328,10 @@ export class WebAudioEngine implements AudioEngine {
   private tapIndices: number[] = []
   private tapSplitter: ChannelSplitterNode | null = null
   private liveNoteId = 0
+  /** Analysis taps the open editors asked for (key: their engine addresses) and how to unregister them. */
+  private analysisKey = ''
+  private analysisRelease: (() => void)[] = []
+  private lastAnalysisSync = 0
 
   /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md). */
   readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time),
@@ -461,6 +486,7 @@ export class WebAudioEngine implements AudioEngine {
     this.liveSource?.disconnect()
     this.liveSource = null
     this.disposeTaps()
+    this.releaseAnalysis()
     this.preview?.dispose()
     this.preview = null
     this.bridge?.dispose()
@@ -1236,11 +1262,70 @@ export class WebAudioEngine implements AudioEngine {
   private tick(): void {
     if (!this.context) return
     const now = performance.now()
+    if (now - this.lastAnalysisSync >= ANALYSIS_SYNC_MS) {
+      this.lastAnalysisSync = now
+      this.syncAnalysis()
+    }
     if (now - this.lastSnapshotTime >= SNAPSHOT_INTERVAL_MS) {
       this.lastSnapshotTime = now
       this.readMeters()
     }
     this.publishSnapshot()
+  }
+
+  /**
+   * Analysis taps follow the editors that are open: the devices whose spectrum, stereo scope or tuner was
+   * looked up recently (devices/effects/analysis.ts, devices/guitar-rig/tuner.ts) become engine taps, and
+   * each streamed tap is registered for its editor. Nothing is requested while no editor looks.
+   */
+  private syncAnalysis(): void {
+    const bridge = this.bridge, synced = this.synced
+    if (!bridge || !synced || !this.engineReady() || bridge.error) { this.releaseAnalysis(); return }
+    const address = (deviceId: string): [number, number] | null => {
+      for (let track = 0; track < synced.tracks.length; track += 1) {
+        const insert = synced.tracks[track].inserts.findIndex(item => item.id === deviceId)
+        if (insert >= 0) return [track, insert]
+      }
+      return null
+    }
+    const wanted: { id: string; track: number; insert: number; tuner: boolean }[] = []
+    for (const [ids, tuner] of [[requestedDeviceAnalysis(), false], [requestedGuitarTuners(), true]] as const) {
+      for (const id of ids) {
+        const at = address(id)
+        if (at && wanted.length < ANALYSIS_SLOTS) wanted.push({ id, track: at[0], insert: at[1], tuner })
+      }
+    }
+    const key = wanted.map(item => `${item.id}:${item.track}:${item.insert}:${item.tuner ? 1 : 0}`).join(',')
+    if (key === this.analysisKey) return
+    this.releaseAnalysis()
+    if (!wanted.length) return
+    this.analysisKey = key
+    void bridge.analysis(wanted.map(({ track, insert, tuner }) => ({ track, insert, tuner })))
+      .catch(error => { this.note(`분석 신호를 요청하지 못했습니다: ${message(error)}`); this.releaseAnalysis() })
+    const rate = bridge.context.sampleRate
+    wanted.forEach((item, slot) => {
+      const source = new BridgeAnalysisSource(bridge, slot)
+      if (item.tuner) {
+        // The tuner window of the 0.3.2 rig analyser: 4096 frames, 8192 above 50 kHz.
+        const tap = { analyser: new EngineAnalyser(source, rate > 50000 ? 8192 : 4096, 'mono'), sampleRate: rate }
+        registerGuitarTunerTap(item.id, tap)
+        this.analysisRelease.push(() => unregisterGuitarTunerTap(tap))
+      } else {
+        // The spectrum reads a 4096-point mono analyser; the utility's scope reads 1024 frames per side.
+        const tap: StereoScopeTap = {
+          analyser: new EngineAnalyser(source, 4096, 'mono'), sampleRate: rate,
+          left: new EngineAnalyser(source, 1024, 'left'), right: new EngineAnalyser(source, 1024, 'right'),
+        }
+        this.analysisRelease.push(registerDeviceAnalysis(item.id, tap))
+      }
+    })
+  }
+
+  private releaseAnalysis(): void {
+    for (const release of this.analysisRelease) release()
+    this.analysisRelease = []
+    if (this.analysisKey && this.bridge && !this.bridge.error) void this.bridge.analysis([]).catch(() => undefined)
+    this.analysisKey = ''
   }
 
   /** Track and dynamics meters from the engine (peaks per graph track, readings per insert). */

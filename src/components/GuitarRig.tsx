@@ -722,7 +722,7 @@ const TUNER_INTERVAL_MS = 60
 
 /**
  * Pedal tuner. Engaging it mutes the rig output (DSP side); while engaged the editor polls the rig's
- * analyser tap and shows note + cents. No engine streams that tap to the UI yet (devices/guitar-rig/tuner.ts).
+ * tuner tap (an engine analysis tap on the web) and shows note + cents. The desktop host does not stream it yet.
  */
 function useTuner(deviceId: string, enabled: boolean): TunerState {
   const native = isDesktopApp()

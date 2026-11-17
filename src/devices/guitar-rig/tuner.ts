@@ -1,9 +1,12 @@
+import { ANALYSIS_REQUEST_MS, type AnalysisReader } from '../effects/analysis.js'
+
 /**
- * Rack tuner. A tap of the signal at the tuner's rack position (an AnalyserNode) is registered per device; the editor
+ * Rack tuner. The engine streams the signal arriving at the tuner's rack position (garak-dsp
+ * `GuitarRig::process_interleaved_tap`, an engine analysis tap) and registers it per device; the editor
  * reads it here and runs the same YIN estimator as the pitch editor (src/devices/pitch-editor/analysis.ts:
  * cumulative mean normalised difference, 0.15 threshold, parabolic refinement of the raw difference).
- * Both engines render the rig off the main thread and neither streams that tap to the UI yet, so the
- * readout waits for one (the estimator and the editor are ready for it).
+ * Looking the tap up is the request for it (as for the 시김새 analysers, devices/effects/analysis.ts). The
+ * desktop host has no analysis stream to the UI yet.
  */
 export const TUNER_A4 = 440
 const NOTE_NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'] as const
@@ -72,12 +75,23 @@ export function detectPitch(samples: Float32Array, sampleRate: number): number |
 }
 
 /** What a live rig exposes for its tuner. */
-export interface GuitarTunerTap { readonly analyser: AnalyserNode; readonly sampleRate: number }
+export interface GuitarTunerTap { readonly analyser: AnalysisReader; readonly sampleRate: number }
 const taps = new Map<string, GuitarTunerTap>()
+const requested = new Map<string, number>()
+const now = () => typeof performance !== 'undefined' ? performance.now() : Date.now()
 
-/** Called by the audio graph for realtime contexts only; offline renders never replace the live tap. */
+/** Called by the engine host once it streams the rig's tuner input. */
 export function registerGuitarTunerTap(deviceId: string, tap: GuitarTunerTap): void { taps.set(deviceId, tap) }
 export function unregisterGuitarTunerTap(tap: GuitarTunerTap): void {
   for (const [id, value] of taps) if (value === tap) taps.delete(id)
 }
-export function guitarTunerTap(deviceId: string): GuitarTunerTap | undefined { return taps.get(deviceId) }
+/** The rig's tuner tap, if the engine streams it; asks the engine for it either way. */
+export function guitarTunerTap(deviceId: string): GuitarTunerTap | undefined {
+  requested.set(deviceId, now())
+  return taps.get(deviceId)
+}
+/** Rigs whose tuner an editor looked up within `maxAgeMs` (older requests are forgotten). */
+export function requestedGuitarTuners(maxAgeMs = ANALYSIS_REQUEST_MS, at = now()): string[] {
+  for (const [id, time] of requested) if (at - time > maxAgeMs) requested.delete(id)
+  return [...requested.keys()]
+}

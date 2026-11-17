@@ -127,7 +127,7 @@ export function EqView(props: DeviceViewProps) {
   const [selected, setSelected] = useState<number | null>(null)
   const [open, setOpen] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; key: number | null; freq: number; db: number } | null>(null)
-  const tap = useAnalysisTap(props.device.id, props.device.enabled)
+  const tap = useAnalysisTap(props.device.id, props.engine.kind === 'web-audio' && props.device.enabled)
   const band = selected ? model.bands[selected - 1] : null
   const name = effectDeviceName(props.device)
   return <div className="eqv">
@@ -158,14 +158,13 @@ function EqEditor(props: DeviceViewProps & { model: ReturnType<typeof useEqModel
   const [notes, setNotes] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; key: number | null; freq: number; db: number } | null>(null)
   const band = selected ? model.bands[selected - 1] : null
-  // Only while an engine streams this device's analysis (none does yet: devices/effects/analysis.ts).
-  const web = !!props.spectrum
+  const web = props.engine.kind === 'web-audio'
   const hz = (v: number) => formatHz(v)
   return <EditorDialog eyebrow="SIGIMSAE · PARAMETRIC EQ" title={effectDeviceName(props.device)} subtitle={`파라메트릭 EQ · 밴드 ${model.bands.filter(b => b.on).length}/${EQ_BAND_COUNT} 사용`} onClose={props.onClose}
     hint={GRAPH_HINT}
     actions={<>
       <div className="sgd-seg" role="radiogroup" aria-label="그래프 범위">{[6, 12, 24].map(r => <button key={r} role="radio" aria-checked={range === r} className={range === r ? 'is-on' : ''} onClick={() => setRange(r)}>±{r}</button>)}</div>
-      <button className={`sgd-toggle${analyzer && web ? ' is-on' : ''}`} aria-pressed={analyzer && web} disabled={!web} onClick={() => setAnalyzer(a => !a)} title={web ? '스펙트럼 분석기 (EQ 뒤 신호)' : '스펙트럼 분석기는 아직 오디오 엔진에서 지원하지 않습니다'}><Icon name="synth" size={14}/>분석기</button>
+      <button className={`sgd-toggle${analyzer && web ? ' is-on' : ''}`} aria-pressed={analyzer && web} disabled={!web} onClick={() => setAnalyzer(a => !a)} title={web ? '스펙트럼 분석기 (EQ 뒤 신호)' : '스펙트럼 분석기는 웹 오디오 엔진에서만 표시됩니다'}><Icon name="synth" size={14}/>분석기</button>
       <button className={`sgd-toggle${notes ? ' is-on' : ''}`} aria-pressed={notes} onClick={() => setNotes(n => !n)} title="음이름 표시"><Icon name="note" size={14}/>음이름</button>
     </>}>
     <div className="eqe-graph">
@@ -173,7 +172,7 @@ function EqEditor(props: DeviceViewProps & { model: ReturnType<typeof useEqModel
         onDragStart={model.ops.dragStart} onDrag={model.ops.drag} onDragEnd={model.ops.dragEnd} onStep={model.ops.step} onToggle={model.ops.toggle}
         onReset={model.ops.reset} onRemove={key => { model.ops.remove(key); onSelect(null) }} onAdd={(f, db) => onSelect(model.ops.add(f, db))}
         onMenu={(key, x, y, freq, db) => setMenu({ x, y, key, freq, db })} spectrum={analyzer ? props.spectrum : undefined} showNotes={notes} ariaLabel="EQ 주파수 응답 그래프. 노드를 선택해 방향키로 조절"/>
-      {!web && <span className="eqe-note">분석기: 오디오 엔진은 아직 스펙트럼을 보내지 않습니다</span>}
+      {!web && <span className="eqe-note">분석기: 데스크톱 엔진은 아직 스펙트럼을 보내지 않습니다</span>}
       {model.message && <span className="eqe-message" role="status">{model.message}</span>}
     </div>
     <div className="eqe-panel">

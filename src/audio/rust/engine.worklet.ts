@@ -1,6 +1,6 @@
 import { GarakEngineError, instantiateGarakEngine, LIVE_EVENT, type EngineApplied, type GarakEngine, type LiveEventKind } from './garakEngineWasm.js'
 import {
-  CommandRing, emptyStatus, ENGINE_PROCESSOR, MeterWriter, RING_LIVE, StatusWriter,
+  ANALYSIS_FRAMES, AnalysisRings, AnalysisWriter, CommandRing, emptyStatus, ENGINE_PROCESSOR, MeterWriter, RING_LIVE, StatusWriter,
   type EngineMeters, type EngineProcessorOptions, type EngineReply, type EngineRequest, type RingCommand,
 } from './engineChannel.js'
 
@@ -18,6 +18,8 @@ const LIVE_KINDS = Object.keys(LIVE_EVENT) as LiveEventKind[]
 const STATUS_EVERY = 14
 /** Meters go to the shared block every this many quanta (~21 ms at 48 kHz). */
 const METERS_EVERY = 8
+/** Analysis taps are published every this many quanta (~32 ms at 48 kHz) while any is requested. */
+const ANALYSIS_EVERY = 12
 /** Retired graphs are freed this many quanta after the last edit (never inside the edit's quantum). */
 const COLLECT_AFTER = 8
 /** A staged update builds tracks after the render until this much of the quantum is used (fraction). */
@@ -38,6 +40,10 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
   private readonly ring: CommandRing | null
   private readonly writer: StatusWriter | null
   private readonly meters: MeterWriter | null
+  private readonly analysisWriter: AnalysisWriter | null
+  private readonly analysisRings = new AnalysisRings()
+  private analysisCount = 0
+  private sinceAnalysis = 0
   private readonly clock: () => number
   private readonly status = emptyStatus()
   private readonly queue: EngineRequest[] = []
@@ -62,6 +68,7 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
     this.ring = init?.shared ? new CommandRing(init.shared.ring) : null
     this.writer = init?.shared ? new StatusWriter(init.shared.status) : null
     this.meters = init?.shared ? new MeterWriter(init.shared.meters) : null
+    this.analysisWriter = init?.shared?.analysis ? new AnalysisWriter(init.shared.analysis) : null
     // AudioWorkletGlobalScope has no `performance` in Chrome. A benchmark passes a clock a worker keeps
     // current (microseconds); otherwise Date.now() (1 ms steps) still averages out over many quanta.
     const shared = init?.clock ? new Float64Array(init.clock) : null
@@ -118,6 +125,12 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
           case 'metronome': engine.setMetronome(message.on, message.gain, message.strokes ? [message.strokes[0], message.strokes[1], message.strokes[2]] : undefined); break
           case 'monitor': engine.monitor(message.tracks); this.monitoring = message.tracks.length > 0; break
           case 'taps': engine.taps(message.tracks); this.tapCount = message.tracks.length; break
+          case 'analysis':
+            engine.analysis(message.taps)
+            this.analysisCount = Math.min(message.taps.length, engine.maxAnalysis)
+            this.analysisRings.clear()
+            this.sinceAnalysis = ANALYSIS_EVERY
+            break
           case 'dispose':
             engine.destroy()
             this.engine = null
@@ -235,6 +248,7 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
           for (let i = 0; i < left.length; i += 1) { l[at + i] = view[k * slot + 2 * i]; r[at + i] = view[k * slot + 2 * i + 1] }
         }
       }
+      if (this.analysisCount) this.analysisRings.append(engine.analysisView(), this.maxBlock, this.analysisCount, left.length)
       at += left.length
     }
     const s = this.status
@@ -260,7 +274,15 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
         this.meters.write(m.revision, m.peaks, m.peaks.length, m.dynamics)
       }
     }
-    // Everything this quantum did on the audio thread: drain, render, staged build, meters.
+    if (this.analysisCount && ++this.sinceAnalysis >= ANALYSIS_EVERY) {
+      this.sinceAnalysis = 0
+      if (this.analysisWriter) this.analysisWriter.write(this.analysisRings, this.analysisCount)
+      else {
+        const slots = Array.from({ length: this.analysisCount }, (_, k) => { const out = new Float32Array(ANALYSIS_FRAMES * 2); this.analysisRings.copySlot(k, out); return out })
+        this.port.postMessage({ type: 'analysis', slots } satisfies EngineReply, slots.map(slot => slot.buffer))
+      }
+    }
+    // Everything this quantum did on the audio thread: drain, render, staged build, meters, analysis.
     const elapsed = this.clock() - began
     s.quanta += 1
     s.renderMs += elapsed

@@ -25,7 +25,8 @@ use core::cell::UnsafeCell;
 
 use garak_engine::metronome::Clicks;
 use garak_engine::{
-    Applied, Controller, DynamicsReading, EngineConfig, LiveEvent, MAX_TAPS, PcmAsset, Renderer, engine,
+    AnalysisTap, Applied, Controller, DynamicsReading, EngineConfig, LiveEvent, MAX_ANALYSIS, MAX_TAPS,
+    PcmAsset, Renderer, engine,
 };
 
 /// Input channels a render call can carry (the worklet's live input: a MediaStream).
@@ -572,6 +573,43 @@ pub extern "C" fn garak_engine_tap_ptr() -> *const f32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn garak_engine_max_taps() -> u32 {
     MAX_TAPS as u32
+}
+
+/// Analysis taps (the editors' spectrum / stereo scope / rig tuner): `count` triples of i32 at `taps` —
+/// graph track, plan insert index, kind (0 the insert's output, 1 a guitar rig's tuner input). Up to
+/// `MAX_ANALYSIS`; 0 turns them off. Returns 0 or -1.
+///
+/// # Safety
+/// `taps` is null or valid for `3 * count` i32 reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_engine_analysis(taps: *const i32, count: usize) -> i32 {
+    // SAFETY: caller contract.
+    let raw = if taps.is_null() || count == 0 {
+        &[][..]
+    } else {
+        unsafe { core::slice::from_raw_parts(taps, count.saturating_mul(3)) }
+    };
+    let mut list = [AnalysisTap::OFF; MAX_ANALYSIS];
+    let mut n = 0;
+    for (slot, &[track, insert, kind]) in list.iter_mut().zip(raw.as_chunks::<3>().0) {
+        *slot = AnalysisTap { track, insert, tuner: kind == 1 };
+        n += 1;
+    }
+    if raw.len() / 3 > MAX_ANALYSIS {
+        return -1;
+    }
+    status(with(|i| i.control.set_analysis(list.get(..n).unwrap_or(&[])).map(|_| ())))
+}
+
+/// The analysis taps of the last render call: `MAX_ANALYSIS` slots of `max_block` interleaved stereo frames.
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_engine_analysis_ptr() -> *const f32 {
+    with(|i| i.render.analysis_output().as_ptr()).unwrap_or(core::ptr::null())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_engine_max_analysis() -> u32 {
+    MAX_ANALYSIS as u32
 }
 
 /// A live event for the track at graph index `track`: `kind` 0 note on (`pitch`, `value` = velocity

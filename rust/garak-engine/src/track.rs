@@ -114,9 +114,28 @@ pub(crate) struct TrackInfo {
     pub instrument_tail: f64,
 }
 
+/// Analysis probes one track can carry in a block (engine `set_analysis`; an editor rarely shows two).
+pub(crate) const PROBES: usize = 2;
+
+/// One analysis probe: the signal after the insert at plan index `insert` (-1: off), or, with `tuner`, a
+/// guitar rig's tuner input there (mono, written to both channels).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Probe {
+    pub insert: i32,
+    pub tuner: bool,
+}
+
+impl Probe {
+    pub const OFF: Probe = Probe { insert: -1, tuner: false };
+}
+
 #[derive(Debug)]
 pub(crate) struct Track {
     pub plan: TrackPlan,
+    /// Analysis probes of this block, set by the renderer before the track renders.
+    pub probes: [Probe; PROBES],
+    /// `PROBES` interleaved stereo slots of `max_block` frames (preallocated: no allocation when a probe is set).
+    pub probe_out: Vec<f32>,
     /// Index in the graph (the host callbacks name tracks by it).
     pub index: usize,
     pub windows: Vec<Window>,
@@ -176,6 +195,40 @@ pub(crate) struct Track {
 
 /// Value of a lane (in its units) at a project frame.
 #[inline]
+/// After the insert at plan index `source`: output probes copy the block, a tuner probe spreads its mono
+/// tap (written by the rig to the front of its slot) to interleaved stereo.
+fn copy_probes(
+    probes: &[Probe; PROBES],
+    out: &mut [f32],
+    slot: usize,
+    source: i32,
+    tuner: Option<usize>,
+    buf: &[f32],
+    count: u32,
+) {
+    let frames = count as usize;
+    if let Some(s) = tuner.and_then(|k| out.get_mut(k * slot..k * slot + frames * 2)) {
+        // Back to front, so each mono value is read before its stereo pair overwrites it.
+        for i in (0..frames).rev() {
+            let v = s.get(i).copied().unwrap_or(0.0);
+            if let Some([l, r]) = s.get_mut(2 * i..2 * i + 2).and_then(|p| <&mut [f32; 2]>::try_from(p).ok())
+            {
+                *l = v;
+                *r = v;
+            }
+        }
+    }
+    let Some(block) = buf.get(..frames * 2) else { return };
+    for (k, p) in probes.iter().enumerate() {
+        if p.insert == source
+            && !p.tuner
+            && let Some(s) = out.get_mut(k * slot..k * slot + frames * 2)
+        {
+            s.copy_from_slice(block);
+        }
+    }
+}
+
 fn lane_value(plans: &[AutomationLane], l: &mut LaneRuntime, frame: f64) -> f64 {
     match plans.get(l.lane) {
         Some(lane) => automation::value(lane, automation::evaluate(lane, frame, &mut l.hint)),
@@ -239,6 +292,8 @@ impl Track {
         let sample_rate = f64::from(p.sample_rate);
         let mut track = Track {
             plan: t.clone(),
+            probes: [Probe::OFF; PROBES],
+            probe_out: vec![0.0; max_block as usize * 2 * PROBES],
             windows: Vec::new(),
             index: 0,
             inserts: Vec::new(),
@@ -582,10 +637,20 @@ impl Track {
             output_delay,
             source,
             cursors,
+            probes,
+            probe_out,
             ..
         } = self;
         let Some(buf) = buffer.get_mut(..n) else { return };
         buf.fill(0.0);
+        let slot = probe_out.len() / PROBES;
+        for (k, p) in probes.iter().enumerate() {
+            if p.insert >= 0
+                && let Some(s) = probe_out.get_mut(k * slot..k * slot + n)
+            {
+                s.fill(0.0);
+            }
+        }
         if !plan.enabled {
             self.peak = 0.0;
             for tap in [pre_tap, post_tap, fader_tap] {
@@ -687,8 +752,15 @@ impl Track {
             if let Some(bpm) = tempo {
                 insert.set_tempo(bpm);
             }
+            let source = i32::from(insert.source);
+            // A tuner probe here: the rig writes its tuner input (mono) to the front of the probe's slot.
+            let tuner = probes.iter().position(|p| p.tuner && p.insert == source);
             if !insert.automated {
-                insert.process(buf);
+                match tuner.and_then(|k| probe_out.get_mut(k * slot..k * slot + count as usize)) {
+                    Some(tap) => insert.process_tuner_tap(buf, tap),
+                    None => insert.process(buf),
+                }
+                copy_probes(probes, probe_out, slot, source, tuner, buf, count);
                 continue;
             }
             let mut offset = 0u32;
@@ -705,10 +777,17 @@ impl Track {
                 }
                 insert.commit();
                 if let Some(part) = buf.get_mut(offset as usize * 2..(offset + chunk) as usize * 2) {
-                    insert.process(part);
+                    let from = offset as usize;
+                    match tuner
+                        .and_then(|k| probe_out.get_mut(k * slot + from..k * slot + from + chunk as usize))
+                    {
+                        Some(tap) => insert.process_tuner_tap(part, tap),
+                        None => insert.process(part),
+                    }
                 }
                 offset += chunk;
             }
+            copy_probes(probes, probe_out, slot, source, tuner, buf, count);
         }
         // A reduced-latency monitor deliberately avoids waiting for unrelated tracks. A return's input is its
         // sends, never a live input: it always stays compensated.

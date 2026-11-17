@@ -9,7 +9,7 @@
 //      AudioContext.renderCapacity load when the browser has it) and rendered offline. On the
 //      isolated page the worklet is timed with a microsecond clock (engineBenchmark.preciseClock);
 //   5. the web host paths (docs/RUST_ENGINE.md 5.7): a count-in clicked by the engine, track and dynamics
-//      meters, a library preview while playing, input monitoring of a MediaStream, route monitoring
+//      meters, an editor's analysis tap (spectrum + scope), a library preview while playing, input monitoring of a MediaStream, route monitoring
 //      and a route recording from the engine's taps, and a pre-master (stem) render.
 // Runs twice: a plain page (postMessage channel) and a cross-origin isolated one (SharedArrayBuffer).
 // Run after `pnpm rust:wasm`: `node scripts/rust-engine-smoke.mjs`. Optional GARAK_CHROMIUM_EXECUTABLE.
@@ -181,6 +181,20 @@ const TASK = async ({ name, arg }) => {
         out.masterLevel = engine.getMasterLevel()
         const compressor = chain.devices.find(device => device.type === 'compressor')
         out.deviceMeter = engine.getDeviceMeter(compressor.id)
+        // The EQ editor's spectrum and the utility's scope: an analysis tap the engine streams while the editor looks.
+        const { deviceAnalysisTap } = await import('/src/devices/effects/analysis.ts')
+        const eqDevice = chain.devices.find(device => device.type === 'eq')
+        out.spectrum = null
+        for (let i = 0; i < 40 && !out.spectrum; i += 1) {
+          await sleep(50)
+          const tap = deviceAnalysisTap(eqDevice.id)
+          if (!tap) continue
+          const bins = new Float32Array(tap.analyser.frequencyBinCount), left = new Float32Array(tap.left.fftSize)
+          tap.analyser.getFloatFrequencyData(bins)
+          tap.left.getFloatTimeDomainData(left)
+          const loudest = Math.max(...bins), peak = Math.max(...left.map(Math.abs))
+          if (loudest > -90 && peak > 0) out.spectrum = { loudestDb: loudest, scopePeak: peak, afterMs: (i + 1) * 50 }
+        }
         // A library preview (no track) plays on the preview engine; the project keeps playing.
         await engine.previewNote('keys', 64).catch(error => { out.previewError = String(error) })
         out.afterPreview = engine.diagnostics().playing
@@ -290,6 +304,7 @@ try {
     assert(h.beatAfterCountIn < 0.25, `the transport starts at the downbeat (beat ${h.beatAfterCountIn})`)
     assert(h.trackLevel > 0.001, `track meters read the engine (${h.trackLevel})`)
     assert(h.deviceMeter && h.deviceMeter.input > 0, 'dynamics meters read the engine')
+    assert(h.spectrum, 'the EQ editor spectrum and scope read an engine analysis tap')
     assert.equal(h.previewError, undefined)
     assert.equal(h.afterPreview, true, 'a library preview does not stop the project')
     assert.equal(h.monitoring.on, true, 'monitoring while playing')

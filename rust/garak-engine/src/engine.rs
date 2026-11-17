@@ -25,10 +25,25 @@ use crate::protocol;
 use crate::queue::{Consumer, Producer, channel};
 use crate::routes::{self, Levels};
 use crate::tempo::TempoMap;
-use crate::track::{Feed, LiveEvent, Track, TrackInfo};
+use crate::track::{Feed, LiveEvent, PROBES, Probe, Track, TrackInfo};
 
 /// Route recording taps the renderer copies out per block (docs/RUST_ENGINE.md 5.7).
 pub const MAX_TAPS: usize = 8;
+/// Analysis taps (editor spectrum / stereo scope / rig tuner) the renderer copies out per block.
+pub const MAX_ANALYSIS: usize = 4;
+
+/// One analysis tap: the signal after the insert at plan index `insert` of graph track `track`, or with
+/// `tuner` a guitar rig's tuner input there (mono on both channels). `track < 0`: off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnalysisTap {
+    pub track: i32,
+    pub insert: i32,
+    pub tuner: bool,
+}
+
+impl AnalysisTap {
+    pub const OFF: AnalysisTap = AnalysisTap { track: -1, insert: -1, tuner: false };
+}
 /// Longest metronome stroke (C++ `setMetronome`: 4 s at the engine rate).
 const MAX_STROKE_SECONDS: usize = 4;
 
@@ -166,6 +181,7 @@ enum Command {
     },
     Monitor([u64; 4]),
     Taps([i32; MAX_TAPS]),
+    Analysis([AnalysisTap; MAX_ANALYSIS]),
     Live {
         track: u32,
         event: LiveEvent,
@@ -250,6 +266,11 @@ pub struct Renderer {
     /// `MAX_TAPS` interleaved stereo slots of `max_block` frames.
     taps: [i32; MAX_TAPS],
     tap_out: Vec<f32>,
+    /// Analysis taps and their signals of the last render call, `MAX_ANALYSIS` interleaved stereo slots of
+    /// `max_block` frames. `probed`: tracks may still carry probes from the previous block.
+    analysis: [AnalysisTap; MAX_ANALYSIS],
+    analysis_out: Vec<f32>,
+    probed: bool,
     live_played: u64,
     live_ignored: u64,
     /// The master feed of the current block for master-resampling routes.
@@ -316,6 +337,9 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             monitor: [0; 4],
             taps: [-1; MAX_TAPS],
             tap_out: vec![0.0; config.max_block as usize * 2 * MAX_TAPS],
+            analysis: [AnalysisTap::OFF; MAX_ANALYSIS],
+            analysis_out: vec![0.0; config.max_block as usize * 2 * MAX_ANALYSIS],
+            probed: false,
             live_played: 0,
             live_ignored: 0,
             master_feed: vec![0.0; config.max_block as usize * 2],
@@ -619,6 +643,22 @@ impl Controller {
             *slot = t;
         }
         self.enqueue(Command::Taps(taps))
+    }
+
+    /// Analysis taps (at most `MAX_ANALYSIS`; the editors that are open ask for them): their signals are
+    /// copied out every block (`Renderer::analysis_output`). An empty list turns them off.
+    pub fn set_analysis(&mut self, taps: &[AnalysisTap]) -> Result<u64, Error> {
+        require(taps.len() <= MAX_ANALYSIS, "Too many analysis taps")?;
+        require(
+            taps.iter()
+                .all(|t| (-1..256).contains(&t.track) && (-1..=i32::from(u16::MAX)).contains(&t.insert)),
+            "Invalid analysis tap",
+        )?;
+        let mut list = [AnalysisTap::OFF; MAX_ANALYSIS];
+        for (slot, &t) in list.iter_mut().zip(taps) {
+            *slot = t;
+        }
+        self.enqueue(Command::Analysis(list))
     }
 
     /// A live note / controller event for the track at graph index `track` (applied at the next block):
@@ -1458,6 +1498,10 @@ impl Renderer {
                     self.taps = taps;
                     self.tap_out.fill(0.0);
                 }
+                Command::Analysis(taps) => {
+                    self.analysis = taps;
+                    self.analysis_out.fill(0.0);
+                }
                 Command::Live { track, event } => {
                     let played = self
                         .active
@@ -1693,6 +1737,7 @@ impl Renderer {
                     ..Io::default()
                 };
                 let gain = (self.master_gain, self.target_master_gain);
+                let placed = Self::place_probes(g, &self.analysis, &mut self.probed);
                 Self::render_tracks(
                     g,
                     block,
@@ -1720,6 +1765,7 @@ impl Renderer {
                     g.master.process(block);
                 }
                 Self::copy_taps(g, &self.taps, &mut self.tap_out, self.config.max_block, cursor, count);
+                Self::copy_analysis(g, &placed, &mut self.analysis_out, self.config.max_block, cursor, count);
             }
             for x in block.iter_mut() {
                 if !x.is_finite() {
@@ -1787,6 +1833,63 @@ impl Renderer {
                 None => dst.fill(0.0),
             }
         }
+    }
+
+    /// Puts this block's analysis probes on their tracks; returns (graph track, probe) per tap (-1: none).
+    fn place_probes(
+        g: &mut Graph,
+        taps: &[AnalysisTap; MAX_ANALYSIS],
+        probed: &mut bool,
+    ) -> [(i32, usize); MAX_ANALYSIS] {
+        let mut placed = [(-1i32, 0usize); MAX_ANALYSIS];
+        let any = taps.iter().any(|t| t.track >= 0);
+        if *probed || any {
+            for t in &mut g.tracks {
+                t.probes = [Probe::OFF; PROBES];
+            }
+        }
+        *probed = any;
+        for (k, tap) in taps.iter().enumerate() {
+            let Some(t) = usize::try_from(tap.track).ok().and_then(|i| g.tracks.get_mut(i)) else { continue };
+            if let Some((p, probe)) = t.probes.iter_mut().enumerate().find(|(_, p)| p.insert < 0)
+                && let Some(out) = placed.get_mut(k)
+            {
+                *probe = Probe { insert: tap.insert, tuner: tap.tuner };
+                *out = (tap.track, p);
+            }
+        }
+        placed
+    }
+
+    /// The probed signals for frames `[cursor, cursor + count)` of this call (silence for a tap that found
+    /// no track).
+    fn copy_analysis(
+        g: &Graph,
+        placed: &[(i32, usize); MAX_ANALYSIS],
+        out: &mut [f32],
+        max_block: u32,
+        cursor: u32,
+        count: u32,
+    ) {
+        let slot = max_block as usize * 2;
+        let n = count as usize * 2;
+        for (k, &(track, probe)) in placed.iter().enumerate() {
+            let from = k * slot + cursor as usize * 2;
+            let Some(dst) = out.get_mut(from..from + n) else { continue };
+            let src = usize::try_from(track).ok().and_then(|t| g.tracks.get(t)).and_then(|t| {
+                let size = t.probe_out.len() / PROBES;
+                t.probe_out.get(probe * size..probe * size + n)
+            });
+            match src {
+                Some(src) => dst.copy_from_slice(src),
+                None => dst.fill(0.0),
+            }
+        }
+    }
+
+    /// The analysis taps of the last render call (`MAX_ANALYSIS` stereo slots of `max_block` frames).
+    pub fn analysis_output(&self) -> &[f32] {
+        &self.analysis_out
     }
 
     /// The transport reached the project end (no cycle): plug-in style instruments release their

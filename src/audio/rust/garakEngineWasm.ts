@@ -77,6 +77,10 @@ interface EngineExports {
   garak_engine_preview_note(track: number, pitch: number, velocity: number, frames: number): number
   garak_engine_control_change(track: number, controller: number, value: number): number
   garak_engine_all_notes_off(track: number): number
+  // Analysis taps (editor spectrum / stereo scope / rig tuner); absent from older builds.
+  garak_engine_analysis?(taps: number, count: number): number
+  garak_engine_analysis_ptr?(): number
+  garak_engine_max_analysis?(): number
 }
 
 /**
@@ -95,6 +99,9 @@ export type LiveEventKind = keyof typeof LIVE_EVENT
 
 /** One dynamics meter reading: graph track index, plan insert index, detector peak and lowest gain (linear). */
 export interface EngineDynamicsReading { track: number; insert: number; input: number; gain: number }
+
+/** One analysis tap: graph track, plan insert index, and whether it is a guitar rig's tuner input. */
+export interface EngineAnalysisTap { track: number; insert: number; tuner: boolean }
 
 /** A reverb kernel computed by a helper instance (`reverbKernel`), for `importKernel`. */
 export interface EngineKernel { type: number; size: number; data: Float32Array }
@@ -155,6 +162,12 @@ export interface GarakEngine {
   readonly maxTaps: number
   /** The route taps of the last render: `maxTaps` slots of `maxBlock` interleaved stereo frames. */
   tapView(): Float32Array
+  /** Analysis taps (at most `maxAnalysis`): an insert's output, or a guitar rig's tuner input (mono on both channels). */
+  analysis(taps: readonly EngineAnalysisTap[]): void
+  /** 0 when this module has no analysis taps. */
+  readonly maxAnalysis: number
+  /** The analysis taps of the last render: `maxAnalysis` slots of `maxBlock` interleaved stereo frames. */
+  analysisView(): Float32Array
   live(track: number, kind: LiveEventKind, pitch?: number, value?: number, id?: number): void
   /** Each track's highest peak since `clearPeaks` (graph order); `count` tracks. */
   peaks(): { values: Float32Array; count: number }
@@ -224,7 +237,9 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
   let viewBuffer: ArrayBuffer | null = null
   let interleaved = new Float32Array(0), left = new Float32Array(0), right = new Float32Array(0)
   let input = new Float32Array(0), taps = new Float32Array(0), peakView = new Float32Array(0), dynamics = new DataView(new ArrayBuffer(0))
+  let analysisView = new Float32Array(0)
   const maxInputChannels = x.garak_engine_max_input_channels(), maxTaps = x.garak_engine_max_taps()
+  const maxAnalysis = x.garak_engine_max_analysis?.() ?? 0
   const views = () => {
     if (viewBuffer === x.memory.buffer) return
     viewBuffer = x.memory.buffer as ArrayBuffer
@@ -234,6 +249,7 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
     right = new Float32Array(viewBuffer, planar + maxBlock * 4, maxBlock)
     input = new Float32Array(viewBuffer, x.garak_engine_input_ptr(), maxBlock * maxInputChannels)
     taps = new Float32Array(viewBuffer, x.garak_engine_tap_ptr(), maxBlock * 2 * maxTaps)
+    if (maxAnalysis && x.garak_engine_analysis_ptr) analysisView = new Float32Array(viewBuffer, x.garak_engine_analysis_ptr(), maxBlock * 2 * maxAnalysis)
     peakView = new Float32Array(viewBuffer, x.garak_engine_peaks_ptr(), 256)
     dynamics = new DataView(viewBuffer, x.garak_engine_dynamics_ptr(), 256 * 12)
   }
@@ -311,6 +327,14 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
     monitor(tracks) { withIndices(tracks, (p, n) => x.garak_engine_monitor(p, n), false) },
     taps(list) { withIndices(list, (p, n) => x.garak_engine_taps(p, n), true) },
     tapView() { views(); return taps },
+    maxAnalysis,
+    analysis(list) {
+      if (!x.garak_engine_analysis) { if (list.length) throw new Error('garak-engine.wasm has no analysis taps'); return }
+      const bytes = new Uint8Array(list.length * 12), view = new DataView(bytes.buffer)
+      list.forEach((tap, k) => { view.setInt32(k * 12, tap.track, true); view.setInt32(k * 12 + 4, tap.insert, true); view.setInt32(k * 12 + 8, tap.tuner ? 1 : 0, true) })
+      check(withBytes(bytes, (p) => x.garak_engine_analysis!(p, list.length)))
+    },
+    analysisView() { views(); return analysisView },
     live(track, kind, pitch = 0, value = 0, id = 0) { check(x.garak_engine_live(track, LIVE_EVENT[kind], pitch, value, id)) },
     peaks() { views(); return { values: peakView, count: x.garak_engine_track_count() } },
     clearPeaks() { x.garak_engine_clear_peaks() },
