@@ -32,7 +32,7 @@ shasum -a 256 -c SHA256SUMS-macos-arm64.txt
 
 음원 재생·입력 모니터링·녹음·WAV 출력은 `garak-audio-host` 프로세스의 **Core Audio** backend를 사용합니다. miniaudio 0.11.26으로 장치/레이트/채널을 열고 내장 음원·기타 앰프·이펙트와 VST3가 같은 callback에서 처리됩니다. 트랙은 웹과 같은 통합 Rust 엔진(`aarch64-apple-darwin` 정적 라이브러리)이 렌더하고, C++ 셸이 장치·전송·마스터·녹음과 VST3·IEUM WAVE 호스트 노드를 맡습니다. VST3는 **arm64 플러그인**을 사용하며 자체 창은 NSView에 연결합니다. Intel 전용 플러그인용 Rosetta bridge와 AU/CLAP/VST2 호스트는 없습니다. ASIO는 Windows 경로입니다.
 
-데스크톱에서 Web Audio는 압축 자산의 일회성 `OfflineAudioContext` 디코딩·비실시간 피치 작업에만 남습니다. 0.3.2에 한해 `GARAK_RUST_ENGINE=0`·`GARAK_RUST_EFFECTS=none` 환경 변수로 이전 C++ 렌더 경로를 쓸 수 있으며, 다음 패치에서 삭제할 예정입니다. 실제 출력과 모니터링 PCM은 JavaScript/IPC를 버퍼마다 왕복하지 않습니다. 새 macOS 빌드·창·Core Audio·권한 동작은 해당 커밋의 CI와 실제 장치에서 확인해야 합니다. Linux에서 통과한 실제 SDK/fixture 검사를 Mac 장치 실측으로 표시하지 않습니다. [네이티브 엔진과 검증 범위](NATIVE_AUDIO.md)
+데스크톱에서 Web Audio는 압축 자산의 일회성 `OfflineAudioContext` 디코딩·비실시간 피치 작업에만 남습니다. 트랙·마스터 버스·메트로놈은 항상 통합 Rust 엔진이 렌더합니다(이전 C++ 렌더 경로는 0.3.3에서 삭제). 실제 출력과 모니터링 PCM은 JavaScript/IPC를 버퍼마다 왕복하지 않습니다. 새 macOS 빌드·창·Core Audio·권한 동작은 해당 커밋의 CI와 실제 장치에서 확인해야 합니다. Linux에서 통과한 실제 SDK/fixture 검사를 Mac 장치 실측으로 표시하지 않습니다. [네이티브 엔진과 검증 범위](NATIVE_AUDIO.md)
 
 ## 소스에서 빌드하기
 

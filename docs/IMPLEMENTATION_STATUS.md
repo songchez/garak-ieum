@@ -10,7 +10,7 @@
 
 오디오 렌더를 **하나의 Rust 엔진**(`rust/garak-engine`)으로 합쳤습니다. 데스크톱은 C ABI(`rust/garak-ffi`)로 링크하고 C++ `RenderEngine`은 장치 I/O·전송·마스터·메트로놈·VST3/IEUM WAVE 호스트 노드·render-ahead 링·녹음을 맡는 셸이 됩니다. 트랙·내장 악기·기타 랙·시김새·센드/리턴·트랙 라우트는 Rust 엔진이 처리 레벨마다 멀티코어로 렌더합니다. 웹은 같은 엔진을 AudioWorklet(`garak-engine-wasm`)에서 돌리고(미터 블록, 라이브 이벤트 링, 입력 모니터링, 녹음 탭), Web Audio 그래프는 엔진이 거부한 프로젝트의 자동 대체 경로입니다. 이펙트와 악기 보이스는 `rust/garak-dsp`(`no_std`, `garak-dsp.wasm`)에 있습니다. 입력은 [렌더-diff 프로토콜](RENDER_DIFF_PROTOCOL.md) 그대로이며 `Controller`/`Renderer`가 lock-free 큐로만 통신합니다.
 
-- 0.3.2에 한한 숨은 대체 경로: 데스크톱 `GARAK_RUST_ENGINE=0`(+ `GARAK_RUST_EFFECTS=none`), 웹 `localStorage` `garak.rustEngine=0`·`garak.rustDsp=0`. 이전 TS·C++ 엔진은 다음 패치에서 삭제할 예정입니다.
+- 데스크톱의 이전 C++ 트랙 경로·C++ 이펙트 DSP는 0.3.3에서 삭제(데스크톱은 항상 Rust 엔진, 패리티는 골든 레퍼런스로 검사). 웹의 숨은 대체 경로: `localStorage` `garak.rustEngine=0`·`garak.rustDsp=0`. 이전 TS 엔진은 다음 패치에서 삭제할 예정입니다.
 - 패리티·CPU·남은 일(웹의 샘플 세트 등록, 데스크톱 IEUM WAVE의 C++ 호스트 노드 유지, 블록 경계의 라이브 MIDI)은 [RUST_ENGINE](RUST_ENGINE.md)과 [RUST](RUST.md)에 기록합니다. 아래 2026-11-04 항목의 C++ 렌더 설명은 당시 구조입니다.
 
 ## 데스크톱 네이티브 오디오 전환 (2026-11-04)

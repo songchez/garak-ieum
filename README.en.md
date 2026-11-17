@@ -56,7 +56,7 @@ pnpm build                # web build (includes garak-dsp.wasm and garak-engine.
 ```
 
 - `pnpm dev` works without Rust: when the WASM modules are missing it logs a note and plays through the Web Audio graph. Run `pnpm rust:wasm` and reload to build them.
-- Desktop builds link the Rust engine (`GARAK_RUST=ON`). To build a C++-only host without Rust, use `GARAK_RUST=0 pnpm native:build`.
+- Native builds always build and link the Rust engine (`rust/garak-ffi`) with cargo (required since 0.3.3). Install Rust with `scripts/setup-rust.ps1` / `setup-rust.sh`.
 - Rust commands (`pnpm rust:test`, `rust:check`, `rust:wasm`, `rust:build`) and the toolchain table are in [Rust audio core](docs/RUST.md) (in Korean).
 
 Test commands, signing and the release process are covered in the [desktop guide](docs/DESKTOP.md#4-소스에서-실행하고-빌드하기) and [release process](docs/RELEASING.md) (in Korean).
@@ -83,7 +83,7 @@ flowchart TD
 - **Render-diff protocol** — the renderer sends the full plan once (`project.set`) and then only the tracks that changed (`project.patch`). The engine is split into a `Controller` on the control thread and a `Renderer` on the audio thread that talk only through lock-free queues, so the audio thread never allocates or locks and no buffer waits on JavaScript or IPC.
 - **Offline processing** — Pitch editing (Signalsmith WASM) and audio warp render new PCM assets in Web Workers while keeping the original audio untouched.
 
-> **Hidden fallbacks for this release (0.3.2) only:** on desktop, the environment variables `GARAK_RUST_ENGINE=0` (tracks on the C++ engine) and `GARAK_RUST_EFFECTS=none` (C++ effect kernels on that C++ path too); on the web, `localStorage.setItem('garak.rustEngine', '0')` (the Web Audio engine) and `localStorage.setItem('garak.rustDsp', '0')` (TS kernels). The old TS and C++ engines are scheduled for removal in the next patch.
+> **Old engines:** the desktop C++ track path and C++ effect DSP were removed in 0.3.3 (the desktop always renders in the Rust engine). On the web, `localStorage.setItem('garak.rustEngine', '0')` (the Web Audio engine) and `localStorage.setItem('garak.rustDsp', '0')` (TS kernels). The old TS engine is scheduled for removal in the next patch.
 
 More detail (in Korean): [Architecture](docs/ARCHITECTURE.md) · [Rust render engine](docs/RUST_ENGINE.md) · [Rust audio core](docs/RUST.md) · [Render-diff protocol](docs/RENDER_DIFF_PROTOCOL.md) · [Native audio](docs/NATIVE_AUDIO.md)
 

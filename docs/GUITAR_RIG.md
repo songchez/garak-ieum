@@ -55,7 +55,7 @@
 
 기타 앰프 DSP는 데스크톱과 웹이 함께 쓰는 Rust 커널([`rust/garak-dsp/src/fx/guitar/`](../rust/garak-dsp/src/fx/guitar/))입니다. 데스크톱은 통합 Rust 엔진이 이 커널을 트랙 인서트로 렌더하며, ASIO/WASAPI/Core Audio 입력 모니터링, 녹음한 리전 재생, WAV 내보내기에 같은 모듈을 사용합니다. 녹음 파일에는 입력 원본을 보존하고, 재생·출력할 때 현재 앰프 설정을 적용합니다. 네이티브 호스트나 효과 처리가 실패하면 오류를 표시합니다. [RUST 2단계](RUST.md#2단계-기타-랙)
 
-웹은 AudioWorklet의 Rust 엔진(`garak-engine.wasm`)이 같은 커널로 랙을 렌더합니다. Web Audio 대체 경로에서는 [effectPreparation.ts](../src/audio/effectPreparation.ts)가 Rust 랙 워크릿(`garak-dsp.wasm`)을, 모듈이 없으면 Web Audio 랙을 준비합니다. 대체 경로의 기타 프로젝트에서는 미래 샘플을 기다리지 않는 마스터 컴프를 사용하며 장치 삭제·그래프 교체 시 워크릿과 메시지 포트를 정리합니다. 0.3.2에 한해 이전 C++ 랙(`native/src/dsp.cpp`, `GARAK_RUST_ENGINE=0` + `GARAK_RUST_EFFECTS=none`)과 Web Audio 랙(`garak.rustDsp=0`)을 숨은 대체 경로로 남기며, 이 경로의 출력은 Rust 커널과 비트 단위로 같다고 보장하지 않습니다.
+웹은 AudioWorklet의 Rust 엔진(`garak-engine.wasm`)이 같은 커널로 랙을 렌더합니다. Web Audio 대체 경로에서는 [effectPreparation.ts](../src/audio/effectPreparation.ts)가 Rust 랙 워크릿(`garak-dsp.wasm`)을, 모듈이 없으면 Web Audio 랙을 준비합니다. 대체 경로의 기타 프로젝트에서는 미래 샘플을 기다리지 않는 마스터 컴프를 사용하며 장치 삭제·그래프 교체 시 워크릿과 메시지 포트를 정리합니다. 이전 C++ 랙(`native/src/dsp.cpp`)은 0.3.3에서 삭제했고(그 출력은 `native/tests/golden/rust-kernels.golden`의 골든 레퍼런스로 남아 Rust 랙을 검사), Web Audio 랙(`garak.rustDsp=0`)은 웹의 숨은 대체 경로로 남으며 그 출력은 Rust 커널과 비트 단위로 같다고 보장하지 않습니다.
 
 엔진이 표시하는 드라이버의 지연 보고값과 기타 입력부터 헤드폰까지의 실측 왕복 지연은 다릅니다. 실제 연주감은 인터페이스·드라이버·버퍼·플러그인에 영향을 받으므로 장비를 연결한 루프백 측정과 청취 검증이 필요합니다. [네이티브 오디오 구조와 현재 검증 범위](NATIVE_AUDIO.md)
 

@@ -1,6 +1,8 @@
 # Rust 렌더 엔진 (4단계)
 
-> **상태 (2026-11-17, 첫 마일스톤):** `rust/garak-engine`이 오디오 트랙(PCM 클립·게인·페이드·크로스페이드), 트랙 볼륨/팬/뮤트/솔로, 내장 이펙트 체인(garak-dsp, 기타 랙 인서트 포함), 센드/리턴, 마스터, 볼륨/팬/뮤트/센드/인서트 파라미터 오토메이션, 템포 맵을 C++ `RenderEngine`과 같은 의미로 렌더합니다. 같은 엔진이 **네이티브(C++ 호스트, `garak-ffi`)와 브라우저(WASM, `garak-engine-wasm`)에서 처음부터 똑같이** 돕니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW·MSVC, 오프라인 내보내기 4종 + 재생 중 diff, C++·Rust 이펙트 모두. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 ≤ -138 dBFS), WASM 대비 네이티브 Rust **-144.5 dBFS**. 웹 앱은 **플래그(`garak.rustEngine`, 기본 꺼짐)로 이 엔진을 AudioWorklet에서 씁니다**([5장](#5-wasm-호스트-audioworklet--5단계-웹-호스트)); 기본 동작 변화 없음. 데스크톱은 `GARAK_RUST_ENGINE=1`로 켤 수 있습니다([10장](#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계)). VST3·IEUM WAVE(호스트 노드), 입력 모니터링·트랙 입력 라우트·녹음 탭, 얼린 윈도, render-ahead도 Rust 그래프로 렌더합니다(2026-11-17, C++ 대비 비트 동일). 두 호스트는 하나의 `Track::render(.., &Io)`와 하나의 `routes::prepare`를 공유합니다: 데스크톱은 `Io::host` 콜백으로, 브라우저는 `Io::input`(입력 블록)으로 모니터 입력을 줍니다. 내장 악기도 두 호스트에서 Rust 엔진이 렌더합니다(아래).
+> **0.3.3:** 데스크톱과 웹 모두 이 엔진이 **유일한 렌더 경로**입니다(웹의 Web Audio 대체 경로는 웹 문서 참고). 데스크톱의 C++ 트랙 경로·C++ 이펙트 DSP·스위치(`GARAK_RUST_ENGINE`, `GARAK_RUST_EFFECTS`, `GARAK_RUST=OFF` 빌드)를 지웠고, 마스터 버스와 메트로놈도 엔진 안으로 옮겼습니다. C++ `RenderEngine`은 셸입니다([10장](#10-데스크톱-호스트-경로-셸--rust-그래프)). C++ 경로와의 패리티는 그 출력을 한 번 기록한 골든 레퍼런스로 검사합니다([7장](#7-패리티-전략과-결과)). 아래 상태 문단과 7.2·7.3의 C++ 비교 수치는 0.3.2까지의 기록입니다.
+
+> **상태 (2026-11-17, 첫 마일스톤):** `rust/garak-engine`이 오디오 트랙(PCM 클립·게인·페이드·크로스페이드), 트랙 볼륨/팬/뮤트/솔로, 내장 이펙트 체인(garak-dsp, 기타 랙 인서트 포함), 센드/리턴, 마스터, 볼륨/팬/뮤트/센드/인서트 파라미터 오토메이션, 템포 맵을 C++ `RenderEngine`과 같은 의미로 렌더합니다. 같은 엔진이 **네이티브(C++ 호스트, `garak-ffi`)와 브라우저(WASM, `garak-engine-wasm`)에서 처음부터 똑같이** 돕니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW·MSVC, 오프라인 내보내기 4종 + 재생 중 diff, C++·Rust 이펙트 모두. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 ≤ -138 dBFS), WASM 대비 네이티브 Rust **-144.5 dBFS**. 웹 앱은 **플래그(`garak.rustEngine`, 기본 꺼짐)로 이 엔진을 AudioWorklet에서 씁니다**([5장](#5-wasm-호스트-audioworklet--5단계-웹-호스트)); 기본 동작 변화 없음. 데스크톱은 0.3.3부터 이 엔진만 씁니다([10장](#10-데스크톱-호스트-경로-셸--rust-그래프)). VST3·IEUM WAVE(호스트 노드), 입력 모니터링·트랙 입력 라우트·녹음 탭, 얼린 윈도, render-ahead도 Rust 그래프로 렌더합니다(2026-11-17, C++ 대비 비트 동일). 두 호스트는 하나의 `Track::render(.., &Io)`와 하나의 `routes::prepare`를 공유합니다: 데스크톱은 `Io::host` 콜백으로, 브라우저는 `Io::input`(입력 블록)으로 모니터 입력을 줍니다. 내장 악기도 두 호스트에서 Rust 엔진이 렌더합니다(아래).
 
 > **악기 마일스톤 (2026-11-17, G2):** 내장 악기 전부가 Rust 엔진에서 돕니다 — 신스 5종(벨벳 키 `keys`, 틴 EP `rhodes`, 모노 베이스 `bass`, 클라우드 패드 `pad`, 글라스 플럭 `pluck`), 포켓 드럼 `drums`, 샘플 악기·킷 전부(`builtin-sampled`: 그랜드/콘서트 그랜드/월리처, 스튜디오·808·로파이 킷, 사물놀이, 가야금·해금·대금), 옥구슬 EP·한밤 106, IEUM WAVE(`native-wavetable`: `native/devices/wavetable-synth` 전체 포팅). 음표/컨트롤러 커서, 서스테인 페달, 피치벤드·모듈레이션·프레셔, CC7/CC11, 릴리스 노이즈 규칙, 보이스 스틸, 편집 중 음표 상태 승계(음표 id 재부여, 지운 음표 릴리스), 탐색·사이클 추적(페달 포함), 악기 파라미터 오토메이션, 라이브 MIDI까지 C++ `RenderEngine`과 같은 의미입니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW, 오프라인 10종 × C++/Rust 이펙트 + 재생 중 편집·사이클·라이브 MIDI·WAVE 패치 크로스페이드, [7.2](#72-결과-이-pc-mingw-w64-gcc-16-release-x86-64)). 아직 아닌 것: VST3 악기(C++ 유지, 4장 hook).
 
@@ -54,9 +56,10 @@ src/audio/rust/RustWebAudioEngine.ts, engine.worklet.ts, engineHost.ts, engineCh
 src/audio/rust/engine.test.ts      WASM 렌더 ↔ 네이티브 Rust 렌더
 src/audio/rust/engineAB.test.ts    웹 경로 A/B (Project → 컴파일러 → WASM ↔ Web Audio 의미), CPU 보고
 scripts/rust-engine-smoke.mjs      Chromium: 재생·내보내기·대체·A/B·CPU (pnpm rust:engine-smoke)
-native/tests/rust_engine_parity_test.cpp  C++ RenderEngine ↔ Rust 엔진 (GARAK_RUST=ON)
-native/tests/rust_engine_bench.cpp        16/32트랙 CPU 비교
-native/tests/rust_engine_instrument_parity_test.cpp  악기 패리티(C++ ↔ Rust) + `bench` 인자로 악기 중심 프로젝트 CPU 비교
+native/tests/golden.hpp, golden/*.golden  0.3.2 C++ 경로의 골든 레퍼런스(해시 + 표본·구간 RMS, 7.1)
+native/tests/rust_engine_parity_test.cpp  Rust 엔진 ↔ 골든 레퍼런스(오디오 프로젝트, 기타 랙)
+native/tests/rust_engine_instrument_parity_test.cpp  악기 ↔ 골든 레퍼런스 + `bench` 인자로 악기 중심 프로젝트 CPU
+native/tests/rust_engine_host_test.cpp    RenderEngine 셸(호스트 노드·멀티코어·render-ahead·메트로놈) ↔ 골든 레퍼런스
 ```
 
 ## 3. 데이터 모델과 실시간 규칙
@@ -102,7 +105,7 @@ Controller ── Command(SPSC 1024) ──────────────�
 
 ## 4. C++ 호스트가 엔진을 쓰는 방법 (FFI)
 
-C++은 장치 콜백과 VST3 처리를 계속 갖고, 나머지를 Rust 엔진에 맡깁니다.
+C++ 셸(`native/src/engine.cpp` `RenderEngine`)은 장치 콜백, 전송·카운트인 타이밍, 녹음 캡처, VST3·IEUM WAVE 처리를 갖고, 나머지(트랙·마스터 버스·메트로놈 클릭)를 Rust 엔진에 맡깁니다.
 
 ```
 garak-audio-host (C++)
@@ -115,9 +118,11 @@ garak-audio-host (C++)
 - 스레드 규칙: `garak_rs_engine_render`만 오디오 반쪽이고, 나머지 `garak_rs_engine_*`는 제어 반쪽(한 번에 한 제어 스레드)입니다. 두 반쪽은 서로 다른 스레드에서 동시에 돌 수 있습니다(핸들 안의 `Controller`와 `Renderer`가 원자적 큐로만 통신). 오류는 예외가 아니라 -1 반환 + `garak_rs_engine_last_error`.
 - **VST3·IEUM WAVE: 호스트 노드 (구현됨, `src/external.rs`):** 플러그인 인스턴스·에디터·상태 저장은 C++ 소유로 둡니다. 셸은 플랜 JSON에서 `"kind":"vst3"`/`"native-wavetable"` 소스와 `"type":"vst3"` 인서트에 `"host":{"latencyFrames","tailSeconds","stereo"}`를 붙여 보냅니다(C++이 준비한 프로세서의 값, `ControlTrack::sourceLatency`/`pluginInserts`). 엔진은 그 자리에 호스트 소스 노드(`Track::host_source`)와 호스트 인서트 단계(`Stage::Host`)를 두고 PDC·꼬리·스테레오 판정에 넣습니다.
   - 렌더 중 엔진은 그 트랙을 렌더하는 스레드에서 `GarakRsHostNodes` 콜백을 부릅니다: `source(user, track, stereo, frames)`(악기 출력), `insert(user, track, insert, stereo, frames)`(인서트 처리), `input(user, track, stereo, frames)`(모니터링 중인 트랙의 장치 입력). 다른 트랙끼리는 동시에, 한 트랙에는 한 번에 하나만.
-  - C++ 쪽은 `TrackRuntime::renderSource`(음표·컨트롤러·서스테인·라이브 MIDI·체이스·파라미터 오토메이션 점 이벤트 → `PluginProcessor::process`)와 `TrackRuntime::processPlugin`(VST3 인서트 오토메이션의 32점 격자)을 그대로 씁니다. 이것은 C++ 트랙 경로가 부르는 바로 그 함수라서 이벤트 타이밍·`ProcessContext`(템포 맵·박자 맵 위치·재생·사이클·녹음)가 비트 단위로 같습니다.
-  - 상태 이전·리셋은 C++ 셸이 계속 C++ 트랙에 합니다(재생/정지/탐색/사이클, 그래프 교체의 `adopt`). Rust 그래프는 PDC 지연선·페이더·내장 이펙트 상태만 갖습니다.
-- **입력 모니터링·트랙 입력 라우트·녹음 탭 (구현됨):** `garak_rs_engine_render_host`에 `GarakRsBlock`(위치·재생·티켓·셸의 마스터 게인과 목표값·모니터 마스크·호스트 노드·render-ahead 링 출력)을 넘깁니다. 엔진이 `prepareRoutes`를 그대로 옮겨(`src/routes.rs`) 처리 레벨(라우트 소스·센더 먼저), 루프 끊기, 마스터 피드, 프리FX/포스트FX/포스트페이더 탭을 만들고, 녹음은 셸이 블록 뒤에 `garak_rs_engine_route_input`으로 라우트 입력을 읽습니다. 저지연 모니터링(PDC 건너뛰기)·모노 입력의 등전력 팬도 C++과 같습니다.
+  - C++ 쪽은 `HostTrack::renderSource`(음표·컨트롤러·서스테인·라이브 MIDI·체이스·파라미터 오토메이션 점 이벤트 → `PluginProcessor::process`)와 `HostTrack::processPlugin`(VST3 인서트 오토메이션의 32점 격자)입니다. 0.3.2의 C++ 트랙 경로에서 그대로 남긴 함수라 이벤트 타이밍·`ProcessContext`(템포 맵·박자 맵 위치·재생·사이클·녹음)가 이전과 비트 단위로 같습니다.
+  - 호스트 노드의 상태 이전·리셋은 셸이 `HostTrack`에 합니다(재생/정지/탐색/사이클, 그래프 교체의 `adopt`). 그 밖의 트랙 상태(내장 악기·이펙트·PDC·페이더)는 Rust 그래프가 갖습니다.
+- **입력 모니터링·트랙 입력 라우트·녹음 탭 (구현됨):** `garak_rs_engine_render_host`에 `GarakRsBlock`(위치·재생·티켓·`master`(마스터 버스 적용)·모니터 마스크·호스트 노드·render-ahead 링 출력)을 넘깁니다. 엔진이 `prepareRoutes`를 그대로 옮겨(`src/routes.rs`) 처리 레벨(라우트 소스·센더 먼저), 루프 끊기, 마스터 피드, 프리FX/포스트FX/포스트페이더 탭을 만들고, 녹음은 셸이 블록 뒤에 `garak_rs_engine_route_input`으로 라우트 입력을 읽습니다. 저지연 모니터링(PDC 건너뛰기)·모노 입력의 등전력 팬도 C++과 같습니다.
+- **마스터 버스·메트로놈 (0.3.3):** `GarakRsBlock::master`가 켜져 있으면 `render_host`가 트랙 합(비유한 값 정리 뒤)에 마스터 게인(엔진이 소유, 프로젝트 `masterGain`과 `garak_rs_engine_set_master_gain`의 목표로 12 ms 글라이드)과 마스터 프로세서를 적용합니다(오프라인 + `garak_rs_engine_set_master_bypass`이면 건너뜀). 셸이 녹음·미터를 마친 뒤 `garak_rs_engine_clicks(out, frames, 위치, 재생, 카운트인 여부, 경과, 길이)`로 메트로놈·카운트인 클릭을 섞습니다(오프라인 없음). 클릭 PCM과 켜짐·볼륨은 `garak_rs_engine_set_metronome`(유지/교체/비움)으로 티켓 순서에 맞춰 넘깁니다. 웹 호스트는 같은 `render_clicks`를 엔진 자체 전송으로 씁니다.
+- **그래프 제출 (0.3.3):** `RenderEngine::prepare()`가 호스트 노드를 만든 뒤 계획을 Rust 그래프에 넘기고(`garak_rs_engine_set`, 셸의 `submit`까지 티켓으로 보류), 지연·꼬리는 `garak_rs_engine_graph_details`에서 받습니다. `update()`도 Rust 엔진에 먼저 물어 거부되면 두 그래프 모두 그대로 둡니다. `UpdateResult`의 종류는 셸과 Rust 분류 중 큰 쪽, `replacedTracks`는 `garak_rs_engine_replaced_tracks`를 반영합니다. 스냅숏의 지연은 렌더 중인 그래프의 값(`garak_rs_engine_active_latency`)입니다.
 - **멀티코어:** 레벨마다 트랙을 셸의 워커 풀에서 병렬로 렌더하고(호스트 노드 콜백도 그 워커에서), 합은 트랙 순서대로. 0 ↔ N 워커 비트 동일.
 - **render-ahead (구현됨, `engine/ahead.rs`):** 셸의 링·워커 스케줄링·라이브 트랙 회수를 그대로 쓰고, 링에 든 트랙은 워커가 `garak_rs_engine_render_ahead`로 Rust 그래프의 그 트랙을 렌더합니다. 콜백의 `render_host`는 그 트랙을 건너뛰고 링 출력을 섞으며(`GarakRsBlock::ahead`), 전송 리셋도 그 트랙을 건너뜁니다(`garak_rs_engine_reset_skip`). 링에서 어긋난 채로 회수한 트랙은 `garak_rs_engine_reset_track`. Rust 명령은 워커를 밖에 둔 채(quiesce) 적용합니다.
 
@@ -280,23 +285,33 @@ LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다
 
 ### 7.1 하네스
 
+**골든 레퍼런스 (0.3.3).** C++ 트랙 경로를 지우기 전에 패리티 테스트의 C++ 쪽 렌더(C++ 이펙트 사용)를 한 번 기록했습니다: `native/tests/golden/`의 네 파일(약 700 KB) — `rust-kernels`(이펙트·기타 랙 커널 1113개), `rust-engine-parity`(8), `rust-engine-instruments`(11), `rust-engine-host`(20, 새 "shell metronome" `RenderEngine` 경우 포함). 기록할 때 MinGW에서 모든 경우가 Rust 렌더와 비트 동일이었습니다. `native/tests/golden.hpp`가 비교합니다:
+
+- 렌더 전체의 FNV-1a 64 해시(-0은 +0으로): 기록 당시 비트 동일이던 경우는 **Windows x64(MSVC·MinGW)에서 비트 동일**이어야 합니다.
+- 모든 플랫폼: 저장한 표본(경우마다 일정 간격 2048개, 커널은 32개), 구간 RMS(64개, 커널은 16개), 피크, 전체 RMS와의 차이가 **≤ -90 dBFS**. |rms(a)−rms(b)| ≤ max|a−b|이므로 구간·전체 비교도 모든 샘플을 이전 게이트와 같은 기준으로 묶습니다(느슨해진 기준 없음).
+- 경우별 보조 값(지연, 길이, 꼬리, 다이내믹스 미터, render-ahead 트랙 수)을 이전 허용 오차로.
+
+다시 기록하려면 C++ 경로가 있는 0.3.2 체크아웃에서 `GARAK_GOLDEN_RECORD=1`로 테스트를 돌립니다(`Suite::record`). 아래 표의 "C++ ↔ Rust"는 0.3.2까지의 비교입니다.
+
 | 테스트 | 비교 | 기준 |
 |---|---|---|
-| `native/tests/rust_engine_parity_test.cpp` (`ctest -R native-rust-engine-parity`) | C++ `RenderEngine` ↔ Rust 엔진, 같은 JSON·PCM(`testkit`을 C ABI로 받아 양쪽에 투입) | residual ≤ -90 dBFS, 지연·길이 동일 |
+| `native/tests/rust_engine_parity_test.cpp` (`ctest -R native-rust-engine-parity`) | Rust 엔진 ↔ 0.3.2 C++ `RenderEngine`의 골든 레퍼런스, 같은 JSON·PCM(`testkit`을 C ABI로) | residual ≤ -90 dBFS, 지연·길이 동일 |
 | `src/audio/rust/engine.test.ts` | WASM 엔진 ↔ 네이티브 Rust 엔진(`cargo test`가 `rust/target/engine-parity/`에 쓴 렌더) | ≤ -90 dBFS |
 | `rust/garak-engine/tests/engine.rs` | diff 경로 ↔ 같은 편집을 새 그래프로(`Controller::rebuild`) | ≤ 1e-6 (프로토콜 8.5) |
 | `rust/garak-engine/tests/realtime.rs` | 렌더 중 힙 사용 | 0회 |
-| `native/tests/rust_engine_instrument_parity_test.cpp` (`ctest -R native-rust-engine-instruments`) | C++ ↔ Rust, 악기 프로젝트(`testkit/instruments.rs`) 오프라인 + 재생 중 편집 | residual ≤ -90 dBFS, 지연·길이·diff 분류 동일 |
+| `native/tests/rust_engine_instrument_parity_test.cpp` (`ctest -R native-rust-engine-instruments`) | Rust ↔ 골든 레퍼런스, 악기 프로젝트(`testkit/instruments.rs`) 오프라인 + 재생 중 편집 | residual ≤ -90 dBFS, 지연·길이·diff 분류 동일 |
 | `rust/garak-engine/tests/instruments.rs` | `engine_test.cpp`의 악기 항목(측정값·동등성) | 원래 기준 그대로 |
 | `rust/garak-engine/tests/realtime_instruments.rs` | 악기·라이브 MIDI·교체 중 힙 사용 | 0회 |
 
 테스트 프로젝트(`testkit.rs`): 오디오 트랙 N개 + 리턴 2개. 겹치는 윈도(크로스페이드)와 페이드 5종, 클립 오프셋·게인, 모노/스테레오/44.1 kHz PCM(48 kHz 엔진에서 리샘플), 기타 랙을 뺀 내장 이펙트 15종 전부(드라이브가 PDC 8프레임: 트랙 쪽 8 + 리턴 쪽 8로 센드/리턴 지연 보정까지 거침), 꺼진 인서트, 프리/포스트 센드, 볼륨·팬·뮤트·센드·인서트(컷오프 로그 범위, 컴프 임계값) 오토메이션, 템포 램프(싱크 딜레이·트레몰로), `audible:false` 트랙의 프리 센드 무음. PCM은 사칙연산만으로 만들어 플랫폼마다 같습니다. 기타 랙 경우는 이 프로젝트에서 트랙 1의 코러스를 리그(컴프·드라이브·크런치 앰프·캐비닛·드라이브 사본·코러스·딜레이·리버브·페이저)로 바꾸고 필터 레인을 앰프 게인 오토메이션으로 바꾼 것입니다(`rust_engine_parity_test.cpp` `withGuitarRig`; 엔진 쪽 단위 테스트는 `tests/guitar_rig.rs`: 렌더 중 힙 사용 0, diff 분류).
 
-C++ 쪽은 두 번 돌립니다: C++ 이펙트로(완전히 독립된 두 구현) 그리고 `GARAK_RUST_EFFECTS=all`처럼 Rust 이펙트로(엔진 구조만 비교). 오프라인 경우는 host.cpp `renderStopped`와 같은 루프(길이 + 꼬리 ≤ 30 s, PDC 앞쪽 제거)이고, 라이브 경우는 재생 중 0.5 s에 Mix+Send+Param+Master diff, 1.5 s에 트랙 재준비를 두 엔진에 같은 JSON으로 보냅니다(분류 결과 `Diff`/`Tracks`도 같아야 통과).
+(0.3.2까지) C++ 쪽은 두 번 돌렸습니다: C++ 이펙트로(완전히 독립된 두 구현) 그리고 Rust 이펙트로(엔진 구조만 비교). 골든 레퍼런스는 C++ 이펙트 쪽입니다. 오프라인 경우는 host.cpp `renderStopped`와 같은 루프(길이 + 꼬리 ≤ 30 s, PDC 앞쪽 제거)이고, 라이브 경우는 재생 중 0.5 s에 Mix+Send+Param+Master diff, 1.5 s에 트랙 재준비를 두 엔진에 같은 JSON으로 보냅니다(분류 결과 `Diff`/`Tracks`도 같아야 통과).
 
 악기 프로젝트(`testkit/instruments.rs`): IEUM WAVE(사용자 뱅크 + 유니즌 3 + 세 오실레이터 + 서브·노이즈 + 필터 두 개 + LFO/엔벨로프/벨로시티 루트 + 드라이브·코러스·딜레이 패치, 그리고 기본 패치; base64 IEWAVE01로 전송), 신스 5종 + 드럼(화음·겹치는 같은 음·클립 끝에서 잘린 음·프로젝트 앞에서 시작한 음, 벤드+범위·모드·프레셔·CC7/11, 트랙마다 악기 파라미터 오토메이션, EQ 인서트, 리버브 리턴 센드), 샘플(4단 벨로시티 그랜드 + 릴리스 존 + 코덱 오프셋, 루프 걸린 44.1 kHz 스테레오 찰현, 벨로시티 3단·초크 킷), 빈티지(서스테인 페달 포함), 전부. PCM은 사칙연산만으로 합성해 플랫폼마다 같습니다. 재생 중 경우는 사이클(1–4 s) 안에서 노브 편집(같은 소스 → 교체 + 보이스 승계), 울리는 음표 삭제·음표 이동·재생 위치에 걸친 음표 추가, 믹스, 탐색(페달 구간), 라이브 MIDI(키·EP·106, 페달·벤드·미리 듣기·패닉), 다른 악기로 교체, 템포 변경(새 그래프), 일시정지·정지·재생, 트랙 삭제(새 그래프)를 두 엔진에 같은 시점에 보냅니다(분류도 같아야 통과).
 
-### 7.2 결과 (이 PC, MinGW-w64 GCC 16 Release, x86-64)
+### 7.2 결과 (이 PC, MinGW-w64 GCC 16 Release, x86-64; 0.3.2 C++ ↔ Rust 기록)
+
+0.3.3에서 같은 경우를 골든 레퍼런스와 비교한 결과도 MinGW에서 전부 비트 동일입니다.
 
 | 경우 | 트랙 | 블록 | 이펙트 | 지연 C++/Rust | residual |
 |---|---|---|---|---|---|
@@ -327,7 +342,9 @@ C++ 쪽은 두 번 돌립니다: C++ 이펙트로(완전히 독립된 두 구현
 
 엔진 자체의 식(페이더·팬 법칙·페이드·오토메이션 곡선·마스터)은 garak-dsp처럼 같은 연산 순서와 플랫폼 libm을 쓰고, AppleClang이 FMA로 합치는 `a*b + c` 자리에는 `math::mul_add`/`mul_add_f32`를 둬서 macOS arm64에서도 같은 반올림을 따르게 했습니다. CI 요약(`rust.yml`)에도 같은 표가 나옵니다.
 
-### 7.3 CPU (단일 스레드, 128프레임 블록, 10 s × 최고 3회, `garak-rust-engine-bench`)
+### 7.3 CPU (단일 스레드, 128프레임 블록, 10 s × 최고 3회, `garak-rust-engine-bench`; 0.3.2 측정)
+
+> 비교 대상 C++ 엔진과 이 벤치는 0.3.3에서 삭제했습니다. 지금은 `garak-rust-engine-host-test --bench`(1스레드 ↔ N워커)와 `garak-rust-engine-instrument-parity-test bench`(악기 프로젝트)가 Rust 엔진만 잽니다.
 
 | 트랙(+리턴 2) | C++ 엔진 + C++ 이펙트 | C++ 엔진 + Rust 이펙트 | Rust 엔진 | 블록당 µs (C++ / Rust) |
 |---|---|---|---|---|
@@ -362,9 +379,9 @@ CI 러너(같은 벤치): Windows MSVC x64 12트랙 1.0× / 1.0× / **1.3×**(1.
 |---|---|---|
 | G1 (이번) | 오디오 트랙·이펙트·센드·오토메이션·템포 맵 오프라인/라이브 패리티 ≤ -90 dBFS, 렌더 무할당, WASM ↔ 네이티브 ≤ -90 dBFS, CI(MSVC·macOS) | 통과 (MinGW·MSVC·macOS) |
 | G2 | 내장 신스·드럼·샘플 악기 + 컨트롤러, 음표 상태 이전 | 통과 (IEUM WAVE 포함, MinGW 비트 동일) |
-| G3 | VST3·IEUM WAVE 외부 hook, 입력 모니터링·녹음 탭, 멀티코어 | |
-| G4 | `engine_test.cpp`의 모든 항목을 Rust 엔진 하네스로 옮겨 통과, 장시간 재생 소크 테스트, CPU ≥ C++ (MSVC·macOS) | |
-| G5 | 데스크톱 호스트에서 기능 플래그(`GARAK_RUST_ENGINE=1`)로 전환 가능, 이후 기본값 | 플래그 동작(10장), 기본값 전환은 G2·G3 뒤 |
+| G3 | VST3·IEUM WAVE 외부 hook, 입력 모니터링·녹음 탭, 멀티코어 | 통과 (10장) |
+| G4 | `engine_test.cpp`의 모든 항목을 Rust 엔진 하네스로 옮겨 통과, 장시간 재생 소크 테스트, CPU ≥ C++ (MSVC·macOS) | `engine_test` 전부 Rust 엔진으로 통과, CPU ≥ C++(7.3). 소크 테스트는 남음 |
+| G5 | 데스크톱 호스트에서 기능 플래그로 전환 가능, 이후 기본값 | 0.3.2 기본값, 0.3.3 유일한 경로(플래그·C++ 경로 삭제) |
 
 ## 8. 5단계(웹 전환) 중 지금 병렬로 할 수 있는 일
 
@@ -385,7 +402,9 @@ CI 러너(같은 벤치): Windows MSVC x64 12트랙 1.0× / 1.0× / **1.3×**(1.
 
 **악기 마일스톤에서 추가:** 내장 신스 5종·드럼·샘플 악기/킷·옥구슬 EP·한밤 106·IEUM WAVE(패치 교체 크로스페이드 포함), 음표/컨트롤러 커서, 페달·벤드·모드·프레셔·CC7/11, 릴리스 노이즈, 보이스 스틸·초크, 탐색·사이클 추적, 음표 id 재부여·지운 음표 릴리스, 악기 파라미터 오토메이션, 라이브 MIDI(엔진 API·C ABI·WASM, 웹의 `LiveEvent` 링과 데스크톱 셸의 라이브 MIDI·명령 모두 `Track::live_event`로), 샘플 세트 등록(데스크톱 셸이 `samples.register` JSON으로 넘김).
 
-**0.3.2에서 추가:** 웹 호스트도 샘플 세트를 같은 JSON과 PCM으로 엔진에 등록합니다(내보내기·바운스·스템 포함). 데스크톱(`GARAK_RUST_ENGINE` 미설정)과 웹 모두 Rust 엔진이 기본이며, `GARAK_RUST_ENGINE=0` / `garak.rustEngine=0`이 이번 릴리스 한정 비상 경로입니다.
+**0.3.2에서 추가:** 웹 호스트도 샘플 세트를 같은 JSON과 PCM으로 엔진에 등록합니다(내보내기·바운스·스템 포함). 데스크톱과 웹 모두 Rust 엔진이 기본이 됐습니다(0.3.2의 데스크톱 비상 경로 `GARAK_RUST_ENGINE=0`은 0.3.3에서 C++ 경로와 함께 삭제).
+
+**0.3.3에서 추가:** 데스크톱의 마스터 버스·메트로놈을 엔진으로(`GarakRsBlock::master`, `garak_rs_engine_clicks`), C++ 트랙 경로·이펙트 DSP 삭제, 골든 레퍼런스 패리티(7.1).
 
 **아직 아님:** 라이브 MIDI의 블록 내 오프셋(블록 경계에 적용). 데스크톱의 IEUM WAVE는 계속 C++ 호스트 노드(편집기·상태가 C++ 쪽)이고, 웹은 Rust IEUM WAVE를 씁니다.
 
@@ -394,77 +413,52 @@ CI 러너(같은 벤치): Windows MSVC x64 12트랙 1.0× / 1.0× / **1.3×**(1.
 1. ~~**G2 악기**~~ (완료, 6장: IEUM WAVE까지 모든 내장 악기). WAVE의 메모리 예산(테이블 바이트·인스턴스 추정)은 아직 512 MB 상한 계산에 넣지 않습니다.
 2. ~~**웹 워크릿 호스트(병렬):**~~ 5장(플래그, 기본 꺼짐). 남은 일은 5.6.
 3. **G3 외부 hook:** VST3·IEUM WAVE를 C++ 인스턴스로 끼우는 콜백, 입력 탭·녹음, 그리고 엔진 내부 트랙 병렬화.
-4. **G4~G5:** 회귀 테스트 전부 이전, 데스크톱 `GARAK_RUST_ENGINE` 플래그, 소크 테스트, 기본값 전환.
+4. ~~**G4~G5:**~~ 회귀 테스트 전부 이전, 기본값 전환(0.3.2), 이전 경로 삭제(0.3.3). 남은 것: 소크 테스트.
 
-## 10. 데스크톱 호스트 경로 (`GARAK_RUST_ENGINE`, G5 첫 단계)
+## 10. 데스크톱 호스트 경로 (셸 + Rust 그래프)
 
-> **상태 (2026-11-17):** 기본값은 **꺼짐**입니다. 켜면 Rust 엔진이 받아들이는 그래프(오디오 트랙·내장 이펙트·센드/리턴·오토메이션·템포 맵·스템/프리즈 탭·얼린 윈도, VST3 악기·인서트와 IEUM WAVE(호스트 노드), 입력 모니터링·트랙 입력 라우트·녹음 탭)는 장치 콜백과 `render.wav` 모두 트랙을 Rust 그래프에서 렌더하고, 멀티코어와 render-ahead도 Rust 그래프로 돕니다. 내장 악기(신스·드럼·샘플 세트·빈티지)도 Rust 그래프가 렌더하고(셸이 샘플 세트를 등록하고 라이브 MIDI·리셋·프로젝트 끝 정지를 넘김), 기타 리그 인서트도 Rust 그래프(garak-dsp `fx::guitar`)가 렌더합니다. 엄격 모드(`strict`)에서 `engine_test` 43개가 모두 Rust 그래프로 통과합니다(예상 실패 0). 모니터링 중에도 엔진을 바꾸지 않습니다.
+> **상태 (0.3.3):** 데스크톱의 모든 그래프가 Rust 그래프로 렌더합니다. 0.3.2의 스위치(`GARAK_RUST_ENGINE=0/1/strict`, 진단용 `GARAK_RUST_ENGINE_REFUSE_INSERT`·`GARAK_RUST_ENGINE_HOST_INSTRUMENTS`, `GARAK_RUST_EFFECTS`)와 C++ 트랙 경로(`TrackRuntime`의 내장 악기·이펙트·믹스·라우트·센드, `dsp.cpp`·`sigimsae_effects.inc`·`eq_effects.inc`·C++ 기타 랙·`rust_effects.inc`·`rust_instrument.hpp`·`metronome.hpp`)는 삭제했습니다. 모든 네이티브 빌드가 `garak-ffi`를 링크합니다(`GARAK_RUST=OFF` 빌드 없음). 호스트 `hello`의 `rustEngine`은 진단용으로 항상 `{available: true, requested: true}`, `engine.snapshot`·`render.wav`의 `rustEngine`은 Rust 그래프가 렌더했는지를 알려 줍니다.
 
-### 10.1 켜는 법
-
-| 값 | 동작 |
-|---|---|
-| (없음), `0` | C++ `RenderEngine` 그대로 (기본값) |
-| `GARAK_RUST_ENGINE=1` | Rust가 받아들이는 그래프는 Rust로, 거부하면 그 그래프만 C++로 (`EngineSnapshot::rustRefusals`, `RenderEngine::lastRustRefusal()`, 호스트 `engine.snapshot`의 `rustRefusal`) |
-| `GARAK_RUST_ENGINE=strict` | 거부하면 `update`/`submit`이 예외 (회귀 테스트용) |
-| `GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1` | (진단) C++ 내장 악기도 VST3처럼 호스트 노드로: 모든 그래프가 Rust 그래프로 렌더 (회귀 스위트의 세 번째 실행) |
-
-환경 변수는 `RenderEngine` 생성 시 읽고, `RenderEngine::setRustEngine(mode)`로 첫 제출 전에 바꿀 수 있습니다. Electron이 띄우는 `garak-audio-host`는 환경을 물려받습니다. 호스트 `hello`는 `rustEngine: { available, requested }`를, `engine.snapshot`은 `rustEngine`(마지막 블록이 Rust로 렌더됐는지)·`rustRefusals`를, `render.wav` 응답은 `rustEngine`을 돌려줍니다.
-
-### 10.2 구조: C++ `RenderEngine`이 셸, Rust 그래프가 트랙 렌더
+### 10.1 구조: C++ `RenderEngine`이 셸, Rust 그래프가 트랙·마스터·메트로놈
 
 ```
-RenderEngine (C++) ─ 전송(재생/정지/탐색·사이클·카운트인), 메트로놈, 라이브 MIDI, 녹음 캡처,
- │                   마스터 버스(게인·마스터 프로세서·masterBypass), 스냅숏·미터 게시, 워커 풀·render-ahead 링,
- │                   VST3·IEUM WAVE 프로세서(호스트 노드), 장치 입력
- ├ prepare()  C++ 그래프는 항상 준비(플러그인 인스턴스, 폴백, tail/latency 값) + Rust에 넘길 PCM 수집
- ├ submit()/update()  같은 계획을 timeline JSON(rust_engine.inc, 왕복 정확한 숫자, 호스트 노드의 지연·꼬리)으로
- │                    garak_rs_engine_set → C++ 명령 뒤에 RustSync{허용 티켓, 켜짐} 명령
- └ render()  블록마다: 활성 그래프가 Rust면 (Rust 명령 적용) → render-ahead 링 소비 →
-                       garak_rs_engine_render_host(out, GarakRsBlock{위치, 재생, 티켓, 마스터 게인, 모니터, 노드, 링})
-                       → 트랙 합(마스터 전) → C++ 마스터 → 녹음(라우트 입력은 garak_rs_engine_route_input)·클릭
+RenderEngine (C++ 셸) ─ 전송(재생/정지/탐색·사이클·카운트인 타이밍), 라이브 MIDI 전달, 녹음 캡처, 스냅숏·미터 게시,
+ │                     워커 풀·render-ahead 링, VST3·IEUM WAVE 프로세서(HostTrack, 호스트 노드), 장치 입력
+ ├ prepare()  호스트 트랙(플러그인 인스턴스, 지연·꼬리) 준비 → 같은 계획을 timeline JSON(rust_engine.inc)으로
+ │            garak_rs_engine_set (submit까지 티켓으로 보류); 지연·꼬리 ← garak_rs_engine_graph_details
+ ├ submit()/update()  셸 명령(Graph / Replace / Touch / Revision) 뒤에 RustSync{허용 티켓}
+ │                    update()는 Rust에 먼저 물어 거부되면 아무것도 큐에 넣지 않음; Rust가 새 그래프를 만들면 셸도 새 그래프
+ └ render()  블록마다: (Rust 명령 적용) → render-ahead 링 소비 →
+                       garak_rs_engine_render_host(out, GarakRsBlock{위치, 재생, 티켓, master=1, 모니터, 노드, 링})
+                       = 트랙 합 → 마스터 게인·마스터 프로세서 (Rust)
+                       → 녹음(라우트 입력은 garak_rs_engine_route_input) → 비유한 값 정리·마스터 미터 (셸)
+                       → garak_rs_engine_clicks(메트로놈·카운트인, Rust)
 ```
 
-- **티켓 게이트:** Rust 명령 큐는 셸이 넘긴 티켓까지만 적용됩니다(`Consumer::peek`). 그래서 Rust 그래프 교체·diff가 C++ 쪽 같은 업데이트의 명령과 **같은 블록**에 적용됩니다.
-- **전송은 셸 소유:** Rust는 셸이 정한 위치·재생 여부로 블록을 렌더하고, 셸의 `reset(chase, effects)`(재생·일시정지·탐색·사이클 순환)이 `garak_rs_engine_reset`으로 그대로 전달됩니다. 카운트인·메트로놈·사이클 분할은 C++ 그대로라 Rust 쪽 동작이 비트 단위로 같습니다.
-- **미터:** 트랙 피크(`trackPeaks`)와 컴프·리미터·게이트 다이내믹스 미터(`garak_rs_engine_take_dynamics`)를 Rust 그래프에서 받아 같은 홀드 규칙으로 게시합니다.
-- **폴백:** 거부된 업데이트(내장 악기, 기타 리그)는 C++ 트랙으로 넘어갑니다. 엔진을 바꾸는 순간 넘겨받는 쪽 상태를 리셋하므로(유휴였던 C++ 트랙은 꼬리가 없음, render-ahead 링은 회수) 재생 중 전환은 꼬리가 끊길 수 있습니다. 모니터링은 더 이상 엔진을 바꾸지 않습니다(장치 입력은 `input` 호스트 노드로 Rust 그래프에 들어감). strict에서 미리 알 수 있는 거부(`rustIneligibility`)는 C++ 그래프를 바꾸기 전에 던집니다. update()는 C++ 그래프를 먼저 갱신해(플러그인 지연·꼬리를 얻으려고) 그 뒤 Rust 그래프에 같은 계획을 넘깁니다.
-- **호스트 노드:** VST3 악기·인서트와 IEUM WAVE는 C++ 프로세서로 남고, Rust 그래프가 체인의 그 자리에서 셸을 부릅니다(4장). 셸은 C++ 트랙 경로의 `renderSource`/`processPlugin`을 그대로 쓰므로 이벤트·PDC·오토메이션 점·`ProcessContext`가 C++ 엔진과 **비트 동일**합니다.
-- **멀티코어:** 셸의 워커 풀(`setProcessing(threads)`)이 있으면 Rust 그래프의 처리 레벨마다 트랙을 풀에서 병렬로 렌더하고(`GarakRsParallelRun` 콜백, 트랙마다 한 워커, 호스트 노드 콜백도 그 워커에서), 다음 레벨(라우트된 트랙·리턴)은 그 뒤에, 합은 트랙 순서대로 합니다. 출력은 1스레드와 **비트 동일**하고, 풀은 원자 변수로만 동기화합니다(할당·잠금 없음).
-- **render-ahead:** 셸의 링(ASIO-Guard식)·워커 스케줄링·라이브 트랙 회수 규칙을 그대로 쓰고, 링에 든 트랙은 워커가 Rust 그래프의 그 트랙을 렌더합니다(`garak_rs_engine_render_ahead`). 콜백은 그 트랙을 건너뛰고 링 출력을 섞으며 전송 리셋도 건너뜁니다. Rust 명령은 워커를 밖에 둔 채 적용합니다. 같은 트랙이 같은 블록에 링에 들어가고, 출력은 C++ 엔진의 render-ahead와 **비트 동일**합니다.
-- **스템·프리즈·바운스 탭:** `preFader`(보정된 인서트 후 신호, 팬·페이더·뮤트 없음, 모노는 모노 유지)와 `directOut=false`(마스터 합에서 빠지고 센드는 유지)를 Rust 엔진이 직접 렌더합니다. `masterBypass`는 셸의 마스터 버스가 처리합니다.
+- **티켓 게이트:** Rust 명령 큐는 셸이 넘긴 티켓까지만 적용됩니다. 그래서 Rust 그래프 교체·diff·마스터 게인·메트로놈 설정이 셸의 같은 업데이트와 **같은 블록**에 적용됩니다.
+- **전송은 셸 소유:** Rust는 셸이 정한 위치·재생 여부로 블록을 렌더하고, 셸의 `reset(chase, effects)`(재생·일시정지·탐색·사이클 순환)이 `garak_rs_engine_reset_skip`으로 전달됩니다. 카운트인 길이·경과는 셸이 세고 클릭은 Rust가 섞습니다.
+- **라이브 편집과 render-ahead:** 믹스·내장 인서트 파라미터 편집은 셸의 `Touch` 명령(트랙을 링에서 회수하고 2초간 콜백에 둠)과 함께 가서, 링에 든 트랙도 다음 블록에 편집이 들립니다. 호스트 노드가 바뀐 트랙은 `Replace`로 `HostTrack`을 교체하고 상태를 넘깁니다.
+- **미터:** 트랙 피크와 컴프·리미터·게이트 다이내믹스 미터(`garak_rs_engine_take_dynamics`)를 Rust 그래프에서 받아 같은 홀드 규칙으로 게시합니다. 지연은 렌더 중인 그래프의 값(`garak_rs_engine_active_latency`).
+- **호스트 노드:** VST3 악기·인서트와 IEUM WAVE는 C++ 프로세서로 남고, Rust 그래프가 체인의 그 자리에서 셸을 부릅니다(4장). 이벤트·PDC·오토메이션 점·`ProcessContext`는 0.3.2와 비트 동일합니다.
+- **멀티코어:** 셸의 워커 풀(`setProcessing(threads)`)이 Rust 그래프의 처리 레벨마다 트랙을 병렬로 렌더하고(`GarakRsParallelRun`, 호스트 노드 콜백도 그 워커에서), 합은 트랙 순서대로. 출력은 1스레드와 **비트 동일**.
+- **render-ahead:** 셸의 링(ASIO-Guard식)·워커 스케줄링·라이브 트랙 회수 규칙으로, 링에 든 트랙은 워커가 `garak_rs_engine_render_ahead`로 렌더합니다. 콜백은 그 트랙을 건너뛰고 링 출력을 섞습니다. 출력은 콜백 렌더와 **비트 동일**.
+- **스템·프리즈·바운스:** `preFader`·`directOut=false`는 Rust 엔진이 렌더하고, `setMasterBypass`(오프라인)는 `garak_rs_engine_set_master_bypass`로 마스터 버스를 건너뜁니다.
 
-### 10.3 테스트와 CI
+### 10.2 테스트와 CI
 
 | 테스트 | 내용 | 결과 (MinGW GCC 16, 이 PC) |
 |---|---|---|
-| `native/tests/rust_engine_host_test.cpp` (`ctest -R native-rust-engine-host`) | C++ 엔진 ↔ Rust 셸: 오프라인 내보내기 3종, 마스터 바이패스, 프리페이더 트랙, 리턴 스템, 재생 중 diff·트랙 재준비·탐색·사이클·일시정지·마스터 게인, 멀티코어 0 ↔ N 워커(라이브·오프라인 24트랙), 폴백/strict | 전부 **비트 동일** (폴백 후 탐색 비교만 -141 dBFS) |
-| 같은 테스트의 호스트 노드 경우 | 상태 있는 대역 플러그인으로 VST3 악기(음표·서스테인·CC1·악기 파라미터 오토메이션) → 지연 11 VST3 인서트(오토메이션)·EQ, 지연 5 VST3 인서트의 오디오 트랙, 지연 7 VST3 인서트의 리턴, 포스트페이더 라우트·마스터 리샘플러·모니터링하는 모노 입력, 라우트/물리 녹음 테이크, 라이브 MIDI, 탐색·사이클·편집; 오프라인 내보내기; 0 ↔ N 워커; 꼬리 있는 얼린 윈도; render-ahead(Normal·High) C++ ↔ Rust ↔ 콜백 렌더 | 출력·테이크 모두 **비트 동일** (macOS arm64는 C++ 이펙트의 FMA 축약 차이로 -144.5 dBFS, 게이트 ≤ -90; Rust ↔ Rust는 어디서나 비트 동일) |
-| 같은 테스트의 메트로놈 경우 | `garak_rs_metronome_render` ↔ `metronome.hpp`(RenderEngine::renderClicks와 같은 구동): 4/4, 6/8+템포 램프, 박자 맵+템포 맵, 곡 중간 12/8-5/4-9/16, 매핑된 위치의 카운트인, 3/4 카운트인 | 전부 **비트 동일** |
+| `native/tests/rust_engine_host_test.cpp` (`ctest -R native-rust-engine-host`) | `RenderEngine` ↔ 0.3.2 C++ 엔진의 골든 레퍼런스: 오프라인 내보내기 3종, 마스터 바이패스, 프리페이더 트랙, 리턴 스템, 재생 중 diff·트랙 재준비·탐색·사이클·일시정지·`setMasterGain`; 호스트 노드(상태 있는 대역 플러그인의 VST3 악기·인서트, 지연 있는 리턴, 라우트·마스터 리샘플러·모니터링·녹음 테이크, 라이브 MIDI), 오프라인 내보내기, 꼬리 있는 얼린 윈도, render-ahead(Normal·High; 링에 든 트랙 수도 기록과 같아야 함); `garak_rs_metronome_render` 6가지 경우; **셸 메트로놈**(템포·박자 맵, 매핑된 위치의 카운트인, 탐색, 일시정지 후 3/4 카운트인, 클릭 세트 교체). 0 ↔ N 워커, render-ahead ↔ 콜백 렌더는 서로 비트 동일 | 전부 **비트 동일** |
+| `native/tests/engine_test.cpp` (`ctest -R native-engine`) | 엔진 회귀 43가지(모두 Rust 그래프로 렌더, 경우마다 Rust 블록 수 출력). 이펙트 단위 검사는 `native/tests/rust_fx.hpp`로 Rust 커널을 직접 | 43/43 |
 | `rust/garak-engine/tests/host.rs` | `render_block`: 엔진 자체 전송과 같은 진행, 티켓 게이트, 병렬 센더 비트 동일, 힙 사용 0 | 통과 |
-| `scripts/rust-engine-suite.mjs` (rust.yml) | `engine_test.cpp` 전체를 `GARAK_RUST_ENGINE=1`(전부 통과해야 함), `strict`(목록에 있는 차단 요인만 실패 허용, `native/tests/rust_engine_expected_failures.txt`), `strict` + `GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1`(전부 통과해야 함)로 실행, 케이스별 Rust 렌더 블록 수를 잡 요약에 | 1: **43/43**, strict: 12개가 Rust 그래프로 통과, 7개는 그래프 렌더 없이 통과, 24개 예상 실패(전부 내장 악기), strict + 호스트 악기: **43/43** |
-| desktop.yml / macos.yml | 네이티브 스모크(`--test-clock`)를 `GARAK_RUST_ENGINE=1`로 한 번 더. 오디오 전용 `render.wav`가 Rust로 렌더됐는지 확인 | 로컬 21/21 통과 |
+| rust.yml | Windows MSVC·macOS arm64에서 위 테스트와 7장 테스트(골든 레퍼런스: Windows 비트 동일, macOS ≤ -90 dBFS) | |
+| desktop.yml / macos.yml | 네이티브 스모크(`--test-clock`): `hello.rustEngine`과 `render.wav`가 Rust 그래프로 렌더했는지 확인 | |
 
-strict 예상 실패의 차단 요인은 이제 내장·샘플 악기뿐입니다(24개, instruments 브랜치; VST3 케이스 중 내장 신스 부분이 함께 든 서스테인·MIDI 컨트롤러·오토메이션·프리즈·스템 포함). 악기 외 차단 요인은 0개: 세 번째 실행이 그 24개도 Rust 그래프로 통과시킵니다.
+0.3.2의 C++ ↔ Rust 셸 CPU 비교(128프레임 블록, 10 s, 이 PC 8워커): 16트랙 C++ 2.2× / Rust 1스레드 4.8× / 8워커 12.1×, 32트랙 1.6× / 3.7× / 8.9×. 지금은 `garak-rust-engine-host-test --bench`가 1스레드 ↔ N워커만 잽니다.
 
-CPU (128프레임 블록, 10 s, 테스트 프로젝트, `garak-rust-engine-host-test --bench`, 이 PC 8워커):
+### 10.3 남은 일
 
-| 트랙(+리턴 2) | C++ 엔진 | Rust 셸 1스레드 | Rust 셸 8워커 | 워커 / 1스레드 |
-|---|---|---|---|---|
-| 16 | 2.2× 실시간 | 4.8× | 12.1× | **2.50×** |
-| 32 | 1.6× | 3.7× | 8.9× | **2.38×** |
+- 데스크톱 IEUM WAVE는 아직 C++ 호스트 노드입니다(편집기·상태가 C++ 쪽). 웹은 Rust IEUM WAVE(`src/wave/`)를 씁니다.
+- 장시간 재생 소크 테스트(G4).
 
-### 10.4 아직 C++에 남은 것 (다음 단계)
-
-| 항목 | 지금 | 계획 |
-|---|---|---|
-| 내장 신스·드럼·샘플 악기, 라이브 MIDI·미리 듣기 | C++ 폴백 | instruments 브랜치(`rust/engine-instruments`)가 들어오면 `rustIneligibility`의 해당 줄을 지우고 라이브 MIDI를 셸에서 Rust 음표 명령으로 전달 |
-| VST3 악기·인서트, IEUM WAVE | **Rust 그래프의 호스트 노드**(C++ 프로세서를 콜백으로; PDC·꼬리·이벤트·트랜스포트 정보·오토메이션 점, 리턴의 VST3 인서트 포함) | — |
-| 기타 리그 | C++ 폴백(`rustIneligibility`가 미리 거부) | garak-dsp 포팅(`rust/guitar-rig`, 패리티 ≤ -90 dBFS, CPU ≤ 1.15× C++) 후 인서트 목록에 추가하고 그 줄을 지움 |
-| 입력 모니터링·트랙 라우트·녹음 탭(프리FX/포스트FX/포스트페이더, 마스터 리샘플) | **Rust 그래프**(`routes.rs`, `input` 호스트 노드, `garak_rs_engine_route_input`) | — |
-| 메트로놈·카운트인 | 데스크톱은 C++ 셸이 섞음(동작 동일). `garak-engine/src/metronome.rs`에 `metronome.hpp`·`meter.hpp` 포팅 완료(격자, 복합 박자 묶음, 박자 맵 재시작·강박, 템포 맵, 카운트인, 6보이스 스트로크 플레이어 + 호스트가 주는 클릭 PCM — 국악 소리 포함). 호스트 테스트 6가지 경우 **비트 동일** | 워크릿/통합 엔진의 `Renderer`에서 마스터 뒤에 섞기 |
-| 얼린 윈도(꼬리 포함) | **Rust 그래프**(클릭 가드 없음, 프로젝트 끝 이후 오프라인으로 계속 읽기, `tailSeconds`가 트랙 꼬리) | — |
-| render-ahead | **Rust 그래프**(셸의 링, 워커가 Rust 트랙을 렌더) | — |
-| 셸의 C++ 트랙 경로(폴백) | 내장 악기·기타 리그가 들어오면 지움 | 두 브랜치가 합쳐지고 strict 예상 실패가 0이 되면 `rustIneligibility`와 C++ 트랙 렌더를 제거 |
-
-참고(두 엔진 공통, 바꾸지 않음): 탐색·정지 리셋은 리턴 지연 정렬용 `outputDelay`를 비우지 않으므로, 지연 있는 리턴이 있을 때 탐색 직후 몇 프레임은 이전 위치의 소리이고 render-ahead 중이면 링이 얼마나 앞서 있었는지에 따라 달라집니다. 일시정지에서 링이 비어 있었는지(이음매 없는 회수)도 워커 타이밍에 달려 있습니다. 그래서 render-ahead 패리티는 재생·탐색·사이클 순환으로 비교합니다.
+참고(바꾸지 않음): 탐색·정지 리셋은 리턴 지연 정렬용 출력 지연선을 비우지 않으므로, 지연 있는 리턴이 있을 때 탐색 직후 몇 프레임은 이전 위치의 소리이고 render-ahead 중이면 링이 얼마나 앞서 있었는지에 따라 달라집니다. 일시정지에서 링이 비어 있었는지(이음매 없는 회수)도 워커 타이밍에 달려 있습니다. 그래서 render-ahead 테스트는 재생·탐색·사이클 순환으로 비교합니다.

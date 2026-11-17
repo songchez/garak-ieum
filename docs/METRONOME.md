@@ -42,7 +42,7 @@
 
 ### 웹(AudioWorklet의 Rust 엔진)
 
-0.3.2부터 웹은 통합 Rust 엔진이 같은 규칙(`rust/garak-engine/src/metronome.rs`, `metronome.hpp`·`meter.hpp` 포팅, 호스트 테스트로 비트 동일)으로 클릭과 카운트인을 마스터 뒤에 섞습니다. 아래 Web Audio 예약은 엔진이 프로젝트를 거부했을 때의 대체 경로입니다. [RUST_ENGINE 5.7](RUST_ENGINE.md#57-웹-호스트-2차-엔진-안에서-끝나는-일)
+웹(0.3.2)과 데스크톱(0.3.3)은 통합 Rust 엔진이 같은 규칙(`rust/garak-engine/src/metronome.rs`, 이전 C++ `metronome.hpp`·`meter.hpp` 포팅, 그 렌더의 골든 레퍼런스와 비트 동일)으로 클릭과 카운트인을 마스터 뒤에 섞습니다. 아래 Web Audio 예약은 엔진이 프로젝트를 거부했을 때의 대체 경로입니다. [RUST_ENGINE 5.7](RUST_ENGINE.md#57-웹-호스트-2차-엔진-안에서-끝나는-일)
 
 ### 웹(Web Audio 대체 경로)
 
@@ -52,7 +52,7 @@
 
 트랙은 Rust 엔진이 렌더하지만 메트로놈·카운트인은 C++ 셸(`RenderEngine`)이 그대로 섞습니다.
 
-UI가 합성한 세 레벨 PCM을 `metronome.set { enabled, volume, sampleRate, strokes? }`로 호스트에 한 번 보냅니다(소리·강세·샘플레이트가 바뀔 때만 `strokes` 포함). 호스트는 장치를 다시 구성해도 설정을 유지합니다. 클릭은 `RenderEngine::render` 콜백 안에서 마스터 처리와 미터 다음에 정확한 프로젝트 프레임(`round(pulse × 프레임/박)`)에 더해집니다([`native/src/metronome.hpp`](../native/src/metronome.hpp)). 콜백에서는 할당하지 않습니다. 오프라인 인스턴스(WAV 내보내기)는 클릭을 만들지 않습니다.
+UI가 합성한 세 레벨 PCM을 `metronome.set { enabled, volume, sampleRate, strokes? }`로 호스트에 한 번 보냅니다(소리·강세·샘플레이트가 바뀔 때만 `strokes` 포함). 호스트는 장치를 다시 구성해도 설정을 유지합니다. 클릭은 `RenderEngine::render` 콜백 안에서 마스터 처리와 미터 다음에 정확한 프로젝트 프레임(`round(pulse × 프레임/박)`)에 더해집니다. 셸이 전송·카운트인 타이밍을 정하고 Rust 엔진이 클릭을 섞습니다(`garak_rs_engine_clicks`, [`rust/garak-engine/src/metronome.rs`](../rust/garak-engine/src/metronome.rs)). 콜백에서는 할당하지 않습니다. 오프라인 인스턴스(WAV 내보내기)는 클릭을 만들지 않습니다.
 
 `transport.play { countInFrames }`이면 엔진이 위치를 멈춘 채 카운트인 클릭을 내고, 끝난 바로 다음 프레임에 재생을 시작합니다. 카운트인 중에 시작한 녹음은 캡처를 기다렸다가 그 프레임부터 기록하며, 테이크 시작 위치는 재생 위치 그대로입니다.
 

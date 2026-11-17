@@ -11,7 +11,7 @@
 | --- | --- |
 | 모듈 파라미터(웹) | `src/devices/effects/*.ts`, `src/devices/effects/sigimsaeDefs.ts` |
 | 샘플 처리 커널 (데스크톱·웹 공통) | `rust/garak-dsp/src/fx/` (`no_std`). 데스크톱은 Rust 엔진이 `garak-ffi`로, 웹은 AudioWorklet의 `garak-engine.wasm`(Web Audio 대체 경로에서는 `garak-dsp.wasm` 워클릿)으로 씁니다. [RUST](RUST.md) |
-| 이전 커널 (0.3.2의 숨은 대체 경로, 다음 패치에서 삭제 예정) | 웹 `src/devices/effects/kernels.ts`·`sigimsae.worklet.ts`(`garak.rustDsp=0`), 네이티브 `native/src/dsp.cpp`·`native/src/sigimsae_effects.inc`(`GARAK_RUST_ENGINE=0` + `GARAK_RUST_EFFECTS=none`). Rust 커널과 클래스 단위로 맞춤 |
+| 이전 커널 | 웹 `src/devices/effects/kernels.ts`·`sigimsae.worklet.ts`(`garak.rustDsp=0`, 숨은 대체 경로). 네이티브 C++ 커널(`dsp.cpp`·`sigimsae_effects.inc`)은 0.3.3에서 삭제했고, 그 출력은 `native/tests/golden/rust-kernels.golden`의 골든 레퍼런스로 Rust 커널을 검사합니다 |
 | 라이브러리 변형 | `src/core/sigimsaeVariants.ts` |
 
 이름 규칙: 한국적인 이름과 장난스러운 서양식 오마주 이름을 섞되 실제 상표·모델명은 쓰지 않습니다.

@@ -10,8 +10,8 @@
   마스터 피드, pre/post-FX·post-fader 탭). 녹음은 데스크톱 `garak_rs_engine_route_input`, 웹 `tap_output`. [RUST_ENGINE](RUST_ENGINE.md)
 - 웹 Web Audio 대체 경로: `src/audio/graph.ts` (`connectRoutes`, `setRouteMonitoring`), `src/audio/RouteRecording.ts`,
   `src/audio/routeRecorder.worklet.ts`, `src/audio/WebAudioEngine.ts`
-- 네이티브 셸과 이전 C++ 경로(`GARAK_RUST_ENGINE=0`): `native/include/garak/engine.hpp` (`TrackRoute`, `RecordingTake::routed`),
-  `native/src/engine.cpp` (`prepareRoutes`, 레벨별 처리, 탭 버퍼), `native/src/protocol.hpp` (`route` 필드),
+- 네이티브 셸: `native/include/garak/engine.hpp` (`TrackRoute`, `RecordingTake::routed`),
+  `native/src/engine.cpp` (`routingTracks`, 라우트 테이크 캡처는 `garak_rs_engine_route_input`; 라우트 렌더는 Rust 엔진 `routes.rs`), `native/src/protocol.hpp` (`route` 필드),
   `native/src/host.cpp` (테이크별 보정값), `src/audio/native/timeline.ts`
 - UI: `src/components/InputSelect.tsx` (입력 목록 + `TapSelect`), `TrackInspector.tsx`, `TrackHeader.tsx`
 
