@@ -19,10 +19,11 @@ import { compileNativeTimeline, NativeTimelineCompiler, type NativePcmAsset, typ
 import { encodeTracks, planNativeSync, type SyncTimeline } from '../native/timelineSync'
 import { encodeWav } from '../wavEncode'
 import { WebAudioEngine } from '../WebAudioEngine'
-import { emptyStatus, TAP_CHANNELS, type EngineMeters, type EngineStatus } from './engineChannel'
+import { emptyStatus, liveControllerNumber, TAP_CHANNELS, type EngineMeters, type EngineStatus } from './engineChannel'
 import { KernelHelper, renderInEngineWorker, RustEngineNode, sharedGarakEngineModule } from './engineHost'
 import type { EngineRenderAsset } from './engineOffline'
 import { GarakEngineError, utf8Encode } from './garakEngineWasm'
+import { liveContextFrame, liveLeadSeconds } from './liveTiming'
 import { rustEngineRefusedInsert } from './flag'
 import type { LoadedSet } from '../samples'
 
@@ -585,15 +586,27 @@ export class RustWebAudioEngine extends WebAudioEngine {
   }
 
   /** A note through the engine's track (live event path); false when the engine does not render that track. */
-  private engineVoice(trackId: string, pitch: number, velocity: number, seconds?: number): LiveVoiceHandle | null {
+  private engineVoice(trackId: string, pitch: number, velocity: number, seconds?: number, timeMs?: number): LiveVoiceHandle | null {
     const bridge = this.bridge, index = this.trackIndex(trackId)
     const track = this.synced?.tracks[index]
     if (!bridge || !this.rustActive() || index < 0 || !track || track.source.kind === 'audio') return null
     const id = ++this.liveNoteId
-    bridge.live(index, 'noteOn', pitch, clamp(velocity, 0, 1), id)
-    const release = () => { bridge.live(index, 'noteOff', pitch, 0, id) }
+    bridge.live(index, 'noteOn', pitch, clamp(velocity, 0, 1), id, this.liveFrame(timeMs))
+    const release = (releaseMs?: number) => { bridge.live(index, 'noteOff', pitch, 0, id, this.liveFrame(releaseMs)) }
     if (seconds !== undefined) setTimeout(release, seconds * 1000)
     return { release }
+  }
+
+  /**
+   * The context frame a live event stamped `timeMs` (performance.now() base; now when absent) sounds at: the render
+   * clock at that moment plus a constant lead (liveTiming.ts), so live notes keep their timing inside a quantum and
+   * unstamped events (panic, timers) stay in order behind stamped ones.
+   */
+  private liveFrame(timeMs?: number): number {
+    const context = this.context
+    if (!context) return 0
+    const now = performance.now()
+    return liveContextFrame(timeMs ?? now, now, context.currentTime, context.sampleRate, liveLeadSeconds(context.sampleRate, context.baseLatency))
   }
 
   private previewGraphFor(context: AudioContext): EngineGraph {
@@ -605,24 +618,26 @@ export class RustWebAudioEngine extends WebAudioEngine {
   }
 
   /** Live MIDI and computer-keyboard notes: through the engine's track while it renders the project. */
-  protected override startLiveNote(trackId: string, pitch: number, velocity: number): LiveVoiceHandle | null {
+  protected override startLiveNote(trackId: string, pitch: number, velocity: number, timeMs?: number): LiveVoiceHandle | null {
     if (this.rustActive()) {
       const track = this.project?.tracks.find(item => item.id === trackId)
       if (!track || track.kind !== 'instrument' || !isTrackEnabled(track)) return null
-      const voice = this.engineVoice(trackId, pitch, velocity)
+      const voice = this.engineVoice(trackId, pitch, velocity, undefined, timeMs)
       if (voice) return voice
       if (this.engineOwnsOutput()) return null
     }
-    return super.startLiveNote(trackId, pitch, velocity)
+    return super.startLiveNote(trackId, pitch, velocity, timeMs)
   }
 
-  protected override liveControl(trackId: string, key: ControllerKey, value: number): void {
+  protected override liveControl(trackId: string, key: ControllerKey, value: number, timeMs?: number): void {
     const index = this.trackIndex(trackId)
-    if (this.rustActive() && this.bridge && index >= 0 && key.startsWith('cc')) {
-      const controller = Number(key.slice(2))
-      if (Number.isInteger(controller)) { this.bridge.live(index, 'control', controller, value); if (this.engineOwnsOutput()) return }
+    // CCs, pitch bend and aftertouch (poly pressure arrives as aftertouch) play in the engine at their stamp.
+    const controller = liveControllerNumber(key)
+    if (this.rustActive() && this.bridge && index >= 0 && controller !== null) {
+      this.bridge.live(index, 'control', controller, value, 0, this.liveFrame(timeMs))
+      if (this.engineOwnsOutput()) return
     }
-    super.liveControl(trackId, key, value)
+    super.liveControl(trackId, key, value, timeMs)
   }
 
   /** MIDI recording timestamps while the engine plays: the engine's frame at that context time. */

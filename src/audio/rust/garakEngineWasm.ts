@@ -70,13 +70,16 @@ interface EngineExports {
   garak_engine_preview_note(track: number, pitch: number, velocity: number, frames: number): number
   garak_engine_control_change(track: number, controller: number, value: number): number
   garak_engine_all_notes_off(track: number): number
+  // ABI 5 (docs/RUST_ENGINE.md 5.8)
+  garak_engine_live_at(track: number, kind: number, pitch: number, value: number, id: number, offset: number): number
 }
 
 /**
  * ABI 3: count-in, metronome, meters, monitoring input, route taps, live events, staged updates, kernels.
  * ABI 4: built-in instruments (sample set registration, per-call live MIDI exports; live events play them).
+ * ABI 5: live events at a sample offset into the next render call (garak_engine_live_at).
  */
-export const ENGINE_ABI_VERSION = 4
+export const ENGINE_ABI_VERSION = 5
 /** Applied kinds of set/patch (docs/RENDER_DIFF_PROTOCOL.md 3.3). */
 export type EngineApplied = 'none' | 'diff' | 'tracks' | 'full'
 const APPLIED: EngineApplied[] = ['none', 'diff', 'tracks', 'full']
@@ -148,7 +151,8 @@ export interface GarakEngine {
   readonly maxTaps: number
   /** The route taps of the last render: `maxTaps` slots of `maxBlock` interleaved stereo frames. */
   tapView(): Float32Array
-  live(track: number, kind: LiveEventKind, pitch?: number, value?: number, id?: number): void
+  /** A live event `offset` frames into the next render call (0: its first frame; docs/RUST_ENGINE.md 5.8). */
+  live(track: number, kind: LiveEventKind, pitch?: number, value?: number, id?: number, offset?: number): void
   /** Each track's highest peak since `clearPeaks` (graph order); `count` tracks. */
   peaks(): { values: Float32Array; count: number }
   clearPeaks(): void
@@ -304,7 +308,7 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
     monitor(tracks) { withIndices(tracks, (p, n) => x.garak_engine_monitor(p, n), false) },
     taps(list) { withIndices(list, (p, n) => x.garak_engine_taps(p, n), true) },
     tapView() { views(); return taps },
-    live(track, kind, pitch = 0, value = 0, id = 0) { check(x.garak_engine_live(track, LIVE_EVENT[kind], pitch, value, id)) },
+    live(track, kind, pitch = 0, value = 0, id = 0, offset = 0) { check(x.garak_engine_live_at(track, LIVE_EVENT[kind], pitch, value, id, offset)) },
     peaks() { views(); return { values: peakView, count: x.garak_engine_track_count() } },
     clearPeaks() { x.garak_engine_clear_peaks() },
     takeDynamics() {

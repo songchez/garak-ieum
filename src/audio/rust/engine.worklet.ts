@@ -3,6 +3,7 @@ import {
   CommandRing, emptyStatus, ENGINE_PROCESSOR, MeterWriter, RING_LIVE, StatusWriter,
   type EngineMeters, type EngineProcessorOptions, type EngineReply, type EngineRequest, type RingCommand,
 } from './engineChannel.js'
+import { liveOffsetFrames } from './liveTiming.js'
 
 declare const sampleRate: number
 declare const currentFrame: number
@@ -113,7 +114,7 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
             continue
           }
           case 'transport': this.transport(message.command, message.frame); break
-          case 'live': this.live(message.track, message.kind, message.pitch, message.value, message.id); break
+          case 'live': this.live(message.track, message.kind, message.pitch, message.value, message.id, message.at); break
           case 'kernels': for (const kernel of message.kernels) engine.importKernel(kernel); break
           case 'metronome': engine.setMetronome(message.on, message.gain, message.strokes ? [message.strokes[0], message.strokes[1], message.strokes[2]] : undefined); break
           case 'monitor': engine.monitor(message.tracks); this.monitoring = message.tracks.length > 0; break
@@ -180,14 +181,15 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
     if (name) this.engine?.transport(name, frame)
   }
 
-  private live(track: number, kind: number, pitch: number, value: number, id: number): void {
+  /** `at`: the context frame to sound at (0: this quantum's first frame); the engine starts it on that sample. */
+  private live(track: number, kind: number, pitch: number, value: number, id: number, at: number): void {
     const name = LIVE_KINDS[kind]
-    if (name) this.engine?.live(track, name, pitch, value, id)
+    if (name) this.engine?.live(track, name, pitch, value, id, liveOffsetFrames(at, currentFrame))
   }
 
   private readonly applyRing = (command: RingCommand): void => {
     try {
-      if (command.command === RING_LIVE) this.live(command.a ?? 0, command.b ?? 0, command.c ?? 0, command.d ?? 0, command.frame)
+      if (command.command === RING_LIVE) this.live(command.a ?? 0, command.b ?? 0, command.c ?? 0, command.d ?? 0, command.frame, command.e ?? 0)
       else this.transport(command.command, command.frame)
     } catch { /* A full engine queue: the next command retries. */ }
     this.appliedSeq = Math.max(this.appliedSeq, command.seq)

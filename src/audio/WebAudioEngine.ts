@@ -112,8 +112,8 @@ export class WebAudioEngine implements AudioEngine {
   /** Monitor-only clicks on the audio clock; never part of the graph, recordings or export. */
   protected readonly metronome = new WebMetronome()
   /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md). */
-  readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time),
-    control: (trackId, key, value) => this.liveControl(trackId, key, value) })
+  readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity, time) => this.startLiveNote(trackId, pitch, velocity, time), beatAt: time => this.heardBeatAt(time),
+    control: (trackId, key, value, time) => this.liveControl(trackId, key, value, time) })
 
   constructor(project?: Project, settings: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     this.settings = normalizeAudioSettings(settings)
@@ -581,13 +581,13 @@ export class WebAudioEngine implements AudioEngine {
   }
 
   /** A live controller (pitch bend, modulation, CC) on the track's instrument. */
-  protected liveControl(trackId: string, key: ControllerKey, value: number): void {
+  protected liveControl(trackId: string, key: ControllerKey, value: number, _timeMs?: number): void {
     const controls = this.graph?.tracks.get(trackId)?.controls
     if (controls && this.context) applyControl(controls, key, value, this.context.currentTime)
   }
 
   /** A held live note through the track's chain; released by its note-off with the instrument's release. */
-  protected startLiveNote(trackId: string, pitch: number, velocity: number): LiveVoiceHandle | null {
+  protected startLiveNote(trackId: string, pitch: number, velocity: number, _timeMs?: number): LiveVoiceHandle | null {
     const context = this.context, graph = this.graph
     const track = this.project?.tracks.find(item => item.id === trackId)
     if (!context || !graph || this.outputFault || !track || track.kind !== 'instrument' || !isTrackEnabled(track)) return null
