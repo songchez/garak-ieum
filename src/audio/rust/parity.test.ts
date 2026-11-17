@@ -193,11 +193,16 @@ describe.skipIf(!built)('Rust DSP parity (WASM vs TypeScript kernels)', () => {
 describe('Rust DSP loader fallbacks', () => {
   afterEach(() => { vi.unstubAllGlobals() })
 
-  it('is off unless explicitly requested', () => {
+  it('is on by default; localStorage garak.rustDsp=0 opts out', () => {
     const store = new Map<string, string>()
     vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null })
+    expect(rustDspRequested()).toBe(true)
+    store.set(RUST_DSP_STORAGE_KEY, '0')
     expect(rustDspRequested()).toBe(false)
     store.set(RUST_DSP_STORAGE_KEY, '1')
+    expect(rustDspRequested()).toBe(true)
+    // (VITE_GARAK_RUST_DSP=0 is substituted by Vite at build time: `rustDspRequested` compiles to `return false`.)
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('blocked') } })
     expect(rustDspRequested()).toBe(true)
   })
 

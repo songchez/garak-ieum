@@ -18,6 +18,7 @@ extern crate std;
 pub mod biquad;
 pub mod fx;
 pub mod gain;
+pub mod instruments;
 pub mod lines;
 pub mod math;
 pub mod params;

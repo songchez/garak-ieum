@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { IDBFactory } from 'fake-indexeddb'
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { AUTOSAVE_MAX_DELAY_MS, AUTOSAVE_MIN_DELAY_MS, FULL_VALIDATION_INTERVAL_MS, assertProjectInvariants, autosaveDelay, autosaveSnapshot, resetAutosaveValidation } from './autosave'
 import { createDemoProject, createEmptyProject, createTrack, uid } from './project'
 import { loadProject, saveProject } from './storage'
 import type { Project, Track } from './types'
 
-beforeEach(() => { resetAutosaveValidation(); vi.stubGlobal('indexedDB', new IDBFactory()) })
+beforeEach(() => { resetAutosaveValidation(); vi.stubGlobal('indexedDB', new IDBFactory()); vi.stubGlobal('IDBKeyRange', IDBKeyRange) })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 const edited = (project: Project, patch: Partial<Project>): Project => ({ ...project, ...patch })

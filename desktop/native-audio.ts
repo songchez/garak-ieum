@@ -22,7 +22,7 @@ const MAX_PCM_BYTES = 512 * 1024 * 1024
 const MAX_TAKES = 64
 /** Several takes reach the renderer in one reply; larger ones stay in the recovery folder. */
 const MAX_TAKES_BYTES = 2 * 1024 * 1024 * 1024
-const METHODS = new Set(['devices.list', 'devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor', 'latency.measure', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'note.control', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'metronome.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
+const METHODS = new Set(['devices.list', 'devices.probe', 'device.suspend', 'device.resume', 'device.clockSource', 'device.directMonitor', 'latency.measure', 'engine.capabilities', 'engine.configure', 'engine.snapshot', 'engine.close', 'transport.play', 'transport.pause', 'transport.stop', 'transport.seek', 'note.preview', 'note.on', 'note.off', 'note.allOff', 'note.control', 'monitor.set', 'record.start', 'record.stop', 'record.commit', 'render.wav', 'render.tail', 'output.test', 'device.controlPanel', 'devices.controlPanel', 'asset.put', 'samples.register', 'project.set', 'metronome.set', 'plugins.scan', 'plugins.list', 'plugins.parameters', 'plugins.parameter', 'plugins.editor', 'plugins.state'])
 
 function record(value: unknown, label = 'request'): Json {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid native audio ${label}.`)
@@ -114,7 +114,11 @@ export class NativeAudioService {
       child.stderr.on('data', (chunk: string) => { if (this.child === child) this.diagnostics = (this.diagnostics + chunk).slice(-8192) })
       child.stdin.on('error', error => { this.failed(child, error); child.kill() })
       child.on('error', error => this.failed(child, error))
-      child.on('exit', (code, signal) => this.failed(child, new Error(`네이티브 오디오 엔진이 종료되었습니다 (${signal ?? code ?? 'unknown'}). 장치 설정에서 다시 연결해주세요.`)))
+      // The host's last stderr line is the only trace of why it exited (a driver crash, a missing DLL); keep it in the error.
+      child.on('exit', (code, signal) => {
+        const reason = this.diagnostics.trim().split(/\r?\n/).at(-1)?.slice(0, 300)
+        this.failed(child, new Error(`네이티브 오디오 엔진이 종료되었습니다 (${signal ?? code ?? 'unknown'}). 재생하면 다시 연결합니다.${reason ? ` 엔진 메시지: ${reason}` : ''}`))
+      })
       const hello = record(await this.send('hello', {}, 15_000), 'handshake')
       if (hello.protocol !== 1) { child.kill(); throw new Error('네이티브 엔진과 앱의 프로토콜 버전이 다릅니다.') }
       this.options.onState({ type: 'state', ready: false, playing: false, generation: this.generation })
@@ -375,6 +379,7 @@ export class NativeAudioService {
         return { ...metadata, data: new Uint8Array(await readFile(path)) }
       } finally { await rm(path, { force: true }).catch(() => {}) }
     }
+    if (method === 'render.tail') return this.send(method, { timeline: await this.resolveTimeline(params.timeline) }, 10 * 60_000)
     // Native host paths are supplied exclusively above, not by the renderer.
     return this.send(method, params)
   }

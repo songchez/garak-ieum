@@ -7,7 +7,7 @@ import type { ControllerKey } from '../core/types'
 import { isEffectDevice, type AudioAsset, type AudioClip, type InstrumentId, type Project, type Track, type TrackInputTap } from '../core/types'
 import { masterFeedExcluded, reconcileTrackRoutes, routeOf } from '../core/trackRouting'
 import { isReturnTrack, sendLayoutKey, sendsOf } from '../core/sends'
-import { clamp } from './math'
+import { clamp, loopRange } from './math'
 import { tempoMapOf, type TempoMap } from '../core/tempoMap'
 import { AUDIO_CLIP_GAIN_MAX, envelopeAt, envelopeBreakpoints, fadeLengths } from '../core/clipEnvelope.js'
 import { pickZone, releaseNoiseGain, type LoadedSet, type SampleLibrary } from './samples'
@@ -17,6 +17,8 @@ import { EFFECT_MODULES } from '../devices/effects/registry'
 import { bindGuitarRigDevice, createGuitarRigMaster } from '../devices/guitar-rig'
 import { bindDeviceAnalysis } from '../devices/effects/analysis'
 import { bindDynamicsMeter } from '../devices/effects/dynamicsMeter'
+import { forwardVintageControl, scheduleVintage, updateVintageParams } from '../devices/vintage/web'
+import { isVintageInstrument, vintageTailSeconds } from '../devices/vintage/params'
 import { dbToGain, randomGenerator, setParameter } from '../devices/effects/shared'
 import { automationValue, evaluateLane, isActiveLane, isDiscrete, targetDef, trackAt } from '../core/automation'
 import type { AutomationLane } from '../core/types'
@@ -154,6 +156,8 @@ export function updateGraph(graph: EngineGraph, project: Project, smooth = true,
     for (const device of track.devices) {
       if (device.enabled && isEffectDevice(device)) channel.devices.get(device.id)?.update(device.params, bpm, now, smooth)
     }
+    // Vintage instruments (Rust worklet) take knob edits now; their parameters glide inside the DSP.
+    if (track.kind === 'instrument' && isVintageInstrument(track.instrument)) updateVintageParams(channel.controls?.input ?? channel.input, track.instrument, track.instrumentParams)
   }
 }
 
@@ -288,15 +292,19 @@ export function updateEffectTempo(graph: EngineGraph, project: Project, bpm: num
   }
 }
 
-export function renderTailSeconds(project: Project): number {
+/** Own tails of the enabled tracks (instrument release plus insert tails; a frozen track's stored tail). */
+function trackTails(project: Project): Map<string, number> {
   const tails = new Map<string, number>()
   // Synced delays ring longest at the slowest tempo of the map.
   const slowest = Math.min(...tempoMapOf(project).points.map(point => point.bpm))
   for (const track of project.tracks) {
     if (!isTrackEnabled(track)) continue
     let tail = 0
+    if (track.render?.frozen) { tails.set(track.id, track.render.frozen.tailSeconds); continue }
     const def = instrumentDef(track.instrument)
-    if (track.kind === 'instrument' && !def.isKit) {
+    if (track.kind === 'instrument' && isVintageInstrument(track.instrument)) {
+      tail = Math.max(tail, vintageTailSeconds(track.instrument, track.instrumentParams) + 0.2)
+    } else if (track.kind === 'instrument' && !def.isKit) {
       tail = Math.max(tail, clamp(paramValue(def.params, track.instrumentParams, 'release'), 0, 30) + 0.2)
     } else if (track.kind === 'instrument' && def.kind === 'sampled') tail = Math.max(tail, 2)
     for (const device of track.devices) {
@@ -305,6 +313,17 @@ export function renderTailSeconds(project: Project): number {
     }
     tails.set(track.id, tail)
   }
+  return tails
+}
+
+/** The longest own tail of a non-return track: what a frozen render of that track stores (docs/BOUNCE_FREEZE_STEMS.md). */
+export function trackTailSeconds(project: Project): number {
+  const tails = trackTails(project)
+  return Math.max(0, ...project.tracks.filter(track => !isReturnTrack(track)).map(track => tails.get(track.id) ?? 0))
+}
+
+export function renderTailSeconds(project: Project): number {
+  const tails = trackTails(project)
   let result = 0.85
   for (const track of project.tracks) {
     const own = tails.get(track.id)
@@ -320,8 +339,13 @@ function usesGuitarRigMaster(tracks: readonly Track[]): boolean {
   return tracks.some(track => isTrackEnabled(track) && track.devices.some(device => device.enabled && device.type === 'guitar-rig'))
 }
 
+export interface GraphOptions {
+  /** Offline stems, bounce and freeze: the track sum goes straight out, without master volume or the master processor. */
+  preMaster?: boolean
+}
+
 /** This graph is used unchanged by realtime playback and OfflineAudioContext. */
-export function createGraph(context: BaseAudioContext, project: Project): EngineGraph {
+export function createGraph(context: BaseAudioContext, project: Project, options: GraphOptions = {}): EngineGraph {
   const nodes: AudioNode[] = []
   const resources: DeviceGraph[] = []
   const remember = <T extends AudioNode>(node: T): T => { nodes.push(node); return node }
@@ -330,7 +354,10 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     const masterVolume = remember(context.createGain())
     const hasGuitarRig = usesGuitarRigMaster(project.tracks)
     let master: { input: AudioNode; output: AudioNode }
-    if (hasGuitarRig) {
+    if (options.preMaster) {
+      const through = remember(context.createGain())
+      master = { input: through, output: through }
+    } else if (hasGuitarRig) {
       // The legacy DynamicsCompressor has 6 ms of fixed lookahead. Select the same
       // causal master for live and offline rig projects; preserve existing mixes.
       const processor = createGuitarRigMaster(context, remember)
@@ -348,7 +375,8 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
     const gate = remember(context.createGain())
     const meter = remember(context.createAnalyser())
     meter.fftSize = 256
-    sum.connect(masterVolume).connect(master.input)
+    if (options.preMaster) sum.connect(master.input)
+    else sum.connect(masterVolume).connect(master.input)
     master.output.connect(gate).connect(meter).connect(context.destination)
     const previewInput = remember(context.createGain())
     previewInput.gain.value = 0.65
@@ -377,7 +405,18 @@ export function createGraph(context: BaseAudioContext, project: Project): Engine
       }
       const postFx = remember(context.createGain())
       tail.connect(postFx).connect(panner)
-      panner.connect(fader).connect(trackMeter).connect(sum)
+      panner.connect(fader)
+      if (track.render?.preFader) {
+        // Freeze/bounce renders: the post-insert signal without pan or fader. Discrete up-mixing leaves a mono
+        // source's right channel silent, which marks the render mono (the live pan then keeps the mono law).
+        const discrete = remember(context.createGain())
+        discrete.channelCount = 2
+        discrete.channelCountMode = 'explicit'
+        discrete.channelInterpretation = 'discrete'
+        postFx.connect(discrete).connect(trackMeter)
+      } else fader.connect(trackMeter)
+      // directOut false (return stems): the track still feeds its sends, but not the master sum.
+      if (track.render?.directOut !== false) trackMeter.connect(sum)
 
       const controls = track.kind === 'instrument' ? createTrackControls(context, input, remember) : undefined
       tracks.set(track.id, {
@@ -440,6 +479,8 @@ function createTrackControls(context: BaseAudioContext, destination: AudioNode, 
 
 /** Applies one controller value at `time`. Other controllers (pan, other CCs, program) have no built-in meaning. */
 export function applyControl(controls: TrackControls, key: ControllerKey, value: number, time: number, range = DEFAULT_BEND_RANGE): void {
+  // Vintage instruments render pitch bend and modulation themselves (no detune input on a worklet).
+  forwardVintageControl(controls.input, key, value, time, range)
   const state = controls.state
   if (key === 'pitchBend') {
     state.bend = value / 8192 * range * 100
@@ -615,6 +656,32 @@ export function stopTrackVoices(graph: EngineGraph, trackId: string, from: numbe
   return stopped
 }
 
+/** A voice rendered elsewhere (a vintage instrument's worklet): filed and released like registerVoice's. */
+function adoptVoice(graph: EngineGraph, base: { stop(at: number): void; release(at: number, seconds: number): void; dispose(): void }): Voice {
+  let disconnected = false
+  const owner = voiceOwner
+  const voice: Voice = {
+    stop(at) { if (!disconnected) base.stop(at) },
+    release(at, seconds) { if (!disconnected) base.release(at, seconds) },
+    disconnect() {
+      if (disconnected) return
+      disconnected = true
+      base.dispose()
+      graph.voices.delete(voice)
+      if (owner) trackVoices.get(graph)?.get(owner.trackId)?.delete(voice)
+    },
+  }
+  if (owner) {
+    let byTrack = trackVoices.get(graph)
+    if (!byTrack) trackVoices.set(graph, byTrack = new Map())
+    let owned = byTrack.get(owner.trackId)
+    if (!owned) byTrack.set(owner.trackId, owned = new Map())
+    owned.set(voice, { onset: owner.onset, audio: owner.audio })
+  }
+  graph.voices.add(voice)
+  return voice
+}
+
 function registerVoice(graph: EngineGraph, sources: SourceNode[], nodes: AudioNode[], envelope: GainNode, pitchBus?: AudioNode): Voice {
   let disconnected = false
   // Pitch bend and vibrato reach every source of a pitched voice through its detune (cents).
@@ -701,6 +768,8 @@ export function scheduleInstrument(
   if (velocity <= 0 || duration <= 0 || availableSeconds <= 0) return
   // Native instruments are rendered by their host; never use the browser's keys fallback.
   if (instrumentDef(instrument).kind === 'native') return
+  // Vintage instruments: the Rust core in a worklet (silent while garak-dsp.wasm is unavailable).
+  if (isVintageInstrument(instrument)) return scheduleVintage(graph, destination, instrument, pitch, when, duration, clamp(velocity, 0, 1), params, base => adoptVoice(graph, base))
   const context = graph.context
   const strength = clamp(velocity, 0, 2)
   const p = (id: string): number => paramValue(instrumentDef(instrument).params, params, id)
@@ -1044,6 +1113,29 @@ function scheduleTracks(
         if (library && library.status(def.set) === 'idle') library.load(def.set, graph.context).catch(() => undefined)
         continue
       }
+    }
+    const frozen = track.render?.frozen
+    if (frozen) {
+      // A frozen render starts at beat 0 and runs into the export tail. Offline it plays to its end; live
+      // playback stops it at a cycle boundary (the next pass schedules it again from the cycle start).
+      const asset = assets.get(frozen.assetId)
+      if (asset && (startsInRange(0) || (chase && startBeat > 0))) {
+        const [beat, time] = adjustStart(Math.max(0, startBeat))
+        const offset = tempo.secondsAt(beat)
+        const limit = realtime && loopRange(project) ? seconds(beat, boundary) : Infinity
+        if (offset < asset.buffer.duration && limit > 0.001) {
+          voiceOwner = { trackId: track.id, onset: time, audio: true }
+          const source = graph.context.createBufferSource()
+          source.buffer = asset.buffer
+          const envelope = graph.context.createGain()
+          // A chased start (seek) fades in like a region; a render from the start must stay sample-exact.
+          if (beat > epsilon) { envelope.gain.setValueAtTime(0, time); envelope.gain.linearRampToValueAtTime(1, time + 0.004) }
+          source.connect(envelope).connect(channel.input)
+          registerVoice(graph, [source], [source, envelope], envelope)
+          if (Number.isFinite(limit)) { source.start(time, offset, limit); source.stop(time + limit + 0.002) } else source.start(time, offset)
+        }
+      }
+      continue
     }
     const events = trackEvents(track, project.lengthBeats, tempo)
     for (const window of events.windows) {

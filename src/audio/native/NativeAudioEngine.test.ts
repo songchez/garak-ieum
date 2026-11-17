@@ -78,7 +78,7 @@ describe('desktop native runtime boundary', () => {
     expect(h.engine.getAudioState()).toMatchObject({ sampleRate: 48000, renderQuantumSize: 160, outputLatency: .005, baseLatency: null })
   })
 
-  it('requires a native bridge and explicit recovery after a native error, without browser fallback', async () => {
+  it('requires a native bridge, and retries the device on the next Play after a native error, without browser fallback', async () => {
     const missing = new NativeAudioEngine(undefined, 'win32', project()); engines.push(missing)
     await expect(missing.play()).rejects.toThrow('네이티브')
     expect(missing.getAudioState().status).toBe('error')
@@ -86,12 +86,13 @@ describe('desktop native runtime boundary', () => {
     h.handlers.set('engine.configure', () => { throw new Error('ASIO device unavailable') })
     await expect(h.engine.play()).rejects.toThrow('ASIO device unavailable')
     expect(h.engine.getSnapshot().ready).toBe(false)
+    // Play is an explicit user action: it reopens the same settings instead of demanding 설정 › 적용.
     await expect(h.engine.play()).rejects.toThrow('ASIO device unavailable')
-    expect(h.calls('engine.configure')).toHaveLength(1)
+    expect(h.calls('engine.configure')).toHaveLength(2)
     h.handlers.delete('engine.configure')
-    await h.engine.configure(DEFAULT_AUDIO_SETTINGS, 48000)
     await h.engine.play()
     expect(h.engine.getSnapshot().playing).toBe(true)
+    expect(h.engine.getAudioState().status).toBe('ready')
   })
 
   it('rejects a silent driver fallback even when rate and channels match', async () => {
@@ -224,7 +225,13 @@ describe('desktop native runtime boundary', () => {
     h.emit({ type: 'error', generation: 2, error: 'native process exited' })
     expect(h.engine.getSnapshot()).toMatchObject({ ready: false, playing: false })
     expect(h.engine.getTrackLevel('keys')).toBe(0)
-    await expect(h.engine.play()).rejects.toThrow('native process exited')
+    expect(h.engine.getAudioState()).toMatchObject({ status: 'error', error: 'native process exited' })
+    // The next Play reopens the device on the replacement host (same settings, same path as 적용).
+    const configured = h.calls('engine.configure').length
+    await h.engine.play()
+    expect(h.calls('engine.configure')).toHaveLength(configured + 1)
+    expect(h.calls('project.set').length).toBeGreaterThanOrEqual(2)
+    expect(h.engine.getSnapshot().playing).toBe(true)
   })
 
   it('restricts backend selection to the supported operating system', () => {
@@ -293,6 +300,20 @@ describe('native asset and project synchronization', () => {
     expect(h.calls('render.wav')[0]).toMatchObject({ timeline: { bpm: 139 } })
     h.handlers.set('render.wav', () => { throw new Error('disk full') })
     await expect(h.engine.exportWav()).rejects.toThrow('disk full')
+  })
+
+  it('passes render options for bounce, freeze and stems, and asks the host for the shared stem tail', async () => {
+    const h = managed(); await h.engine.play(); h.engine.pause()
+    h.handlers.set('render.wav', () => ({ data: new Uint8Array(60), frames: 2, sampleRate: 48000, tailSeconds: 1.25, trackTailSeconds: 0.75 }))
+    h.handlers.set('render.tail', () => ({ tailSeconds: 2.5 }))
+    const rendered = await h.engine.renderAudio(project(), { bitDepth: 32, preMaster: true, tailSeconds: 40, startFrame: 480.4 })
+    expect(h.calls('render.wav')[0]).toMatchObject({ bitDepth: 32, preMaster: true, tailSeconds: 30, startFrame: 480 })
+    expect(rendered).toMatchObject({ frames: 2, sampleRate: 48000, tailSeconds: 1.25, trackTailSeconds: 0.75 })
+    await h.engine.exportWav()
+    expect(h.calls('render.wav')[1]).toMatchObject({ bitDepth: 16 })
+    expect(h.calls('render.wav')[1]).not.toHaveProperty('preMaster')
+    expect(await h.engine.renderTail(project())).toBe(2.5)
+    expect(h.calls('render.tail')[0]).toHaveProperty('timeline')
   })
 
   it('captures both opaque state and editor-changed normalized parameters, without mutating its input', async () => {

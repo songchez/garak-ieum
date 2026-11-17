@@ -23,20 +23,42 @@ const multipart = () => smf(1, [
 ])
 const singlepart = () => smf(0, [[...name('MIDI QA WAVE'), ...event(0, 0x90, 48, 105), ...event(960, 0x90, 48, 0), ...event(0, 0x90, 55, 100), ...event(960, 0x80, 55, 0), ...end]])
 
-/** Read the actual autosave in both packaged garak:// and development origins. */
+/**
+ * Read the actual autosave in both packaged garak:// and development origins. Since the per-record autosave
+ * (src/core/projectRecords.ts) the bundle is a manifest of content-addressed records; legacy bundles still carry
+ * `project` inline.
+ */
 async function savedProject(page) {
   return page.evaluate(() => new Promise((resolve, reject) => {
     const open = indexedDB.open('noct-studio')
     open.onerror = () => reject(open.error)
     open.onsuccess = () => {
       const database = open.result
-      const transaction = database.transaction(['project-bundles', 'project-summaries'], 'readonly')
+      const stores = ['project-bundles', 'project-summaries', ...(database.objectStoreNames.contains('project-records') ? ['project-records'] : [])]
+      const transaction = database.transaction(stores, 'readonly')
       let project = null
       const latest = transaction.objectStore('project-summaries').index('updatedAt').openCursor(null, 'prev')
       latest.onsuccess = () => {
         if (!latest.result) return
-        const request = transaction.objectStore('project-bundles').get(latest.result.value.id)
-        request.onsuccess = () => { project = request.result?.project ?? null }
+        const id = latest.result.value.id
+        const request = transaction.objectStore('project-bundles').get(id)
+        request.onsuccess = () => {
+          const bundle = request.result
+          if (bundle?.format !== 'records-1') { project = bundle?.project ?? null; return }
+          const range = IDBKeyRange.bound([id], [id, []])
+          const records = transaction.objectStore('project-records')
+          const keys = records.getAllKeys(range), values = records.getAll(range)
+          values.onsuccess = () => {
+            const byKey = new Map(keys.result.map((key, index) => [key.join('\u0000'), values.result[index]]))
+            const get = (kind, entity, hash) => byKey.get([id, kind, entity, hash].join('\u0000'))
+            const meta = get('meta', id, bundle.meta)
+            const tracks = bundle.tracks.map(([trackId, hash]) => {
+              const record = get('track', trackId, hash)
+              return record && { ...record.track, clips: record.clips.map(([clipId, clipHash]) => get('clip', clipId, clipHash)) }
+            })
+            project = meta && tracks.every(Boolean) ? { ...meta, tracks } : null
+          }
+        }
       }
       transaction.oncomplete = () => { database.close(); resolve(project) }
       transaction.onabort = () => { database.close(); reject(transaction.error) }

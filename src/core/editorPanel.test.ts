@@ -16,6 +16,12 @@ describe('editor workspace size', () => {
     expect(editorPanelHeight(preferred, 120)).toBe(40)
     expect(Number.isFinite(editorPanelHeight(NaN, Infinity))).toBe(true)
   })
+  it('gives the piano roll room for its note grid and lanes on short screens', () => {
+    const short = defaultEditorPanel({ width: 1280, height: 720 })
+    expect(short.heights.piano).toBe(300)
+    expect(short.heights.mixer).toBe(252)
+    expect(defaultEditorPanel({ width: 1920, height: 1080 }).heights.piano).toBe(340)
+  })
   it('remembers a separate size for each editor and recovers from invalid storage', () => {
     const store = new Map<string, string>()
     const adapter = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value) } }

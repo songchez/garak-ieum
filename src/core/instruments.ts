@@ -1,9 +1,11 @@
 import { INSTRUMENT_PARAMS, SAMPLED_KIT_PARAMS, SAMPLED_PARAMS, SAMPLED_PIANO_PARAMS, type ParamDef, type SynthId } from './devices'
 import type { SampleAttribution } from './types'
 import { WAVETABLE_DEFINITION } from '../devices/wavetable-synth/definition'
+import { HANBAM_106_DEFINITION, OKGU_EP_DEFINITION } from '../devices/vintage/definition'
 
-export type InstrumentKind = 'synth' | 'sampled' | 'native'
-export type InstrumentCategory = 'synth' | 'piano' | 'keys' | 'drums' | 'gugak'
+/** native: IEUM WAVE (native host only); vintage: the Rust instrument core (native engine or garak-dsp.wasm). */
+export type InstrumentKind = 'synth' | 'sampled' | 'native' | 'vintage'
+export type InstrumentCategory = 'synth' | 'vintage' | 'piano' | 'keys' | 'drums' | 'gugak'
 
 export interface InstrumentDef {
   id: string
@@ -50,6 +52,7 @@ export function categoryIcon(category: InstrumentCategory): string {
   switch (category) {
     case 'drums': return 'drum'
     case 'piano': case 'keys': return 'keys'
+    case 'vintage': return 'keys'
     case 'gugak': return 'note'
     default: return 'synth'
   }
@@ -64,6 +67,8 @@ export const INSTRUMENTS: readonly InstrumentDef[] = [
   synth('drums', 'Pocket Drums', '포켓 드럼', 'DRUM MACHINE', 'synth', 'drum', '#e38457', '킥 · 스네어 · 하이햇 · 퍼커션'),
   synth('pad', 'Cloud Pad', '클라우드 패드', 'ATMOSPHERIC', 'synth', 'pad', '#8cc7c0', '공간을 채우는 부드러운 패드'),
   synth('pluck', 'Glass Pluck', '글라스 플럭', 'PLUCK SYNTH', 'synth', 'note', '#d98a9f', '반짝이는 짧은 플럭 사운드'),
+  OKGU_EP_DEFINITION,
+  HANBAM_106_DEFINITION,
   sampled('grand', 'salamander', 'Grand Piano', '그랜드 피아노', 'SAMPLED GRAND', 'piano', false, '#d9b45a', '네 단계 세기로 녹음한 밝고 또렷한 그랜드'),
   sampled('concert-grand', 'bitklavier', 'Concert Grand', '콘서트 그랜드', 'SAMPLED CONCERT GRAND', 'piano', false, '#c79a4b', '공연장에서 녹음한 깊고 풍성한 콘서트 그랜드'),
   sampled('wurlitzer', 'wurlitzer', 'Wurlitzer EP', '월리처', 'SAMPLED EP', 'keys', false, '#6f9fd0', '따뜻하게 일그러지는 빈티지 전기 피아노'),
@@ -78,6 +83,7 @@ export const INSTRUMENTS: readonly InstrumentDef[] = [
 
 export const INSTRUMENT_SECTIONS: readonly { title: string; categories: readonly InstrumentCategory[] }[] = [
   { title: '신스', categories: ['synth'] },
+  { title: '빈티지', categories: ['vintage'] },
   { title: '피아노·건반', categories: ['piano', 'keys'] },
   { title: '드럼', categories: ['drums'] },
   { title: '국악', categories: ['gugak'] },

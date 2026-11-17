@@ -12,7 +12,7 @@
  * when an effect with delay lines / reverb kernels is created (never in `process`), and the views
  * below are re-created after that.
  *
- * Nothing uses this by default yet; see `rustDspRequested()` in ./flag.ts and ./sigimsaeRust.ts.
+ * The web's default effect path since stage 3 (sigimsae.ts, ./sigimsaeRust.ts); `rustDspRequested()` in ./flag.ts opts out.
  */
 
 export const GARAK_WASM_ABI = 2
@@ -58,6 +58,12 @@ interface Exports {
   garak_fx_param_id(kind: number, index: number): number
   garak_fx_param_range(kind: number, index: number): number
   garak_fx_create(kind: number, rate: number, bpm: number, count: number): number
+  /** Absent from modules built before stage 3 (the loader then builds reverbs in the worklet). */
+  garak_fx_create_reverb?(rate: number, bpm: number, count: number, kernels: number): number
+  garak_reverb_kernel_len?(rate: number, space: number): number
+  garak_reverb_build?(rate: number, space: number, size: number): number
+  garak_region_alloc?(floats: number): number
+  garak_region_free?(region: number): void
   garak_fx_free(slot: number): void
   garak_fx_automate(slot: number, count: number): void
   garak_fx_set_param(slot: number, index: number, value: number): void
@@ -211,11 +217,21 @@ export class GarakWasm {
    * Null when every slot is taken, the arguments are invalid, or the memory cannot grow.
    * Call on the control path (constructor, structural edits), never inside `process()`.
    */
-  createEffect(type: RustEffectType, sampleRate: number, params?: Record<string, number>, bpm = 120): RustEffect | null {
+  createEffect(type: RustEffectType, sampleRate: number, params?: Record<string, number>, bpm = 120, reverbKernels?: Float32Array | null): RustEffect | null {
     const x = this.x, defs = this.paramDefs(type)
     const tempo = (value: number) => clampValue(Number.isFinite(value) ? value : 120, 20, 400)
-    this.stage(defs, params)
-    const slot = x.garak_fx_create(RUST_EFFECT[type], sampleRate, tempo(bpm), defs.length)
+    let slot: number
+    if (type === 'reverb' && reverbKernels && x.garak_region_alloc && x.garak_fx_create_reverb) {
+      // Kernels prepared by `buildReverbKernels` (main thread): only a copy happens here.
+      const region = x.garak_region_alloc(reverbKernels.length) >>> 0
+      if (!region) return null
+      new Float32Array(x.memory.buffer, region, reverbKernels.length).set(reverbKernels)
+      this.stage(defs, params)
+      slot = x.garak_fx_create_reverb(sampleRate, tempo(bpm), defs.length, region)
+    } else {
+      this.stage(defs, params)
+      slot = x.garak_fx_create(RUST_EFFECT[type], sampleRate, tempo(bpm), defs.length)
+    }
     this.refreshViews()
     if (slot < 0) return null
     const meter = (out: Float32Array) => {
@@ -242,6 +258,23 @@ export class GarakWasm {
     }
   }
 
+  /**
+   * The reverb's impulse response for (`type`, `size`) as partitioned FFT kernels, ready for
+   * `createEffect('reverb', ..., kernels)` in another instance (dsp.cpp `impulse()` + the
+   * convolver's spectra). This is the expensive part of a reverb (~5-20 ms for a hall), so the main
+   * thread does it and the worklet only copies. Null for an invalid rate or a pre-stage-3 module.
+   */
+  buildReverbKernels(sampleRate: number, type: number, size: number): Float32Array | null {
+    const x = this.x
+    if (!x.garak_reverb_build || !x.garak_reverb_kernel_len || !x.garak_region_free) return null
+    const floats = x.garak_reverb_kernel_len(sampleRate, type) >>> 0
+    const region = floats ? x.garak_reverb_build(sampleRate, type, size) >>> 0 : 0
+    if (!region) return null
+    const kernels = new Float32Array(x.memory.buffer, region, floats).slice()
+    x.garak_region_free(region)
+    return kernels
+  }
+
   // Copies through the static scratch buffers; no allocation per call.
   private run(kernel: (frames: number) => void, l: Float32Array, r: Float32Array, frames = Math.min(l.length, r.length)): void {
     this.refreshViews()
@@ -256,10 +289,20 @@ export class GarakWasm {
   }
 }
 
-/** Synchronous instantiation (works inside AudioWorkletGlobalScope). The module imports nothing. */
+/**
+ * The module's only imports: transcendentals from the host `Math` (rust/garak-dsp/src/math.rs).
+ * Passed as the builtins themselves, never wrapped: engines recognise imported `Math.*` builtins
+ * and call their native implementation directly, which is faster than the same function compiled
+ * to wasm and bit-identical to the `Math.*` calls of the TS kernels.
+ */
+export const MATH_IMPORTS = {
+  math: { garak_tan: Math.tan, garak_exp: Math.exp, garak_log: Math.log, garak_pow: Math.pow },
+} as const
+
+/** Synchronous instantiation (works inside AudioWorkletGlobalScope). */
 export function instantiateGarakWasm(source: WebAssembly.Module | BufferSource): GarakWasm {
   const module = source instanceof WebAssembly.Module ? source : new WebAssembly.Module(source)
-  const instance = new WebAssembly.Instance(module, {})
+  const instance = new WebAssembly.Instance(module, MATH_IMPORTS)
   return new GarakWasm(instance.exports as unknown as Exports)
 }
 
@@ -267,6 +310,16 @@ export function instantiateGarakWasm(source: WebAssembly.Module | BufferSource):
  * Main thread: fetch + compile the module. Resolves to null (never throws) when the artifact was
  * not built or fails to compile, so callers keep the existing TypeScript / C++ paths.
  */
+let sharedModule: Promise<WebAssembly.Module | null> | null = null
+/**
+ * The page's garak-dsp module: fetched and compiled once and shared by the 시김새 kernels
+ * (devices/effects/sigimsae.ts) and the vintage instruments (devices/vintage/availability.ts).
+ */
+export function sharedGarakWasmModule(baseUrl = '/'): Promise<WebAssembly.Module | null> {
+  sharedModule ??= loadGarakWasmModule(baseUrl)
+  return sharedModule
+}
+
 export async function loadGarakWasmModule(baseUrl = '/', fetchImpl: typeof fetch = fetch): Promise<WebAssembly.Module | null> {
   try {
     const response = await fetchImpl(new URL(GARAK_WASM_PATH, new URL(baseUrl, globalThis.location?.href ?? 'http://localhost/')).href)

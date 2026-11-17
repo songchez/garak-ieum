@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from 'react'
+import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react'
 import type { ControllerKey, ControllerPoint, MidiClip } from '../core/types'
 import { MAX_BEND_RANGE, applyVisibleController, bendRangeOf, clampControllerValue, controllerSpec, lineController, normalizeController, thinController, visibleController } from '../core/controllers'
 
@@ -31,6 +31,8 @@ interface ControllerLaneProps {
   playhead: number | null
   onChange: (clip: MidiClip) => void
   onRemove: () => void
+  /** Corner label (the piano roll passes its collapse button); defaults to the controller's short name. */
+  label?: ReactNode
 }
 
 const EPSILON = 1e-9
@@ -53,7 +55,7 @@ export const formatControllerValue = (key: ControllerKey, value: number, range =
   return String(value)
 }
 
-export default function ControllerLane({ clip, laneKey, tool, beatWidth, gridWidth, gridStyle, keyWidth, height, snap, playhead, onChange, onRemove }: ControllerLaneProps) {
+export default function ControllerLane({ clip, laneKey, tool, beatWidth, gridWidth, gridStyle, keyWidth, height, snap, playhead, onChange, onRemove, label }: ControllerLaneProps) {
   const spec = controllerSpec(laneKey)
   const events = useMemo(() => visibleController(clip, laneKey), [clip, laneKey])
   const [draft, setDraft] = useState<ControllerPoint[] | null>(null)
@@ -132,7 +134,7 @@ export default function ControllerLane({ clip, laneKey, tool, beatWidth, gridWid
 
   return <div className="piano-controller-lane" style={{ height }}>
     <div className="piano-velocity-corner piano-controller-corner" style={{ width: keyWidth }} title={`${spec.label} 레인`}>
-      <span className="piano-controller-name">{spec.short}</span>
+      <span className="piano-controller-name">{label ?? spec.short}</span>
       {laneKey === 'pitchBend' && <select className="piano-controller-range" value={range} aria-label="피치 벤드 범위(반음)" title="내장 악기의 피치 벤드 범위(반음). 이음웨이브·VST3는 악기 설정을 따릅니다."
         onChange={event => { const value = Number(event.currentTarget.value); const { bendRange: _range, ...rest } = clip; onChange(value === 2 ? rest : { ...rest, bendRange: value }) }}>
         {[1, 2, 3, 4, 5, 7, 12, 24, MAX_BEND_RANGE].map(value => <option key={value} value={value}>±{value}</option>)}

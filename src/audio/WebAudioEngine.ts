@@ -1,22 +1,26 @@
 import { instrumentDef } from '../core/instruments'
 import { DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, normalizeAudioSettings, projectSampleRate, type AudioSettings, type AudioState, type RenderSizeHint, type SampleRate } from '../core/audioSettings'
 import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
-import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, SampleAttribution, SampleStatus, TransportSnapshot } from '../core/types'
+import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, RenderOptions, RenderedAudio, SampleAttribution, SampleStatus, TransportSnapshot, VintageBridge } from '../core/types'
+import { playbackProject } from '../core/freeze'
+import { encodeWav } from './wavEncode'
 import { numberedInputChoices } from '../core/trackInputs'
 import {
-  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
+  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, trackTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
   setRouteMonitoring, stopTrackVoices, trackLayoutKey, updateEffectTempo, updateGraph,
 } from './graph'
 import { diffArrangement, type TrackChange } from './arrangementDiff'
 import { hasActiveAutomation } from '../core/automation'
 import type { EngineGraph } from './graph'
-import { clamp, encodePcm16Wav, loopRange, normalizedStart, positionAfter } from './math'
+import { clamp, loopRange, normalizedStart, positionAfter } from './math'
 import { tempoMapOf } from '../core/tempoMap'
 import { SampleLibrary } from './samples'
 import { ownAudioBytes } from './assetBytes'
 import { playOutputTest } from './OutputTest'
 import { assertWebAudioProjectSupported, unsupportedWebAudioInstruments, WAVETABLE_HOST_REQUIRED } from './instrumentSupport'
 import { prepareEffects } from './effectPreparation'
+import { loadVintageWasm, subscribeVintageWasm, vintageWasmStatus, vintageWorkletSupported, VINTAGE_WEB_UNAVAILABLE } from '../devices/vintage/availability'
+import { flushVintage, prepareVintage } from '../devices/vintage/web'
 import { assertGuitarRigHealthy } from '../devices/guitar-rig'
 import { prepareRouteRecorder, RouteRecordings, type RouteRecordingHost } from './RouteRecording'
 import type { TakeCallbacks } from '../core/recording'
@@ -51,6 +55,12 @@ const contextKey = (settings: AudioSettings): string => JSON.stringify([settings
  */
 export class WebAudioEngine implements AudioEngine {
   readonly kind = 'web-audio' as const
+  /** 옥구슬 EP / 한밤 106 run from the Rust core compiled to WASM (no TypeScript fallback). */
+  readonly vintage: VintageBridge = {
+    available: () => vintageWasmStatus() === 'ready' && vintageWorkletSupported(),
+    reason: () => vintageWasmStatus() === 'ready' ? '' : vintageWasmStatus() === 'loading' || vintageWasmStatus() === 'idle' ? 'Rust 오디오 코어(WASM)를 불러오는 중입니다.' : VINTAGE_WEB_UNAVAILABLE,
+    subscribe: listener => { void loadVintageWasm(); return subscribeVintageWasm(listener) },
+  }
   /** One MediaRecorder per take; a browser records the chosen track only. */
   readonly maxSimultaneousRecordings = 1
   /** Decoded sample sets outlive contexts and graphs; see audio/samples.ts. */
@@ -175,6 +185,8 @@ export class WebAudioEngine implements AudioEngine {
         if (!current()) throw configurationCancelled()
         // Load all built-in worklets once per context. Later graph edits are synchronous.
         await prepareEffects(candidate)
+        // The vintage instruments' worklet + Rust core (never throws; unavailable keeps them silent).
+        await prepareVintage(candidate)
         if (!current()) throw configurationCancelled()
         if (candidateOutputError) throw candidateOutputError
         if (candidate.state !== 'running') throw new Error('오디오 장치를 시작하지 못했습니다. 적용 버튼을 다시 눌러 주세요.')
@@ -376,10 +388,13 @@ export class WebAudioEngine implements AudioEngine {
 
   readonly getMasterLevel = (): number => this.masterLevel
 
-  setProject(project: Project): void {
+  setProject(source: Project): void {
+    this.sourceProject = source
+    // Frozen tracks play their cached render (core/freeze.ts); everything below sees that playback project.
+    const project = playbackProject(source, this.assets)
     // A live edit can introduce a native instrument. Stop before the browser scheduler
     // would omit it; the next Play explains the host requirement without replacing its sound.
-    if (this.playing && unsupportedWebAudioInstruments(project).length) this.pause()
+    if (this.playing && unsupportedWebAudioInstruments(project, this.vintage).length) this.pause()
     const beat = this.currentBeat()
     const rate = projectSampleRate(project.sampleRate)
     const changedRate = rate !== this.desiredSampleRate
@@ -420,8 +435,15 @@ export class WebAudioEngine implements AudioEngine {
   setAssets(assets: Map<string, AudioAsset>): void {
     const changed = assets.size !== this.assets.size || [...assets].some(([id, asset]) => this.assets.get(id)?.buffer !== asset.buffer)
     this.assets = new Map(assets)
+    // A freeze cache arriving or leaving switches its track between the cached render and live playback.
+    if (changed && this.sourceProject?.tracks.some(track => track.freeze)) {
+      const before = this.project
+      this.setProject(this.sourceProject)
+      if (before !== this.project) return
+    }
     if (changed && this.playing) this.restartAt(this.currentBeat())
   }
+  private sourceProject: Project | null = null
 
   async resume(): Promise<void> {
     if (this.configurationTask) await this.configurationTask
@@ -459,7 +481,9 @@ export class WebAudioEngine implements AudioEngine {
 
   async play(options: PlayOptions = {}): Promise<void> {
     if (!this.project) throw new Error('재생할 프로젝트가 없습니다.')
-    assertWebAudioProjectSupported(this.project)
+    // A first Play of a project with vintage instruments waits for the Rust core (fetched once per page).
+    if (vintageWasmStatus() !== 'ready' && unsupportedWebAudioInstruments(this.project, this.vintage).length) await loadVintageWasm()
+    assertWebAudioProjectSupported(this.project, this.vintage)
     const request = ++this.transportRequest
     const lifecycle = this.lifecycle
     this.pendingPlayRequest = request
@@ -468,7 +492,7 @@ export class WebAudioEngine implements AudioEngine {
       if (request !== this.transportRequest || lifecycle !== this.lifecycle || !this.context || !this.project) return
       if (this.playing) return
       // Project edits may land while a device permission/configuration promise is pending.
-      assertWebAudioProjectSupported(this.project)
+      assertWebAudioProjectSupported(this.project, this.vintage)
       let beat = normalizedStart(this.project, this.position)
       if (!loopRange(this.project) && beat >= this.project.lengthBeats) beat = 0
       this.playing = true
@@ -532,6 +556,7 @@ export class WebAudioEngine implements AudioEngine {
     const lifecycle = this.lifecycle
     const def = instrumentDef(instrument)
     if (def.kind === 'native') throw new Error(WAVETABLE_HOST_REQUIRED)
+    if (def.kind === 'vintage' && !this.vintage.available()) throw new Error(this.vintage.reason())
     await this.resume()
     if (def.set) await this.preloadSamples(def.set)
     if (lifecycle !== this.lifecycle || !this.context || !this.graph || this.outputFault) return
@@ -709,7 +734,18 @@ export class WebAudioEngine implements AudioEngine {
 
   /** Exports the entire arrangement once; the audition loop is deliberately ignored. */
   async exportWav(project: Project = this.requireProject()): Promise<Blob> {
-    assertWebAudioProjectSupported(project)
+    return (await this.renderAudio(project, { bitDepth: 16 })).blob
+  }
+
+  async renderTail(project: Project): Promise<number> {
+    return Math.min(30, renderTailSeconds(playbackProject(project, this.assets)))
+  }
+
+  /** Offline render (export, bounce, freeze, stems; docs/BOUNCE_FREEZE_STEMS.md). */
+  async renderAudio(source: Project, options: RenderOptions): Promise<RenderedAudio> {
+    const project = playbackProject(source, this.assets)
+    if (vintageWasmStatus() !== 'ready' && unsupportedWebAudioInstruments(project, this.vintage).length) await loadVintageWasm()
+    assertWebAudioProjectSupported(project, this.vintage)
     for (const setId of this.sampleSets(project)) {
       try { await this.preloadSamples(setId) } catch (error) {
         throw new Error(`샘플 악기 "${setId}"를 불러오지 못했습니다: ${error instanceof Error ? error.message : ''}`)
@@ -717,7 +753,8 @@ export class WebAudioEngine implements AudioEngine {
     }
     const sampleRate = projectSampleRate(project.sampleRate)
     const tempo = tempoMapOf(project)
-    const duration = tempo.secondsAt(project.lengthBeats) + renderTailSeconds(project)
+    const tailSeconds = options.tailSeconds === undefined ? renderTailSeconds(project) : Math.min(30, Math.max(0, options.tailSeconds))
+    const duration = tempo.secondsAt(project.lengthBeats) + tailSeconds
     const frames = Math.ceil(duration * sampleRate)
     if (!Number.isFinite(frames) || frames < 1) throw new Error('프로젝트의 내보내기 길이가 올바르지 않습니다.')
     // OfflineAudioContext stores all rendered samples in RAM. Fail clearly before
@@ -725,7 +762,8 @@ export class WebAudioEngine implements AudioEngine {
     if (frames > sampleRate * 60 * 15) throw new Error('이 초기 버전은 한 번에 최대 15분까지 WAV로 내보낼 수 있습니다. 프로젝트 길이를 줄여 주세요.')
     const offline = new OfflineAudioContext(2, frames, sampleRate)
     await prepareEffects(offline)
-    const graph = createGraph(offline, project)
+    await prepareVintage(offline)
+    const graph = createGraph(offline, project, { preMaster: options.preMaster })
     try {
       scheduleRange(graph, project, new Map(this.assets), 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
       // Automation is scheduled for the whole render before it starts, so worklet events are queued first.
@@ -735,10 +773,13 @@ export class WebAudioEngine implements AudioEngine {
         scheduleAutomation(graph, project, 0, duration, time => Math.min(project.lengthBeats, tempo.beatAt(time)))
       }
       scheduleTempoUpdates(offline, graph, project, duration)
+      // Vintage instrument nodes are built now, with every note of the render in their options.
+      flushVintage(graph)
       const rendered = await offline.startRendering()
       assertGuitarRigHealthy(offline)
-      const bytes = encodePcm16Wav([rendered.getChannelData(0), rendered.getChannelData(1)], rendered.sampleRate)
-      return new Blob([bytes], { type: 'audio/wav' })
+      const start = Math.min(rendered.length - 1, Math.max(0, Math.round(options.startFrame ?? 0)))
+      const channels = [rendered.getChannelData(0).subarray(start), rendered.getChannelData(1).subarray(start)]
+      return { blob: encodeWav(channels, rendered.sampleRate, options.bitDepth), sampleRate: rendered.sampleRate, frames: channels[0].length, tailSeconds, trackTailSeconds: trackTailSeconds(project) }
     } finally {
       disposeGraph(graph)
     }

@@ -1,4 +1,5 @@
-import { countInClicks, DEFAULT_METRONOME_PREFS, effectiveLevel, metronomeGrid, scheduleSegment, type MetronomeEngineState, type MetronomeLevel } from '../core/metronome'
+import { countInClicks, DEFAULT_METRONOME_PREFS, effectiveLevel, scheduleSegment, type MetronomeEngineState, type MetronomeLevel } from '../core/metronome'
+import { meterMapOf } from '../core/meterMap'
 import type { Project } from '../core/types'
 import { tempoMapOf } from '../core/tempoMap'
 import { metronomeStrokes } from './metronomeSounds'
@@ -27,21 +28,21 @@ export class WebMetronome {
     if (previous.enabled && !this.state.enabled) this.cancel(now)
   }
 
-  /** The count-in runs at the tempo in effect where the transport starts (`atBeat`). */
+  /** The count-in runs at the tempo and in the meter in effect where the transport starts (`atBeat`). */
   countInSeconds(project: Project, bars: number, atBeat = 0): number {
-    return countInClicks(project.timeSignature, bars).lengthBeats * 60 / tempoMapOf(project).bpmAt(atBeat)
+    return countInClicks(meterMapOf(project).meterAt(atBeat), bars).lengthBeats * 60 / tempoMapOf(project).bpmAt(atBeat)
   }
 
   /** Count-in clicks play even with the metronome off: they are the cue to start. */
   scheduleCountIn(context: BaseAudioContext, project: Project, bars: number, startTime: number, atBeat = 0): void {
     const beatSeconds = 60 / tempoMapOf(project).bpmAt(atBeat)
-    for (const click of countInClicks(project.timeSignature, bars).clicks) this.click(context, startTime + click.beat * beatSeconds, click.level)
+    for (const click of countInClicks(meterMapOf(project).meterAt(atBeat), bars).clicks) this.click(context, startTime + click.beat * beatSeconds, click.level)
   }
 
-  /** One transport segment of the engine scheduler: [startBeat, endBeat) starting at `startTime`. */
+  /** One transport segment of the engine scheduler: [startBeat, endBeat) starting at `startTime`; accents follow the meter map. */
   scheduleSegment(context: BaseAudioContext, project: Project, startBeat: number, endBeat: number, startTime: number): void {
     if (!this.state.enabled) return
-    for (const click of scheduleSegment(metronomeGrid(project.timeSignature), startBeat, endBeat, startTime, tempoMapOf(project))) this.click(context, click.time, click.level)
+    for (const click of scheduleSegment(meterMapOf(project), startBeat, endBeat, startTime, tempoMapOf(project))) this.click(context, click.time, click.level)
   }
 
   /** Stops clicks that have not started yet; ringing ones decay naturally. */

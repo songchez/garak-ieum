@@ -28,9 +28,13 @@ export function validateTimeSignature(value: unknown): TimeSignature {
   return { numerator, denominator: denominator as TimeSignatureDenominator }
 }
 
-/** Changing meter re-groups existing quarter-note positions without moving or stretching music. */
+/**
+ * Changing the meter of bar 1 re-groups existing quarter-note positions without moving or stretching music.
+ * Later meter changes (Project.meterMap, core/meterMap.ts) stay on their bar numbers.
+ */
 export function setProjectTimeSignature(project: Project, numerator: number, denominator: number): Project {
   const timeSignature = validateTimeSignature({ numerator, denominator })
   if (project.timeSignature.numerator === numerator && project.timeSignature.denominator === denominator) return project
-  return { ...project, timeSignature, beatsPerBar: quarterNotesPerBar(timeSignature) }
+  return { ...project, timeSignature, beatsPerBar: quarterNotesPerBar(timeSignature),
+    ...(project.meterMap ? { meterMap: [{ bar: 0, ...timeSignature }, ...project.meterMap.slice(1)] } : {}) }
 }

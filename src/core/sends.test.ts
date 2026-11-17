@@ -113,11 +113,11 @@ describe('schema 15 send/return validation', () => {
     const tracks = [track('audio', 'vox', { sends: [{ returnId: 'ret', level: 0.5, pre: true }] }), createReturnTrack('리버브')]
     tracks[0].sends![0].returnId = tracks[1].id
     const loaded = validateProject(saved(tracks))
-    expect(loaded.schemaVersion).toBe(17)
+    expect(loaded.schemaVersion).toBe(19)
     expect(loaded.tracks[0].sends).toEqual([{ returnId: tracks[1].id, level: 0.5, pre: true }])
     expect(loaded.tracks[1]).toMatchObject({ kind: 'return', soloSafe: true, volume: 1 })
     expect(validateProject(loaded)).toEqual(loaded)
-    for (const version of [13, 14]) expect(validateProject(saved([track('audio', 'a')], version)).schemaVersion).toBe(17)
+    for (const version of [13, 14]) expect(validateProject(saved([track('audio', 'a')], version)).schemaVersion).toBe(19)
   })
 
   it('requires schema 15 and rejects sends on returns, regions on returns and repeated returns', () => {

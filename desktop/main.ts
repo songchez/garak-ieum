@@ -1,13 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, systemPreferences } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
 import { mkdirSync } from 'node:fs'
-import { open, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, open, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import type { DesktopFile, DesktopSaveResult, DesktopViewCommand } from './contracts.js'
+import type { DesktopFile, DesktopFolderResult, DesktopSaveResult, DesktopViewCommand } from './contracts.js'
 import { ipcNativeError, NativeAudioService } from './native-audio.js'
-import { APP_URL, CONTENT_SECURITY_POLICY, MAX_PROJECT_BYTES, PROJECT_EXTENSIONS, assetRelativePath, desktopMcpStartupErrorMessage, exportExtension, isAppUrl, isBundledLicenseUrl, isExternalUrl, validateSaveRequest } from './policy.js'
+import { APP_URL, CONTENT_SECURITY_POLICY, MAX_PROJECT_BYTES, PROJECT_EXTENSIONS, assetRelativePath, desktopMcpStartupErrorMessage, exportExtension, isAppUrl, isBundledLicenseUrl, isExternalUrl, safeFolderName, validateFolderFile, validateSaveRequest } from './policy.js'
 
 const directory = dirname(fileURLToPath(import.meta.url))
 const cliMode = process.argv.includes('--mcp') ? 'mcp' : process.argv.includes('--mcp-token') ? 'token' : null
@@ -29,6 +29,8 @@ let microphoneRequest: Promise<boolean> | null = null
 let nativeAudio: NativeAudioService | null = null
 const pendingFiles: string[] = []
 let pendingClose: { id: string; timer: NodeJS.Timeout | null } | null = null
+/** Stem export folders the user picked in this session, by opaque token (docs/BOUNCE_FREEZE_STEMS.md). */
+const exportFolders = new Map<string, string>()
 
 function trusted(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   return Boolean(window && !window.isDestroyed() && event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && isAppUrl(event.senderFrame?.url ?? ''))
@@ -184,6 +186,37 @@ function installIpc(): void {
       await atomicSave(result.filePath, request.data)
       return { canceled: false, fileName: basename(result.filePath) }
     } finally { fileDialogPending = false }
+  })
+  ipcMain.handle('garak:choose-export-folder', async (event, value: unknown): Promise<DesktopFolderResult> => {
+    assertTrusted(event)
+    if (!window || fileDialogPending || pendingClose || typeof value !== 'string') return { canceled: true }
+    fileDialogPending = true
+    try {
+      const result = await dialog.showOpenDialog(window, { title: '스템을 저장할 폴더 선택', buttonLabel: '이 폴더에 저장', properties: ['openDirectory', 'createDirectory'] })
+      const parent = result.filePaths[0]
+      if (result.canceled || !parent) return { canceled: true }
+      // A new subfolder per export: never overwrite or mix with files already there.
+      const base = safeFolderName(value)
+      let folderName = base, target = join(parent, folderName)
+      for (let counter = 2; await stat(target).then(() => true, () => false); counter++) { folderName = `${base} (${counter})`; target = join(parent, folderName) }
+      await mkdir(target)
+      const token = randomUUID()
+      exportFolders.set(token, target)
+      return { canceled: false, token, folderName }
+    } finally { fileDialogPending = false }
+  })
+  ipcMain.handle('garak:write-export-file', async (event, value: unknown): Promise<void> => {
+    assertTrusted(event)
+    const file = validateFolderFile(value)
+    const folder = exportFolders.get(file.token)
+    if (!folder) throw new Error('스템 폴더가 닫혔습니다. 다시 내보내 주세요.')
+    const target = join(folder, file.name)
+    if (dirname(target) !== folder) throw new Error('스템 파일 이름이 올바르지 않습니다.')
+    await atomicSave(target, file.data)
+  })
+  ipcMain.handle('garak:close-export-folder', (event, value: unknown) => {
+    assertTrusted(event)
+    if (typeof value === 'string') exportFolders.delete(value)
   })
   ipcMain.on('garak:ready', event => {
     if (!trusted(event)) return
@@ -460,6 +493,9 @@ if (cliMode) {
           } finally { fileDialogPending = false }
         },
       })
+      // Spawn the audio host and finish its handshake while the window loads, so the renderer's
+      // launch connection (NativeAudioEngine.autoStart) does not wait for process start-up.
+      void nativeAudio.request('engine.capabilities').catch(() => undefined)
       installIpc()
       installPermissions()
       buildMenu()

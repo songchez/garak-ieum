@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb'
 import { createEmptyProject, createTrack, uid } from './project'
 import { setProjectTimeSignature } from './meter'
 import { listProjects, loadProject, saveProject, saveStoredProject, type StoredProject } from './storage'
@@ -64,7 +64,7 @@ async function rawRecord(store: string, key: IDBValidKey): Promise<unknown> {
   } finally { database.close() }
 }
 
-beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()) })
+beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()); vi.stubGlobal('IDBKeyRange', IDBKeyRange) })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('project library persistence', () => {

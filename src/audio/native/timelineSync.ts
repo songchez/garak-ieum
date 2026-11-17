@@ -97,7 +97,7 @@ function header(timeline: SyncTimeline): Omit<SyncTimeline, 'tracks' | 'assets'>
   const { tracks: _tracks, assets: _assets, ...rest } = timeline
   return rest
 }
-const timing = (timeline: SyncTimeline) => JSON.stringify([timeline.projectId, timeline.sampleRate, timeline.bpm, timeline.tempoMap ?? null,
+const timing = (timeline: SyncTimeline) => JSON.stringify([timeline.projectId, timeline.sampleRate, timeline.bpm, timeline.tempoMap ?? null, timeline.meterMap ?? null,
   timeline.timeSignature, timeline.beatsPerBar, timeline.lengthFrames, timeline.cycle, timeline.lowLatencyMonitoring ?? true, timeline.tracks.map(track => track.id)])
 const sameArray = (a: readonly unknown[] | undefined, b: readonly unknown[] | undefined) => a === b || (!a?.length && !b?.length)
 const light = (track: SyncTrack) => { const { notes: _n, controls: _c, audio: _a, automation: _m, ...rest } = track; return JSON.stringify(rest) }

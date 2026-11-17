@@ -12,7 +12,10 @@ const finite = (n: unknown, fallback: number): number => typeof n === 'number' &
 
 export function defaultEditorPanel(view = typeof window === 'undefined' ? { width: 1280, height: 900 } : { width: window.innerWidth, height: window.innerHeight }): EditorPanelLayout {
   const height = view.height <= 760 ? 252 : view.width >= 1700 ? 340 : view.width <= 1250 ? 290 : 310
-  return { heights: { piano: height, audio: height, mixer: height, devices: height, pitch: Math.max(310, height) }, collapsed: false }
+  // The piano roll stacks its note grid over the velocity/pedal lanes; on short screens it needs a little more
+  // room so the grid keeps three rows while velocity keeps a usable height.
+  const piano = view.height <= 760 ? 300 : height
+  return { heights: { piano, audio: height, mixer: height, devices: height, pitch: Math.max(310, height) }, collapsed: false }
 }
 
 /** A small window constrains the displayed size, without destroying the user's preferred height. */

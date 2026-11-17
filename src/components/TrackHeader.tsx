@@ -46,6 +46,8 @@ export interface TrackHeaderProps {
   onResizeStart(e: React.PointerEvent, all: boolean, reset: boolean): void
   /** 오토메이션 보기 toggle (A); `active` marks a track that plays automation. */
   automation?: { visible: boolean; active: boolean; onToggle(): void }
+  /** Freeze state (docs/BOUNCE_FREEZE_STEMS.md): frozen plays the cached render; stale is locked but plays live. */
+  freeze?: 'frozen' | 'stale'
 }
 
 export function TrackHeader(props: TrackHeaderProps) {
@@ -95,6 +97,7 @@ export function TrackHeader(props: TrackHeaderProps) {
   if (focused) cls.push('focused'); if (selected) cls.push('selected'); if (multi) cls.push('multi')
   if (!track.enabled) cls.push('track-off'); if (hiddenNow) cls.push('track-hidden'); if (editing) cls.push('renaming')
   if (config.colorBar) cls.push('with-color-bar')
+  if (props.freeze) cls.push(`track-${props.freeze}`)
 
   return <div className={cls.join(' ')} data-track-id={track.id} data-kind={track.kind} style={{ height, '--track-color': track.color } as React.CSSProperties}
     onPointerDown={pointerDown} onDoubleClick={doubleClick} onContextMenu={props.onContextMenu}>
@@ -111,6 +114,8 @@ export function TrackHeader(props: TrackHeaderProps) {
         {track.kind === 'return' && <b className="track-return-badge" title="리턴 트랙 · 다른 트랙의 센드로 소리를 받습니다">{returnLetterOf(props.routeTracks ?? [track], track.id) || 'R'}</b>}
         {hiddenNow && <b className="track-hide-badge" title="가려진 트랙">H</b>}
         {!track.enabled && <b className="track-off-badge" title="꺼진 트랙"><Icon name="power" size={9}/></b>}
+        {props.freeze && <b className={`track-freeze-badge ${props.freeze}`} role="img" aria-label={props.freeze === 'frozen' ? '얼린 트랙' : '얼림 만료'}
+          title={props.freeze === 'frozen' ? '얼린 트랙 · 미리 렌더한 오디오를 재생합니다. 리전·악기·시김새 편집은 잠겨 있습니다. 볼륨·팬·뮤트·센드는 조절할 수 있습니다.' : '얼림 만료 · 템포·길이·샘플레이트가 바뀌어 원래 소리로 재생합니다. 다시 얼리거나 얼림을 해제하세요.'}><Icon name="snowflake" size={10}/></b>}
       </div>
       {(kinds.length > 0 || showPan) && <div className="track-controls">
         {kinds.length > 0 && <TrackButtons track={shown} kinds={kinds} arm={arm} recording={ui.recording} implicitMute={implicitMute} onPress={props.onButton} onSweep={props.onSweep}/>}

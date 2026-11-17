@@ -5,7 +5,8 @@
  */
 import { TEMPO_MAX, TEMPO_MIN, normalizeTempoPoints, tempoPointsFromSteps, type TempoStep } from './tempoMap'
 import { controllerSpec, normalizeController, pruneController, ccKey, MAX_BEND_RANGE, DEFAULT_BEND_RANGE } from './controllers'
-import type { ControllerKey, TempoPoint } from './types'
+import type { ControllerKey, MeterEvent as ProjectMeterEvent, TempoPoint } from './types'
+import { meterEventsFromSmf } from './meterMap'
 
 export const MAX_MIDI_FILE_BYTES = 16 * 1024 * 1024
 const MAX_TRACKS = 256
@@ -45,6 +46,8 @@ export interface MidiImportResult {
   tempoMap?: TempoPoint[]
   /** Initial SMF meter; defaults to 4/4 when no meter is set at tick zero. */
   timeSignature?: { numerator: number; denominator: number }
+  /** Later time-signature changes as meter-map events (bar > 0, docs/METER_MAP.md). Absent = one meter. */
+  meterMap?: ProjectMeterEvent[]
   warnings: string[]
 }
 
@@ -403,14 +406,14 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
   const tempoPoints = tempoPointsFromSteps(steps)
   if (tempoPoints.some(point => point.bpm < TEMPO_MIN || point.bpm > TEMPO_MAX)) warn(`지원 범위(${TEMPO_MIN}–${TEMPO_MAX} BPM)를 벗어난 템포는 범위 안으로 맞췄습니다.`)
   const tempoMap = tempoPoints.length > 1 ? normalizeTempoPoints(tempoPoints[0].bpm, tempoPoints) : undefined
-  let currentMeter = { numerator: 4, denominator: 4 }, initialMeter = currentMeter
+  let initialMeter = { numerator: 4, denominator: 4 }
   meters.sort((a, b) => a.tick - b.tick || a.order - b.order)
-  for (const meter of meters) {
-    const next = { numerator: meter.numerator, denominator: meter.denominator }
-    if (meter.tick === 0) initialMeter = next
-    else if (next.numerator !== currentMeter.numerator || next.denominator !== currentMeter.denominator) warn('곡 중간의 박자표 변경은 가져오지 않았습니다. 처음 박자표와 원래 노트 위치를 유지했습니다.')
-    currentMeter = next
-  }
+  // Time-signature changes become the meter map (docs/METER_MAP.md); a change off a bar line moves to the next one.
+  const meterChanges = meterEventsFromSmf(meters.map(meter => ({ beat: meter.tick / division, numerator: meter.numerator, denominator: meter.denominator })))
+  for (const meter of meters) if (meter.tick === 0) initialMeter = { numerator: meter.numerator, denominator: meter.denominator }
+  if (meterChanges.moved) warn('마디 경계에 있지 않은 박자표 변경은 다음 마디 시작으로 옮겼습니다. 노트 위치는 그대로입니다.')
+  if (meterChanges.skipped) warn('지원하지 않는 박자표 변경(분자 1–32, 분모 2·4·8·16 밖)은 가져오지 않았습니다.')
+  const meterMap = meterChanges.events.length ? meterChanges.events : undefined
   const sorted = [...outputs.values()].sort((a, b) => a.source - b.source || a.port - b.port || a.channel - b.channel)
   const counts = new Map<number, number>(), ports = new Map<number, Set<number>>()
   for (const track of sorted) {
@@ -430,5 +433,5 @@ export function parseMidiFile(data: ArrayBuffer | Uint8Array, options: MidiImpor
     return { name, channel, notes, ...(program === undefined ? {} : { program }), ...(sustain.length ? { sustain } : {}),
       ...(Object.keys(lanes).length ? { controllers: lanes } : {}), ...(bendRange === undefined ? {} : { bendRange }) }
   })
-  return { tracks, lengthBeats: endTick / division, bpm: tempoMap ? tempoPoints[0].bpm : 60_000_000 / initialMicroseconds, ...(tempoMap ? { tempoMap } : {}), timeSignature: initialMeter, warnings: [...warnings] }
+  return { tracks, lengthBeats: endTick / division, bpm: tempoMap ? tempoPoints[0].bpm : 60_000_000 / initialMicroseconds, ...(tempoMap ? { tempoMap } : {}), timeSignature: initialMeter, ...(meterMap ? { meterMap } : {}), warnings: [...warnings] }
 }

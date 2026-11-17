@@ -18,6 +18,14 @@ export interface DesktopSaveResult {
   fileName?: string
 }
 
+/** A folder the user picked for a multi-file export (stems); files are written into a new subfolder. */
+export interface DesktopFolderResult {
+  canceled: boolean
+  /** Opaque handle for writeExportFile; no filesystem path crosses into the renderer. */
+  token?: string
+  folderName?: string
+}
+
 export interface DesktopBridge {
   readonly isDesktop: true
   readonly platform: string
@@ -33,6 +41,12 @@ export interface DesktopBridge {
   }
   openProject(): Promise<DesktopFile | null>
   saveFile(request: DesktopSaveRequest): Promise<DesktopSaveResult>
+  /** Stem export: pick a parent folder; a subfolder named after `name` is created there. */
+  chooseExportFolder?(name: string): Promise<DesktopFolderResult>
+  /** Writes one .wav into the chosen folder (a plain file name, never a path). */
+  writeExportFile?(token: string, name: string, data: Uint8Array): Promise<void>
+  /** Forgets the folder handle. */
+  closeExportFolder?(token: string): Promise<void>
   onOpenProject(callback: (file: DesktopFile) => void): () => void
   onSaveProject(callback: () => void): () => void
   onNewProject(callback: () => void): () => void

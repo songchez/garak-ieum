@@ -52,7 +52,7 @@ export function diffArrangement(previous: Project | null, next: Project): Arrang
   if (previous === next) return NONE
   if (!previous) return { global: true, tracks: new Map() }
   if (previous.bpm !== next.bpm || previous.lengthBeats !== next.lengthBeats || !sameSmall(previous.loop, next.loop)
-    || !sameSmall(previous.timeSignature, next.timeSignature) || !sameSmall(previous.tempoMap, next.tempoMap)) return { global: true, tracks: new Map() }
+    || !sameSmall(previous.timeSignature, next.timeSignature) || !sameSmall(previous.tempoMap, next.tempoMap) || !sameSmall(previous.meterMap, next.meterMap)) return { global: true, tracks: new Map() }
   const before = previous.tracks, after = next.tracks
   if (before === after) return NONE
   if (before.length !== after.length) return { global: true, tracks: new Map() }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "garak/meter.hpp"
 #include "garak/tempo.hpp"
 #include <array>
 #include <atomic>
@@ -67,6 +68,9 @@ struct ProcessContext {
   bool cycleActive = false, recording = false;
   std::int64_t cycleStartFrame = 0, cycleEndFrame = 0, continuousFrame = 0;
   const TempoMap* tempo = nullptr;
+  // Time-signature changes (docs/METER_MAP.md); null = timeSigNumerator/Denominator for the whole song. When set,
+  // the signature fields already hold the meter at projectFrame.
+  const MeterMap* meters = nullptr;
   // Musical position (quarter notes) of a project frame: through the tempo map when there is one.
   [[nodiscard]] double beatAt(double frame) const noexcept { return tempo ? tempo->beatAtFrame(frame, sampleRate) : frame / sampleRate * bpm / 60.0; }
 };
@@ -172,6 +176,12 @@ struct AudioWindow {
   std::int64_t fadeInFrames = 0, fadeOutFrames = 0;
   // Fade shapes (src/core/clipEnvelope.ts FADE_CURVE_CODES): 0 linear, 1 equal power, 2 S-curve, 3 exponential, 4 logarithmic.
   std::int32_t fadeInCurve = 0, fadeOutCurve = 0;
+  // A frozen track's cached render (docs/BOUNCE_FREEZE_STEMS.md): no click guard, may end after the project
+  // (its tail), and offline engines keep reading it during the export tail like an instrument release.
+  bool freeze = false;
+  // Frozen windows: the frozen track's own tail (PreparedProject::trackTailSeconds() of its freeze render), so
+  // the export and the returns it feeds keep the unfrozen tail exactly.
+  double tailSeconds = 0;
   bool operator==(const AudioWindow&) const = default;
 };
 // Gain of a region fade at progress x (0 = silent end, 1 = full level); matches fadeShape() in clipEnvelope.ts.
@@ -258,6 +268,10 @@ struct TrackTimeline {
   std::vector<AutomationLane> automation;
   // Fader audibility if the track were unmuted (solo state included); used while a mute lane is active.
   bool unmutedAudible = true;
+  // Offline render options (docs/BOUNCE_FREEZE_STEMS.md). directOut=false keeps the track out of the master sum
+  // while its sends still feed returns (return stems). preFader skips pan and fader: the output is the
+  // compensated post-insert signal (freeze and bounce in place); a mono source leaves its right channel silent.
+  bool directOut = true, preFader = false;
 };
 struct ProjectTimeline {
   std::uint32_t version = 1;
@@ -269,6 +283,9 @@ struct ProjectTimeline {
   // Note/audio/cycle frames already follow it; the host uses it for clicks, synced effects and VST3 time.
   std::vector<TempoPoint> tempoMap;
   int timeSigNumerator = 4, timeSigDenominator = 4;
+  // Time-signature changes (schema 18; docs/METER_MAP.md): events sorted by bar, the first at bar 0 with the
+  // meter above. Empty = one meter. The host uses it for metronome accents and the VST3 signature/bar position.
+  std::vector<MeterEvent> meterMap;
   std::int64_t lengthFrames = 1;
   std::optional<std::array<std::int64_t, 2>> cycle;
   float masterGain = 1;
@@ -419,6 +436,8 @@ class PreparedProject {
   PreparedProject& operator=(const PreparedProject&) = delete;
   [[nodiscard]] std::size_t trackCount() const noexcept;
   [[nodiscard]] double tailSeconds() const noexcept;
+  // The longest own tail of a non-return track (instrument release plus insert tails), without the render floor.
+  [[nodiscard]] double trackTailSeconds() const noexcept;
   [[nodiscard]] std::uint32_t latencyFrames() const noexcept;
   [[nodiscard]] std::uint32_t senderLatencyFrames() const noexcept;
  private:
@@ -518,6 +537,9 @@ class RenderEngine {
   // Offline instances ignore the audition cycle, and allow tails beyond project end.
   // Set only while stopped, before submitting/playing a project.
   void setOffline(bool offline) noexcept;
+  // Offline only: skip master gain and the master processor (pre-master stems, freeze and bounce renders).
+  // Set only while stopped, before submitting/playing a project.
+  void setMasterBypass(bool bypass) noexcept;
   // Control thread, before the first submit and before the device starts:
   // creates the worker pool (threads > 0, or 1 when only rendering ahead).
   // Graphs prepared afterwards carry render-ahead rings within a memory budget.

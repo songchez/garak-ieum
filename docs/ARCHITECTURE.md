@@ -52,6 +52,7 @@ flowchart TD
 | [`src/devices/contracts.ts`](../src/devices/contracts.ts), [`src/devices/effects/registry.ts`](../src/devices/effects/registry.ts) | 실시간 이펙트 계약과 여섯 모듈 등록; 각 모듈이 정의·DSP·잔향 시간을 소유 |
 | [`src/devices/pitch-editor/`](../src/devices/pitch-editor/) | 리전 피치/포먼트 UI·음계 보정·세션 초안/도구옵션·원본 분석·Worker 렌더·v2 문서 검증·float WAV 자산 |
 | [`src/audio/samples.ts`](../src/audio/samples.ts) | 샘플 세트 로더: 매니페스트 해석, 포맷 선택, 디코딩 캐시, 존 선택, 로딩 상태 알림 |
+| [`src/core/projectRecords.ts`](../src/core/projectRecords.ts) | 자동 저장용 레코드 분할(메타·트랙·리전·원본), 내용 해시, 매니페스트 조립 |
 | [`src/core/storage.ts`](../src/core/storage.ts) | ID별 프로젝트 번들·요약 목록, 기존 latest 이전, IndexedDB 원자적 저장·순서 보장, 원본 Blob 검증, `.garak` 가져오기·내보내기 |
 | [`src/audio/engineFactory.ts`](../src/audio/engineFactory.ts), [`src/audio/native/NativeAudioEngine.ts`](../src/audio/native/NativeAudioEngine.ts) | 환경별 엔진 선택, 네이티브 명령·상태·PCM 등록과 비실시간 디코딩 |
 | [`src/audio/native/timeline.ts`](../src/audio/native/timeline.ts), [`src/core/nativePlugins.ts`](../src/core/nativePlugins.ts) | 리전 의미를 샘플 프레임 계획으로 변환, schema 6 VST3 식별·파라미터·상태 계약 |
@@ -203,7 +204,24 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 
 ### IndexedDB
 
-데이터베이스 이름은 `noct-studio`, 버전은 **2**입니다. `project-bundles`는 프로젝트 ID를 키로 Project와 원본 Blob 배열을 보관하고, `project-summaries`는 이름·BPM·박자표·마디 길이·트랙 수·프로젝트 길이·생성/수정 시각을 보관합니다. 목록 조회는 요약 저장소만 읽어 오디오를 로드하거나 디코딩하지 않습니다. 번들과 요약은 같은 읽기·쓰기 트랜잭션에서 함께 갱신합니다. 저장 호출은 순서대로 처리하고, 변경 시각은 같은 밀리초 또는 뒤로 간 시스템 시각에서도 순서가 유지되도록 증가시킵니다. `AudioBuffer`와 미터 값은 저장하지 않습니다.
+데이터베이스 이름은 `noct-studio`, 버전은 **3**입니다. `project-bundles`는 프로젝트 ID를 키로 매니페스트(manifest)를 보관하고, `project-records`는 그 매니페스트가 가리키는 레코드를 보관하며, `project-summaries`는 이름·BPM·박자표·마디 길이·트랙 수·프로젝트 길이·생성/수정 시각을 보관합니다. 목록 조회는 요약 저장소만 읽어 오디오를 로드하거나 디코딩하지 않습니다. 번들과 요약은 같은 읽기·쓰기 트랜잭션에서 함께 갱신합니다. 저장 호출은 순서대로 처리하고, 변경 시각은 같은 밀리초 또는 뒤로 간 시스템 시각에서도 순서가 유지되도록 증가시킵니다. `AudioBuffer`와 미터 값은 저장하지 않습니다.
+
+**레코드 단위 증분 저장 (v3).** 자동 저장은 프로젝트 전체를 다시 쓰지 않습니다([`core/projectRecords.ts`](../src/core/projectRecords.ts)). 프로젝트는 작은 머클 트리로 나뉩니다. 매니페스트 → 메타 레코드(트랙을 뺀 Project) · 트랙 레코드(리전을 뺀 Track + 리전 참조 순서) · 리전 레코드(MIDI 음표 포함) · 오디오 원본 레코드(`{ id, name, blob }`). 레코드 키는 `[프로젝트 ID, 종류, 객체 ID, 내용 해시]`입니다. 해시는 키 순서와 무관한 JSON(cyrb53)이고, 원본 오디오는 Blob당 한 번 SHA-256으로 계산합니다. 스냅숏은 불변이라 바뀌지 않은 객체는 해시를 다시 계산하지 않습니다. 음표 하나를 고치면 리전 1개 · 트랙 1개 · 매니페스트 · 요약만 씁니다.
+
+- **원자적 커밋:** 레코드는 덮어쓰지 않고 새 키로만 씁니다. 하나의 읽기·쓰기 트랜잭션에서 없는 레코드 → 매니페스트(커밋 지점) → 요약 순서로 쓰므로, 중간에 끊겨도 이전 매니페스트가 완전한 레코드 집합을 가리킵니다. 매니페스트가 없는 레코드를 가리키면 마지막 검증 사본을 엽니다.
+- **복구 사본:** `${id}\0validated`도 매니페스트이며 자신이 닿는 레코드 목록(`reachable`)을 함께 저장합니다. 최신 저장본과 공유하는 레코드는 한 번만 저장됩니다.
+- **정리(GC):** 같은 트랜잭션에서 최신 매니페스트와 복구 매니페스트 어디에서도 닿지 않는 레코드를 지웁니다. 이 탭이 마지막으로 커밋한 세대(generation)와 저장소의 세대가 같으면 키 목록을 다시 읽지 않고, 다르면(다른 탭·이전 세션) 프로젝트 범위의 키를 모두 읽어 고아 레코드까지 정리합니다.
+- **이전:** v2 번들은 그대로 읽히며(복원 결과 동일), 그 프로젝트를 다음에 저장할 때 같은 트랜잭션에서 매니페스트와 레코드로 바뀝니다. 이전 형식의 검증 사본은 다음 검증 저장까지 유지되어 복구에 쓰입니다. Project 형식과 `.garak`은 바뀌지 않습니다.
+- **데스크톱:** Electron 렌더러도 같은 IndexedDB 경로를 사용합니다. 데스크톱 전용 프로젝트 자동 저장 파일은 없으며, `desktop/main.ts`의 파일 쓰기는 명시적인 `.garak` 내보내기(임시 파일 후 교체)입니다.
+
+32트랙 · 4,036리전 · 65,952음표 · 오디오 원본 4개(16 MB) 프로젝트에서 음표 하나를 고친 뒤의 자동 저장(fake-indexeddb, `GARAK_AUTOSAVE_BENCH=1 pnpm vitest run src/core/autosaveBenchmark.test.ts`):
+
+| | 이전(전체 번들) | 레코드 단위 |
+| --- | --- | --- |
+| 음표 1개 수정 후 자동 저장 | 23.0 MB(오디오 16 MB 포함), 평균 97 ms | 12.7 KB, 평균 7 ms |
+| 주기적 전체 검증 저장 | 30.0 MB, 211 ms | 275 KB, 34 ms |
+| 다시 연 뒤 첫 자동 저장 | 30.0 MB, 192 ms | 264 KB, 131 ms(전체 해시 1회) |
+| 불러오기 | 106 ms | 115 ms |
 
 버전 1의 `projects` 저장소 `latest`와 `audio-assets` 원본은 업그레이드 트랜잭션 안에서 새 번들·요약으로 함께 이전합니다. 기존 저장소는 삭제하거나 덮어쓰지 않습니다. 데이터 검증 또는 쓰기가 실패하면 업그레이드를 롤백하고 원본을 유지합니다. 명시적인 ID를 준 `loadProject(id)`는 다른 저장본을 반환하지 않으며, 인수 없는 호환 호출만 가장 최근 수정본을 조회합니다. 기본 URL은 이 호환 호출로 자동 복원하지 않습니다.
 
@@ -252,6 +270,7 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 | `src/core/project.test.ts` | 이전 데모 호환, 비파괴 클립 편집, 가져온 프로젝트 검증 |
 | `src/core/projectTemplates.test.ts` | 세 샘플의 유효성·독립 ID·편곡 경계·실제 샘플 존과 파일·조성·그루브·섹션 변형 |
 | `src/core/projectLibrary.test.ts` | 저장 완료 후 생성/가져오기, 같은 템플릿의 수정 격리, 같은 원본 ID 파일의 새 저장본과 Blob 보존, 오류 시 기존 목록 유지 |
+| `src/core/trackAutosave.test.ts` | 레코드 단위 자동 저장의 변경 감지·쓰기 집합, 레코드 사이 중단 시 이전 저장본 유지, 커밋되지 않은 레코드 무시·정리, GC, 다른 탭 저장 후 재검사, v2 번들 이전, 번들과 동일한 복원·복구 사본 |
 | `src/core/projectLibraryStorage.test.ts` | fake-indexeddb를 통한 다중 프로젝트·요약 목록·저장 순서·원자적 실패·기존 latest 이전 및 원본 보존 |
 | `src/core/storage.test.ts` | `.garak` 원본 바이트·참조 왕복, 손상·누락·중복 검출, 저장소 사용 불가 처리 |
 | `src/audio/math.test.ts` | 루프·재생 위치, 페이드, WAV 헤더·채널·PCM 값 |

@@ -680,6 +680,86 @@ void sendReturns(){
   }
 }
 
+// Bounce, freeze and stems (docs/BOUNCE_FREEZE_STEMS.md). An offline render as the host's render.wav makes it:
+// `total` frames after dropping the graph's plug-in delay compensation from the start.
+std::vector<float> offlineRender(const ProjectTimeline&p,const AssetStore&assets,std::uint32_t total,bool preMaster,const PluginResolver&plugins={}){
+  RenderEngine e(p.sampleRate,256);e.setOffline(true);e.setMasterBypass(preMaster);auto prepared=e.prepare(p,assets,{},plugins);
+  const auto latency=static_cast<std::uint32_t>(prepared->latencyFrames());e.submit(std::move(prepared));check(e.play(),"Play failed");
+  auto out=render(e,total+latency,256);out.erase(out.begin(),out.begin()+static_cast<std::ptrdiff_t>(latency)*2);return out;
+}
+double ownTail(const ProjectTimeline&p,const PluginResolver&plugins={}){RenderEngine e(p.sampleRate,256);return e.prepare(p,{},{},plugins)->trackTailSeconds();}
+std::uint32_t exportFrames(const ProjectTimeline&p,const AssetStore&assets,const PluginResolver&plugins={}){
+  RenderEngine e(p.sampleRate,256);const auto prepared=e.prepare(p,assets,{},plugins);
+  return static_cast<std::uint32_t>(p.lengthFrames+static_cast<std::int64_t>(std::ceil(std::min(30.0,prepared->tailSeconds())*p.sampleRate)));
+}
+double maxDifferenceOf(const std::vector<float>&a,const std::vector<float>&b){check(a.size()==b.size(),"Different rendered lengths");double d=0;for(std::size_t i=0;i<a.size();++i)d=std::max(d,double(std::abs(a[i]-b[i])));return d;}
+
+void freezeMatchesLive(){
+  const std::int64_t length=24000;
+  // Mono (synth + plain delay), stereo (synth + reverb) and a latent VST3 insert (plug-in delay compensation).
+  for(int variant=0;variant<3;++variant)for(const bool preMaster:{true,false}) {
+    auto p=project(48000,length);p.bpm=120;
+    auto t=synthTrack("keys");t.id="keys";t.source.params["level"]=.4;t.notes={{1,100,9000,length,60,.8f},{2,12000,23990,length,67,.6f}};
+    if(variant==0)t.inserts.push_back({"delay","delay",true,{{"amount",.5},{"time",.25},{"feedback",.3},{"sync",1}},{}});
+    if(variant==1)t.inserts.push_back({"verb","reverb",true,{},{}});
+    if(variant==2){BuiltinInsert slow;slow.id="slow";slow.type="vst3";slow.plugin.instanceId="slow";t.inserts.push_back(slow);}
+    t.gain=.7f;t.pan=variant==1?-.4f:.35f;t.sends={{"ret",.4f,false},{"pre",.3f,true}};
+    auto ret=returnTrack("ret");ret.inserts.push_back({"echo","delay",true,{{"amount",1},{"dry",0},{"time",.25},{"feedback",.2},{"sync",1}},{}});
+    auto pre=returnTrack("pre");pre.gain=.5f;
+    auto other=synthTrack("bass");other.id="bass";other.source.params["level"]=.3;other.notes={{3,6000,20000,length,40,.7f}};other.pan=-.2f;
+    p.tracks={t,other,ret,pre};
+    const PluginResolver plugins=[](const PluginSpec&,double,unsigned){return std::make_shared<TestPlugin>(37);};
+    const auto total=exportFrames(p,{},plugins);
+    const auto live=offlineRender(p,{},total,preMaster,plugins);
+    // Freeze render: the track alone, pre-fader (no pan, fader or sends), pre-master, with its own tail.
+    auto solo=project(48000,length);solo.bpm=120;auto f=t;f.sends.clear();f.preFader=true;solo.tracks={f};
+    const auto frozenFrames=exportFrames(solo,{},plugins);
+    const auto frozen=offlineRender(solo,{},frozenFrames,true,plugins);
+    // A mono track's pre-fader render leaves the right channel silent; it is kept mono, so pan keeps the mono law.
+    bool mono=true;for(std::uint32_t i=0;i<frozenFrames;++i)if(frozen[2*i+1]!=0){mono=false;break;}
+    check(mono==(variant==0),"A frozen render's mono/stereo layout disagrees with the track's source");
+    std::vector<float> pcm;if(mono){pcm.resize(frozenFrames);for(std::uint32_t i=0;i<frozenFrames;++i)pcm[i]=frozen[2*i];}else pcm=frozen;
+    AssetStore assets{{"frozen",asset("frozen",48000,pcm,mono?1:2)}};
+    TrackTimeline z;z.id="keys";z.gain=t.gain;z.pan=t.pan;z.sends=t.sends;
+    AudioWindow w;w.id=1;w.assetId="frozen";w.startFrame=0;w.endFrame=frozenFrames;w.clipLengthFrames=frozenFrames;w.sourceSampleRate=48000;w.freeze=true;w.tailSeconds=ownTail(solo,plugins);z.audio={w};
+    auto q=p;q.tracks={z,other,ret,pre};
+    if(exportFrames(q,assets)!=total){std::ostringstream m;m<<"Freezing a track changed the export length ("<<exportFrames(q,assets)<<" vs "<<total<<", frozen "<<frozenFrames<<", variant "<<variant<<")";throw std::runtime_error(m.str());}
+    const auto played=offlineRender(q,assets,total,preMaster);
+    check(energy(live)>.01,"The live reference rendered silence");
+    const auto difference=maxDifferenceOf(live,played);
+    if(difference>2e-5){std::ostringstream m;m<<"A frozen track does not render like the live track (variant "<<variant<<", max difference "<<difference<<")";throw std::runtime_error(m.str());}
+    // The frozen tail plays during the export tail, after the project end.
+    double tail=0;for(std::size_t i=static_cast<std::size_t>(length)*2;i<played.size();++i)tail=std::max(tail,double(std::abs(played[i])));
+    check(tail>1e-4,"A frozen track lost its tail after the project end");
+  }
+}
+
+void stemsSumToMix(){
+  // Pre-master stems: each audible track alone without its sends, plus each return fed by every sender whose own
+  // output stays out of the master (directOut = false). Their sum is the pre-master mix.
+  const std::int64_t length=24000;
+  auto p=project(48000,length);p.bpm=120;
+  auto a=synthTrack("keys");a.id="a";a.source.params["level"]=.4;a.notes={{1,100,9000,length,60,.8f},{2,12000,23990,length,64,.6f}};
+  a.inserts.push_back({"verb","reverb",true,{},{}});a.gain=.8f;a.pan=-.3f;a.sends={{"echo",.5f,false},{"space",.2f,true}};
+  auto b=synthTrack("bass");b.id="b";b.source.params["level"]=.3;b.notes={{3,6000,20000,length,40,.7f}};b.sends={{"echo",.3f,true}};b.gain=1.2f;
+  auto muted=synthTrack("pad");muted.id="muted";muted.notes={{4,0,20000,length,72,.7f}};muted.mute=true;muted.audible=false;muted.sends={{"echo",1.f,false}};
+  auto echo=returnTrack("echo");echo.inserts.push_back({"echo","delay",true,{{"amount",1},{"dry",0},{"time",.25},{"feedback",.4},{"sync",1}},{}});echo.gain=.9f;
+  auto space=returnTrack("space");space.inserts.push_back({"room","reverb",true,{},{}});
+  p.tracks={a,b,muted,echo,space};
+  const auto total=exportFrames(p,{});
+  const auto mix=offlineRender(p,{},total,true);
+  check(energy(mix)>.01,"The stem reference mix rendered silence");
+  std::vector<float> sum(mix.size(),0.f);
+  const auto add=[&](const ProjectTimeline&stem){const auto out=offlineRender(stem,{},total,true);for(std::size_t i=0;i<sum.size();++i)sum[i]+=out[i];};
+  for(const auto*track:{&a,&b}){auto stem=p;auto alone=*track;alone.sends.clear();stem.tracks={alone};add(stem);}
+  for(const auto*ret:{&echo,&space}){auto stem=p;stem.tracks.clear();for(auto t:{a,b,muted}){t.directOut=false;stem.tracks.push_back(t);}stem.tracks.push_back(*ret);add(stem);}
+  const auto difference=maxDifferenceOf(mix,sum);
+  if(difference>2e-5){std::ostringstream m;m<<"Pre-master stems do not sum to the mix (max difference "<<difference<<")";throw std::runtime_error(m.str());}
+  // render.wav startFrame / preMaster: the master processor is bypassed only on request.
+  auto loud=p;loud.masterGain=.5f;const auto mastered=offlineRender(loud,{},total,false);
+  check(maxDifferenceOf(mix,mastered)>1e-6,"The master bypass changed nothing (or the master processor is missing)");
+}
+
 PluginResolver testInstruments(){return [](const PluginSpec&,double,std::uint32_t){auto p=std::make_shared<TestPlugin>();p->instrument=true;return p;};}
 std::unique_ptr<RenderEngine> busyEngine(const Busy&b,const ProcessingOptions&options,bool offline=false,std::uint32_t maxBlock=512){
   auto e=std::make_unique<RenderEngine>(48000,maxBlock);if(offline)e->setOffline(true);e->setProcessing(options);
@@ -990,6 +1070,34 @@ void metronomeClicks(){
    checkClicks(render(e,48000,128),{},"Offline export rendered metronome clicks");check(e.snapshot().frame==48000,"Offline engine honored a count-in");}
   // A click set for another rate is ignored rather than played at the wrong speed.
   {RenderEngine e(44100,256);auto q=project(44100,44100*4);e.submit(e.prepare(q,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");checkClicks(render(e,1000),{},"Mismatched-rate clicks played");}
+}
+
+// Time-signature changes (docs/METER_MAP.md): 4/4 → 3/4 → 7/8 → 6/8 at 120 BPM (a quarter = 24000 frames).
+// Every bar's first pulse is the downbeat; 7/8 clicks seven eighths; 6/8 accents its dotted group (겹박자).
+void meterMapClicks(){
+  const MeterMap map(4,4,{{0,4,4},{1,3,4},{2,7,8},{3,6,8}});
+  check(map.events().size()==4&&map.events()[1].beat==4&&map.events()[2].beat==7&&map.events()[3].beat==10.5,"Meter map bar walk is wrong");
+  check(map.barStart(12)==10.5&&map.barStart(13.5)==13.5&&map.barStart(8.9)==7,"Meter map bar lines are wrong");
+  check(MeterMap(3,4,{}).constant()&&!map.constant(),"Constant meter detection failed");
+  // Out-of-order and duplicate bars are dropped, never reordered.
+  check(MeterMap(4,4,{{0,4,4},{3,3,4},{2,7,8},{3,5,4}}).events().size()==2,"Unsorted meter events were accepted");
+  auto p=project(48000,48000*8);p.meterMap=map.events();
+  const std::vector<std::pair<std::size_t,float>> want{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f},
+    {96000,1.f},{120000,.25f},{144000,.25f},
+    {168000,1.f},{180000,.25f},{192000,.25f},{204000,.25f},{216000,.25f},{228000,.25f},{240000,.25f},
+    {252000,1.f},{264000,.25f},{276000,.25f},{288000,.5f},{300000,.25f},{312000,.25f},{324000,1.f}};
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");
+   checkClicks(render(e,324001,97),want,"Metronome accents do not follow the meter changes");}
+  // Starting mid-song (inside the 3/4 bar) and with odd block sizes clicks the same frames.
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.seek(130000),"Seek failed");check(e.play(),"Play failed");
+   std::vector<std::pair<std::size_t,float>> later;for(const auto&[frame,level]:want)if(frame>=130000)later.push_back({frame-130000,level});
+   checkClicks(render(e,324001-130000,61),later,"Meter-map clicks depend on the start position");}
+  // The count-in clicks whole bars of the meter where the transport starts: one 7/8 bar of eighths.
+  {RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.setMetronome(impulseClicks(),false,1),"Metronome command failed");check(e.seek(168000),"Seek failed");check(e.play(84000),"Count-in play failed");
+   checkClicks(render(e,84000,89),{{0,1.f},{12000,.25f},{24000,.25f},{36000,.25f},{48000,.25f},{60000,.25f},{72000,.25f}},"Count-in does not use the local meter");}
+  // With a tempo map the downbeats stay on the bar lines and take the map's frames (60 BPM from beat 4).
+  {auto q=p;q.tempoMap={{0,120,false},{4,60,false}};RenderEngine e(48000,256);e.submit(e.prepare(q,{}));check(e.setMetronome(impulseClicks(),true,1),"Metronome command failed");check(e.play(),"Play failed");
+   checkClicks(render(e,96000+48000*3+1,101),{{0,1.f},{24000,.25f},{48000,.25f},{72000,.25f},{96000,1.f},{144000,.25f},{192000,.25f},{240000,1.f}},"Meter changes do not follow the tempo map");}
 }
 
 void dynamicsMeters(){
@@ -1512,10 +1620,11 @@ void updatesWithRenderAhead(){
 int main(){
   const std::pair<const char*,void(*)()>tests[]={{"synths and block independence",synthsAndBlockIndependence},{"audio windows, resampling and cycle",audioWindowsAndLoop},{"region gain, fade curves and crossfade",regionGainFadesAndCrossfade},{"sample zones and required assets",sampledZonesAndMissingAssets},{"live MIDI release and equal-power panning",liveMidiAndPanning},{"piano key-release noise",pianoReleaseNoise},{"native monitoring and capture ring",monitoringAndRecording},{"per-track physical inputs and layout swap",perTrackInputRouting},{"simultaneous multi-take capture",simultaneousTakes},{"loopback latency detection",latencyDetection},{"callback overload counting",overloadCounting},{"built-in effects and guitar rig",builtinEffectsAndGuitar},{"guitar rig rack pedals and tuner",guitarRigPedalsAndTuner},{"guitar rig repeated modules",guitarRigInstances},{"nonuniform reverb convolution",reverbPartitionAccuracy},{"sigimsae effects",sigimsaeEffects},{"VST event timing and delay compensation",pluginTimingAndCompensation},{"live edits preserve voices and tails",editsPreserveVoicesAndTails},{"offline consistency and validation",offlineConsistencyAndValidation},{"concurrent control/audio isolation",concurrentControlAndRender},
     {"multi-core tracks are bit-identical",multicoreBitIdentical},{"render-ahead equals callback rendering",renderAheadMatchesCallback},
-    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation},{"automation x tempo map x sends x returns",automationTempoSendsReturns},
+    {"render-ahead yields live tracks",renderAheadLiveTracks},{"multi-core stress with random buffers",processingStress},{"parametric EQ and sweep filter",parametricEqAndSweep},{"dynamics meters",dynamicsMeters},{"metronome clicks, count-in and export",metronomeClicks},{"tempo map frames, clicks and synced effects",tempoMapFrames},{"meter map: metronome accents across time-signature changes",meterMapClicks},{"track-input routes, taps and loop prevention",trackInputRoutes},{"sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger",sustainPedal},{"send/return buses: gains, single processing, PDC and tails",sendReturns},{"MIDI controllers: bend, vibrato, expression, chase, live and VST3",midiControllers},{"tempo map x returns x controllers",tempoSendsControllers},{"track automation lanes",trackAutomation},{"automation x tempo map x sends x returns",automationTempoSendsReturns},
     {"update: diffs equal a full rebuild",updateDiffsMatchRebuild},{"update: voices and tails survive edits",updatesKeepVoicesAndTails},
     {"update: track add/remove keeps other tracks",graphChangesKeepOtherTracks},{"update: 32 reverbs share impulse responses",manyReverbsShareImpulses},
-    {"update: render-ahead tracks take diffs",updatesWithRenderAhead}};
+    {"update: render-ahead tracks take diffs",updatesWithRenderAhead},
+    {"freeze: a frozen track renders like the live track",freezeMatchesLive},{"stems: pre-master stems sum to the mix",stemsSumToMix}};
   unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

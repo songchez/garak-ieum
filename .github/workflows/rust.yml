@@ -1,9 +1,9 @@
 name: Rust core
 
-# The Rust DSP core (docs/RUST.md): lint, unit tests, the WASM module (+ size report and the
-# TypeScript parity test against it) on Linux, and the garak-ffi staticlib linked into the C++
-# parity test with the real CI toolchains (Windows MSVC, macOS arm64). Web-only and other native
-# PRs never run this; the app does not depend on the Rust artifacts yet.
+# The Rust DSP core (docs/RUST.md) and render engine (docs/RUST_ENGINE.md): lint, unit tests, the
+# WASM modules (+ size report, the TypeScript parity test and the engine's WASM-vs-native test) on
+# Linux, and the garak-ffi staticlib linked into the C++ kernel and engine parity tests with the
+# real CI toolchains (Windows MSVC, macOS arm64). Web-only and other native PRs never run this.
 on:
   workflow_dispatch:
   pull_request:
@@ -20,6 +20,15 @@ on:
       - 'native/tests/rust_bench.cpp'
       - 'native/tests/engine_test.cpp'
       - 'native/tests/rust_parity_test.cpp'
+      - 'native/tests/rust_engine_parity_test.cpp'
+      - 'native/tests/rust_engine_bench.cpp'
+      - 'native/src/engine.cpp'
+      - 'native/src/protocol.hpp'
+      - 'native/include/garak/engine.hpp'
+      - 'native/include/garak/tempo.hpp'
+      - 'native/tests/rust_instrument_test.cpp'
+      - 'native/src/rust_instrument.hpp'
+      - 'src/devices/vintage/**'
       - 'src/audio/rust/**'
       - 'src/devices/effects/kernels.ts'
       - 'src/devices/effects/sigimsae.ts'
@@ -71,8 +80,9 @@ jobs:
         working-directory: rust
         run: |
           cargo clippy --locked --workspace --all-targets -- -D warnings
-          cargo clippy --locked -p garak-dsp -p garak-wasm --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy --locked -p garak-dsp -p garak-wasm -p garak-engine -p garak-engine-wasm --target wasm32-unknown-unknown -- -D warnings
 
+      # Also writes the engine parity project and its native render to rust/target/engine-parity/.
       - name: Unit tests
         working-directory: rust
         run: cargo test --locked --workspace
@@ -88,7 +98,17 @@ jobs:
           node scripts/rust.mjs wasm
           size=$(stat -c %s public/wasm/garak-dsp.wasm)
           gzip=$(gzip -9 -c public/wasm/garak-dsp.wasm | wc -c)
-          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 128 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
+          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 160 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
+
+      # The render engine for the worklet (docs/RUST_ENGINE.md 5): not shipped yet, size reported.
+      - name: Build the engine WASM module
+        working-directory: rust
+        run: |
+          cargo build --locked -p garak-engine-wasm --target wasm32-unknown-unknown --profile wasm
+          file=target/wasm32-unknown-unknown/wasm/garak_engine_wasm.wasm
+          size=$(stat -c %s "$file")
+          gzip=$(gzip -9 -c "$file" | wc -c)
+          echo "### garak_engine_wasm.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the WASM module
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -107,7 +127,8 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: TypeScript parity against the built WASM module
+      # Kernel parity (WASM vs TS) and the render engine (WASM vs the native Rust render).
+      - name: TypeScript parity against the built WASM modules
         run: pnpm exec vitest run src/audio/rust
 
   native-parity:
@@ -159,15 +180,26 @@ jobs:
           -DGARAK_RUST=ON -DGARAK_ENABLE_DEVICES=OFF -DGARAK_ENABLE_ASIO=OFF -DGARAK_ENABLE_VST3=OFF
           ${{ matrix.cmake_args }}
 
-      - name: Build garak-ffi, the parity test, the benchmark and the engine test
+      - name: Build garak-ffi, the parity tests, the benchmarks and the engine test
         run: >
           cmake --build build/native-rust --config Release --parallel 4
-          --target garak-rust-parity-test garak-rust-bench garak-engine-test
+          --target garak-rust-parity-test garak-rust-bench garak-engine-test garak-rust-instrument-test
+          garak-rust-engine-parity-test garak-rust-engine-bench
 
       # Every ported effect through C++ and Rust (param sweeps, automation, tempo, resets,
       # hand-overs, other sample rates): residual <= -90 dBFS, identical latency / tail / meters.
       - name: Run the Rust vs C++ parity test
         run: ctest --test-dir build/native-rust -C Release -R native-rust-parity --output-on-failure
+
+      # Render engine (docs/RUST_ENGINE.md): the same project through the C++ RenderEngine and
+      # rust/garak-engine (offline exports at several blocks/rates, live diffs): residual <= -90 dBFS.
+      - name: Run the render-engine parity test (C++ vs Rust engine)
+        run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-parity --output-on-failure
+
+      # 옥구슬 EP / 한밤 106 through garak-ffi: checksum parity with the WASM build (parity.golden),
+      # 8 voices < 3 % of one core at 48 kHz, and engine use (timeline, live pedal, edits).
+      - name: Run the vintage instrument test (parity, CPU budget, engine)
+        run: ctest --test-dir build/native-rust -C Release -R native-rust-instruments --output-on-failure
 
       # The whole engine regression suite with every built-in effect switched to Rust.
       - name: Engine tests with the Rust effects (GARAK_RUST_EFFECTS=all)
@@ -186,4 +218,13 @@ jobs:
             echo
             echo "### CPU baseline (${{ matrix.name }})"
             "$dir/garak-rust-bench" 3
+            echo
+            echo "### Render engine parity (${{ matrix.name }})"
+            "$dir/garak-rust-engine-parity-test" | grep '^|'
+            echo
+            echo "### Render engine CPU, 16/32 tracks (${{ matrix.name }})"
+            "$dir/garak-rust-engine-bench" 10 3 128
+            echo
+            echo "### Vintage instruments (${{ matrix.name }})"
+            "$dir/garak-rust-instrument-test" | grep '^|'
           } | tee -a "$GITHUB_STEP_SUMMARY"

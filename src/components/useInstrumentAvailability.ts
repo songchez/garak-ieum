@@ -3,11 +3,15 @@ import type { AudioEngine, InstrumentId } from '../core/types'
 import { canPlayInstrument } from '../audio/instrumentSupport'
 import { wavetableBridgeStatus, WAVETABLE_UNAVAILABLE_STATUS } from '../devices/wavetable-synth/bridge'
 
-/** Device disconnect/reconnect updates preview affordances without reopening a panel. */
+/** Device disconnect/reconnect (and the vintage instruments' Rust core loading) update preview affordances without reopening a panel. */
 export function useInstrumentAvailability(engine: AudioEngine): (instrument: InstrumentId) => boolean {
   const bridge = engine.wavetable
   const subscribe = useCallback((listener: () => void) => bridge?.subscribe(listener) ?? (() => {}), [bridge])
   const snapshot = useCallback(() => wavetableBridgeStatus(bridge), [bridge])
   useSyncExternalStore(subscribe, snapshot, () => WAVETABLE_UNAVAILABLE_STATUS)
+  const vintage = engine.vintage
+  const subscribeVintage = useCallback((listener: () => void) => vintage?.subscribe(listener) ?? (() => {}), [vintage])
+  const vintageSnapshot = useCallback(() => vintage?.available() === true, [vintage])
+  useSyncExternalStore(subscribeVintage, vintageSnapshot, () => false)
   return instrument => canPlayInstrument(engine, instrument)
 }

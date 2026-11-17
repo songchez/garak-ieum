@@ -40,6 +40,20 @@ describe('WebMetronome', () => {
     expect(context.starts[4].length).toBe(down)
   })
 
+  it('accents each bar\'s first beat across time-signature changes and counts in the local meter', () => {
+    const context = new FakeContext(), metronome = new WebMetronome()
+    metronome.setState(on, 0)
+    const ctx = context as unknown as BaseAudioContext
+    // 4/4, then 3/4 from bar 2 (beat 4), then 6/8 from bar 3 (beat 7).
+    const p = project({ meterMap: [{ bar: 0, numerator: 4, denominator: 4 }, { bar: 1, numerator: 3, denominator: 4 }, { bar: 2, numerator: 6, denominator: 8 }] })
+    metronome.scheduleSegment(ctx, p, 3, 10.5, 0)
+    // 120 BPM: half a second per quarter. Beats 3, 4 (downbeat), 5, 6, 7 (downbeat, eighths from here), …
+    expect(context.starts.map(start => start.time)).toEqual([0, .5, 1, 1.5, 2, 2.25, 2.5, 2.75, 3, 3.25, 3.5])
+    const down = context.starts[1].length
+    expect(context.starts.filter(start => start.length === down).map(start => start.time)).toEqual([.5, 2, 3.5])
+    expect(metronome.countInSeconds(p, 1, 8)).toBe(1.5)
+  })
+
   it('stays silent when off, but still plays a count-in', () => {
     const context = new FakeContext(), metronome = new WebMetronome()
     const ctx = context as unknown as BaseAudioContext

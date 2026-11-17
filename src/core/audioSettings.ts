@@ -234,6 +234,8 @@ export interface AudioState {
   underruns?: number
   commandOverflows?: number
   voiceOverflows?: number
+  /** Desktop launch connection: attempts, fallback and reason (NativeAudioEngine.autoStart). */
+  startup?: import('../audio/native/deviceStartup').NativeStartupReport | null
 }
 
 export interface InputState {

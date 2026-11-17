@@ -5,13 +5,17 @@
 //! - `#![no_std]` staticlib: links into MinGW, MSVC and Apple toolchains without Rust's std
 //!   runtime libraries (`--print native-static-libs` is empty), so CMake needs no per-platform
 //!   system-library lists. The libc symbols used are `abort` (panic handler) and the C math
-//!   functions behind `garak-dsp`'s `platform-math` (`exp`, `pow`, `tanh`, …), which every C++
+//!   functions behind `garak-dsp`'s `platform-math` (`exp`, `pow`, `tanh`, …), plus the CRT heap
+//!   (`malloc`/`calloc`/`realloc`/`free`) for the engine's control half, all of which every C++
 //!   host links already.
-//! - Caller-owned storage: C++ embeds `GarakRsBiquad` / `GarakRsUtility` by value (fixed size,
-//!   8-byte aligned); Rust never allocates. Compile-time asserts keep the sizes honest.
+//! - Caller-owned storage for the kernels: C++ embeds `GarakRsBiquad` / `GarakRsUtility` by value
+//!   (fixed size, 8-byte aligned); kernel calls never allocate. Compile-time asserts keep the
+//!   sizes honest. The engine (`engine.rs`) owns its graphs and allocates on the control thread
+//!   only (docs/RUST_ENGINE.md).
 //! - Every entry point tolerates null pointers (no-op) and never unwinds.
 #![no_std]
 
+extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
@@ -19,8 +23,26 @@ use core::ptr;
 
 use garak_dsp::{Biquad, Coefficients, FilterType, Utility, UtilityParams};
 
+/// The render engine (`garak_rs_engine_*`, `garak_rs_testkit_*`; header `include/garak_engine.h`).
+pub mod engine;
 /// Built-in effects (`garak_rs_fx_*`, `garak_rs_reverb_*`).
 pub mod fx;
+mod heap;
+
+// The engine's control half allocates; the staticlib uses the C runtime heap (tests use std's).
+#[cfg(not(test))]
+#[global_allocator]
+static HEAP: heap::Crt = heap::Crt;
+
+/// The prebuilt `alloc` crate is compiled with unwind tables that name this personality routine
+/// (GNU and Apple targets; MSVC's resolves to the CRT). Every profile is `panic = "abort"`, so it is
+/// never called: nothing here unwinds.
+#[cfg(all(not(test), not(target_env = "msvc")))]
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_eh_personality() {}
+
+/// Built-in instruments (`garak_rs_instrument_*`).
+pub mod instruments;
 
 /// Bumped on any incompatible change to `garak_rust.h`.
 pub const GARAK_RS_ABI_VERSION: u32 = 2;
@@ -264,11 +286,13 @@ mod tests {
     const HEADER: &str = include_str!("../include/garak_rust.h");
     const SOURCE: &str = include_str!("lib.rs");
     const FX_SOURCE: &str = include_str!("fx.rs");
+    const INSTRUMENT_SOURCE: &str = include_str!("instruments.rs");
 
     fn exported() -> Vec<String> {
         SOURCE
             .lines()
             .chain(FX_SOURCE.lines())
+            .chain(INSTRUMENT_SOURCE.lines())
             .filter_map(|l| l.split("extern \"C\" fn ").nth(1))
             .filter_map(|rest| rest.split('(').next())
             .filter(|name| name.starts_with("garak_rs_"))

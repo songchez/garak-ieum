@@ -104,3 +104,27 @@
 .tempo-point.ramp circle{fill:var(--brass-soft)}
 .tempo-point.selected circle,.tempo-point:focus-visible circle{fill:var(--brass);stroke:var(--accent-hover)}
 .tempo-label{position:absolute;left:7px;top:-12px;font-size:8px;line-height:10px;color:var(--text-secondary);white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
+
+/* 박자 global track (docs/METER_MAP.md): time-signature changes on bar lines, under the tempo row. */
+.timeline-global-row.meter-row{top:106px;z-index:17}
+.meter-lane{cursor:copy}
+.meter-change{position:absolute;top:2px;height:18px;display:flex;align-items:center;padding:0 6px 0 4px;box-sizing:border-box;border-left:2px solid var(--brass);border-radius:0 3px 3px 0;background:var(--brass-soft);color:var(--text-secondary);font-size:9px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:grab;touch-action:none;user-select:none;outline:0}
+.meter-change:hover{background:color-mix(in srgb,var(--brass) 23%,transparent)}
+.meter-change.selected{background:var(--loop-fill);color:var(--on-brass)}
+.meter-change.dragging{opacity:.8;cursor:grabbing}
+.meter-change:focus-visible{box-shadow:0 0 0 1px var(--accent-hover)}
+.meter-editor{position:fixed;z-index:1000;width:200px;display:flex;flex-direction:column;gap:8px;padding:10px;box-sizing:border-box;border:1px solid var(--border-default);border-radius:6px;background:var(--surface-raised);box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:10px;color:var(--text-secondary)}
+.meter-editor-title{font-size:9px;font-weight:600;color:var(--text-muted)}
+.meter-editor-fields{display:flex;align-items:center;gap:6px}
+.meter-editor-fields input,.meter-editor-fields select{width:64px;height:24px;box-sizing:border-box;padding:0 6px;border:1px solid var(--border-default);border-radius:4px;background:var(--surface-input);color:var(--text-primary);font-size:11px}
+.meter-editor-fields input[aria-invalid=true]{border-color:var(--danger)}
+.meter-editor-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.meter-editor-presets button,.meter-editor-actions button{height:22px;border:1px solid var(--border-default);border-radius:4px;color:var(--text-secondary);font-size:9px}
+.meter-editor-presets button.active,.meter-editor-presets button:hover{border-color:var(--brass);color:var(--text-primary)}
+.meter-editor-actions{display:flex;justify-content:flex-end;gap:6px}
+.meter-editor-actions button{padding:0 10px}
+.meter-editor-actions button.primary{background:var(--brass);border-color:var(--brass);color:var(--on-brass)}
+.meter-editor-actions button:disabled{opacity:.5}
+/* A frozen track's regions are locked: shown through a cool tint, not editable (docs/BOUNCE_FREEZE_STEMS.md). */
+.track-lane.frozen-lane{background-image:linear-gradient(color-mix(in srgb,#5fb8e8 7%,transparent),color-mix(in srgb,#5fb8e8 7%,transparent))}
+.track-lane.frozen-lane .timeline-clip,.track-lane.frozen-lane [class*="clip"]{filter:saturate(.55)}

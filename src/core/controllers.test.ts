@@ -99,7 +99,7 @@ describe('controller lanes persistence (schema 16)', () => {
   it('round-trips and rejects controller data in older schemas or invalid lanes', () => {
     const p = project([keys([clip({ bendRange: 12, controllers: { pitchBend: pts([0, -8192], [1, 8191]), cc74: pts([2, 3]) } })])])
     const loaded = validateProject(JSON.parse(JSON.stringify(p)))
-    expect(loaded.schemaVersion).toBe(17)
+    expect(loaded.schemaVersion).toBe(19)
     expect(loaded.tracks[0].clips[0]).toMatchObject({ bendRange: 12, controllers: { pitchBend: pts([0, -8192], [1, 8191]), cc74: pts([2, 3]) } })
     expect(() => validateProject({ ...JSON.parse(JSON.stringify(p)), schemaVersion: 13 })).toThrow(/schema version 16/)
     expect(() => validateProject({ ...JSON.parse(JSON.stringify(p)), schemaVersion: 15 })).toThrow(/schema version 16/)

@@ -148,8 +148,59 @@ int32_t garak_rs_fx_meter(GarakRsFx* fx, float* out_peak, float* out_gain);
  * must then swap the two storage buffers as well. */
 int32_t garak_rs_fx_take_state(GarakRsFx* fx, GarakRsFx* previous);
 
+/* ---- Built-in instruments (rust/garak-ffi/src/instruments.rs) -----------------------------------
+ * 옥구슬 EP and 한밤 106 (rust/garak-dsp/src/instruments). The same Rust code runs in the browser
+ * worklet (garak-wasm), with deterministic math, so both engines render identical samples.
+ * Lifecycle: allocate garak_rs_instrument_size() bytes aligned to garak_rs_instrument_align(),
+ * garak_rs_instrument_init (control thread), then process / set_param / reset / take_state on the
+ * audio thread (real-time safe). The state is plain data: free the bytes, no destructor runs. */
+enum GarakRsInstrumentKind { GARAK_RS_INSTRUMENT_EP = 0, GARAK_RS_INSTRUMENT_POLY = 1 };
+#define GARAK_RS_INSTRUMENT_COUNT 2
+
+/* GarakRsInstrumentEvent.kind */
+#define GARAK_RS_EVENT_NOTE_ON 0       /* pitch, value = velocity 0..1, id = host note id or -1 */
+#define GARAK_RS_EVENT_NOTE_OFF 1      /* by id (>= 0) or pitch */
+#define GARAK_RS_EVENT_ALL_NOTES_OFF 2 /* releases every voice, lifts the pedal */
+#define GARAK_RS_EVENT_CONTROLLER 3    /* param: 0..127 CC, 128 pressure, 129 bend, 131 bend range; value 0..1 */
+#define GARAK_RS_EVENT_PARAM 4         /* param = catalog index, value in catalog units */
+#define GARAK_RS_EVENT_RESET 5         /* immediate silence */
+
+typedef struct GarakRsInstrumentEvent {
+  uint32_t offset; /* frame inside the block; sorted */
+  uint32_t kind;
+  int32_t id;
+  uint32_t pitch;
+  float value;
+  uint32_t param;
+} GarakRsInstrumentEvent;
+
+typedef struct GarakRsInstrument GarakRsInstrument; /* opaque */
+
+size_t garak_rs_instrument_size(void);
+size_t garak_rs_instrument_align(void);
+/* Kind of a project instrument id ("okgu-ep", "hanbam-106"), or -1. */
+int32_t garak_rs_instrument_kind(const char* id, size_t len);
+uint32_t garak_rs_instrument_param_count(uint32_t kind);
+size_t garak_rs_instrument_param_id(uint32_t kind, uint32_t index, char* out, size_t capacity);
+int32_t garak_rs_instrument_param_range(uint32_t kind, uint32_t index, double* out_default, double* out_min,
+                                        double* out_max);
+/* GARAK_RS_OK, GARAK_RS_ERR_ARGUMENT, GARAK_RS_ERR_KIND or GARAK_RS_ERR_RATE. */
+int32_t garak_rs_instrument_init(GarakRsInstrument* inst, uint32_t kind, double sample_rate, const double* params,
+                                 uint32_t count);
+void garak_rs_instrument_set_param(GarakRsInstrument* inst, uint32_t index, double value);
+double garak_rs_instrument_param(const GarakRsInstrument* inst, uint32_t index);
+/* Planar stereo, overwritten. */
+void garak_rs_instrument_process(GarakRsInstrument* inst, float* left, float* right, uint32_t frames,
+                                 const GarakRsInstrumentEvent* events, uint32_t count);
+void garak_rs_instrument_reset(GarakRsInstrument* inst);
+/* inst adopts previous's voices / delay lines and keeps its own parameters. */
+void garak_rs_instrument_take_state(GarakRsInstrument* inst, const GarakRsInstrument* previous);
+double garak_rs_instrument_tail(const GarakRsInstrument* inst);
+uint32_t garak_rs_instrument_active_voices(const GarakRsInstrument* inst);
+
 #ifdef __cplusplus
 } /* extern "C" */
+static_assert(sizeof(GarakRsInstrumentEvent) == 24, "GarakRsInstrumentEvent layout");
 static_assert(sizeof(GarakRsCoefficients) == 40, "GarakRsCoefficients layout");
 static_assert(sizeof(GarakRsUtilityParams) == 40, "GarakRsUtilityParams layout");
 #endif
