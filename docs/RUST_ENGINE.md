@@ -253,6 +253,7 @@ RenderEngine (C++) ─ 전송(재생/정지/탐색·사이클·카운트인), �
 | 테스트 | 내용 | 결과 (MinGW GCC 16, 이 PC) |
 |---|---|---|
 | `native/tests/rust_engine_host_test.cpp` (`ctest -R native-rust-engine-host`) | C++ 엔진 ↔ Rust 셸: 오프라인 내보내기 3종, 마스터 바이패스, 프리페이더 트랙, 리턴 스템, 재생 중 diff·트랙 재준비·탐색·사이클·일시정지·마스터 게인, 멀티코어 0 ↔ N 워커(라이브·오프라인 24트랙), 폴백/strict | 전부 **비트 동일** (폴백 후 탐색 비교만 -141 dBFS) |
+| 같은 테스트의 메트로놈 경우 | `garak_rs_metronome_render` ↔ `metronome.hpp`(RenderEngine::renderClicks와 같은 구동): 4/4, 6/8+템포 램프, 박자 맵+템포 맵, 곡 중간 12/8-5/4-9/16, 매핑된 위치의 카운트인, 3/4 카운트인 | 전부 **비트 동일** |
 | `rust/garak-engine/tests/host.rs` | `render_block`: 엔진 자체 전송과 같은 진행, 티켓 게이트, 병렬 센더 비트 동일, 힙 사용 0 | 통과 |
 | `scripts/rust-engine-suite.mjs` (rust.yml) | `engine_test.cpp` 전체를 `GARAK_RUST_ENGINE=1`(전부 통과해야 함)과 `strict`(목록에 있는 차단 요인만 실패 허용, `native/tests/rust_engine_expected_failures.txt`)로 실행, 케이스별 Rust 렌더 블록 수를 잡 요약에 | 1: **43/43**, strict: 7개가 Rust 그래프로 통과, 9개는 그래프 렌더 없이 통과, 27개 예상 실패 |
 | desktop.yml / macos.yml | 네이티브 스모크(`--test-clock`)를 `GARAK_RUST_ENGINE=1`로 한 번 더. 오디오 전용 `render.wav`가 Rust로 렌더됐는지 확인 | 로컬 21/21 통과 |
@@ -274,6 +275,6 @@ CPU (128프레임 블록, 10 s, 테스트 프로젝트, `garak-rust-engine-host-
 | VST3 악기·인서트, IEUM WAVE | C++ 폴백 | 4장 설계대로 `External{slot}` 노드 + 호스트 콜백(`process_external`, 지연·꼬리는 준비 시 resolver가 보고, 블록마다 템포·박자 맵 위치 전달) |
 | 기타 리그 | C++ 폴백 | garak-dsp 포팅(패리티 ≤ -90 dBFS, CPU ≤ 1.15× C++) 후 인서트 목록에 추가 |
 | 입력 모니터링·트랙 라우트·녹음 탭(프리FX/포스트FX/포스트페이더, 마스터 리샘플) | 모니터링 중·라우트가 있으면 C++ | `render_block`에 입력 버퍼와 모니터 마스크를 넘기고 트랙 탭을 셸에 노출 |
-| 메트로놈·카운트인 | C++ 셸(그래서 동작 동일) | 웹 워크릿용으로 `metronome.hpp`·`meter.hpp`를 garak-engine 모듈로 포팅 |
+| 메트로놈·카운트인 | 데스크톱은 C++ 셸이 섞음(동작 동일). `garak-engine/src/metronome.rs`에 `metronome.hpp`·`meter.hpp` 포팅 완료(격자, 복합 박자 묶음, 박자 맵 재시작·강박, 템포 맵, 카운트인, 6보이스 스트로크 플레이어 + 호스트가 주는 클릭 PCM — 국악 소리 포함). 호스트 테스트 6가지 경우 **비트 동일** | 워크릿/통합 엔진의 `Renderer`에서 마스터 뒤에 섞기 |
 | 얼린 윈도(꼬리 포함) | C++ 폴백 | 클릭 가드 없음·프로젝트 끝 이후 읽기·`tailSeconds`를 clip/track에 추가 |
 | render-ahead | Rust 그래프 동안 꺼짐 | 필요하면 Rust 트랙 링으로 |
