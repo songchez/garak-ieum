@@ -128,6 +128,8 @@ try {
     assert.equal(capabilities.wavetable.schemaFingerprint, wave.fingerprint)
     assert.equal(capabilities.wavetable.minimumSampleRate, 22050)
     assert.equal(capabilities.wavetable.maximumSampleRate, 192000)
+    // GARAK_RUST_ENGINE=1|strict (docs/RUST_ENGINE.md 10): the host must actually run the Rust engine.
+    if (process.env.GARAK_RUST_ENGINE) assert.deepEqual(capabilities.rustEngine, { available: true, requested: true })
     assert.equal((await service.request('engine.snapshot')).ready, false)
   })
   await checked('native output opens only the explicitly requested test clock', async () => {
@@ -236,7 +238,10 @@ try {
     audioTrack.gain = 1
     audioTrack.audio = [{ id: 1, clipId: 'audio-clip', assetId: 'pcm', startFrame: 0, endFrame: 12000, sourceStartFrame: 0, sourceSampleRate: 48000, clipOffsetFrames: 0, clipLengthFrames: 12000, gain: 1, fadeInFrames: 0, fadeOutFrames: 0 }]
     const p = project([audioTrack]); p.masterGain = 1
-    const output = wav((await service.request('render.wav', { timeline: p })).data)
+    const rendered = await service.request('render.wav', { timeline: p })
+    const output = wav(rendered.data)
+    // An audio-only project renders through the Rust graph when the flag is on.
+    if (process.env.GARAK_RUST_ENGINE) assert.equal(rendered.rustEngine, true, rendered.rustRefusal)
     assert.ok(rms(output.samples.subarray(0, 12000 * 2)) > .05)
     assert.ok(output.samples.slice(0, 100).some(sample => sample !== 0))
     const malformed = new Float32Array([0, Number.NaN])

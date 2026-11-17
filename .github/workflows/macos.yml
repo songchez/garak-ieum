@@ -108,6 +108,12 @@ jobs:
       - name: Verify native audio and actual VST3 host
         run: pnpm native:test
 
+      # The same smoke with the unified Rust render engine (docs/RUST_ENGINE.md 10; off by default).
+      - name: Verify native audio through the Rust engine (GARAK_RUST_ENGINE=1)
+        env:
+          GARAK_RUST_ENGINE: '1'
+        run: node scripts/native-test.mjs
+
       - name: Install DMG and verify bundle metadata
         run: pnpm desktop:install:mac:test
 
