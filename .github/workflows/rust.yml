@@ -126,9 +126,10 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      # Kernel parity (WASM vs TS), the render engine (WASM vs the native Rust render) and the web
-      # engine path A/B (Project -> timeline compiler -> garak-engine.wasm vs the Web Audio semantics).
-      - name: TypeScript parity against the built WASM modules
+      # The render engine (WASM vs the native Rust render), the web engine path A/B (Project -> timeline
+      # compiler -> garak-engine.wasm vs the 0.3.2 mix semantics), every built-in effect through the module
+      # and the web host paths.
+      - name: TypeScript checks against the built WASM engine
         run: pnpm exec vitest run src/audio/rust
 
   native-parity:

@@ -2,16 +2,16 @@
 
 세 기능 모두 **WAV 내보내기와 같은 오프라인 렌더 경로**를 씁니다. `src/core/renderPlan.ts`가 파생 프로젝트(렌더 계획)를 만들고, 각 엔진의 `renderAudio(project, options)`가 그것을 내보내기와 같은 그래프로 렌더합니다. 그래서 결과는 일반 내보내기와 샘플 단위로 정렬됩니다.
 
-| 렌더 옵션 (`RenderOptions`) | 의미 | Web Audio | 네이티브 (`render.wav`) |
+| 렌더 옵션 (`RenderOptions`) | 의미 | 웹 (Worker의 Rust 엔진) | 네이티브 (`render.wav`) |
 | --- | --- | --- | --- |
 | `bitDepth` 16 / 24 / 32 | 32 = IEEE float(클리핑 없음) | `encodeWav` | 호스트가 직접 기록 |
-| `preMaster` | 마스터 볼륨·마스터 프로세서 생략 | `createGraph(..., { preMaster })` | `RenderEngine::setMasterBypass` |
-| `tailSeconds` | 렌더 꼬리 길이를 고정(0–30초) | `renderTailSeconds` 대신 사용 | 그래프 꼬리 대신 사용 |
+| `preMaster` | 마스터 볼륨·마스터 프로세서 생략 | 엔진 마스터 바이패스(`masterBypass`) | `RenderEngine::setMasterBypass` |
+| `tailSeconds` | 렌더 꼬리 길이를 고정(0–30초) | 엔진 꼬리 대신 사용 | 그래프 꼬리 대신 사용 |
 | `startFrame` | PDC 보정 뒤 앞부분을 잘라냄 | 렌더 결과를 자름 | 쓰기 전에 건너뜀 |
 
 트랙 단위 렌더 탭(`Track.render`, 저장되지 않음 — 파생 프로젝트에만 존재)은 두 엔진에 같은 뜻으로 전달됩니다.
 
-- `preFader`: 인서트(시김새·VST3)와 PDC 보정을 거친 신호를 팬·페이더·뮤트 없이 출력합니다. **모노 소스는 오른쪽 채널을 비웁니다**(Web Audio는 discrete 업믹스, 네이티브는 `stereoSource||stereoEffects`가 아닐 때 R=0). 렌더 결과의 오른쪽이 완전히 무음이면 모노 에셋으로 저장해, 재생 시 팬이 원래와 같은 모노 법칙을 따릅니다.
+- `preFader`: 인서트(시김새·VST3)와 PDC 보정을 거친 신호를 팬·페이더·뮤트 없이 출력합니다. **모노 소스는 오른쪽 채널을 비웁니다**(Rust 엔진과 네이티브는 `stereoSource||stereoEffects`가 아닐 때 R=0. 0.3.3에서 삭제된 Web Audio 경로는 discrete 업믹스). 렌더 결과의 오른쪽이 완전히 무음이면 모노 에셋으로 저장해, 재생 시 팬이 원래와 같은 모노 법칙을 따릅니다.
 - `directOut: false`: 트랙 자신의 출력은 마스터 합에서 빠지고 센드는 그대로 리턴을 먹입니다(리턴 스템).
 - `frozen`: 얼린 트랙의 캐시를 재생합니다(아래).
 

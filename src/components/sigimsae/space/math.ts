@@ -1,7 +1,7 @@
 /**
  * Display math for the space / modulation / drive 시김새 editors. Everything here mirrors the DSP in
- * src/devices/effects (kernels.ts, reverb.ts, drive.ts) so the pictures tell the truth about the
- * sound. Pure functions, no DOM: unit-tested in math.test.ts.
+ * engine (rust/garak-dsp; the parameter catalogs in src/devices/effects) so the pictures tell the truth
+ * about the sound. Pure functions, no DOM: unit-tested in math.test.ts.
  */
 import { DELAY_TIME_OPTIONS, LFO_SYNC_OPTIONS } from '../../../devices/effects/sigimsaeDefs'
 import { DELAY_MAX_SECONDS } from '../../../devices/effects/sigimsae'

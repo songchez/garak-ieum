@@ -62,9 +62,9 @@ target = { kind: 'track', param: 'volume'|'pan'|'mute' }
 
 ## 엔진
 
-0.3.2부터 데스크톱과 웹 모두 통합 Rust 엔진(`rust/garak-engine/src/automation.rs`, 트랙 렌더는 `src/track.rs`)이 아래 **네이티브** 항목과 같은 식으로 오토메이션을 평가합니다(C++ 엔진과 패리티, [RUST_ENGINE](RUST_ENGINE.md)). 아래 **Web Audio** 항목은 웹 대체 경로, **네이티브** 항목의 C++ 코드는 셸과 이전 C++ 경로(`GARAK_RUST_ENGINE=0`)의 설명입니다.
+0.3.2부터 데스크톱과 웹 모두 통합 Rust 엔진(`rust/garak-engine/src/automation.rs`, 트랙 렌더는 `src/track.rs`)이 아래 **네이티브** 항목과 같은 식으로 오토메이션을 평가합니다(C++ 엔진과 패리티, [RUST_ENGINE](RUST_ENGINE.md)). 아래 **Web Audio** 항목은 0.3.3에서 삭제된 웹 대체 경로의 기록(웹은 이제 엔진만 씀), **네이티브** 항목의 C++ 코드는 셸과 이전 C++ 경로(`GARAK_RUST_ENGINE=0`)의 설명입니다. 오토메이션 × 템포 맵 × 센드/리턴 검사는 `src/audio/automationCrossFeature.test.ts`가 컴파일된 엔진 타임라인에서 합니다.
 
-**Web Audio** (`src/audio/graph.ts` `scheduleAutomation`): 128프레임(렌더 퀀텀) 격자마다 값을 계산해
+**Web Audio** (0.3.3에서 삭제된 `src/audio/graph.ts` `scheduleAutomation`): 128프레임(렌더 퀀텀) 격자마다 값을 계산해
 앞서 예약합니다. 트랙 볼륨·팬·뮤트와 AudioParam 기반 시김새(EQ·필터·컴프·드라이브·리버브·기타 앰프)는
 `setTargetAtTime`으로 예약되어 단계 사이가 부드럽게 이어집니다. 워클릿 시김새(딜레이·코러스 등)는 시각이 붙은
 파라미터 묶음을 한 번에 보내고(`schedule`), 워클릿이 해당 블록에서 적용한 뒤 내부 12 ms 스무딩으로 이어 갑니다.

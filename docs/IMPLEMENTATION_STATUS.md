@@ -8,9 +8,10 @@
 
 ## 통합 Rust 엔진 (0.3.2, 2026-11-17)
 
-오디오 렌더를 **하나의 Rust 엔진**(`rust/garak-engine`)으로 합쳤습니다. 데스크톱은 C ABI(`rust/garak-ffi`)로 링크하고 C++ `RenderEngine`은 장치 I/O·전송·마스터·메트로놈·VST3/IEUM WAVE 호스트 노드·render-ahead 링·녹음을 맡는 셸이 됩니다. 트랙·내장 악기·기타 랙·시김새·센드/리턴·트랙 라우트는 Rust 엔진이 처리 레벨마다 멀티코어로 렌더합니다. 웹은 같은 엔진을 AudioWorklet(`garak-engine-wasm`)에서 돌리고(미터 블록, 라이브 이벤트 링, 입력 모니터링, 녹음 탭), Web Audio 그래프는 엔진이 거부한 프로젝트의 자동 대체 경로입니다. 이펙트와 악기 보이스는 `rust/garak-dsp`(`no_std`, `garak-dsp.wasm`)에 있습니다. 입력은 [렌더-diff 프로토콜](RENDER_DIFF_PROTOCOL.md) 그대로이며 `Controller`/`Renderer`가 lock-free 큐로만 통신합니다.
+오디오 렌더를 **하나의 Rust 엔진**(`rust/garak-engine`)으로 합쳤습니다. 데스크톱은 C ABI(`rust/garak-ffi`)로 링크하고 C++ `RenderEngine`은 장치 I/O·전송·마스터·메트로놈·VST3/IEUM WAVE 호스트 노드·render-ahead 링·녹음을 맡는 셸이 됩니다. 트랙·내장 악기·기타 랙·시김새·센드/리턴·트랙 라우트는 Rust 엔진이 처리 레벨마다 멀티코어로 렌더합니다. 웹은 같은 엔진을 AudioWorklet(`garak-engine-wasm`)에서 돌립니다(미터 블록, 라이브 이벤트 링, 입력 모니터링, 녹음 탭). 이펙트와 악기 보이스는 `rust/garak-dsp`(`no_std`)에 있습니다. 입력은 [렌더-diff 프로토콜](RENDER_DIFF_PROTOCOL.md) 그대로이며 `Controller`/`Renderer`가 lock-free 큐로만 통신합니다.
 
-- 0.3.2에 한한 숨은 대체 경로: 데스크톱 `GARAK_RUST_ENGINE=0`(+ `GARAK_RUST_EFFECTS=none`), 웹 `localStorage` `garak.rustEngine=0`·`garak.rustDsp=0`. 이전 TS·C++ 엔진은 다음 패치에서 삭제할 예정입니다.
+- 0.3.2에 한한 숨은 대체 경로: 데스크톱 `GARAK_RUST_ENGINE=0`(+ `GARAK_RUST_EFFECTS=none`).
+- 0.3.3(웹): 웹의 유일한 렌더러가 이 엔진입니다. Web Audio 그래프·`RustWebAudioEngine`(`WebAudioEngine`에 합침)·TS 이펙트 커널·Web Audio 기타 랙·빈티지 악기 Web Audio 경로·웹용 `garak-dsp.wasm`, 스위치 `garak.rustEngine`·`garak.rustDsp`·`VITE_GARAK_RUST_*`·`GARAK_RUST_DSP=0`을 삭제했습니다. AudioWorklet·WebAssembly가 없거나 `garak-engine.wasm`을 불러오지 못하면 분명한 오류를 보여 주고, 엔진이 거부하는 프로젝트는 대체 없이 재생·내보내기가 실패합니다. 웹의 스펙트럼 분석기·기타 랙 튜너·스테레오 스코프는 엔진이 분석 데이터를 보낼 때까지 비어 있고, 라이브 MIDI는 CC만 실시간 전달합니다(피치벤드·애프터터치는 녹음만). [RUST_ENGINE 5장](RUST_ENGINE.md#5-wasm-호스트-audioworklet--5단계-웹-호스트)
 - 패리티·CPU·남은 일(웹의 샘플 세트 등록, 데스크톱 IEUM WAVE의 C++ 호스트 노드 유지, 블록 경계의 라이브 MIDI)은 [RUST_ENGINE](RUST_ENGINE.md)과 [RUST](RUST.md)에 기록합니다. 아래 2026-11-04 항목의 C++ 렌더 설명은 당시 구조입니다.
 
 ## 데스크톱 네이티브 오디오 전환 (2026-11-04)
@@ -63,7 +64,7 @@ Ableton Live의 Warp처럼 오디오 리전을 프로젝트 템포에 맞추고,
 | 리전 편집 | 다중·사각형 선택, 복사/잘라내기/붙여넣기, 같은 종류 트랙 간 이동, Alt 복사, 비파괴 MIDI/오디오 좌우 트림, 분할·합치기·반복 붙이기, 뮤트·수동 끝점 루프. 인접 경계 자석 스냅과 정렬선. 리전 일부를 편집하는 시간 범위 선택은 후속입니다. |
 | 리전 인스펙터 | MIDI 뮤트·루프·퀀타이즈·스윙·트랜스포즈·벨로시티·딜레이, 오디오 뮤트·루프·게인·딜레이·페이드. 혼합값 표시와 다중 편집. `RegionInspector.tsx`. |
 | 트랙 인스펙터 | 이름·아이콘·악기·트랜스포즈·벨로시티 오프셋·키/벨로시티 제한·딜레이. 악기·오디오 트랙의 지원 항목을 구분합니다. `TrackInspector.tsx`. |
-| 재생 변환 | 리전 루프, MIDI 퀀타이즈·스윙·트랙/리전 이조·벨로시티·제한·틱 딜레이를 재생 시 적용합니다. 원본 MIDI 값은 유지합니다. `core/playback.ts` → `audio/native/timeline.ts` → 통합 Rust 엔진(데스크톱·웹 공통; 웹 대체 경로는 `audio/graph.ts`). |
+| 재생 변환 | 리전 루프, MIDI 퀀타이즈·스윙·트랙/리전 이조·벨로시티·제한·틱 딜레이를 재생 시 적용합니다. 원본 MIDI 값은 유지합니다. `core/playback.ts` → `audio/native/timeline.ts` → 통합 Rust 엔진(데스크톱·웹 공통). |
 | 피아노롤 | 선택/사각형 선택, 음표 생성·이동·길이·벨로시티, 클립 간 복사/붙여넣기, Q/Shift+Q, 우클릭 메뉴. 기본 마우스는 자유 이동·길이 편집이며 스냅을 직접 선택할 수 있습니다. 좌우 방향키는 보이는 격자 한 칸, 위아래는 반음(드럼은 패드 한 행), Shift+방향키는 선택 확장입니다. |
 | 악기·이펙트 | 합성 6종과 샘플 10종(피아노 2종·Wurlitzer·드럼 3종·국악 4종), 순서를 바꿀 수 있는 EQ/필터/컴프레서/드라이브/딜레이/리버브 체인. 출처는 [SAMPLES](SAMPLES.md)와 [제3자 자산 안내](../THIRD_PARTY_NOTICES.md)를 따릅니다. |
 | 피치 편집 | 단선율 음표/곡선 분석, 드래그·센트 이동·분할/합치기, 선택 음표의 음계·강도 보정, 실험적 포먼트 보존·이동, Worker 재합성, 원본 복원, 재생·Undo·저장·WAV 출력. `devices/pitch-editor/`. 원본 60초·1~2채널·±12반음. |

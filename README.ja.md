@@ -52,10 +52,10 @@ pnpm desktop:dev          # Rust エンジン・C++ ホスト・アプリをビ�
 pnpm desktop:build        # Windows x64 インストーラー (.exe)
 pnpm desktop:build:mac    # macOS arm64 DMG
 pnpm dev                  # ブラウザーで実行 (AudioWorklet 上の Rust エンジン)
-pnpm build                # Web ビルド (garak-dsp.wasm・garak-engine.wasm を含む)
+pnpm build                # Web ビルド (garak-engine.wasm を含む)
 ```
 
-- `pnpm dev` は Rust がなくても動きます。WASM モジュールがない場合はコンソールに案内を出し、Web Audio グラフで再生します。作成するには `pnpm rust:wasm` を実行して再読み込みします。
+- Web アプリは `garak-engine.wasm` でのみ音を出すため、`pnpm dev` の前に `pnpm rust:wasm` で一度ビルドしてください。モジュールがない場合は音の代わりにエンジンの読み込みエラーを表示します(ビルドして再読み込み)。
 - デスクトップビルドは Rust エンジンをリンクします(`GARAK_RUST=ON`)。Rust なしで C++ のみのホストをビルドするには `GARAK_RUST=0 pnpm native:build` を使います。
 - Rust のコマンド(`pnpm rust:test`、`rust:check`、`rust:wasm`、`rust:build`)とツールチェーン表は [Rust オーディオコア](docs/RUST.md)(韓国語)にあります。
 
@@ -72,18 +72,17 @@ flowchart TD
   H -->|"C ABI (garak-ffi)"| E["Rust エンジン rust/garak-engine<br/>トラック · 内蔵音源 · ギターリグ · ミックス · センド/リターン · ルート"]
   W -->|"WASM (garak-engine-wasm)"| E
   E --> D["rust/garak-dsp (no_std)<br/>エフェクト · 音源ボイス"]
-  C -.->|"エンジンが拒否したかモジュールがないときのみ"| F["Web Audio グラフ (Web の代替経路)"]
 ```
 
 - **単一のプロジェクトモデル** — 画面(React)からの編集も AI(MCP)からの編集も、`src/core` の `ProjectSession` と検証済みコマンドを経由します。プロジェクトはシリアライズ可能なデータで、Undo/Redo の履歴を共有します。
 - **ローカル保存** — プロジェクトと元のオーディオは IndexedDB に自動保存され、`.garak` ファイルに書き出して別のマシンで作業を続けられます。アカウントやクラウドのバックエンドはありません。
-- **一つの Rust エンジン、二つのホスト** — `rust/garak-engine` がタイムラインからマスター前の合算まで、トラック・内蔵音源・ギターリグ・エフェクト(시김새)・センド/リターン・トラックルートをレンダリングします。デスクトップは C ABI(`rust/garak-ffi`、ヘッダーは `rust/garak-ffi/include`)で、ブラウザーは WASM(`rust/garak-engine-wasm`)で同じコードを使います。エフェクトと音源ボイスは `rust/garak-dsp`(`no_std`、Web 用の `garak-dsp.wasm` にもビルド)にあります。
+- **一つの Rust エンジン、二つのホスト** — `rust/garak-engine` がタイムラインからマスター前の合算まで、トラック・内蔵音源・ギターリグ・エフェクト(시김새)・センド/リターン・トラックルートをレンダリングします。デスクトップは C ABI(`rust/garak-ffi`、ヘッダーは `rust/garak-ffi/include`)で、ブラウザーは WASM(`rust/garak-engine-wasm`)で同じコードを使います。エフェクトと音源ボイスは `rust/garak-dsp`(`no_std`)にあります。
 - **デスクトップ: 薄い C++ シェル** — `garak-audio-host` の `RenderEngine` はデバイス I/O(ASIO・WASAPI・Core Audio)、VST3・IEUM WAVE(エンジンがコールバックで呼ぶホストノード)、トランスポート・マスターバス・メトロノーム、render-ahead リング、録音を担当し、トラックのレンダリングは Rust エンジンに任せます。トラックは処理レベルごとにワーカースレッドで並列にレンダリングされ、結果は 1 スレッドとビット単位で一致します。ネイティブエンジンが使えない場合はエラーを表示し、Web Audio へ黙って切り替えることはしません。
-- **Web: AudioWorklet** — `garak-engine.wasm` が AudioWorklet で動作し、メーターブロック・ライブイベントリング(SharedArrayBuffer)、入力モニタリング、録音タップを扱います。書き出しは Worker で同じエンジンを使ってオフラインレンダリングします。エンジンがプロジェクトを拒否したかモジュールがない場合のみ、自動的に Web Audio グラフを使います。
+- **Web: AudioWorklet** — `garak-engine.wasm` が AudioWorklet で動作し、メーターブロック・ライブイベントリング(SharedArrayBuffer)、入力モニタリング、録音タップを扱います。書き出しは Worker で同じエンジンを使ってオフラインレンダリングします。Web で唯一のレンダラーで、代替経路はありません。ブラウザーが AudioWorklet・WebAssembly に対応していないかモジュールを読み込めない場合は明確なエラーを表示し、エンジンが拒否したプロジェクトは理由を示して再生・書き出しが失敗します。
 - **レンダー差分プロトコル** — レンダラーは最初に計画全体(`project.set`)を、その後は変更されたトラックだけ(`project.patch`)を送ります。エンジンは制御スレッドの `Controller` とオーディオスレッドの `Renderer` に分かれ、ロックフリーのキューだけで通信するため、オーディオスレッドは割り当てやロックをせず、バッファーごとに JavaScript や IPC の応答を待つこともありません。
 - **オフライン処理** — ピッチ編集(Signalsmith WASM)とオーディオワープは Worker で新しい PCM アセットをレンダリングし、元のオーディオはそのまま保持します。
 
-> **今回のリリース(0.3.2)限定の隠れた代替経路:** デスクトップでは環境変数 `GARAK_RUST_ENGINE=0`(トラックを C++ エンジンで)と `GARAK_RUST_EFFECTS=none`(その C++ 経路のエフェクトも C++ カーネルで)、Web では `localStorage.setItem('garak.rustEngine', '0')`(Web Audio エンジン)と `localStorage.setItem('garak.rustDsp', '0')`(TS カーネル)。旧 TS・C++ エンジンは次のパッチで削除する予定です。
+> **今回のリリース(0.3.2)限定の隠れた代替経路:** デスクトップでは環境変数 `GARAK_RUST_ENGINE=0`(トラックを C++ エンジンで)と `GARAK_RUST_EFFECTS=none`(その C++ 経路のエフェクトも C++ カーネルで)。Web の代替経路(`garak.rustEngine`、`garak.rustDsp`)と旧 TS・Web Audio エンジンは 0.3.3 で削除されました。
 
 詳しくは(韓国語):[アーキテクチャ](docs/ARCHITECTURE.md) · [Rust レンダーエンジン](docs/RUST_ENGINE.md) · [Rust オーディオコア](docs/RUST.md) · [レンダー差分プロトコル](docs/RENDER_DIFF_PROTOCOL.md) · [ネイティブオーディオ](docs/NATIVE_AUDIO.md)
 
