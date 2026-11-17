@@ -1,0 +1,2 @@
+# Golden renders (raw 24-bit PCM): never convert line endings or diff as text.
+*.iwgold binary
