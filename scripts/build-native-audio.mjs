@@ -11,9 +11,8 @@ assert.ok(args.every(arg => ['--core-only', '--no-tests'].includes(arg)), 'Usage
 const coreOnly = args.includes('--core-only')
 const desktop = process.platform === 'win32' || process.platform === 'darwin'
 if (process.platform === 'darwin') assert.equal(process.arch, 'arm64', 'The macOS desktop engine supports native Apple Silicon only.')
-// Desktop builds (0.3.0+) run the built-in 시김새 in the Rust DSP core (docs/RUST.md).
-// GARAK_RUST=0 builds the C++-only host (e.g. a machine without Rust); --core-only never needs Rust.
-const rust = desktop && !coreOnly && process.env.GARAK_RUST !== '0'
+// Every build links the unified Rust render engine (rust/garak-ffi, docs/RUST_ENGINE.md 10): since 0.3.3 it renders
+// every track, so CMake builds it with cargo (scripts/setup-rust.ps1 / setup-rust.sh install the pinned toolchain).
 const cmake = process.env.CMAKE || 'cmake'
 const ctest = process.env.CTEST || (path.isAbsolute(cmake) ? path.join(path.dirname(cmake), process.platform === 'win32' ? 'ctest.exe' : 'ctest') : 'ctest')
 const { paths, archives } = await prepareNativeDependencies(cmake)
@@ -32,8 +31,8 @@ async function filesUnder(directory) {
 }
 async function inputsDigest() {
   const hash = createHash('sha256')
-  hash.update(JSON.stringify({ args: [...args].sort(), rust, platform: process.platform, arch: process.arch, cmake: execFileSync(cmake, ['--version'], { encoding: 'utf8' }) }))
-  const rustFiles = rust ? (await filesUnder(path.join(root, 'rust'))).filter(file => !path.relative(path.join(root, 'rust'), file).split(path.sep).includes('target')) : []
+  hash.update(JSON.stringify({ args: [...args].sort(), platform: process.platform, arch: process.arch, cmake: execFileSync(cmake, ['--version'], { encoding: 'utf8' }) }))
+  const rustFiles = (await filesUnder(path.join(root, 'rust'))).filter(file => !path.relative(path.join(root, 'rust'), file).split(path.sep).includes('target'))
   const files = [...await filesUnder(path.join(root, 'native')), ...rustFiles, path.join(root, 'scripts/build-native-audio.mjs'), path.join(root, 'scripts/native-dependencies.mjs')]
   for (const file of files.map(file => path.relative(root, file).split(path.sep).join('/')).sort()) {
     hash.update(file + '\0'); hash.update(await readFile(path.join(root, file))); hash.update('\0')
@@ -59,8 +58,6 @@ const options = [
   '-DGARAK_ENABLE_VST3=' + (coreOnly ? 'OFF' : 'ON'),
   '-DGARAK_DESKTOP_BUILD=' + (desktop && !coreOnly ? 'ON' : 'OFF'),
   '-DGARAK_BUILD_TESTS=ON',
-  '-DGARAK_RUST=' + (rust ? 'ON' : 'OFF'),
-  '-DGARAK_RUST_EFFECTS=' + (rust ? 'all' : ''),
   '-DGARAK_DEPENDENCY_CACHE=' + path.join(nativeCache, 'archives'),
   '-DGARAK_VST3_SDK_ROOT=' + paths.vst3sdk,
   '-DGARAK_MINIAUDIO_ROOT=' + paths.miniaudio,

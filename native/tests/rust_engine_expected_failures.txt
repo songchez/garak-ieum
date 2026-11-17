@@ -1,7 +1,0 @@
-# engine_test.cpp cases expected to fail under GARAK_RUST_ENGINE=strict (docs/RUST_ENGINE.md 10).
-# Strict mode refuses any graph the Rust engine cannot render instead of falling back to C++, so these are the
-# Rust engine's missing features, by blocker. scripts/rust-engine-suite.mjs fails CI when a case not listed here
-# fails, and asks for this list to shrink when a listed case starts passing. Format: <test name> | <blocker>
-# Empty: every case renders through the Rust graph in strict mode (built-in instruments included; VST3 / IEUM
-# WAVE as host nodes). The suite's third run (GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1: the C++ built-in instruments
-# as host nodes) passes every case too.

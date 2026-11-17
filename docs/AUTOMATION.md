@@ -62,7 +62,7 @@ target = { kind: 'track', param: 'volume'|'pan'|'mute' }
 
 ## 엔진
 
-0.3.2부터 데스크톱과 웹 모두 통합 Rust 엔진(`rust/garak-engine/src/automation.rs`, 트랙 렌더는 `src/track.rs`)이 아래 **네이티브** 항목과 같은 식으로 오토메이션을 평가합니다(C++ 엔진과 패리티, [RUST_ENGINE](RUST_ENGINE.md)). 아래 **Web Audio** 항목은 웹 대체 경로, **네이티브** 항목의 C++ 코드는 셸과 이전 C++ 경로(`GARAK_RUST_ENGINE=0`)의 설명입니다.
+0.3.2부터 데스크톱과 웹 모두 통합 Rust 엔진(`rust/garak-engine/src/automation.rs`, 트랙 렌더는 `src/track.rs`)이 아래 **네이티브** 항목과 같은 식으로 오토메이션을 평가합니다(C++ 엔진과 패리티, [RUST_ENGINE](RUST_ENGINE.md)). 아래 **Web Audio** 항목은 웹 대체 경로, **네이티브** 항목은 0.3.3에서 삭제한 C++ 트랙 경로의 규칙으로, Rust 엔진이 같은 식을 씁니다(셸에는 VST3 파라미터 점만 남음).
 
 **Web Audio** (`src/audio/graph.ts` `scheduleAutomation`): 128프레임(렌더 퀀텀) 격자마다 값을 계산해
 앞서 예약합니다. 트랙 볼륨·팬·뮤트와 AudioParam 기반 시김새(EQ·필터·컴프·드라이브·리버브·기타 앰프)는

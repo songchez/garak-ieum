@@ -4,7 +4,7 @@
 
 ## EQ·필터
 
-대상: `eq`(Curve 8, 파라메트릭 EQ)와 `filter`(Sweep). 코드: `src/components/sigimsae/eq/`, 모델 `src/devices/effects/eqModel.ts`, 네이티브 `native/src/eq_effects.inc`.
+대상: `eq`(Curve 8, 파라메트릭 EQ)와 `filter`(Sweep). 코드: `src/components/sigimsae/eq/`, 모델 `src/devices/effects/eqModel.ts`, 커널 `rust/garak-dsp/src/fx/eq.rs`(이전 네이티브 `eq_effects.inc`는 0.3.3에서 삭제).
 
 ### 벤치마크
 

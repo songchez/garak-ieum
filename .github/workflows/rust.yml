@@ -2,8 +2,8 @@ name: Rust core
 
 # The Rust DSP core (docs/RUST.md) and render engine (docs/RUST_ENGINE.md): lint, unit tests, the
 # WASM modules (+ size report, the TypeScript parity test and the engine's WASM-vs-native test) on
-# Linux, and the garak-ffi staticlib linked into the C++ kernel and engine parity tests with the
-# real CI toolchains (Windows MSVC, macOS arm64). Web-only and other native PRs never run this.
+# Linux, and the garak-ffi staticlib linked into the native engine and its golden-reference tests with
+# the real CI toolchains (Windows MSVC, macOS arm64). Web-only and other native PRs never run this.
 on:
   workflow_dispatch:
   pull_request:
@@ -12,27 +12,21 @@ on:
       - 'rust/**'
       - 'native/CMakeLists.txt'
       - 'native/cmake/**'
-      - 'native/include/garak/dsp.hpp'
-      - 'native/src/dsp.cpp'
-      - 'native/src/sigimsae_effects.inc'
-      - 'native/src/eq_effects.inc'
-      - 'native/src/rust_effects.inc'
-      - 'native/tests/rust_bench.cpp'
       - 'native/tests/engine_test.cpp'
+      - 'native/tests/eq_test.inc'
+      - 'native/tests/golden.hpp'
+      - 'native/tests/golden/**'
+      - 'native/tests/rust_fx.hpp'
       - 'native/tests/rust_parity_test.cpp'
       - 'native/tests/rust_engine_parity_test.cpp'
-      - 'native/tests/rust_engine_bench.cpp'
       - 'native/tests/rust_engine_host_test.cpp'
-      - 'native/tests/rust_engine_expected_failures.txt'
-      - 'native/src/rust_engine.inc'
-      - 'scripts/rust-engine-suite.mjs'
       - 'native/tests/rust_engine_instrument_parity_test.cpp'
+      - 'native/tests/rust_instrument_test.cpp'
+      - 'native/src/rust_engine.inc'
       - 'native/src/engine.cpp'
       - 'native/src/protocol.hpp'
       - 'native/include/garak/engine.hpp'
       - 'native/include/garak/tempo.hpp'
-      - 'native/tests/rust_instrument_test.cpp'
-      - 'native/src/rust_instrument.hpp'
       - 'native/src/wavetable.cpp'
       - 'native/devices/wavetable-synth/**'
       - 'src/devices/vintage/**'
@@ -173,35 +167,36 @@ jobs:
           path: build/native-rust/archives
           key: native-archives-${{ hashFiles('native/dependencies.lock.json') }}
 
-      # Core-only configuration: the parity test needs garak_core, not devices, ASIO or VST3.
-      # CMake picks the Rust target from the compiler (MSVC -> x86_64-pc-windows-msvc,
-      # AppleClang arm64 -> aarch64-apple-darwin).
-      - name: Configure with GARAK_RUST=ON
+      # Core-only configuration: the tests need garak_core (the Rust engine's shell), not devices, ASIO or VST3.
+      # CMake builds garak-ffi with cargo and picks the Rust target from the compiler (MSVC ->
+      # x86_64-pc-windows-msvc, AppleClang arm64 -> aarch64-apple-darwin).
+      - name: Configure the native core
         run: >
           cmake -S native -B build/native-rust -DCMAKE_BUILD_TYPE=Release
-          -DGARAK_RUST=ON -DGARAK_ENABLE_DEVICES=OFF -DGARAK_ENABLE_ASIO=OFF -DGARAK_ENABLE_VST3=OFF
+          -DGARAK_ENABLE_DEVICES=OFF -DGARAK_ENABLE_ASIO=OFF -DGARAK_ENABLE_VST3=OFF
           ${{ matrix.cmake_args }}
 
-      - name: Build garak-ffi, the parity tests, the benchmarks and the engine test
+      - name: Build garak-ffi, the engine test and the golden-reference tests
         run: >
           cmake --build build/native-rust --config Release --parallel 4
-          --target garak-rust-parity-test garak-rust-bench garak-engine-test garak-rust-instrument-test
-          garak-rust-engine-parity-test garak-rust-engine-bench garak-rust-engine-host-test
+          --target garak-rust-parity-test garak-engine-test garak-rust-instrument-test
+          garak-rust-engine-parity-test garak-rust-engine-host-test
           garak-rust-engine-instrument-parity-test
 
-      # Every ported effect through C++ and Rust (param sweeps, automation, tempo, resets,
-      # hand-overs, other sample rates): residual <= -90 dBFS, identical latency / tail / meters.
-      - name: Run the Rust vs C++ parity test
+      # The golden references (native/tests/golden, docs/RUST_ENGINE.md 7) are the 0.3.2 C++ track path's renders:
+      # bit-identical on Windows x64 (MSVC here), residual <= -90 dBFS on macOS arm64.
+      # Every effect kernel and the guitar rig (param sweeps, automation, tempo, resets, hand-overs, other
+      # sample rates), with latency / tail / meters as recorded.
+      - name: Run the Rust kernel test (vs golden)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-parity --output-on-failure
 
-      # Render engine (docs/RUST_ENGINE.md): the same project through the C++ RenderEngine and
-      # rust/garak-engine (offline exports at several blocks/rates, live diffs): residual <= -90 dBFS.
-      - name: Run the render-engine parity test (C++ vs Rust engine)
+      # Render engine (docs/RUST_ENGINE.md): offline exports at several blocks/rates and live diffs, guitar rig.
+      - name: Run the render-engine parity test (vs golden)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-parity --output-on-failure
 
-      # Built-in instruments (synths, drums, sample instruments, 옥구슬 EP / 한밤 106) through both
-      # engines: offline exports and a live engine with edits, seeks, cycle wraps and live MIDI.
-      - name: Run the render-engine instrument parity test (C++ vs Rust engine)
+      # Built-in instruments (synths, drums, sample instruments, 옥구슬 EP / 한밤 106, IEUM WAVE): offline exports
+      # and a live engine with edits, seeks, cycle wraps and live MIDI.
+      - name: Run the render-engine instrument parity test (vs golden)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-instruments --output-on-failure
 
       # 옥구슬 EP / 한밤 106 through garak-ffi: checksum parity with the WASM build (parity.golden),
@@ -209,52 +204,26 @@ jobs:
       - name: Run the vintage instrument test (parity, CPU budget, engine)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-instruments --output-on-failure
 
-      # GARAK_RUST_ENGINE host path (docs/RUST_ENGINE.md 10): RenderEngine as the shell around the Rust graph —
-      # C++ vs Rust shell (offline, live diffs/seek/cycle/master), multi-core bit-identity, C++ fallback.
+      # RenderEngine, the shell around the Rust graph (docs/RUST_ENGINE.md 10): offline, live diffs/seek/cycle/master,
+      # host nodes, render-ahead, metronome and count-in vs golden; multi-core bit-identity.
       - name: Run the Rust engine host test
         run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-host --output-on-failure
 
-      # The whole engine regression suite through the Rust engine: GARAK_RUST_ENGINE=1 (refused graphs fall back
-      # to C++) must pass entirely; strict (no fallback) may fail only the cases listed with their blocker in
-      # native/tests/rust_engine_expected_failures.txt. The per-case table goes to the job summary.
-      - name: Engine tests through the Rust engine (GARAK_RUST_ENGINE=1 and strict)
-        shell: bash
-        run: |
-          dir=build/native-rust
-          [ -d "$dir/Release" ] && dir="$dir/Release"
-          node scripts/rust-engine-suite.mjs "$dir/garak-engine-test"
-
-      # The whole engine regression suite with every built-in effect switched to Rust.
-      - name: Engine tests with the Rust effects (GARAK_RUST_EFFECTS=all)
-        env:
-          GARAK_RUST_EFFECTS: all
+      # The whole engine regression suite (every case renders through the Rust engine).
+      - name: Engine tests
         run: ctest --test-dir build/native-rust -C Release -R native-engine --output-on-failure
 
-      # The guitar rig's CPU gate: the Rust rig may take at most 1.15x the C++ rig's time.
-      - name: Guitar rig CPU gate (Rust <= 1.15x C++)
-        shell: bash
-        run: |
-          dir=build/native-rust
-          [ -d "$dir/Release" ] && dir="$dir/Release"
-          "$dir/garak-rust-bench" 3 --gate=1.15 guitar-rig
-
-      - name: Parity table and CPU baseline (C++ vs Rust)
+      - name: Golden-reference tables and CPU
         shell: bash
         run: |
           dir=build/native-rust
           [ -d "$dir/Release" ] && dir="$dir/Release"
           {
-            echo "### Rust vs C++ parity (${{ matrix.name }})"
+            echo "### Rust kernels vs golden (${{ matrix.name }})"
             "$dir/garak-rust-parity-test" | grep '^|'
             echo
-            echo "### CPU baseline (${{ matrix.name }})"
-            "$dir/garak-rust-bench" 3
-            echo
-            echo "### Render engine parity (${{ matrix.name }})"
+            echo "### Render engine vs golden (${{ matrix.name }})"
             "$dir/garak-rust-engine-parity-test" | grep '^|'
-            echo
-            echo "### Render engine CPU, 16/32 tracks (${{ matrix.name }})"
-            "$dir/garak-rust-engine-bench" 10 3 128
             echo
             echo "### Rust engine host path (${{ matrix.name }})"
             "$dir/garak-rust-engine-host-test" --bench | grep '^|'

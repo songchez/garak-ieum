@@ -56,7 +56,7 @@ pnpm build                # Web ビルド (garak-dsp.wasm・garak-engine.wasm �
 ```
 
 - `pnpm dev` は Rust がなくても動きます。WASM モジュールがない場合はコンソールに案内を出し、Web Audio グラフで再生します。作成するには `pnpm rust:wasm` を実行して再読み込みします。
-- デスクトップビルドは Rust エンジンをリンクします(`GARAK_RUST=ON`)。Rust なしで C++ のみのホストをビルドするには `GARAK_RUST=0 pnpm native:build` を使います。
+- ネイティブビルドは常に Rust エンジン(`rust/garak-ffi`)を cargo でビルドしてリンクします(0.3.3 から必須)。Rust は `scripts/setup-rust.ps1` / `setup-rust.sh` でインストールします。
 - Rust のコマンド(`pnpm rust:test`、`rust:check`、`rust:wasm`、`rust:build`)とツールチェーン表は [Rust オーディオコア](docs/RUST.md)(韓国語)にあります。
 
 テスト用コマンド、署名、リリース手順は [デスクトップガイド](docs/DESKTOP.md#4-소스에서-실행하고-빌드하기) と [リリース手順](docs/RELEASING.md)(韓国語)を参照してください。
@@ -83,7 +83,7 @@ flowchart TD
 - **レンダー差分プロトコル** — レンダラーは最初に計画全体(`project.set`)を、その後は変更されたトラックだけ(`project.patch`)を送ります。エンジンは制御スレッドの `Controller` とオーディオスレッドの `Renderer` に分かれ、ロックフリーのキューだけで通信するため、オーディオスレッドは割り当てやロックをせず、バッファーごとに JavaScript や IPC の応答を待つこともありません。
 - **オフライン処理** — ピッチ編集(Signalsmith WASM)とオーディオワープは Worker で新しい PCM アセットをレンダリングし、元のオーディオはそのまま保持します。
 
-> **今回のリリース(0.3.2)限定の隠れた代替経路:** デスクトップでは環境変数 `GARAK_RUST_ENGINE=0`(トラックを C++ エンジンで)と `GARAK_RUST_EFFECTS=none`(その C++ 経路のエフェクトも C++ カーネルで)、Web では `localStorage.setItem('garak.rustEngine', '0')`(Web Audio エンジン)と `localStorage.setItem('garak.rustDsp', '0')`(TS カーネル)。旧 TS・C++ エンジンは次のパッチで削除する予定です。
+> **旧エンジン:** デスクトップの C++ トラック経路と C++ エフェクト DSP は 0.3.3 で削除しました(デスクトップは常に Rust エンジン)。Web では `localStorage.setItem('garak.rustEngine', '0')`(Web Audio エンジン)と `localStorage.setItem('garak.rustDsp', '0')`(TS カーネル)。旧 TS エンジンは次のパッチで削除する予定です。
 
 詳しくは(韓国語):[アーキテクチャ](docs/ARCHITECTURE.md) · [Rust レンダーエンジン](docs/RUST_ENGINE.md) · [Rust オーディオコア](docs/RUST.md) · [レンダー差分プロトコル](docs/RENDER_DIFF_PROTOCOL.md) · [ネイティブオーディオ](docs/NATIVE_AUDIO.md)
 

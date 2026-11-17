@@ -8,8 +8,8 @@
   (`audibleTrackIds` 솔로 규칙), `src/core/trackRouting.ts` (처리 레벨·마스터 피드에 리턴 반영)
 - 통합 Rust 엔진(데스크톱·웹 공통, 0.3.2 기본): `rust/garak-engine/src/routes.rs`(처리 레벨·센드 해석), `src/track.rs`(리턴 입력·PDC), `src/plan.rs`·`src/protocol.rs`(`return`, `sends` 필드). [RUST_ENGINE](RUST_ENGINE.md)
 - 웹 Web Audio 대체 경로: `src/audio/graph.ts` (`connectSends`, `updateGraph`, `renderTailSeconds`)
-- 네이티브 셸과 이전 C++ 경로(`GARAK_RUST_ENGINE=0`): `native/include/garak/engine.hpp` (`TrackSend`, `TrackTimeline::isReturn`, `senderLatencyFrames`),
-  `native/src/engine.cpp` (`prepareRoutes`의 센드 해석, `fillReturnInput`, 리턴 PDC), `native/src/protocol.hpp`
+- 네이티브 셸: `native/include/garak/engine.hpp` (`TrackSend`, `TrackTimeline::isReturn`, `senderLatencyFrames`),
+  `native/src/engine.cpp` (렌더-어헤드 대상 판정 `routingTracks`; 센드·리턴 렌더는 Rust 엔진), `native/src/protocol.hpp`
   (`return`, `sends` 필드), `native/src/host.cpp` (라우팅 테이크 보정값), `src/audio/native/timeline.ts`
 - UI: `src/components/ChannelStrip.tsx` (센드 구역), `src/components/SendKnob.tsx`, `Mixer.tsx`, `Timeline.tsx`
   (메뉴·리턴 레인), `TrackHeader.tsx` (리턴 문자 배지), `TrackInspector.tsx`

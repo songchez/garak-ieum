@@ -2,7 +2,6 @@
 #include "midi_input.hpp"
 #include "midi_routing.hpp"
 #include "garak/device.hpp"
-#include "garak/dsp.hpp"
 #include "garak/vst3.hpp"
 #include "ieum_wave/patch.hpp"
 #include <cstdlib>
@@ -211,16 +210,10 @@ class Host {
   Json request(const std::string& method,const Json& a,std::string_view blob={}) {
     if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"midiInput",true},{"midiDevices",midi::MidiInputManager::supported()},{"backends",DeviceHost::availableBackends()},
       {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}},
-      // 옥구슬 EP / 한밤 106 (native/src/rust_instrument.hpp) need the Rust DSP core (GARAK_RUST=ON).
-      {"vintage",{{"protocolVersion",1},{"available",garak::dsp::rustEffectsAvailable()},{"instruments",Json::array({"okgu-ep","hanbam-106"})}}},
-      // The unified Rust render engine: on by default since 0.3.2, GARAK_RUST_ENGINE=0 is the hidden C++ fallback
-      // (docs/RUST_ENGINE.md 10).
-      {"rustEngine",{{"available",garak::rustEngineAvailable()},{"requested",engine_?engine_->rustEngineRequested():garak::rustEngineAvailable()&&[]{
-        const char* v=std::getenv("GARAK_RUST_ENGINE");
-        if(!v||!*v) return true;
-        const std::string_view s(v);
-        return !(s=="0"||s=="off"||s=="false");
-      }()}}}};
+      // 옥구슬 EP / 한밤 106 render in the Rust engine like every built-in instrument.
+      {"vintage",{{"protocolVersion",1},{"available",true},{"instruments",Json::array({"okgu-ep","hanbam-106"})}}},
+      // Every graph renders in the unified Rust engine since 0.3.3 (docs/RUST_ENGINE.md 10); kept for diagnostics.
+      {"rustEngine",{{"available",true},{"requested",true}}}};
     if (method=="engine.snapshot") { auto result=snapshot(); drainMidi(result); return result; }
     if (method.rfind("midi.",0)==0) return midiRequest(method,a);
     if (method=="devices.list") {
@@ -762,11 +755,9 @@ class Host {
       if(done%(scratchFrames*32)==0) pumpNativeEvents();
     }
     file.flush(); if(!file) throw std::runtime_error("WAV export flush failed");
-    // rustEngine: the tracks rendered in the Rust graph (GARAK_RUST_ENGINE; false when off or refused, see rustRefusal).
-    Json result={{"path",path},{"sampleRate",project.sampleRate},{"frames",total},{"channels",2},{"bitDepth",bitDepth},{"tailSeconds",tail},{"trackTailSeconds",trackTail},
+    // rustEngine: the render went through the Rust graph (always since 0.3.3; diagnostics).
+    return {{"path",path},{"sampleRate",project.sampleRate},{"frames",total},{"channels",2},{"bitDepth",bitDepth},{"tailSeconds",tail},{"trackTailSeconds",trackTail},
       {"rustEngine",offline.snapshot().rustEngine}};
-    if(offline.rustEngineRequested()&&offline.snapshot().rustRefusals)result["rustRefusal"]=offline.lastRustRefusal();
-    return result;
   }
   Json snapshot() const {
     Json result={{"type","state"},{"ready",false},{"playing",false},{"frame",0},{"sampleRate",48000},{"masterLevel",0},{"levels",Json::object()},{"testClock",test_}};
@@ -782,9 +773,8 @@ class Host {
       result.update({{"revision",s.revision},{"ready",configured_&&s.ready&&device.running},{"playing",s.playing&&device.running},{"frame",s.frame},{"sampleRate",s.sampleRate},{"masterLevel",s.masterPeak},
         {"recording",s.recording},{"recordingStartFrame",s.recordingStartFrame},{"recordedFrames",s.recordedFrames},{"recordingDroppedFrames",s.recordingDroppedFrames},{"latencyFrames",s.latencyFrames},{"commandOverflows",s.commandOverflows},{"voiceOverflows",s.voiceOverflows},{"invalidSamples",s.invalidSamples},
         {"workerThreads",s.workerThreads},{"renderAheadTracks",s.renderAheadTracks},{"renderAheadResyncs",s.renderAheadResyncs},
-        // GARAK_RUST_ENGINE (docs/RUST_ENGINE.md 10): whether the tracks render in the Rust graph, and refusals (C++ fallback).
-        {"rustEngine",s.rustEngine},{"rustRefusals",s.rustRefusals}});
-      if(engine_->rustEngineRequested()&&s.rustRefusals)result["rustRefusal"]=engine_->lastRustRefusal();
+        // Whether the Rust render engine has rendered the graph (docs/RUST_ENGINE.md 10; diagnostics).
+        {"rustEngine",s.rustEngine}});
       for(std::size_t i=0;i<std::min(project_.tracks.size(),std::size_t(s.trackCount));++i) result["levels"][project_.tracks[i].id]=s.trackPeaks[i];
       // Per-insert dynamics meters for the compressor/limiter/gate views, keyed by device id.
       result["dynamics"]=Json::object();

@@ -1,15 +1,16 @@
-// Behavioural parity: Rust kernels (rust/garak-dsp through the garak-ffi C ABI) against the existing
-// C++ kernels on identical input. Tolerance-based (libm vs the platform libm differ in the last
-// ulp; outputs are float), never golden hashes. Built with -DGARAK_RUST=ON (docs/RUST.md).
+// Rust DSP kernels (rust/garak-dsp through the garak-ffi C ABI) against golden references (docs/RUST.md,
+// native/tests/golden.hpp). Until 0.3.2 this test rendered every case through the C++ kernels too and compared the
+// two (residual <= -90 dBFS; every case was bit-identical). 0.3.3 removed the C++ effect DSP, so its outputs were
+// recorded once (native/tests/golden/rust-kernels.golden) and the Rust kernels are now checked against them: bit-
+// identical on Windows x64, residual <= -90 dBFS elsewhere, plus the same latency, tail and dynamics-meter values.
 //
-// Effects: every makeEffect() type with a Rust port is rendered through both backends of the same
-// StereoProcessor interface (makeEffect(..., EffectBackend::Cpp / ::Rust)) with identical input,
-// block sizes, EffectControl automation, tempo changes, resets and takeStateFrom hand-overs. The
-// gate is a residual <= -90 dBFS per effect plus identical latency, tail and dynamics-meter values.
-// The guitar rig (garak_rs_rig_*) runs through the same comparison in groups (rigParity).
-#include "garak/dsp.hpp"
+// Effects: every built-in effect type is driven through the same programme as before (identical input, block sizes,
+// live parameter automation, tempo changes, resets and state hand-overs). The guitar rig (garak_rs_rig_*) runs
+// through the same comparison in groups (rigParity).
 #include "garak/engine.hpp"
 #include "garak_rust.h"
+#include "golden.hpp"
+#include "rust_fx.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include <vector>
 
 namespace {
+golden::Suite goldens("rust-kernels");
 int failures = 0;
 void check(bool ok, const std::string& what, double detail = 0) {
   if (!ok) { ++failures; std::fprintf(stderr, "FAIL %s (%.3g)\n", what.c_str(), detail); }
@@ -33,18 +35,13 @@ std::vector<float> noise(std::size_t samples, std::uint32_t seed) {
   for (auto& x : out) { seed = seed * 1664525u + 1013904223u; x = static_cast<float>(seed / 4294967296.0 * 2 - 1); }
   return out;
 }
-double maxDiff(const std::vector<float>& a, const std::vector<float>& b) {
-  double m = 0;
-  for (std::size_t i = 0; i < a.size(); ++i) m = std::max(m, static_cast<double>(std::abs(a[i] - b[i])));
-  return m;
-}
 double dbfs(double v) { return v > 0 ? 20 * std::log10(v) : -400; }
 
 constexpr double rate = 48000;
 constexpr std::uint32_t frames = 4800;
 
 void biquadParity() {
-  using garak::dsp::Filter;
+  using garak::test::Filter;
   struct Case { Filter type; double hz, q, gain, hz2, q2, gain2; };
   const Case cases[] = {
     {Filter::Lowpass, 800, 3, 0, 6000, -6, 0},     {Filter::Highpass, 120, 0, 0, 2000, 12, 0},
@@ -55,16 +52,7 @@ void biquadParity() {
   for (const auto& c : cases) {
     const auto kind = static_cast<std::uint32_t>(c.type);
     const auto input = noise(frames * 2, 7 + kind);
-    // C++: configure, run, then rebuild + takeHistoryFrom (how parameter edits glide in native).
-    garak::dsp::Biquad cpp;
-    cpp.configure(c.type, rate, c.hz, c.q, c.gain);
-    std::vector<float> expected = input;
-    for (std::uint32_t i = 0; i < frames / 2; ++i) for (unsigned ch = 0; ch < 2; ++ch) expected[2 * i + ch] = cpp.sample(expected[2 * i + ch], ch);
-    garak::dsp::Biquad next;
-    next.configure(c.type, rate, c.hz2, c.q2, c.gain2);
-    next.takeHistoryFrom(cpp);
-    for (std::uint32_t i = frames / 2; i < frames; ++i) for (unsigned ch = 0; ch < 2; ++ch) expected[2 * i + ch] = next.sample(expected[2 * i + ch], ch);
-
+    // Configure, run, then retarget (how parameter edits glide).
     GarakRsBiquad rs;
     garak_rs_biquad_init(&rs);
     garak_rs_biquad_configure(&rs, kind, rate, c.hz, c.q, c.gain);
@@ -72,8 +60,8 @@ void biquadParity() {
     garak_rs_biquad_process_interleaved(&rs, actual.data(), frames / 2);
     garak_rs_biquad_retarget(&rs, kind, rate, c.hz2, c.q2, c.gain2);
     garak_rs_biquad_process_interleaved(&rs, actual.data() + frames, frames / 2);
-    const double d = maxDiff(expected, actual);
-    check(d < 1e-5, "biquad type " + std::to_string(kind), d);
+    const auto r = goldens.check("biquad " + std::to_string(kind) + " " + std::to_string(&c - cases), actual);
+    check(r.ok, r.message, r.residual);
   }
 }
 
@@ -90,13 +78,7 @@ void utilityParity() {
   int index = 0;
   for (const auto& pair : settings) {
     const auto input = noise(frames * 2, 40 + index);
-    std::vector<float> expected = input, actual = input;
-    auto first = garak::dsp::makeEffect("utility", pair[0], rate, 120, garak::dsp::EffectBackend::Cpp);
-    first->process(expected.data(), 1000);
-    auto second = garak::dsp::makeEffect("utility", pair[1], rate, 120, garak::dsp::EffectBackend::Cpp);
-    second->takeStateFrom(*first);
-    second->process(expected.data() + 2000, frames - 1000);
-
+    std::vector<float> actual = input;
     GarakRsUtility rs;
     garak_rs_utility_init(&rs, rate);
     const auto p0 = rustParams(pair[0]), p1 = rustParams(pair[1]);
@@ -104,16 +86,16 @@ void utilityParity() {
     garak_rs_utility_process_interleaved(&rs, actual.data(), 1000);
     garak_rs_utility_configure(&rs, &p1);
     garak_rs_utility_process_interleaved(&rs, actual.data() + 2000, frames - 1000);
-    const double d = maxDiff(expected, actual);
-    check(d < 1e-6, "utility case " + std::to_string(index), d);
+    const auto r = goldens.check("utility kernel " + std::to_string(index), actual);
+    check(r.ok, r.message, r.residual);
     ++index;
   }
 }
 
-// Reference transcription of the track pan law in native/src/engine.cpp (the mix loop keeps it
-// inline). If that loop changes, update this copy and garak-dsp's gain.rs together.
+// Reference transcription of the track pan law of the C++ track mix loop removed in 0.3.3 (src/audio/graph.ts uses
+// the same law). garak-dsp's gain.rs must keep it.
 void enginePan(bool stereo, double pan, double& l, double& r) {
-  constexpr double pi = garak::dsp::pi;
+  constexpr double pi = garak::test::pi;
   if (!stereo) { const double angle = (pan + 1) * pi / 4; r = l * std::sin(angle); l *= std::cos(angle); }
   else if (pan < 0) { const double angle = (pan + 1) * pi / 2; l += r * std::cos(angle); r *= std::sin(angle); }
   else if (pan > 0) { const double angle = pan * pi / 2; r += l * std::sin(angle); l *= std::cos(angle); }
@@ -136,15 +118,13 @@ void panParity() {
   }
   check(worst < 1e-12, "pan law", worst);
   double gainWorst = 0;
-  for (double db = -60; db <= 24; db += 1.5) gainWorst = std::max(gainWorst, std::abs(garak::dsp::dbToGain(db) - garak_rs_db_to_gain(db)) / garak::dsp::dbToGain(db));
+  for (double db = -60; db <= 24; db += 1.5) gainWorst = std::max(gainWorst, std::abs(garak::test::dbToGain(db) - garak_rs_db_to_gain(db)) / garak::test::dbToGain(db));
   check(gainWorst < 1e-14, "dbToGain", gainWorst);
 }
 
 // ---- Effects ----------------------------------------------------------------------------------
 
-using garak::dsp::EffectBackend;
-using garak::dsp::StereoProcessor;
-constexpr double residualGate = -90;  // dBFS
+using garak::test::Effect;
 
 struct Def { std::string id; double fallback, minimum, maximum; };
 std::vector<Def> catalog(std::string_view type) {
@@ -178,7 +158,7 @@ std::vector<float> programme(std::size_t frameCount, double sr, std::uint32_t se
     const double cycle = std::fmod(t, 0.75);
     double envelope = cycle < 0.3 ? std::min(1.0, cycle / 0.004) : cycle < 0.45 ? std::exp(-(cycle - 0.3) * 30) : 0.0;
     if (t > 1.0 && t < 1.25) envelope *= 1.8;  // hot section
-    phase += 2 * garak::dsp::pi * (80 + 6000 * (t / (frameCount / sr))) / sr;
+    phase += 2 * garak::test::pi * (80 + 6000 * (t / (frameCount / sr))) / sr;
     const double tone = 0.4 * std::sin(phase);
     const double impulse = i % 9973 == 0 ? 0.9 : 0.0;
     out[2 * i] = static_cast<float>(envelope * (0.5 * (rng.unit() * 2 - 1) + tone) + impulse);
@@ -205,70 +185,51 @@ std::vector<std::string> order;
 // Row of the parity table the next renders count towards (default: the effect type).
 std::string statsGroup;
 
-// Renders `input` through the C++ and the Rust backend with the same programme of blocks/actions.
+// Renders `input` through the Rust kernel with the programme of blocks/actions and compares the output, latency,
+// tail and dynamics meter with the golden reference of the former C++ kernel.
 void compare(const std::string& type, const std::string& name, const garak::Parameters& init, const std::vector<float>& input,
              const std::vector<Block>& blocks, double sr = rate, double bpm = 120) {
   const std::string key = statsGroup.empty() ? type : statsGroup;
   if (!stats.count(key)) order.push_back(key);
   auto& st = stats[key];
-  std::unique_ptr<StereoProcessor> fx[2];
-  std::unique_ptr<garak::dsp::EffectControl> control[2];
-  std::vector<float> out[2] = {input, input};
-  double meterWorst = 0, tailWorst = 0;
-  bool latencyEqual = true;
-  for (int b = 0; b < 2; ++b) {
-    fx[b] = garak::dsp::makeEffect(type, init, sr, bpm, b ? EffectBackend::Rust : EffectBackend::Cpp);
-    control[b] = std::make_unique<garak::dsp::EffectControl>(type, init);
-  }
-  auto compareReports = [&] {
-    latencyEqual &= fx[0]->latencyFrames() == fx[1]->latencyFrames();
-    tailWorst = std::max(tailWorst, std::abs(fx[0]->tailSeconds() - fx[1]->tailSeconds()));
-  };
-  compareReports();
+  auto fx = garak::test::makeEffect(type, init, sr, bpm);
+  auto control = std::make_unique<garak::test::Control>(type, init);
+  std::vector<float> out = input;
+  double auxLatency = 0, auxTail = 0, auxPeak = 0, auxGain = 0, auxBlocks = 0, auxMeters = 0;
   std::size_t offset = 0;
   for (const auto& block : blocks) {
     const std::uint32_t n = std::min<std::uint32_t>(block.frames, static_cast<std::uint32_t>(input.size() / 2 - offset));
     if (!n) break;
-    for (int b = 0; b < 2; ++b) {
-      for (const auto& a : block.actions) {
-        switch (a.kind) {
-          case Action::Automate: control[b]->set(control[b]->index(a.id), a.value); break;
-          case Action::Tempo: fx[b]->setTempo(a.value); break;
-          case Action::Reset: fx[b]->reset(); break;
-          case Action::Handover: {
-            auto next = garak::dsp::makeEffect(type, a.handover, sr, bpm, b ? EffectBackend::Rust : EffectBackend::Cpp);
-            next->takeStateFrom(*fx[b]);
-            fx[b] = std::move(next);
-            control[b] = std::make_unique<garak::dsp::EffectControl>(type, a.handover);
-            break;
-          }
+    for (const auto& a : block.actions) {
+      switch (a.kind) {
+        case Action::Automate: control->set(control->index(a.id), a.value); break;
+        case Action::Tempo: fx->setTempo(a.value); break;
+        case Action::Reset: fx->reset(); break;
+        case Action::Handover: {
+          auto next = garak::test::makeEffect(type, a.handover, sr, bpm);
+          next->takeStateFrom(*fx);
+          fx = std::move(next);
+          control = std::make_unique<garak::test::Control>(type, a.handover);
+          break;
         }
       }
-      control[b]->apply(*fx[b]);
-      fx[b]->process(out[b].data() + offset * 2, n);
     }
-    compareReports();
-    auto* tap0 = fx[0]->dynamics();
-    auto* tap1 = fx[1]->dynamics();
-    if ((tap0 == nullptr) != (tap1 == nullptr)) st.meterOk = false;
-    if (tap0 && tap1) {
-      float p0, g0, p1, g1;
-      tap0->take(p0, g0); tap1->take(p1, g1);
-      meterWorst = std::max({meterWorst, static_cast<double>(std::abs(p0 - p1)), static_cast<double>(std::abs(g0 - g1))});
-    }
+    control->apply(*fx);
+    fx->process(out.data() + offset * 2, n);
+    auxLatency += fx->latencyFrames(); auxTail += fx->tailSeconds(); ++auxBlocks;
+    if (auto* tap = fx->dynamics()) { float p = 0, g = 1; tap->take(p, g); auxPeak += p; auxGain += g; ++auxMeters; }
     offset += n;
   }
-  const double d = maxDiff(out[0], out[1]);
-  bool finite = std::all_of(out[1].begin(), out[1].end(), [](float v) { return std::isfinite(v); });
+  const bool finite = std::all_of(out.begin(), out.end(), [](float v) { return std::isfinite(v); });
+  // Former gates: latency identical, tail within 1e-9 s and each meter reading within 1e-5 per block.
+  const double blocksDone = std::max(1.0, auxBlocks);
+  const auto r = goldens.check(type + "/" + name, out, {auxBlocks, auxLatency, auxTail, auxMeters, auxPeak, auxGain, double(fx->latencyFrames()), fx->tailSeconds()},
+                               {0, 0, 1e-9 * blocksDone, 0, 1e-5 * blocksDone, 1e-5 * blocksDone, 0, 1e-9});
   ++st.renders;
-  if (d > st.worst) { st.worst = d; st.worstCase = name; }
-  st.latencyTailOk &= latencyEqual && tailWorst <= 1e-9;
-  st.meterOk &= meterWorst <= 1e-5;
+  if (r.residual > st.worst) { st.worst = r.residual; st.worstCase = name; }
+  st.latencyTailOk &= r.ok || r.message.find("aux") == std::string::npos;
   check(finite, type + " " + name + ": non-finite Rust output");
-  check(dbfs(d) <= residualGate, type + " " + name + ": residual " + std::to_string(dbfs(d)) + " dBFS", d);
-  check(latencyEqual, type + " " + name + ": latency differs");
-  check(tailWorst <= 1e-9, type + " " + name + ": tail differs", tailWorst);
-  check(meterWorst <= 1e-5, type + " " + name + ": dynamics meter differs", meterWorst);
+  check(r.ok, r.message, r.residual);
 }
 
 std::vector<Block> plainBlocks(std::size_t frameCount, std::uint32_t seed, bool tempo) {
@@ -521,35 +482,15 @@ void ffiContract() {
   garak_rs_fx_automate(nullptr, nullptr, 0);
   // The guitar rig has its own entry points (garak_rs_rig_*), not a garak_rs_fx kind.
   check(garak_rs_fx_kind("guitar-rig", 10) < 0, "guitar rig is not a garak_rs_fx kind");
-  check(garak::dsp::rustEffectSupported("guitar-rig"), "guitar rig has a Rust port");
   garak_rs_rig_process(nullptr, nullptr, 128);
   garak_rs_rig_automate(nullptr, nullptr, 0);
   check(garak_rs_fx_param_count(99) == 0, "unknown kind");
-  check(garak::dsp::rustEffectsAvailable(), "rustEffectsAvailable");
   bool threw = false;
-  try { (void)garak::dsp::makeEffect("guitar-rig", {{"ampGain", 99}}, rate, 120, EffectBackend::Rust); } catch (const std::exception&) { threw = true; }
-  check(threw, "Rust guitar rig validates parameters like the C++ path");
+  try { (void)garak::test::makeEffect("guitar-rig", {{"ampGain", 99}}, rate, 120); } catch (const std::exception&) { threw = true; }
+  check(threw, "guitar rig parameters are validated against the Rust catalog");
   threw = false;
-  try { (void)garak::dsp::makeEffect("chorus", {{"rate", 99}}, rate, 120, EffectBackend::Rust); } catch (const std::exception&) { threw = true; }
-  check(threw, "Rust path validates parameters like the C++ path");
-  // Runtime switch: default C++ (or the GARAK_RUST_EFFECTS start-up list), per type, "all".
-  const char* env = std::getenv("GARAK_RUST_EFFECTS");
-  if (env && std::string(env) == "all") check(garak::dsp::effectBackend("reverb") == EffectBackend::Rust, "GARAK_RUST_EFFECTS=all selects Rust");
-  else if (env && (std::string(env) == "none" || std::string(env) == "cpp")) check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "GARAK_RUST_EFFECTS=none selects C++");
-#ifdef GARAK_RUST_EFFECTS_DEFAULT
-  else if (!env && std::string(GARAK_RUST_EFFECTS_DEFAULT) == "all") check(garak::dsp::effectBackend("delay") == EffectBackend::Rust && garak::dsp::effectBackend("guitar-rig") == EffectBackend::Rust, "build default (all) selects Rust, the rig included");
-#else
-  else if (!env) check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "default backend is C++");
-#endif
-  garak::dsp::setEffectBackend("delay", EffectBackend::Rust);
-  check(garak::dsp::effectBackend("delay") == EffectBackend::Rust, "setEffectBackend(delay)");
-  garak::dsp::setEffectBackend("all", EffectBackend::Cpp);
-  check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "setEffectBackend(all, Cpp)");
-  check(garak::dsp::effectBackend("guitar-rig") == EffectBackend::Cpp, "setEffectBackend(all, Cpp) includes the rig");
-  garak::dsp::setEffectBackend("guitar-rig", EffectBackend::Rust);
-  check(garak::dsp::effectBackend("guitar-rig") == EffectBackend::Rust, "setEffectBackend(guitar-rig)");
-  check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "the rig switch leaves the other effects alone");
-  garak::dsp::setEffectBackend("all", EffectBackend::Cpp);
+  try { (void)garak::test::makeEffect("chorus", {{"rate", 99}}, rate, 120); } catch (const std::exception&) { threw = true; }
+  check(threw, "effect parameters are validated against the Rust catalog");
 }
 } // namespace
 
@@ -569,13 +510,14 @@ int main(int argc, char** argv) {
     effectParity(type);
   }
   if (argc == 1 || std::string(argv[1]) == "guitar-rig") rigParity();
-  std::printf("| effect | renders | max residual (dBFS) | worst case | latency/tail | meter |\n|---|---:|---:|---|---|---|\n");
+  check(goldens.size() > 0, "no golden references (native/tests/golden/rust-kernels.golden)");
+  std::printf("| effect | renders | max residual vs golden (dBFS) | worst case | latency/tail/meter |\n|---|---:|---:|---|---|\n");
   for (const auto& type : order) {
     const auto& s = stats[type];
-    std::printf("| %s | %d | %.1f | %s | %s | %s |\n", type.c_str(), s.renders, dbfs(s.worst), s.worstCase.empty() ? "(bit-identical)" : s.worstCase.c_str(),
-                s.latencyTailOk ? "identical" : "DIFFERS", s.meterOk ? "ok" : "DIFFERS");
+    std::printf("| %s | %d | %.1f | %s | %s |\n", type.c_str(), s.renders, dbfs(s.worst), s.worstCase.empty() ? "(bit-identical)" : s.worstCase.c_str(),
+                s.latencyTailOk ? "as recorded" : "DIFFERS");
   }
-  if (failures) { std::fprintf(stderr, "%d Rust parity check(s) failed\n", failures); return EXIT_FAILURE; }
-  std::puts("Rust DSP parity: biquad, utility, pan law, dbToGain and every ported effect within -90 dBFS");
+  if (failures) { std::fprintf(stderr, "%d Rust kernel check(s) failed\n", failures); return EXIT_FAILURE; }
+  std::puts("Rust DSP kernels: biquad, utility, pan law, dbToGain and every effect match the golden references");
   return EXIT_SUCCESS;
 }

@@ -1,0 +1,2 @@
+# Golden reference renders (native/tests/golden.hpp): little-endian binary, never line-ending converted.
+*.golden binary

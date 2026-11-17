@@ -299,8 +299,8 @@ impl Track {
         }
         let mut tail = built.tail;
         if let Some(host) = hosted {
-            // Instruments the host renders (VST3, IEUM WAVE on the desktop, built-in instruments with
-            // GARAK_RUST_ENGINE_HOST_INSTRUMENTS): its processor's delay and tail come with the plan.
+            // Instruments the host renders (VST3, IEUM WAVE on the desktop): its processor's delay and tail
+            // come with the plan.
             require(
                 f64::from(host.latency) <= sample_rate * 30.0,
                 "Plugin latency exceeds native memory budget",

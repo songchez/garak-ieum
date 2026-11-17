@@ -1,10 +1,10 @@
 # 네이티브 오디오 엔진
 
-2026-11-17 (0.3.2) · 구현 및 검증 상태
+2026-11-17 (0.3.3) · 구현 및 검증 상태
 
-데스크톱은 별도 `garak-audio-host` 프로세스에서 오디오를 처리합니다. Windows는 **ASIO 또는 WASAPI**, Apple Silicon macOS는 **Core Audio**를 사용합니다. 0.3.2부터 트랙 렌더는 웹과 같은 **통합 Rust 엔진**(`rust/garak-engine`, C ABI `rust/garak-ffi`)이 맡고, C++20 `RenderEngine`은 그 엔진을 감싼 얇은 셸입니다. 셸은 장치 I/O, 전송·마스터 버스·메트로놈, VST3·IEUM WAVE 호스트 노드(엔진이 콜백으로 부름), 워커 풀과 render-ahead 링, 녹음을 맡고, Rust 엔진이 트랙·내장 악기·기타 랙·시김새·믹스·센드/리턴·트랙 라우트를 렌더합니다. Electron/React는 편집과 제어를 맡습니다. [셸](../native/include/garak/engine.hpp) · [Rust 엔진 C ABI](../rust/garak-ffi/include/garak_engine.h) · [장치 어댑터](../native/src/device.cpp) · [렌더러 연결](../src/audio/native/NativeAudioEngine.ts) · [Rust 렌더 엔진 10장](RUST_ENGINE.md#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계)
+데스크톱은 별도 `garak-audio-host` 프로세스에서 오디오를 처리합니다. Windows는 **ASIO 또는 WASAPI**, Apple Silicon macOS는 **Core Audio**를 사용합니다. 트랙 렌더는 웹과 같은 **통합 Rust 엔진**(`rust/garak-engine`, C ABI `rust/garak-ffi`)이 맡고(0.3.2 기본, 0.3.3부터 유일한 경로), C++20 `RenderEngine`은 그 엔진을 감싼 얇은 셸입니다. 셸은 장치 I/O, 전송·카운트인 타이밍, 라이브 MIDI 전달, VST3·IEUM WAVE 호스트 노드(엔진이 콜백으로 부름), 워커 풀과 render-ahead 링, 녹음, 스냅숏을 맡고, Rust 엔진이 트랙·내장 악기·기타 랙·시김새·믹스·센드/리턴·트랙 라우트와 마스터 버스·메트로놈을 렌더합니다. Electron/React는 편집과 제어를 맡습니다. [셸](../native/include/garak/engine.hpp) · [Rust 엔진 C ABI](../rust/garak-ffi/include/garak_engine.h) · [장치 어댑터](../native/src/device.cpp) · [렌더러 연결](../src/audio/native/NativeAudioEngine.ts) · [Rust 렌더 엔진 10장](RUST_ENGINE.md#10-데스크톱-호스트-경로-셸--rust-그래프)
 
-> **0.3.2에 한한 숨은 대체 경로:** 앱을 환경 변수 `GARAK_RUST_ENGINE=0`으로 띄우면 트랙을 이전 C++ `RenderEngine`이, 여기에 `GARAK_RUST_EFFECTS=none`을 더하면 그 C++ 경로의 내장 이펙트도 C++ 커널이 처리합니다(Rust 그래프는 항상 `garak-dsp`를 씀)(`garak-audio-host`는 Electron의 환경을 물려받음). 호스트 `hello`의 `rustEngine`, `engine.snapshot`의 `rustEngine`·`rustRefusals`, `render.wav` 응답의 `rustEngine`으로 어느 경로가 돌았는지 확인합니다. 이전 C++ 렌더 경로는 다음 패치에서 삭제할 예정입니다.
+> **0.3.3:** 이전 C++ 트랙 경로·C++ 이펙트 DSP와 스위치(`GARAK_RUST_ENGINE`, `GARAK_RUST_EFFECTS`, Rust 없는 `GARAK_RUST=0` 빌드)를 삭제했습니다. 호스트 `hello`의 `rustEngine`은 진단용으로 항상 `{available: true, requested: true}`, `engine.snapshot`·`render.wav`의 `rustEngine`은 Rust 그래프가 렌더했는지를 알려 줍니다.
 
 이 문서의 구현 여부와 실제 하드웨어 검증은 구분합니다. **Linux의 실제 VST3 SDK 빌드·실행 검사와 Windows MSVC·macOS arm64의 설치물 CI가 통과**했습니다. CI에서 실제 네이티브 호스트와 VST3 테스트 모듈을 검사하고, Windows 설치 파일과 Mac DMG를 설치한 뒤 앱 화면의 네이티브 연결을 검사했습니다. CI는 명시적인 테스트 클록을 사용하므로 실제 인터페이스의 입출력·왕복 지연·타사 플러그인 창은 별도 실기 확인 대상입니다. [Windows CI](https://github.com/songchez/garak-ieum/actions/runs/41785545281) · [macOS CI](https://github.com/songchez/garak-ieum/actions/runs/41785545268) — 검사 대상 PR head `3075f9993ba3dcdf7e6d1f6872d7cf3e670e19ce`.
 
@@ -68,7 +68,7 @@ flowchart TD
 
 **멀티코어 처리와 미리 처리.** `processingThreads`(`auto` = 하드웨어 스레드 − 1, 최대 8 / `0` = 끔 / 1–16)만큼 작업 스레드를 만들어 블록마다 트랙을 나눠 처리하고, callback 스레드가 트랙 순서대로 합산합니다. Rust 엔진은 처리 레벨(라우트 소스·센더 먼저, 그다음 라우트된 트랙·리턴)마다 트랙을 이 풀에서 병렬로 렌더하며(`GarakRsParallelRun`, 호스트 노드 콜백도 그 작업 스레드에서), 풀은 원자 변수로만 동기화합니다. 그래서 스레드 수와 관계없이 출력이 비트 단위로 같습니다. 작업 스레드는 Windows MMCSS "Pro Audio"·시간 임계 우선순위, macOS 시간 제약 정책으로 실행합니다(macOS `os_workgroup` 합류는 남은 작업). `renderAhead`(`off` 기본 / `normal` = 장치 버퍼 2개 / `high` = 4개)는 VST3가 없고, 모니터링·녹음 중이 아니며, 최근 2초 안에 실시간 음표가 없는 트랙을 작업 스레드가 미리 계산해 두는 기능입니다(Cubase ASIO-Guard 방식). 실시간 음표·모니터링·녹음 시작이 생기면 그 트랙은 미리 계산된 부분을 다 쓴 뒤(최대 창 + 1 버퍼 늦게) 끊김 없이 callback 처리로 돌아갑니다. 탐색·정지·프로젝트 변경·템포 변경에서는 미리 계산을 버리고, 일시 정지에서는 아직 재생하지 않은 미리 계산 구간이 있던 트랙의 음성·꼬리를 초기화합니다. 믹스·파라미터 변경은 창 길이만큼 늦게 들릴 수 있습니다. 상태에는 `workerThreads`, `renderAheadTracks`, `renderAheadResyncs`를 보고합니다.
 
-Rust 엔진(`rust/garak-engine`)이 준비된 타임라인, 음표의 샘플 offset, 루프·탐색, 샘플 존·벨로시티·choke, 내장 합성·샘플·빈티지 악기, 믹서와 트랙별 지연 보상, 센드/리턴과 트랙 라우트·녹음 탭을 처리하고, 이펙트(EQ·필터·컴프레서·드라이브·딜레이·리버브 등 시김새)와 기타 앰프는 `rust/garak-dsp` 커널을 씁니다. `native/src/engine.cpp`(셸, `rust_engine.inc`)는 전송·카운트인·메트로놈, 마스터 버스, 라이브 MIDI 전달, 샘플 세트 등록과 녹음 캡처를 맡습니다. 녹음은 장치 입력을 한정된 링 버퍼에 넣고 별도 스레드가 Float32 WAV를 작성합니다. 트랙은 물리 입력 채널(`input.channels`, 모노 또는 쌍)을 가지며 호스트가 열린 채널 목록으로 콜백의 인터리브 위치를 찾습니다. 열리지 않은 채널을 고른 트랙은 무음이고 `tracksMissingInput`에 표시됩니다. `record.start { takes }`는 최대 64개 트랙을 같은 프레임에서 함께 시작하고 트랙마다 1·2채널 파일을 씁니다. 콜백 처리 시간이 버퍼 시간의 90%를 넘거나 드라이버가 overload를 알리면 `device.overloads`가 늘고, 최근 비율은 `device.lastCallbackLoad`입니다. 디스크/큐 오류와 실제 시작 프레임은 제어 응답으로 전달합니다. [셸](../native/src/engine.cpp) · [Rust 엔진](../rust/garak-engine/src/) · [DSP 커널](../rust/garak-dsp/src/) · [녹음 연결](../src/audio/native/NativeRecording.ts)
+Rust 엔진(`rust/garak-engine`)이 준비된 타임라인, 음표의 샘플 offset, 루프·탐색, 샘플 존·벨로시티·choke, 내장 합성·샘플·빈티지 악기, 믹서와 트랙별 지연 보상, 센드/리턴과 트랙 라우트·녹음 탭, 마스터 버스와 메트로놈·카운트인 클릭을 처리하고, 이펙트(EQ·필터·컴프레서·드라이브·딜레이·리버브 등 시김새)와 기타 앰프는 `rust/garak-dsp` 커널을 씁니다. `native/src/engine.cpp`(셸, `rust_engine.inc`)는 전송·카운트인 타이밍, 라이브 MIDI 전달, 샘플 세트 등록, 녹음 캡처와 VST3·IEUM WAVE 호스트 노드(`HostTrack`)를 맡습니다. 녹음은 장치 입력을 한정된 링 버퍼에 넣고 별도 스레드가 Float32 WAV를 작성합니다. 트랙은 물리 입력 채널(`input.channels`, 모노 또는 쌍)을 가지며 호스트가 열린 채널 목록으로 콜백의 인터리브 위치를 찾습니다. 열리지 않은 채널을 고른 트랙은 무음이고 `tracksMissingInput`에 표시됩니다. `record.start { takes }`는 최대 64개 트랙을 같은 프레임에서 함께 시작하고 트랙마다 1·2채널 파일을 씁니다. 콜백 처리 시간이 버퍼 시간의 90%를 넘거나 드라이버가 overload를 알리면 `device.overloads`가 늘고, 최근 비율은 `device.lastCallbackLoad`입니다. 디스크/큐 오류와 실제 시작 프레임은 제어 응답으로 전달합니다. [셸](../native/src/engine.cpp) · [Rust 엔진](../rust/garak-engine/src/) · [DSP 커널](../rust/garak-dsp/src/) · [녹음 연결](../src/audio/native/NativeRecording.ts)
 
 WAV 내보내기는 같은 셸·Rust 그래프와 **새 플러그인 인스턴스**를 오프라인 모드로 실행합니다. 실시간 플러그인 상태를 읽을 때는 callback을 정지시켜 경쟁을 피합니다. VST3와 내장 효과의 tail을 포함하되 전체 tail은 30초로 제한합니다. 출력은 프로젝트 레이트의 스테레오 PCM 16-bit WAV이며, 처리는 블록 단위로 파일에 기록합니다. 피치 렌더 자산도 이 출력에 포함됩니다.
 
@@ -119,15 +119,15 @@ pnpm native:build
 pnpm native:test
 ```
 
-데스크톱 빌드(`scripts/build-native-audio.mjs`)는 CMake를 `-DGARAK_RUST=ON -DGARAK_RUST_EFFECTS=all`로 구성해 `rust/garak-ffi`를 cargo로 빌드·링크합니다. cargo가 없으면 CMake가 설치 스크립트를 안내하며 멈춥니다. Rust 없이 C++ 전용 호스트를 빌드하려면 `GARAK_RUST=0 pnpm native:build`(`--core-only`는 Rust를 쓰지 않음). `native:build`는 고정 archive를 검증·추출하고, 실제 SDK로 helper와 테스트 모듈을 빌드한 뒤 CTest와 설치 단계를 실행합니다. 빌드 작업 폴더는 `build/native-work/`, 배포용 helper와 고지는 `build/native-audio/`입니다. `native:test`는 별도 프로세스 제어·자산·실제 fixture VST3·녹음·WAV 경로를 검사합니다. `desktop:prepare`에도 네이티브 빌드가 포함되며 설치물에는 테스트 플러그인을 넣지 않습니다. [빌드 스크립트](../scripts/build-native-audio.mjs) · [검사 스크립트](../scripts/native-test.mjs)
+모든 네이티브 빌드(`scripts/build-native-audio.mjs`, `--core-only` 포함)는 CMake(`native/cmake/GarakRust.cmake`)가 `rust/garak-ffi`를 cargo로 빌드·링크합니다. cargo가 없으면 CMake가 설치 스크립트를 안내하며 멈춥니다. `native:build`는 고정 archive를 검증·추출하고, 실제 SDK로 helper와 테스트 모듈을 빌드한 뒤 CTest와 설치 단계를 실행합니다. 빌드 작업 폴더는 `build/native-work/`, 배포용 helper와 고지는 `build/native-audio/`입니다. `native:test`는 별도 프로세스 제어·자산·실제 fixture VST3·녹음·WAV 경로를 검사합니다. `desktop:prepare`에도 네이티브 빌드가 포함되며 설치물에는 테스트 플러그인을 넣지 않습니다. [빌드 스크립트](../scripts/build-native-audio.mjs) · [검사 스크립트](../scripts/native-test.mjs)
 
 Linux의 `pnpm native:build`는 장치 없이 실제 VST3/오프라인 엔진을 빌드하는 개발 검사입니다. `pnpm native:build --core-only`는 VST3·장치 지원을 끈 핵심 DSP 검사 용도이며 배포 엔진으로 사용하지 않습니다. Windows/macOS 배포 빌드는 VST3와 플랫폼 장치 지원을 요구하고 Windows는 ASIO를 필수로 요구합니다.
 
 | 검증 | 확인한 결과 / 남은 확인 |
 | --- | --- |
 | CMake 전체 Linux 빌드 | 실제 고정 SDK 사용, 성공 |
-| CTest `native-engine` | 프레임·믹싱·DSP·입력·지연 보상 등 코어 회귀 통과. `scripts/rust-engine-suite.mjs`(rust.yml)가 같은 스위트를 `GARAK_RUST_ENGINE=1`·`strict`로 Rust 그래프에서 실행 |
-| CTest `native-rust-*` | C++ 엔진 ↔ Rust 엔진 패리티: 이펙트(`native-rust-parity`), 오디오 프로젝트(`-engine-parity`), 악기(`-engine-instruments`, `-instruments`), 셸·호스트 노드·멀티코어·render-ahead(`-engine-host`). 상세 결과는 [RUST_ENGINE 7·10장](RUST_ENGINE.md#7-패리티-전략과-결과) |
+| CTest `native-engine` | 프레임·믹싱·DSP·입력·지연 보상 등 코어 회귀 통과(모든 경우가 Rust 그래프로 렌더) |
+| CTest `native-rust-*` | 0.3.2 C++ 경로에서 기록한 골든 레퍼런스(`native/tests/golden/`)와 비교: 이펙트·기타 랙(`native-rust-parity`), 오디오 프로젝트(`-engine-parity`), 악기(`-engine-instruments`, `-instruments`), 셸·호스트 노드·멀티코어·render-ahead·메트로놈(`-engine-host`). Windows x64 비트 동일, 그 밖 ≤ -90 dBFS. 상세는 [RUST_ENGINE 7·10장](RUST_ENGINE.md#7-패리티-전략과-결과) |
 | CTest `native-asio-formats` | 모든 지원 PCM endian/유효 비트·clipping·비정상 값 변환 통과 |
 | CTest `native-vst3` | 실제 모듈 탐색, effect/instrument/processor-only, 이벤트 offset, 겹친 note ID/reset, 260개 초기 parameter, 상태 왕복·크기 한도 통과 |
 | CMake install | helper 및 8개 패키지의 고지·manifest 설치 확인 |
