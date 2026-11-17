@@ -29,7 +29,7 @@ import { deviceFromVariant, effectDeviceName } from './core/sigimsaeDevices'
 import { EFFECT_DEFS } from './core/devices'
 import { SAMPLE_CREDITS, instrumentDef, previewPitch } from './core/instruments'
 import { exportProjectBundle, loadProject, saveProject } from './core/storage'
-import { autosaveDelay } from './core/autosave'
+import { AutosaveScheduler, autosaveDelay } from './core/autosave'
 import { clearRecallSolo, effectiveArm, implicitlyMuted, monitorModePatch, monitorTargets, pressTrackButton, recordTakeTrackIds, recordTarget, sweepTrackButton, type TrackButtonKind, type TrackButtonMods } from './core/trackActions'
 import { TRACK_ICON_OPTIONS, TRACK_ZOOM_LIMITS, VIEW_STORAGE_KEY, loadTrackHeader, loadTrackZoom, loadView, pruneTrackZoom, resolveSnap, saveTrackHeader, saveTrackZoom, saveView, type TrackHeaderState, type TrackZoom, type ViewState } from './core/trackUi'
 import { Icon } from './components/Icon'
@@ -265,7 +265,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   const [inputCapture]=useState(()=>new InputCapture(()=>navigator.mediaDevices.getUserMedia(inputConstraints(audioSettingsRef.current,projectRef.current.sampleRate))))
   const monitorWarned=useRef(false)
   const saveQueue=useRef(Promise.resolve())
-  const saveTimer=useRef<number|null>(null)
+  /** Debounced autosave with a pending ceiling; flushed when the page is hidden or unloaded (core/autosave.ts). */
+  const [autosave]=useState(()=>new AutosaveScheduler())
   /** Wall time of the last autosave; large projects wait longer between saves (core/autosave.ts). */
   const lastSaveMs=useRef(0)
   const saveRevision=useRef(0)
@@ -678,15 +679,30 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     }catch(error){if(!cancelled){setRestoreError(error instanceof Error?error.message:'저장소 오류');setSaveStatus('error')}}})()
     return()=>{cancelled=true}
   },[projectId,notify])
+  /** Queues an autosave of the session's latest snapshot. It is read when queued, not when the timer was armed, so a
+   * flush on page hide also carries edits whose render effects have not run yet (an inline field committed on blur). */
+  function startAutosave(revision:number){
+    const state=commandSession.getSnapshot(),project=state.history.present,assets=assetsRef.current
+    saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{const started=performance.now();await saveProject(project,assets,{trusted:true});lastSaveMs.current=performance.now()-started;if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=state.revision;persistedAssets.current=assets;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일로 내보내 보관해주세요.`)}}})
+  }
+  /** Writes unsaved edits now instead of after the quiet period: the page is going away (reload, tab close, app
+   * switch) or the user pressed Ctrl+S. A timer armed for later never fires in an unloaded document. */
+  const flushAutosave=useRef(()=>{});flushAutosave.current=()=>{
+    if(!loaded)return
+    autosave.cancel()
+    const state=commandSession.getSnapshot()
+    if(persistedProject.current===state.history.present&&persistedAssets.current===assetsRef.current&&persistedRevision.current===state.revision)return
+    const revision=++saveRevision.current;setSaveStatus('saving');startAutosave(revision)
+  }
   useEffect(()=>{document.title=loaded?`${project.name} · ${BRAND.name}`:`프로젝트 열기 · ${BRAND.name}`},[loaded,project.name])
   useEffect(()=>{
     if(!loaded)return
-    if(persistedProject.current===project&&persistedAssets.current===assets&&persistedRevision.current===commandState.revision)return
+    // Back at the saved snapshot (undo): drop the pending write.
+    if(persistedProject.current===project&&persistedAssets.current===assets&&persistedRevision.current===commandState.revision){autosave.cancel();return}
     const revision=++saveRevision.current;setSaveStatus('saving')
-    const timer=window.setTimeout(()=>{saveTimer.current=null;saveQueue.current=saveQueue.current.catch(()=>{}).then(async()=>{try{const started=performance.now();await saveProject(project,assets,{trusted:true});lastSaveMs.current=performance.now()-started;if(saveRevision.current===revision){persistedProject.current=project;persistedRevision.current=commandState.revision;persistedAssets.current=assets;setSaveStatus('saved')}}catch(error){if(saveRevision.current===revision){setSaveStatus('error');notify(`자동 저장 실패: ${error instanceof Error?error.message:'저장 공간을 확인해주세요'}. 프로젝트 파일로 내보내 보관해주세요.`)}}})},autosaveDelay(lastSaveMs.current))
-    saveTimer.current=timer
-    return()=>{window.clearTimeout(timer);if(saveTimer.current===timer)saveTimer.current=null}
-  },[project,assets,commandState.revision,loaded,notify])
+    autosave.schedule(()=>startAutosave(revision),autosaveDelay(lastSaveMs.current))
+  },[project,assets,commandState.revision,loaded,autosave])
+  useEffect(()=>()=>autosave.cancel(),[autosave])
   navigationGuard.current=async()=>{
     if(!loaded){engine.stop();return true}
     // Commit an inline name/number before taking the final snapshot. Pitch inputs
@@ -699,7 +715,7 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
     let snapshot=commandSession.getSnapshot(),originals=assetsRef.current
     try{
       if(engine.kind==='native'){setBusy('플러그인 상태를 저장하는 중…');await captureNativeProjectState();setBusy('')}
-      if(saveTimer.current!==null){window.clearTimeout(saveTimer.current);saveTimer.current=null}
+      autosave.cancel()
       snapshot=commandSession.getSnapshot();originals=assetsRef.current
       const revision=++saveRevision.current
       // Always finish with this snapshot. A queued older autosave may still be
@@ -738,9 +754,17 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{
     if(!loaded)return
     if(document.activeElement instanceof HTMLElement)document.activeElement.blur()
+    // Start writing now: if the user (or the browser) leaves anyway, the save has a head start on the unload.
+    flushAutosave.current()
     const state=commandSession.getSnapshot()
     if(persistedRevision.current!==state.revision||persistedProject.current!==state.history.present||persistedAssets.current!==assetsRef.current||saveStatus!=='saved'||recordRef.current||recordPreparingRef.current||busy||pitchDirtyRef.current||pitchBusyRef.current){event.preventDefault();event.returnValue=''}
   };window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard)},[loaded,saveStatus,busy,commandSession])
+  useEffect(()=>{
+    const flush=()=>flushAutosave.current()
+    const hidden=()=>{if(document.visibilityState==='hidden')flush()}
+    window.addEventListener('pagehide',flush);document.addEventListener('visibilitychange',hidden)
+    return()=>{window.removeEventListener('pagehide',flush);document.removeEventListener('visibilitychange',hidden)}
+  },[])
   useEffect(()=>{const hide=()=>pausePlaybackWithRecording(engine,{cancelPreparation:cancelRecordPreparation,finishRecording});window.addEventListener('pagehide',hide);return()=>window.removeEventListener('pagehide',hide)},[])
   useEffect(()=>bindRecordingToTransport(engine,finishRecording),[engine])
 
@@ -1304,6 +1328,8 @@ export default function App({projectId,navigating,navigationError,onHome,onNew,o
   }
   async function saveBundle(){
     const snapshot=prepareExport();if(!snapshot)return
+    // Ctrl+S also writes the local copy now, so the project reopens exactly as exported.
+    flushAutosave.current()
     exporting.current=true;setBusy('프로젝트를 묶는 중…')
     try{
       const current=await captureNativeProjectState()
