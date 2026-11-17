@@ -27,7 +27,7 @@
 
 가락이음에는 두 엔진이 있습니다. 브라우저의 `WebAudioEngine`(AudioWorklet, TypeScript)과 데스크톱의 C++20 `RenderEngine`입니다. 조사한 DSP는 대부분 C/C++입니다.
 
-- **권장:** `native/devices/<악기>/`에 C++ DSP를 하나 둡니다. 데스크톱은 직접 링크하고 웹은 Emscripten WASM으로 빌드해 AudioWorklet에서 실행합니다. 기존 Signalsmith WASM 사례(`src/devices/pitch-editor/vendor/`)와 같은 방식입니다. TS와 C++로 두 번 포팅하지 않아도 되고 두 엔진의 소리가 같습니다. 단, IEUM WAVE는 현재 웹에서 합성하지 않습니다. 웹 WASM 경로는 이 조사 범위를 넘는 별도 작업입니다.
+- **권장:** `native/devices/<악기>/`에 C++ DSP를 하나 둡니다. 데스크톱은 직접 링크하고 웹은 Emscripten WASM으로 빌드해 AudioWorklet에서 실행합니다. 기존 Signalsmith WASM 사례(`src/devices/pitch-editor/vendor/`)와 같은 방식입니다. TS와 C++로 두 번 포팅하지 않아도 되고 두 엔진의 소리가 같습니다. (이후 실제로는 Rust로 구현해 데스크톱·웹이 같은 코드를 씁니다. IEUM WAVE도 0.3.3부터 Rust 엔진에서만 렌더합니다.)
 - **악기 정의:** `src/core/instruments.ts`의 `kind: 'native'`(WAVE와 같은 방식) 또는 `'sampled'`로 등록합니다. 샘플 기반은 [SAMPLES.md](SAMPLES.md) 규격(Opus/AAC, 세트당 20 MB 이하, `scripts/samples/<set>.py` 재현 스크립트)을 따릅니다.
 - **라이선스 고지:** MIT·Apache·BSD 코드는 원 저작권 고지와 라이선스 전문을 `native/devices/<악기>/LICENSE.*`와 `THIRD_PARTY_NOTICES.md`에 보존합니다. Apache-2.0은 NOTICE 파일이 있으면 함께 보존합니다. GPL 코드는 "or later" 여부를 기록합니다. GPL-2.0-only 코드는 GPL-3.0-only와 결합할 수 없으므로 사용하지 않습니다.
 - **프리셋:** 원본 기기의 공장 프리셋(롤랜드 패치, 야마하 ROM 카트리지)을 옮겨 적은 데이터는 번들하지 않습니다. 직접 만든 프리셋만 포함하고 사용자가 자신의 SysEx·패치를 가져오도록 합니다.

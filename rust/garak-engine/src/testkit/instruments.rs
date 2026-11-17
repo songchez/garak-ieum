@@ -396,8 +396,8 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// An IEUM WAVE patch as the renderer sends it (base64 IEWAVE01 pack, native/devices/
-/// wavetable-synth patch.cpp). `rich`: unison, three oscillators, a user bank in slot 4, sub,
+/// An IEUM WAVE patch as the renderer sends it (base64 IEWAVE01 pack, decoded by
+/// wave/patch.rs). `rich`: unison, three oscillators, a user bank in slot 4, sub,
 /// noise, both filters, LFO / envelope / velocity routes, drive, chorus and delay; otherwise the
 /// default patch.
 pub fn wave_patch(rich: bool) -> String {

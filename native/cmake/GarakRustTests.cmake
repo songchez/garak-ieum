@@ -34,3 +34,12 @@ add_test(NAME native-rust-engine-instruments COMMAND garak-rust-engine-instrumen
 # 옥구슬 EP / 한밤 106: checksum parity with the WASM build (parity.golden), CPU budget, engine use.
 garak_rust_test(garak-rust-instrument-test tests/rust_instrument_test.cpp)
 add_test(NAME native-rust-instruments COMMAND garak-rust-instrument-test)
+# IEUM WAVE (docs/IEUM_WAVE.md), rendered only by the Rust engine since 0.3.3: through RenderEngine as the shell
+# (sample rates, onsets, partitions, live/audition notes, held-note patch edits, table crossfades, validation,
+# callback allocations), and against golden renders of the former C++ synth (bit-identical on Windows x86-64).
+garak_rust_test(garak-wavetable-host-test tests/wavetable_host_test.cpp)
+add_test(NAME native-wavetable-host COMMAND garak-wavetable-host-test)
+garak_rust_test(garak-rust-wave-golden-test tests/rust_wave_golden_test.cpp)
+target_compile_definitions(garak-rust-wave-golden-test PRIVATE
+  "GARAK_WAVE_GOLDEN_DIR=\"${GARAK_RUST_ROOT}/garak-engine/tests/golden/ieum-wave\"")
+add_test(NAME native-rust-wave-golden COMMAND garak-rust-wave-golden-test)

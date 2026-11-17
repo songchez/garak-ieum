@@ -67,7 +67,7 @@ pnpm build                # 웹 빌드 (garak-dsp.wasm·garak-engine.wasm 포함
 flowchart TD
   UI["React 편집기 · MCP"] --> S["ProjectSession (src/core)"]
   S --> C["렌더러: NativeTimelineCompiler<br/>RenderPlan → project.set / project.patch"]
-  C -->|"Electron IPC"| H["데스크톱: garak-audio-host (C++ 셸)<br/>장치 I/O · VST3·IEUM WAVE 호스트 노드<br/>전송·마스터 · render-ahead 링 · 녹음"]
+  C -->|"Electron IPC"| H["데스크톱: garak-audio-host (C++ 셸)<br/>장치 I/O · VST3 호스트 노드<br/>전송·마스터 · render-ahead 링 · 녹음"]
   C -->|"메시지 · SharedArrayBuffer 링"| W["웹: AudioWorklet<br/>garak-engine.wasm"]
   H -->|"C ABI (garak-ffi)"| E["Rust 엔진 rust/garak-engine<br/>트랙 · 내장 악기 · 기타 랙 · 믹스 · 센드/리턴 · 라우트"]
   W -->|"WASM (garak-engine-wasm)"| E
@@ -78,7 +78,7 @@ flowchart TD
 - **하나의 프로젝트 모델** — 화면(React)과 AI(MCP) 편집 모두 `src/core`의 `ProjectSession`과 검증된 명령을 거칩니다. 프로젝트는 직렬화 가능한 데이터이며 Undo/Redo 이력을 공유합니다.
 - **로컬 저장** — 프로젝트와 원본 오디오는 IndexedDB에 자동 저장되고, `.garak` 파일로 내보내 다른 기기에서 이어서 편집할 수 있습니다. 계정·클라우드 백엔드는 없습니다.
 - **하나의 Rust 엔진, 두 호스트** — `rust/garak-engine`이 타임라인부터 트랙·내장 악기·기타 랙·시김새·센드/리턴·트랙 라우트·마스터 앞 합까지 렌더합니다. 데스크톱은 C ABI(`rust/garak-ffi`, 헤더는 `rust/garak-ffi/include`)로, 브라우저는 WASM(`rust/garak-engine-wasm`)으로 같은 코드를 씁니다. 이펙트와 악기 보이스는 `rust/garak-dsp`(`no_std`, 웹용 `garak-dsp.wasm`으로도 빌드)에 있습니다.
-- **데스크톱: 얇은 C++ 셸** — `garak-audio-host`의 `RenderEngine`은 장치 I/O(ASIO·WASAPI·Core Audio), VST3·IEUM WAVE(엔진이 콜백으로 부르는 호스트 노드), 전송·마스터 버스·메트로놈, render-ahead 링, 녹음을 맡고 트랙 렌더는 Rust 엔진에 맡깁니다. 트랙은 처리 레벨마다 워커 스레드에서 병렬로 렌더되며 결과는 1스레드와 비트 단위로 같습니다. 네이티브 엔진을 쓸 수 없으면 오류를 표시하며 Web Audio로 조용히 대체하지 않습니다.
+- **데스크톱: 얇은 C++ 셸** — `garak-audio-host`의 `RenderEngine`은 장치 I/O(ASIO·WASAPI·Core Audio), VST3(엔진이 콜백으로 부르는 호스트 노드), 전송·마스터 버스·메트로놈, render-ahead 링, 녹음을 맡고 트랙 렌더는 Rust 엔진에 맡깁니다. 트랙은 처리 레벨마다 워커 스레드에서 병렬로 렌더되며 결과는 1스레드와 비트 단위로 같습니다. 네이티브 엔진을 쓸 수 없으면 오류를 표시하며 Web Audio로 조용히 대체하지 않습니다.
 - **웹: AudioWorklet** — `garak-engine.wasm`이 AudioWorklet에서 돌며 미터 블록·라이브 이벤트 링(SharedArrayBuffer), 입력 모니터링, 녹음 탭을 처리합니다. 내보내기는 Worker에서 같은 엔진으로 오프라인 렌더합니다. 엔진이 프로젝트를 거부하거나 모듈이 없을 때만 Web Audio 그래프로 자동 대체합니다.
 - **렌더-diff 프로토콜** — 렌더러가 처음에 전체 계획(`project.set`)을, 그 뒤에는 바뀐 트랙만(`project.patch`) 보냅니다. 엔진은 제어 스레드의 `Controller`와 오디오 스레드의 `Renderer`로 나뉘고 lock-free 큐로만 통신하므로, 오디오 스레드는 할당·잠금 없이 돌고 매 버퍼가 JavaScript나 IPC 응답을 기다리지 않습니다.
 - **오프라인 처리** — 피치 편집(Signalsmith WASM)과 오디오 워프는 Worker에서 새 PCM 자산을 렌더링하고, 원본은 그대로 보존합니다.

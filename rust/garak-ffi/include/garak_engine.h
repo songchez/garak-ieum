@@ -69,7 +69,10 @@ typedef void (*GarakRsParallelRun)(void* host, uint32_t count, GarakRsTask task,
 void garak_rs_engine_render_block(GarakRsEngine* engine, float* out, uint32_t frames, int64_t position, int32_t playing,
                                   uint64_t allowed, float* peaks, uint32_t peak_capacity, GarakRsParallelRun run,
                                   void* host);
-/* VST3 / IEUM WAVE and device input stay in the host (docs/RUST_ENGINE.md 4): the graph calls these back at the
+/* Audio thread: 1 when the next graph of the same project could swap in now (nothing deferred, no IEUM WAVE table
+ * crossfade running), else 0. The shell holds its own graph command until then. */
+int32_t garak_rs_engine_settled(GarakRsEngine* engine);
+/* VST3 plug-ins and device input stay in the host (docs/RUST_ENGINE.md 4): the graph calls these back at the
  * node's place in each chain, on any render thread (concurrently for different tracks, never twice at once for
  * one track). source: fill the zeroed `stereo` (interleaved, `frames`) with track `track`'s instrument. insert:
  * process `stereo` in place through plan insert `insert`. input: add a monitored track's device input into

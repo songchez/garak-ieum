@@ -3,7 +3,6 @@
 #include "midi_routing.hpp"
 #include "garak/device.hpp"
 #include "garak/vst3.hpp"
-#include "ieum_wave/patch.hpp"
 #include <cstdlib>
 #include <algorithm>
 #include <array>
@@ -209,7 +208,7 @@ class Host {
   }
   Json request(const std::string& method,const Json& a,std::string_view blob={}) {
     if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"midiInput",true},{"midiDevices",midi::MidiInputManager::supported()},{"backends",DeviceHost::availableBackends()},
-      {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}},
+      {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",garak::wavetableSchemaFingerprint()},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}},
       // 옥구슬 EP / 한밤 106 render in the Rust engine like every built-in instrument.
       {"vintage",{{"protocolVersion",1},{"available",true},{"instruments",Json::array({"okgu-ep","hanbam-106"})}}},
       // Every graph renders in the unified Rust engine since 0.3.3 (docs/RUST_ENGINE.md 10); kept for diagnostics.

@@ -77,7 +77,7 @@ struct ProcessContext {
 struct PluginEvent {
   // Controller: MIDI controller; parameterId is the controller number (ControlEvent numbering: 0..127 CC,
   // 128 channel pressure, 129 pitch bend, 130 program change) and value is normalizedControllerValue().
-  // VST3 delivers it through the plug-in's IMidiMapping; IEUM WAVE interprets it itself.
+  // VST3 delivers it through the plug-in's IMidiMapping; the vintage instruments interpret it themselves.
   enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff, Controller };
   Type type = Type::NoteOn;
   std::uint32_t offset = 0;
@@ -85,7 +85,7 @@ struct PluginEvent {
   std::uint8_t pitch = 60, channel = 0;
   float value = 1;
   std::uint32_t parameterId = 0;
-  bool audition = false; // Separate WAVE live/editor note ownership from the timeline.
+  bool audition = false; // Live/editor note ownership, separate from the timeline's.
 };
 class PluginProcessor {
  public:
@@ -112,7 +112,7 @@ struct TrackSource {
   bool isKit = false;
   Parameters params;
   PluginSpec plugin;
-  std::vector<std::uint8_t> patchData; // Validated IEWAVE01 pack, decoded off the callback.
+  std::vector<std::uint8_t> patchData; // IEUM WAVE: IEWAVE01 pack, validated and rendered by the Rust engine.
   bool operator==(const TrackSource&) const = default;
 };
 struct BuiltinInsert {
@@ -460,6 +460,9 @@ struct UpdateResult {
   std::uint32_t replacedTracks = 0, commands = 0;
 };
 
+// IEUM WAVE renders only in the Rust engine since 0.3.3 (docs/IEUM_WAVE.md): its patch schema fingerprint, which
+// the renderer checks before it sends a patch.
+[[nodiscard]] std::uint32_t wavetableSchemaFingerprint() noexcept;
 // Blocks rendered by the Rust graph in this process, all engines (diagnostics and the regression suite's report).
 [[nodiscard]] std::uint64_t rustEngineBlocks() noexcept;
 

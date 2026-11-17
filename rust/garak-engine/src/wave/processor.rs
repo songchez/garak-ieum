@@ -290,28 +290,33 @@ impl Processor {
 
     /// wavetable.cpp `tailSeconds` (export allowance of the desired patch).
     pub fn tail_seconds(&self) -> f64 {
-        let p = &self.desired_patch;
-        let maximum = |id: usize| -> f64 {
-            if p.routes.iter().any(|r| r.enabled && r.amount != 0.0 && r.destination == id) {
-                return f64::from(g::MAXIMUM.get(id).copied().unwrap_or(0.0));
-            }
-            f64::from(p.params.get(id).copied().unwrap_or(0.0))
-        };
-        let mut seconds = maximum(54);
-        if maximum(90) > 0.0 {
-            seconds += 0.05;
-        }
-        if maximum(93) > 0.0 {
-            let feedback = maximum(92);
-            let repeats = if feedback > 0.0 {
-                let r = ceil(log(1e-5) / log(feedback));
-                if 1.0 < r { r } else { 1.0 }
-            } else {
-                1.0
-            };
-            seconds += maximum(91) * repeats;
-        }
-        let total = seconds + 0.01;
-        if total < 30.0 { total } else { 30.0 }
+        patch_tail_seconds(&self.desired_patch)
     }
+}
+
+/// The export allowance of `p` in seconds: the amplitude release, drive smoothing and delay repeats
+/// (at their routed maximum when modulated), capped at 30 s.
+pub(crate) fn patch_tail_seconds(p: &Patch) -> f64 {
+    let maximum = |id: usize| -> f64 {
+        if p.routes.iter().any(|r| r.enabled && r.amount != 0.0 && r.destination == id) {
+            return f64::from(g::MAXIMUM.get(id).copied().unwrap_or(0.0));
+        }
+        f64::from(p.params.get(id).copied().unwrap_or(0.0))
+    };
+    let mut seconds = maximum(54);
+    if maximum(90) > 0.0 {
+        seconds += 0.05;
+    }
+    if maximum(93) > 0.0 {
+        let feedback = maximum(92);
+        let repeats = if feedback > 0.0 {
+            let r = ceil(log(1e-5) / log(feedback));
+            if 1.0 < r { r } else { 1.0 }
+        } else {
+            1.0
+        };
+        seconds += maximum(91) * repeats;
+    }
+    let total = seconds + 0.01;
+    if total < 30.0 { total } else { 30.0 }
 }

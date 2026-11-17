@@ -10,8 +10,9 @@
 //! returns) follows once they all finished, and the mix is summed in track order — bit-identical to
 //! the single-threaded path.
 //!
-//! VST3 and IEUM WAVE stay host processors (docs/RUST_ENGINE.md 4): the graph calls the host back at
-//! their place in each chain ([`HostCallbacks`]), and asks it for monitored device input.
+//! VST3 plug-ins stay host processors (docs/RUST_ENGINE.md 4): the graph calls the host back at
+//! their place in each chain ([`HostCallbacks`]), and asks it for monitored device input. IEUM WAVE
+//! renders here (since 0.3.3); the shell waits for its table crossfades ([`Renderer::host_settled`]).
 
 use core::ffi::c_void;
 
@@ -308,5 +309,13 @@ impl Renderer {
     /// Applies queued commands up to `allowed` without rendering.
     pub fn host_consume(&mut self, allowed: u64) {
         self.consume_until(allowed);
+    }
+
+    /// Whether the next graph of the same project could swap in now (audio thread): no graph waits in
+    /// the queue and no IEUM WAVE track of the active graph is inside a table crossfade. The shell holds
+    /// its own graph command until then, so both graphs swap in the same block.
+    pub fn host_settled(&mut self) -> bool {
+        self.deferred.is_none()
+            && self.active.as_mut().is_none_or(|g| g.tracks.iter_mut().all(|t| t.source.ready_to_transfer()))
     }
 }

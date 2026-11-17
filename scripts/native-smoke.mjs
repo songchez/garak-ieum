@@ -171,6 +171,9 @@ try {
     assert.equal(pcm24.readUInt16LE(34), 24); assert.equal(pcm24.readUInt32LE(40), full.frames * 6)
     await assert.rejects(service.request('render.wav', { timeline: project(), bitDepth: 20 }), /bit depth/i)
   })
+  if (!waveExpected()) await checked('a WAVE project is refused without the Rust engine', async () => {
+    await assert.rejects(service.request('project.set', { timeline: project([track('wave', wave.basic)]) }), /Rust/)
+  })
   await checked('native WAVE timeline and custom banks render finite stereo at 44.1/48/96 kHz', async () => {
     for (const sampleRate of [44100, 48000, 96000]) {
       const rendered = []

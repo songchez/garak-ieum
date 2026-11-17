@@ -424,7 +424,7 @@ export interface VintageBridge {
 }
 export interface AudioEngine {
   readonly kind: 'web-audio' | 'native'
-  /** Supplied only by a native host that actually loads the IEUM WAVE DSP module. */
+  /** IEUM WAVE: supplied by engines with the Rust synth (the desktop host, the browser's garak-engine.wasm engine). */
   readonly wavetable?: WavetableNativeBridge
   /** Whether this engine can run the vintage instruments (Rust core: native GARAK_RUST or garak-dsp.wasm). */
   readonly vintage?: VintageBridge

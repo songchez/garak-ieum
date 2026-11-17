@@ -1,4 +1,4 @@
-//! Nodes the desktop host processes itself (docs/RUST_ENGINE.md 4): VST3 instruments and inserts, IEUM WAVE,
+//! Nodes the desktop host processes itself (docs/RUST_ENGINE.md 4): VST3 instruments and inserts
 //! and the host's view of a block (monitored tracks, device input). The C++ shell owns those processors, their
 //! editors and state; the graph calls it back at the node's place in the chain, on whatever thread renders the
 //! track, so plug-in delay compensation, sends, routes and the mix stay in this engine.

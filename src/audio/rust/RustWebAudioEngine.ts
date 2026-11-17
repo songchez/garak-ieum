@@ -1,10 +1,10 @@
 import { DEFAULT_AUDIO_SETTINGS, projectSampleRate, type AudioSettings } from '../../core/audioSettings'
-import { playbackProject } from '../../core/freeze'
+import { freezeStatus, playbackProject } from '../../core/freeze'
 import { instrumentDef } from '../../core/instruments'
 import { countInBeats, type MetronomeEngineState, type PlayOptions } from '../../core/metronome'
 import { meterMapOf } from '../../core/meterMap'
 import { isTrackEnabled, trackNote } from '../../core/playback'
-import type { AudioAsset, ControllerKey, InstrumentId, Project, RenderOptions, RenderedAudio, TransportSnapshot } from '../../core/types'
+import type { AudioAsset, ControllerKey, InstrumentId, Project, RenderOptions, RenderedAudio, Track, TransportSnapshot } from '../../core/types'
 import { createEmptyProject } from '../../core/project'
 import { tempoMapOf } from '../../core/tempoMap'
 import type { TakeCallbacks } from '../../core/recording'
@@ -25,8 +25,14 @@ import type { EngineRenderAsset } from './engineOffline'
 import { GarakEngineError, utf8Encode } from './garakEngineWasm'
 import { rustEngineRefusedInsert } from './flag'
 import type { LoadedSet } from '../samples'
+import { WAVETABLE_HOST_REQUIRED } from '../instrumentSupport'
+import { encodeWavetablePatch, wavetablePatchData, WAVETABLE_UNAVAILABLE_STATUS, type WavetableBridgeStatus, type WavetableNativeBridge } from '../../devices/wavetable-synth/bridge'
+import { combineWavetablePatch, type WavetablePatch } from '../../devices/wavetable-synth/model'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
+/** A superseded IEUM WAVE patch request (the editor ignores it; a newer one follows). */
+const waveAbort = () => new DOMException('오디오 작업이 취소되었습니다.', 'AbortError')
+const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((value, i) => value === b[i])
 /** Library previews (no track) while the engine plays: this long, like the Web Audio engine's. */
 const PREVIEW_SECONDS = 0.3
 
@@ -153,6 +159,30 @@ export class RustWebAudioEngine extends WebAudioEngine {
   private tapSplitter: ChannelSplitterNode | null = null
   private previewGraph: EngineGraph | null = null
   private liveNoteId = 0
+  /** IEUM WAVE (docs/IEUM_WAVE.md): the synth exists only in garak-engine.wasm, so its availability is the module's. */
+  private waveModule: 'idle' | 'loading' | 'ready' | 'missing' = 'idle'
+  private waveStatus: WavetableBridgeStatus = WAVETABLE_UNAVAILABLE_STATUS
+  private readonly waveListeners = new Set<(status: WavetableBridgeStatus) => void>()
+  private readonly wavePatchRequests = new Map<string, number>()
+  /** Editor keyboard notes per track: `${channel}:${pitch}` -> live note id. */
+  private readonly waveNotes = new Map<string, Map<string, number>>()
+  /** Encoded patches per WAVE track, kept while the track's parameter and state objects stay the same. */
+  private readonly wavePayloads = new Map<string, { params: Track['instrumentParams']; state: Track['instrumentState']; data: string }>()
+
+  /** The WAVE editor's host contract (bridge.ts), served by the engine's live events and project sync. */
+  readonly wavetable: WavetableNativeBridge = {
+    protocolVersion: 1,
+    getStatus: () => { this.loadWaveModule(); return this.waveStatus },
+    subscribe: listener => {
+      this.waveListeners.add(listener)
+      this.loadWaveModule()
+      return () => { this.waveListeners.delete(listener) }
+    },
+    applyPatch: (trackId, patch, revision) => this.applyWavePatch(trackId, patch, revision),
+    previewNoteOn: (trackId, note, velocity, channel = 0) => this.waveNoteOn(trackId, note, velocity, channel),
+    previewNoteOff: (trackId, note, channel = 0) => this.waveNoteOff(trackId, note, channel),
+    allNotesOff: trackId => this.waveAllNotesOff(trackId),
+  }
 
   constructor(project?: Project, settings: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     // The base constructor would call setProject before this class's fields exist.
@@ -191,9 +221,112 @@ export class RustWebAudioEngine extends WebAudioEngine {
   /** The Web Audio graph exists only while the engine is not what is heard (a stopped project's previews and a fallback). */
   protected override graphEnabled(): boolean { return this.playing || !this.engineOwnsOutput() }
 
+  /** Starts loading garak-engine.wasm once, so IEUM WAVE knows whether it can sound before audio starts. */
+  private loadWaveModule(): void {
+    if (this.waveModule !== 'idle') return
+    this.waveModule = 'loading'
+    void sharedGarakEngineModule().then(module => module, () => null).then(module => {
+      this.waveModule = module ? 'ready' : 'missing'
+      this.publishWaveStatus()
+    })
+  }
+
+  private publishWaveStatus(): void {
+    const bridge = this.bridge
+    const reason = this.waveModule === 'missing' ? 'garak-engine.wasm이 없어 이 브라우저에서는 IEUM WAVE 소리를 낼 수 없습니다 (pnpm rust:wasm으로 빌드). 음색 편집과 저장은 사용할 수 있습니다.'
+      : this.waveModule !== 'ready' ? 'Rust 오디오 엔진(WASM)을 불러오는 중입니다. 음색 편집과 저장은 사용할 수 있습니다.'
+      : bridge?.error ? `Rust 오디오 엔진이 멈췄습니다: ${bridge.error}`
+      : ''
+    const sampleRate = bridge && bridge.context === this.context ? bridge.context.sampleRate : undefined
+    const next: WavetableBridgeStatus = Object.freeze(reason ? { available: false, reason } : { available: true, ...(sampleRate ? { sampleRate } : {}) })
+    if (next.available === this.waveStatus.available && next.reason === this.waveStatus.reason && next.sampleRate === this.waveStatus.sampleRate) return
+    this.waveStatus = next
+    for (const listener of [...this.waveListeners]) listener(next)
+  }
+
+  /** The WAVE track `trackId` of the current project (a frozen one plays its render, not the synth). */
+  private waveTrack(trackId: string): Track | undefined {
+    const project = this.project
+    return project?.tracks.find(track => track.id === trackId && track.kind === 'instrument' && track.instrument === 'wavetable' && !track.pluginInstrument && freezeStatus(project, track, this.assets) !== 'frozen')
+  }
+
+  /**
+   * The timeline as the engine reads it: each IEUM WAVE source carries its patch as base64 `patchData` (like the
+   * desktop host's). The pack is encoded again only when the track's parameters or state object changed.
+   */
+  private wireWave(timeline: NativeProjectTimeline, project: Project): SyncTimeline {
+    if (!timeline.tracks.some(track => track.source.kind === 'native-wavetable')) return timeline
+    const tracks = timeline.tracks.map(track => {
+      if (track.source.kind !== 'native-wavetable') return track
+      const { patch, ...source } = track.source
+      const owner = project.tracks.find(item => item.id === track.id)
+      const cached = owner && this.wavePayloads.get(track.id)
+      const data = cached && cached.params === owner.instrumentParams && cached.state === owner.instrumentState ? cached.data : wavetablePatchData(patch)
+      if (owner) this.wavePayloads.set(track.id, { params: owner.instrumentParams, state: owner.instrumentState, data })
+      return { ...track, source: { ...source, patchData: data } }
+    })
+    for (const id of [...this.wavePayloads.keys()]) if (!project.tracks.some(track => track.id === id)) this.wavePayloads.delete(id)
+    return { ...timeline, tracks }
+  }
+
+  /**
+   * Resolves once the engine plays `patch` on `trackId`: the project carrying it is synchronized and accepted.
+   * The project (not this call) is what reaches the engine; a newer edit or another revision aborts this one.
+   */
+  private async applyWavePatch(trackId: string, patch: WavetablePatch, revision: number): Promise<{ revision: number }> {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('IEUM WAVE 패치 확인 번호가 유효하지 않습니다.')
+    if (revision <= (this.wavePatchRequests.get(trackId) ?? 0)) throw waveAbort()
+    this.wavePatchRequests.set(trackId, revision)
+    const wanted = encodeWavetablePatch(patch)
+    const current = () => {
+      if (this.wavePatchRequests.get(trackId) !== revision) throw waveAbort()
+      const track = this.waveTrack(trackId)
+      if (!track || !sameBytes(encodeWavetablePatch(combineWavetablePatch(track.instrumentParams, track.instrumentState)), wanted)) throw waveAbort()
+    }
+    // Yield first: React's project effect can follow the editor's effect in the same commit.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    current()
+    if (!this.waveStatus.available) throw new Error(this.waveStatus.reason ?? WAVETABLE_HOST_REQUIRED)
+    await this.resume()
+    if (this.bridge && this.bridge.context === this.context) await this.syncNow()
+    current()
+    if (!this.rustActive()) throw new Error(this.bridge ? `Rust 엔진이 이 프로젝트를 받지 않았습니다: ${this.verdict.reason}` : WAVETABLE_HOST_REQUIRED)
+    if (this.trackIndex(trackId) < 0) throw waveAbort()
+    return { revision }
+  }
+
+  private waveNoteOn(trackId: string, pitch: number, velocity: number, channel: number): void {
+    if (!Number.isInteger(pitch) || pitch < 0 || pitch > 127 || !Number.isInteger(channel) || channel < 0 || channel > 15 || !Number.isFinite(velocity) || velocity < 0 || velocity > 1) throw new Error('IEUM WAVE 미리듣기 음표가 유효하지 않습니다.')
+    if (velocity === 0) { this.waveNoteOff(trackId, pitch, channel); return }
+    const bridge = this.bridge, index = this.trackIndex(trackId)
+    if (!bridge || !this.rustActive() || index < 0 || !this.waveTrack(trackId)?.enabled) throw new Error('IEUM WAVE의 최신 음색이 오디오 엔진에 적용될 때까지 기다려 주세요.')
+    this.waveNoteOff(trackId, pitch, channel)
+    let notes = this.waveNotes.get(trackId)
+    if (!notes) { notes = new Map(); this.waveNotes.set(trackId, notes) }
+    const id = ++this.liveNoteId
+    notes.set(`${channel}:${pitch}`, id)
+    bridge.live(index, 'noteOn', pitch, velocity, id)
+  }
+
+  private waveNoteOff(trackId: string, pitch: number, channel: number): void {
+    const notes = this.waveNotes.get(trackId), key = `${channel}:${pitch}`, id = notes?.get(key)
+    if (id === undefined) return
+    notes!.delete(key)
+    const index = this.trackIndex(trackId)
+    if (this.bridge && index >= 0) this.bridge.live(index, 'noteOff', pitch, 0, id)
+  }
+
+  /** Releases this track's editor and live notes; its timeline notes and other tracks keep playing. */
+  private waveAllNotesOff(trackId: string): void {
+    this.waveNotes.delete(trackId)
+    const index = this.trackIndex(trackId)
+    if (this.bridge && index >= 0 && this.rustActive()) this.bridge.live(index, 'allNotesOff')
+  }
+
   protected override async prepareContext(context: AudioContext): Promise<void> {
     const module = await sharedGarakEngineModule()
-    if (!module) { this.note('garak-engine.wasm이 없어 Web Audio 엔진을 씁니다 (pnpm rust:wasm으로 빌드).'); return }
+    if (!module) { this.waveModule = 'missing'; this.publishWaveStatus(); this.note('garak-engine.wasm이 없어 Web Audio 엔진을 씁니다 (pnpm rust:wasm으로 빌드).'); return }
+    this.waveModule = 'ready'
     try {
       const bridge = await RustEngineNode.create(context, module)
       this.bridge?.dispose()
@@ -215,6 +348,8 @@ export class RustWebAudioEngine extends WebAudioEngine {
       this.verdict = { accepted: false, reason: '아직 Rust 엔진에 프로젝트를 보내지 않았습니다.' }
       this.pushMetronome()
       this.scheduleSync()
+      this.waveNotes.clear()
+      this.publishWaveStatus()
     } catch (error) {
       this.note(`워크릿을 시작하지 못해 Web Audio 엔진을 씁니다: ${message(error)}`)
     }
@@ -317,11 +452,12 @@ export class RustWebAudioEngine extends WebAudioEngine {
       // The worklet generates what it lacks (one long quantum): a slower edit, not a failure.
       this.note(`리버브 커널을 미리 만들지 못했습니다: ${message(error)}`)
     }
-    const plan = planNativeSync(this.synced, timeline)
+    const wired = this.wireWave(timeline, project)
+    const plan = planNativeSync(this.synced, wired)
     try {
       await bridge.update(plan.method, plan.method === 'project.set' ? (plan.params as { timeline: unknown }).timeline : plan.params, plan.binary)
       if (bridge !== this.bridge) return
-      this.synced = timeline
+      this.synced = wired
       this.orders.set(timeline.revision, { ids: timeline.tracks.map(track => track.id), inserts: timeline.tracks.map(track => track.inserts.map(insert => insert.id)) })
       for (const key of [...this.orders.keys()]) if (key < timeline.revision - 8) this.orders.delete(key)
       this.setVerdict(true, '')
@@ -564,9 +700,10 @@ export class RustWebAudioEngine extends WebAudioEngine {
    * play yet) sounds on a small preview-only graph straight to the output, never the project's graph.
    */
   override async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8, trackId?: string): Promise<void> {
+    if (instrumentDef(instrument).kind === 'native') return this.previewWave(pitch, velocity, trackId)
     if (!this.engineOwnsOutput()) return super.previewNote(instrument, pitch, velocity, trackId)
     const def = instrumentDef(instrument)
-    if (def.kind === 'native' || (def.kind === 'vintage' && !this.vintage.available())) return super.previewNote(instrument, pitch, velocity, trackId)
+    if (def.kind === 'vintage' && !this.vintage.available()) return super.previewNote(instrument, pitch, velocity, trackId)
     await this.resume()
     if (def.set) await this.preloadSamples(def.set)
     const context = this.context
@@ -582,6 +719,19 @@ export class RustWebAudioEngine extends WebAudioEngine {
     const params = track?.instrument === instrument ? track.instrumentParams : undefined
     if (loaded) scheduleSampled(graph, graph.previewInput, loaded, def.isKit, live.pitch, context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params)
     else scheduleInstrument(graph, graph.previewInput, instrument, live.pitch, context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params)
+  }
+
+  /** IEUM WAVE previews: only the engine has the synth, so a WAVE track's note always goes through it. */
+  private async previewWave(pitch: number, velocity: number, trackId?: string): Promise<void> {
+    if (trackId === undefined) throw new Error('IEUM WAVE 미리듣기에는 프로젝트의 악기 트랙이 필요합니다.')
+    if (!this.waveStatus.available) throw new Error(this.waveStatus.reason ?? WAVETABLE_HOST_REQUIRED)
+    await this.resume()
+    if (this.bridge && this.bridge.context === this.context) await this.syncNow()
+    const track = this.waveTrack(trackId)
+    if (!track || !isTrackEnabled(track)) return
+    if (!this.rustActive()) throw new Error(this.bridge ? `Rust 엔진이 이 프로젝트를 받지 않았습니다: ${this.verdict.reason}` : WAVETABLE_HOST_REQUIRED)
+    const live = trackNote(track, pitch, velocity)
+    if (live) this.engineVoice(track.id, live.pitch, live.velocity, 0.65)
   }
 
   /** A note through the engine's track (live event path); false when the engine does not render that track. */
@@ -757,11 +907,12 @@ export class RustWebAudioEngine extends WebAudioEngine {
     let timeline: NativeProjectTimeline
     try { timeline = compileNativeTimeline(project, metadata) } catch (error) { return fallback(message(error)) }
     if (timeline.lengthFrames > sampleRate * 60 * 15) throw new Error('이 초기 버전은 한 번에 최대 15분까지 WAV로 내보낼 수 있습니다. 프로젝트 길이를 줄여 주세요.')
-    const encoded = encodeTracks(timeline.tracks)
+    const wired = this.wireWave(timeline, project)
+    const encoded = encodeTracks(wired.tracks)
     let result
     try {
       result = await renderInEngineWorker(module, {
-        timeline: utf8Encode(JSON.stringify({ ...timeline, tracks: encoded.tracks })), binary: encoded.binary ?? undefined,
+        timeline: utf8Encode(JSON.stringify({ ...wired, tracks: encoded.tracks })), binary: encoded.binary ?? undefined,
         sampleRate, lengthFrames: timeline.lengthFrames, assets, sampleSets,
         tailSeconds: options.tailSeconds === undefined ? undefined : Math.min(30, Math.max(0, options.tailSeconds)),
         startFrame: options.startFrame,

@@ -4,7 +4,7 @@
 
 > **상태 (2026-11-17, 첫 마일스톤):** `rust/garak-engine`이 오디오 트랙(PCM 클립·게인·페이드·크로스페이드), 트랙 볼륨/팬/뮤트/솔로, 내장 이펙트 체인(garak-dsp, 기타 랙 인서트 포함), 센드/리턴, 마스터, 볼륨/팬/뮤트/센드/인서트 파라미터 오토메이션, 템포 맵을 C++ `RenderEngine`과 같은 의미로 렌더합니다. 같은 엔진이 **네이티브(C++ 호스트, `garak-ffi`)와 브라우저(WASM, `garak-engine-wasm`)에서 처음부터 똑같이** 돕니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW·MSVC, 오프라인 내보내기 4종 + 재생 중 diff, C++·Rust 이펙트 모두. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 ≤ -138 dBFS), WASM 대비 네이티브 Rust **-144.5 dBFS**. 웹 앱은 **플래그(`garak.rustEngine`, 기본 꺼짐)로 이 엔진을 AudioWorklet에서 씁니다**([5장](#5-wasm-호스트-audioworklet--5단계-웹-호스트)); 기본 동작 변화 없음. 데스크톱은 0.3.3부터 이 엔진만 씁니다([10장](#10-데스크톱-호스트-경로-셸--rust-그래프)). VST3·IEUM WAVE(호스트 노드), 입력 모니터링·트랙 입력 라우트·녹음 탭, 얼린 윈도, render-ahead도 Rust 그래프로 렌더합니다(2026-11-17, C++ 대비 비트 동일). 두 호스트는 하나의 `Track::render(.., &Io)`와 하나의 `routes::prepare`를 공유합니다: 데스크톱은 `Io::host` 콜백으로, 브라우저는 `Io::input`(입력 블록)으로 모니터 입력을 줍니다. 내장 악기도 두 호스트에서 Rust 엔진이 렌더합니다(아래).
 
-> **악기 마일스톤 (2026-11-17, G2):** 내장 악기 전부가 Rust 엔진에서 돕니다 — 신스 5종(벨벳 키 `keys`, 틴 EP `rhodes`, 모노 베이스 `bass`, 클라우드 패드 `pad`, 글라스 플럭 `pluck`), 포켓 드럼 `drums`, 샘플 악기·킷 전부(`builtin-sampled`: 그랜드/콘서트 그랜드/월리처, 스튜디오·808·로파이 킷, 사물놀이, 가야금·해금·대금), 옥구슬 EP·한밤 106, IEUM WAVE(`native-wavetable`: `native/devices/wavetable-synth` 전체 포팅). 음표/컨트롤러 커서, 서스테인 페달, 피치벤드·모듈레이션·프레셔, CC7/CC11, 릴리스 노이즈 규칙, 보이스 스틸, 편집 중 음표 상태 승계(음표 id 재부여, 지운 음표 릴리스), 탐색·사이클 추적(페달 포함), 악기 파라미터 오토메이션, 라이브 MIDI까지 C++ `RenderEngine`과 같은 의미입니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW, 오프라인 10종 × C++/Rust 이펙트 + 재생 중 편집·사이클·라이브 MIDI·WAVE 패치 크로스페이드, [7.2](#72-결과-이-pc-mingw-w64-gcc-16-release-x86-64)). 아직 아닌 것: VST3 악기(C++ 유지, 4장 hook).
+> **악기 마일스톤 (2026-11-17, G2):** 내장 악기 전부가 Rust 엔진에서 돕니다 — 신스 5종(벨벳 키 `keys`, 틴 EP `rhodes`, 모노 베이스 `bass`, 클라우드 패드 `pad`, 글라스 플럭 `pluck`), 포켓 드럼 `drums`, 샘플 악기·킷 전부(`builtin-sampled`: 그랜드/콘서트 그랜드/월리처, 스튜디오·808·로파이 킷, 사물놀이, 가야금·해금·대금), 옥구슬 EP·한밤 106, IEUM WAVE(`native-wavetable`: 원래 C++ `native/devices/wavetable-synth` 전체 포팅, 0.3.3부터 유일한 구현). 음표/컨트롤러 커서, 서스테인 페달, 피치벤드·모듈레이션·프레셔, CC7/CC11, 릴리스 노이즈 규칙, 보이스 스틸, 편집 중 음표 상태 승계(음표 id 재부여, 지운 음표 릴리스), 탐색·사이클 추적(페달 포함), 악기 파라미터 오토메이션, 라이브 MIDI까지 C++ `RenderEngine`과 같은 의미입니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW, 오프라인 10종 × C++/Rust 이펙트 + 재생 중 편집·사이클·라이브 MIDI·WAVE 패치 크로스페이드, [7.2](#72-결과-이-pc-mingw-w64-gcc-16-release-x86-64)). 아직 아닌 것: VST3 악기(C++ 유지, 4장 hook).
 
 관련 문서: [RUST.md](RUST.md)(1~3단계, DSP 커널), [RENDER_DIFF_PROTOCOL.md](RENDER_DIFF_PROTOCOL.md)(엔진 입력 계약), [SENDS_RETURNS.md](SENDS_RETURNS.md), [AUTOMATION.md](AUTOMATION.md), [TEMPO_MAP.md](TEMPO_MAP.md), [REGION_GAIN_FADES.md](REGION_GAIN_FADES.md).
 
@@ -30,8 +30,8 @@ rust/garak-engine/            #![no_std] + alloc (이유: 3장). 의존성: gara
   src/engine.rs               Controller(제어 스레드) / Renderer(오디오 스레드), 그래프 준비(prepare), diff 분류(update), 명령 적용(consume), 블록 렌더
   src/track.rs                TrackRuntime: 윈도 또는 악기 → (리턴 입력) → 인서트(32프레임 오토메이션 청크) → PDC → 페이더/팬/뮤트 → 출력 지연, 탭
   src/instrument.rs           악기 소스: compileSynth·resolveSet, 음표/컨트롤러/이벤트 커서, 추적(chase), 라이브 MIDI·페달,
-                              renumberNotes/removedNotes, 옥구슬 EP·한밤 106·IEUM WAVE의 플러그인 이벤트 경로(rust_instrument.hpp·wavetable.cpp와 같음)
-  src/wave/                   IEUM WAVE: schema.rs(patch_schema.hpp에서 생성), patch.rs(IEWAVE01 디코더·검증), tables.rs(FFT 밉맵),
+                              renumberNotes/removedNotes, 옥구슬 EP·한밤 106·IEUM WAVE의 플러그인 이벤트 경로(0.3.2까지의 C++ 구현과 같음)
+  src/wave/                   IEUM WAVE: schema.rs(schema.json에서 생성), patch.rs(IEWAVE01 디코더·검증), tables.rs(FFT 밉맵),
                               dsp.rs(엔벨로프·SVF·이펙트), synth.rs(16보이스·유니즌·모드 매트릭스·테이블 크로스페이드), processor.rs(호스트 쪽)
   src/clip.rs                 오디오 윈도: 게인, 페이드 5종, 4 ms 클릭 가드, 선형 보간 리샘플, 4/6채널 다운믹스
   src/insert.rs               garak-dsp Fx + 소유 저장 공간, 리버브 커널 캐시(공유 Arc), 라이브 파라미터 판정
@@ -105,7 +105,7 @@ Controller ── Command(SPSC 1024) ──────────────�
 
 ## 4. C++ 호스트가 엔진을 쓰는 방법 (FFI)
 
-C++ 셸(`native/src/engine.cpp` `RenderEngine`)은 장치 콜백, 전송·카운트인 타이밍, 녹음 캡처, VST3·IEUM WAVE 처리를 갖고, 나머지(트랙·마스터 버스·메트로놈 클릭)를 Rust 엔진에 맡깁니다.
+C++ 셸(`native/src/engine.cpp` `RenderEngine`)은 장치 콜백, 전송·카운트인 타이밍, 녹음 캡처, VST3 처리와 IEUM WAVE 패치 검증을 갖고, 나머지(트랙·IEUM WAVE·마스터 버스·메트로놈 클릭)를 Rust 엔진에 맡깁니다.
 
 ```
 garak-audio-host (C++)
@@ -116,7 +116,7 @@ garak-audio-host (C++)
 ```
 
 - 스레드 규칙: `garak_rs_engine_render`만 오디오 반쪽이고, 나머지 `garak_rs_engine_*`는 제어 반쪽(한 번에 한 제어 스레드)입니다. 두 반쪽은 서로 다른 스레드에서 동시에 돌 수 있습니다(핸들 안의 `Controller`와 `Renderer`가 원자적 큐로만 통신). 오류는 예외가 아니라 -1 반환 + `garak_rs_engine_last_error`.
-- **VST3·IEUM WAVE: 호스트 노드 (구현됨, `src/external.rs`):** 플러그인 인스턴스·에디터·상태 저장은 C++ 소유로 둡니다. 셸은 플랜 JSON에서 `"kind":"vst3"`/`"native-wavetable"` 소스와 `"type":"vst3"` 인서트에 `"host":{"latencyFrames","tailSeconds","stereo"}`를 붙여 보냅니다(C++이 준비한 프로세서의 값, `ControlTrack::sourceLatency`/`pluginInserts`). 엔진은 그 자리에 호스트 소스 노드(`Track::host_source`)와 호스트 인서트 단계(`Stage::Host`)를 두고 PDC·꼬리·스테레오 판정에 넣습니다.
+- **VST3: 호스트 노드 (구현됨, `src/external.rs`):** 플러그인 인스턴스·에디터·상태 저장은 C++ 소유로 둡니다. (IEUM WAVE도 0.3.2까지 이 경로였고, 0.3.3부터는 엔진이 직접 렌더하며 `native-wavetable` 소스의 `"host"`는 거부합니다.) 셸은 플랜 JSON에서 `"kind":"vst3"` 소스와 `"type":"vst3"` 인서트에 `"host":{"latencyFrames","tailSeconds","stereo"}`를 붙여 보냅니다(C++이 준비한 프로세서의 값, `ControlTrack::sourceLatency`/`pluginInserts`). 엔진은 그 자리에 호스트 소스 노드(`Track::host_source`)와 호스트 인서트 단계(`Stage::Host`)를 두고 PDC·꼬리·스테레오 판정에 넣습니다.
   - 렌더 중 엔진은 그 트랙을 렌더하는 스레드에서 `GarakRsHostNodes` 콜백을 부릅니다: `source(user, track, stereo, frames)`(악기 출력), `insert(user, track, insert, stereo, frames)`(인서트 처리), `input(user, track, stereo, frames)`(모니터링 중인 트랙의 장치 입력). 다른 트랙끼리는 동시에, 한 트랙에는 한 번에 하나만.
   - C++ 쪽은 `HostTrack::renderSource`(음표·컨트롤러·서스테인·라이브 MIDI·체이스·파라미터 오토메이션 점 이벤트 → `PluginProcessor::process`)와 `HostTrack::processPlugin`(VST3 인서트 오토메이션의 32점 격자)입니다. 0.3.2의 C++ 트랙 경로에서 그대로 남긴 함수라 이벤트 타이밍·`ProcessContext`(템포 맵·박자 맵 위치·재생·사이클·녹음)가 이전과 비트 단위로 같습니다.
   - 호스트 노드의 상태 이전·리셋은 셸이 `HostTrack`에 합니다(재생/정지/탐색/사이클, 그래프 교체의 `adopt`). 그 밖의 트랙 상태(내장 악기·이펙트·PDC·페이더)는 Rust 그래프가 갖습니다.
@@ -265,7 +265,7 @@ LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다
 | 내장 드럼 `drums` | 포켓 드럼 | `Synth::Kind::Drums`(스윕 사인, LCG 노이즈 + 하이패스) | **지원** | 비트 동일 |
 | 샘플 악기 / 킷 `builtin-sampled` | 그랜드(Salamander), 콘서트 그랜드(bitKlavier), 월리처, 가야금·해금·대금, 스튜디오·808·로파이 킷, 사물놀이 | `SampleSet`, `pickZone`, 루프, 릴리스 존, 초크, 코덱 오프셋 | **지원**: `samples.register`와 같은 JSON으로 등록, PCM은 `put_asset` 저장소 공유 | 비트 동일 |
 | 옥구슬 EP `okgu-ep`, 한밤 106 `hanbam-106` | 빈티지 | `rust_instrument.hpp`(플러그인 이벤트 경로로 Rust 커널 호출) | **지원**: 같은 커널을 엔진이 직접, 이벤트 변환·정렬·리셋 규칙 동일 | 비트 동일 |
-| IEUM WAVE `native-wavetable` | IEUM WAVE | `native/devices/wavetable-synth`(C++ 라이브러리) + `wavetable.cpp`(호스트 쪽) | **지원**: `garak-engine::wave`(같은 상태·같은 연산 순서; 테이블·딜레이선은 제어 스레드에서 할당, 테이블 세트는 사용자 뱅크가 같으면 공유) | 비트 동일 |
+| IEUM WAVE `native-wavetable` | IEUM WAVE | (0.3.3에서 삭제: `native/devices/wavetable-synth` + `wavetable.cpp`) | **지원, 유일한 구현**: `garak-engine::wave`(같은 상태·같은 연산 순서; 테이블·딜레이선은 제어 스레드에서 할당, 테이블 세트는 사용자 뱅크가 같으면 공유) | 비트 동일 |
 | VST3 악기 | — | `vst3.cpp` | 거부. C++ 유지, 4장 외부 hook | — |
 | 기타 랙 인서트 `guitar-rig` | — | `dsp.cpp` | 거부 | — |
 
@@ -278,7 +278,14 @@ LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다
 - **보이스 스틸.** 빈 보이스가 없으면 가장 오래된 보이스(첫 최댓값). 킷의 초크 그룹은 3 ms로 페이드.
 - **편집 중 상태 승계(프로토콜 4.2).** 업데이트는 새 음표를 이전 음표와 (프레임·피치·벨로시티)로 맞춰 id를 이어 주고(`renumberNotes`), 악기 정체성(종류·악기 id·샘플 세트와 같은 PCM 객체)이 같으면 보이스·컨트롤러·라이브 노트·페달을 넘깁니다. 짝 없는 이전 음표가 울리고 있으면 릴리스(빈티지: 노트 오프)합니다. 재생 위치에 걸친 새 음표는 다음 반복부터 들립니다. 새 그래프(템포·트랙 추가/삭제)도 트랙 id로 같은 규칙, 새 트랙은 추적 리셋.
 - **오토메이션.** 내장 악기 파라미터는 블록 시작에 `Synth` 필드를 바꿔 새로 시작하는 음표에 적용(보이스는 시작할 때 복사), 빈티지 악기는 블록 시작마다 `set_param`(내부 글라이드).
-- **IEUM WAVE.** 벨로시티를 1로 자르지 않고(최대 2) 받고, 벤드 범위(131)는 받지 않으며, CC7/CC11은 5 ms로 스무딩한 출력 게인입니다. 정지·탐색은 신스 리셋 + 매크로(모드·프레셔)를 패치 값으로, 프로젝트 끝에서는 리셋하지 않습니다. 라이브 패닉은 오디션 노트를 한 이벤트로 놓습니다. 같은 패치의 트랙 재준비는 실행 중인 프로세서를 그대로 넘겨받고, 패치가 바뀌면 새 그래프가 되어 실행 중인 신스가 새 테이블 세트로 20 ms 크로스페이드합니다. 크로스페이드 중에는 다음 그래프 교체가 끝날 때까지 기다립니다(`readyToPreserve`, 이후 명령도 순서대로 대기).
+- **IEUM WAVE.** 벨로시티를 1로 자르지 않고(최대 2) 받고, 벤드 범위(131)는 받지 않으며, CC7/CC11은 5 ms로 스무딩한 출력 게인입니다. 정지·탐색은 신스 리셋 + 매크로(모드·프레셔)를 패치 값으로, 프로젝트 끝에서는 리셋하지 않습니다. 라이브 패닉은 오디션 노트를 한 이벤트로 놓습니다. 같은 패치의 트랙 재준비는 실행 중인 프로세서를 그대로 넘겨받고, 패치가 바뀌면 새 그래프가 되어 실행 중인 신스가 새 테이블 세트로 20 ms 크로스페이드합니다. 크로스페이드 중에는 다음 그래프 교체가 끝날 때까지 기다립니다(이후 명령도 순서대로 대기; 데스크톱 셸은 `garak_rs_engine_settled`로 자기 그래프 명령도 같이 기다림).
+
+### 6.2 IEUM WAVE: 0.3.3 Rust 엔진 단일화
+
+- **데스크톱:** 셸은 `native-wavetable` 소스를 호스트 노드가 아니라 전체 `patchData`(base64 IEWAVE01)로 Rust 그래프에 넘기고, 그래프를 바꾸기 전에 `garak_rs_wave_check_patch`로 검증해(잘못된 패치는 프로젝트를 바꾸지 않고 거부) 내보내기 꼬리를 얻습니다. 라이브 MIDI·미리 듣기·`note.allOff {trackId}`는 다른 내장 악기처럼 `garak_rs_engine_live`로 갑니다. `hello.wavetable`(`protocolVersion` 1, `schemaFingerprint` = `garak_rs_wave_schema_fingerprint()`, 22,050–192,000 Hz)은 Rust 엔진이 있을 때만 알리고, 없으면 `null`입니다. `GARAK_RUST_ENGINE=0`(C++ 트랙 경로)이나 Rust 엔진이 거부한 그래프에 WAVE 트랙이 있으면 C++로 대체하지 않고 거부합니다.
+- **웹:** `RustWebAudioEngine`이 `WavetableNativeBridge`를 구현합니다(상태 = garak-engine.wasm 사용 가능 여부, `applyPatch` = 그 패치를 담은 프로젝트가 엔진에 동기화·수락됨, 미리 듣기 = 엔진 라이브 이벤트). 타임라인은 `wireWave`가 `patch`를 `patchData`로 바꿔 보냅니다(트랙의 파라미터·상태 객체가 같으면 다시 인코딩하지 않음). 내보내기도 엔진 Worker입니다.
+- **스키마:** `generate-schema.mjs`가 schema.json에서 `schema.generated.ts`와 `wave/schema.rs`를 직접 만듭니다(C++ 헤더 단계 없음).
+- **패리티:** 삭제 전 C++ 엔진 렌더를 골든으로 보관(`rust/garak-engine/tests/golden/ieum-wave`, [IEUM_WAVE.md 골든 패리티](IEUM_WAVE.md#골든-패리티)). `native-rust-wave-golden`: Windows x86-64 비트 동일, 그 밖 ≤ -90 dBFS. `native-rust-engine-instruments`는 WAVE 트랙을 뺀 프로젝트로 C++ 엔진과 비교합니다.
 - **라이브 MIDI.** 노트 온/오프(id 또는 피치), 미리 듣기(길이 지정), 컨트롤러, 패닉(페달 해제 + 벤드/모드 중앙). 라이브 페달 중 노트 오프는 지연, 같은 키 재타격은 이전 음을 먼저 놓음. 명령 큐로 블록 경계에 적용합니다(호스트의 블록 내 오프셋 큐 `queueLiveMidi` 연결은 호스트 통합 몫).
 
 ## 7. 패리티 전략과 결과
@@ -379,7 +386,7 @@ CI 러너(같은 벤치): Windows MSVC x64 12트랙 1.0× / 1.0× / **1.3×**(1.
 |---|---|---|
 | G1 (이번) | 오디오 트랙·이펙트·센드·오토메이션·템포 맵 오프라인/라이브 패리티 ≤ -90 dBFS, 렌더 무할당, WASM ↔ 네이티브 ≤ -90 dBFS, CI(MSVC·macOS) | 통과 (MinGW·MSVC·macOS) |
 | G2 | 내장 신스·드럼·샘플 악기 + 컨트롤러, 음표 상태 이전 | 통과 (IEUM WAVE 포함, MinGW 비트 동일) |
-| G3 | VST3·IEUM WAVE 외부 hook, 입력 모니터링·녹음 탭, 멀티코어 | 통과 (10장) |
+| G3 | VST3 외부 hook(IEUM WAVE는 0.3.3부터 엔진 안), 입력 모니터링·녹음 탭, 멀티코어 | 통과 (10장) |
 | G4 | `engine_test.cpp`의 모든 항목을 Rust 엔진 하네스로 옮겨 통과, 장시간 재생 소크 테스트, CPU ≥ C++ (MSVC·macOS) | `engine_test` 전부 Rust 엔진으로 통과, CPU ≥ C++(7.3). 소크 테스트는 남음 |
 | G5 | 데스크톱 호스트에서 기능 플래그로 전환 가능, 이후 기본값 | 0.3.2 기본값, 0.3.3 유일한 경로(플래그·C++ 경로 삭제) |
 
@@ -406,13 +413,13 @@ CI 러너(같은 벤치): Windows MSVC x64 12트랙 1.0× / 1.0× / **1.3×**(1.
 
 **0.3.3에서 추가:** 데스크톱의 마스터 버스·메트로놈을 엔진으로(`GarakRsBlock::master`, `garak_rs_engine_clicks`), C++ 트랙 경로·이펙트 DSP 삭제, 골든 레퍼런스 패리티(7.1).
 
-**아직 아님:** 라이브 MIDI의 블록 내 오프셋(블록 경계에 적용). 데스크톱의 IEUM WAVE는 계속 C++ 호스트 노드(편집기·상태가 C++ 쪽)이고, 웹은 Rust IEUM WAVE를 씁니다.
+**아직 아님:** 라이브 MIDI의 블록 내 오프셋(블록 경계에 적용). IEUM WAVE는 0.3.3부터 데스크톱·웹 모두 Rust 엔진입니다([6.2](#62-ieum-wave-033-rust-엔진-단일화)).
 
 **다음 마일스톤 제안:**
 
 1. ~~**G2 악기**~~ (완료, 6장: IEUM WAVE까지 모든 내장 악기). WAVE의 메모리 예산(테이블 바이트·인스턴스 추정)은 아직 512 MB 상한 계산에 넣지 않습니다.
 2. ~~**웹 워크릿 호스트(병렬):**~~ 5장(플래그, 기본 꺼짐). 남은 일은 5.6.
-3. **G3 외부 hook:** VST3·IEUM WAVE를 C++ 인스턴스로 끼우는 콜백, 입력 탭·녹음, 그리고 엔진 내부 트랙 병렬화.
+3. ~~**G3 외부 hook:**~~ VST3를 C++ 인스턴스로 끼우는 콜백(IEUM WAVE는 0.3.3부터 엔진 안), 입력 탭·녹음, 그리고 엔진 내부 트랙 병렬화.
 4. ~~**G4~G5:**~~ 회귀 테스트 전부 이전, 기본값 전환(0.3.2), 이전 경로 삭제(0.3.3). 남은 것: 소크 테스트.
 
 ## 10. 데스크톱 호스트 경로 (셸 + Rust 그래프)
@@ -423,7 +430,7 @@ CI 러너(같은 벤치): Windows MSVC x64 12트랙 1.0× / 1.0× / **1.3×**(1.
 
 ```
 RenderEngine (C++ 셸) ─ 전송(재생/정지/탐색·사이클·카운트인 타이밍), 라이브 MIDI 전달, 녹음 캡처, 스냅숏·미터 게시,
- │                     워커 풀·render-ahead 링, VST3·IEUM WAVE 프로세서(HostTrack, 호스트 노드), 장치 입력
+ │                     워커 풀·render-ahead 링, VST3 프로세서(HostTrack, 호스트 노드), IEUM WAVE 패치 검증, 장치 입력
  ├ prepare()  호스트 트랙(플러그인 인스턴스, 지연·꼬리) 준비 → 같은 계획을 timeline JSON(rust_engine.inc)으로
  │            garak_rs_engine_set (submit까지 티켓으로 보류); 지연·꼬리 ← garak_rs_engine_graph_details
  ├ submit()/update()  셸 명령(Graph / Replace / Touch / Revision) 뒤에 RustSync{허용 티켓}
@@ -439,7 +446,7 @@ RenderEngine (C++ 셸) ─ 전송(재생/정지/탐색·사이클·카운트인 
 - **전송은 셸 소유:** Rust는 셸이 정한 위치·재생 여부로 블록을 렌더하고, 셸의 `reset(chase, effects)`(재생·일시정지·탐색·사이클 순환)이 `garak_rs_engine_reset_skip`으로 전달됩니다. 카운트인 길이·경과는 셸이 세고 클릭은 Rust가 섞습니다.
 - **라이브 편집과 render-ahead:** 믹스·내장 인서트 파라미터 편집은 셸의 `Touch` 명령(트랙을 링에서 회수하고 2초간 콜백에 둠)과 함께 가서, 링에 든 트랙도 다음 블록에 편집이 들립니다. 호스트 노드가 바뀐 트랙은 `Replace`로 `HostTrack`을 교체하고 상태를 넘깁니다.
 - **미터:** 트랙 피크와 컴프·리미터·게이트 다이내믹스 미터(`garak_rs_engine_take_dynamics`)를 Rust 그래프에서 받아 같은 홀드 규칙으로 게시합니다. 지연은 렌더 중인 그래프의 값(`garak_rs_engine_active_latency`).
-- **호스트 노드:** VST3 악기·인서트와 IEUM WAVE는 C++ 프로세서로 남고, Rust 그래프가 체인의 그 자리에서 셸을 부릅니다(4장). 이벤트·PDC·오토메이션 점·`ProcessContext`는 0.3.2와 비트 동일합니다.
+- **호스트 노드:** VST3 악기·인서트는 C++ 프로세서로 남고(IEUM WAVE는 0.3.3부터 Rust 그래프가 직접 렌더, [6.2](#62-ieum-wave-033-rust-엔진-단일화)), Rust 그래프가 체인의 그 자리에서 셸을 부릅니다(4장). 이벤트·PDC·오토메이션 점·`ProcessContext`는 0.3.2와 비트 동일합니다.
 - **멀티코어:** 셸의 워커 풀(`setProcessing(threads)`)이 Rust 그래프의 처리 레벨마다 트랙을 병렬로 렌더하고(`GarakRsParallelRun`, 호스트 노드 콜백도 그 워커에서), 합은 트랙 순서대로. 출력은 1스레드와 **비트 동일**.
 - **render-ahead:** 셸의 링(ASIO-Guard식)·워커 스케줄링·라이브 트랙 회수 규칙으로, 링에 든 트랙은 워커가 `garak_rs_engine_render_ahead`로 렌더합니다. 콜백은 그 트랙을 건너뛰고 링 출력을 섞습니다. 출력은 콜백 렌더와 **비트 동일**.
 - **스템·프리즈·바운스:** `preFader`·`directOut=false`는 Rust 엔진이 렌더하고, `setMasterBypass`(오프라인)는 `garak_rs_engine_set_master_bypass`로 마스터 버스를 건너뜁니다.
@@ -458,7 +465,7 @@ RenderEngine (C++ 셸) ─ 전송(재생/정지/탐색·사이클·카운트인 
 
 ### 10.3 남은 일
 
-- 데스크톱 IEUM WAVE는 아직 C++ 호스트 노드입니다(편집기·상태가 C++ 쪽). 웹은 Rust IEUM WAVE(`src/wave/`)를 씁니다.
+- IEUM WAVE 테이블 메모리는 아직 512 MB 예산 계산에 들어가지 않습니다(6.2).
 - 장시간 재생 소크 테스트(G4).
 
 참고(바꾸지 않음): 탐색·정지 리셋은 리턴 지연 정렬용 출력 지연선을 비우지 않으므로, 지연 있는 리턴이 있을 때 탐색 직후 몇 프레임은 이전 위치의 소리이고 render-ahead 중이면 링이 얼마나 앞서 있었는지에 따라 달라집니다. 일시정지에서 링이 비어 있었는지(이음매 없는 회수)도 워커 타이밍에 달려 있습니다. 그래서 render-ahead 테스트는 재생·탐색·사이클 순환으로 비교합니다.

@@ -1,10 +1,10 @@
 // The Rust render engine behind RenderEngine (docs/RUST_ENGINE.md 10). Included by engine.cpp inside namespace garak.
 // Since 0.3.3 every graph renders in rust/garak-engine (garak_engine.h): tracks, built-in instruments and effects,
-// the guitar rig, routes, taps, sends, frozen windows, plug-in delay compensation, the master bus and the
-// metronome. This C++ engine stays the shell: transport, cycle, count-in timing, live MIDI forwarding, capture,
-// render-ahead rings, worker pool and snapshots. VST3 instruments and inserts and IEUM WAVE stay C++ processors the
-// Rust graph calls back at their place in the chain (host nodes, docs/RUST_ENGINE.md 4), and so does monitored
-// device input.
+// IEUM WAVE (the shell validates its patches, docs/IEUM_WAVE.md), the guitar rig, routes, taps, sends, frozen windows,
+// plug-in delay compensation, the master bus and the metronome. This C++ engine stays the shell: transport, cycle,
+// count-in timing, live MIDI forwarding, capture, render-ahead rings, worker pool and snapshots. VST3 instruments and
+// inserts stay C++ processors the Rust graph calls back at their place in the chain (host nodes,
+// docs/RUST_ENGINE.md 4), and so does monitored device input.
 //
 // The plan travels as the same timeline JSON the host receives (docs/RENDER_DIFF_PROTOCOL.md), written from the
 // ProjectTimeline with round-trip exact numbers, so the Rust parser reads exactly these values.
@@ -33,12 +33,20 @@ class JsonWriter {
   void comma() { if (!out.empty() && out.back() != '{' && out.back() != '[') out.push_back(','); }
 };
 
-// An identity for an IEUM WAVE patch (the Rust graph only compares it): length and FNV-1a 64.
-std::string patchIdentity(const std::vector<std::uint8_t>& data) {
-  std::uint64_t hash = 1469598103934665603ULL;
-  for (const auto byte : data) { hash ^= byte; hash *= 1099511628211ULL; }
-  char buffer[48]; std::snprintf(buffer, sizeof buffer, "%zu:%016llx", data.size(), static_cast<unsigned long long>(hash));
-  return buffer;
+// An IEUM WAVE patch as the timeline carries it (base64 IEWAVE01; the Rust graph decodes and renders it).
+std::string patchText(const std::vector<std::uint8_t>& data) {
+  static constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((data.size() + 2) / 3 * 4);
+  for (std::size_t i = 0; i < data.size(); i += 3) {
+    const std::uint32_t n = (std::uint32_t(data[i]) << 16) | (i + 1 < data.size() ? std::uint32_t(data[i + 1]) << 8 : 0) |
+                            (i + 2 < data.size() ? std::uint32_t(data[i + 2]) : 0);
+    out.push_back(alphabet[(n >> 18) & 63]);
+    out.push_back(alphabet[(n >> 12) & 63]);
+    out.push_back(i + 1 < data.size() ? alphabet[(n >> 6) & 63] : '=');
+    out.push_back(i + 2 < data.size() ? alphabet[n & 63] : '=');
+  }
+  return out;
 }
 
 // The sample sets `p`'s enabled sampled-instrument tracks use (each once). Missing ones are left out: the Rust
@@ -144,8 +152,7 @@ std::string rustTimelineJson(const ProjectTimeline& p, const ControlRecipe* reci
         if (hosted) writeHost(w, info->sourceLatency, info->sourceTail, true);
         break;
       case TrackSource::Kind::NativeWavetable:
-        w.key("kind"); w.str("native-wavetable"); w.key("instrumentId"); w.str("wavetable"); w.key("patchData"); w.str(patchIdentity(t.source.patchData));
-        if (hosted) writeHost(w, info->sourceLatency, info->sourceTail, true);
+        w.key("kind"); w.str("native-wavetable"); w.key("instrumentId"); w.str("wavetable"); w.key("patchData"); w.str(patchText(t.source.patchData));
         break;
     }
     w.raw("}");
@@ -238,7 +245,28 @@ std::string rustTimelineJson(const ProjectTimeline& p, const ControlRecipe* reci
   return std::move(w.out);
 }
 
+// IEUM WAVE (docs/IEUM_WAVE.md) renders only in the Rust graph. Control thread, before a graph changes: refuses a
+// sample rate or patch the synth cannot play and returns the patch's export tail in seconds.
+double checkWavetablePatch(std::uint32_t sampleRate, const std::vector<std::uint8_t>& patch) {
+  if (sampleRate < 22050 || sampleRate > 192000) throw std::invalid_argument("IEUM WAVE requires a sample rate of 22050..192000 Hz");
+  double tail = 0;
+  std::string error(256, '\0');
+  std::size_t length = 0;
+  if (garak_rs_wave_check_patch(patch.data(), patch.size(), &tail, reinterpret_cast<std::uint8_t*>(error.data()), error.size(), &length) != 0) {
+    error.resize(std::min(length, error.size()));
+    throw std::invalid_argument("Invalid IEUM WAVE patch: " + error);
+  }
+  return tail;
+}
+
+bool hasWavetable(const ProjectTimeline& p) {
+  return std::any_of(p.tracks.begin(), p.tracks.end(), [](const TrackTimeline& t) { return t.enabled && t.source.kind == TrackSource::Kind::NativeWavetable; });
+}
 } // namespace
+
+std::uint32_t wavetableSchemaFingerprint() noexcept {
+  return garak_rs_wave_schema_fingerprint();
+}
 
 // Control-thread owner of the Rust engine handle. The audio thread only calls the render half
 // (garak_rs_engine_render_host, _reset*, _live, _clicks, _render_ahead, ...) on `handle`.

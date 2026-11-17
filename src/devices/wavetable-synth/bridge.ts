@@ -10,8 +10,10 @@ export interface WavetableBridgeStatus {
 }
 
 /**
- * Host contract, not an audio device implementation. The checked-in Web Audio
- * engine does not implement this interface. Native hosts own their device clock,
+ * Host contract, not an audio device implementation. The synth renders only in
+ * the Rust engine (docs/IEUM_WAVE.md): the desktop NativeAudioEngine (host
+ * handshake) and the browser RustWebAudioEngine (garak-engine.wasm) implement
+ * it; the plain Web Audio engine does not. Engines own their device clock,
  * project-wide track synchronization, and real-time event queues.
  */
 export interface WavetableNativeBridge {
@@ -90,6 +92,14 @@ export function encodeWavetablePatch(value: WavetablePatch): Uint8Array {
     for (const frame of bank.frames) for (const sample of frame) float(sample)
   }
   return result
+}
+
+/** The timeline's `patchData`: the IEWAVE01 pack as base64 (the desktop host and garak-engine.wasm decode it). */
+export function wavetablePatchData(patch: WavetablePatch): string {
+  const bytes = encodeWavetablePatch(patch)
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  return btoa(binary)
 }
 
 export interface WavetablePreviewStatus {

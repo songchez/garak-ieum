@@ -3,7 +3,9 @@
 //   1. the app boots with the flag on (no console errors) and createAudioEngine picks the Rust host;
 //   2. A/B: the same projects exported by the Web Audio engine and by the Rust engine (worker);
 //   3. realtime: the Rust worklet plays (non-silent master, advancing transport, seek/pause/stop),
-//      a project the engine refuses falls back to Web Audio, and the export runs on the engine;
+//      a sampled kit and IEUM WAVE (a preset change while playing, the WAVE editor bridge's patch and
+//      audition notes, its export) stay on the engine, a project the engine refuses falls back to Web Audio,
+//      and the export runs on the engine;
 //   4. CPU: 16/32-track projects played in realtime on both engines (worklet render time per
 //      quantum; AudioContext.renderCapacity load when the browser has it) and rendered offline. On the
 //      isolated page the worklet is timed with a microsecond clock (engineBenchmark.preciseClock);
@@ -65,6 +67,7 @@ const TASK = async ({ name, arg }) => {
       const { createTrack } = await import('/src/core/project.ts')
       const { DEFAULT_AUDIO_SETTINGS } = await import('/src/core/audioSettings.ts')
       const fixtures = await import('/src/audio/rust/engineTestProjects.ts')
+      const { combineWavetablePatch } = await import('/src/devices/wavetable-synth/model.ts')
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
       const factoryPicksRust = (() => { const e = createAudioEngine(DEFAULT_AUDIO_SETTINGS); const ok = e instanceof RustWebAudioEngine; e.dispose(); return ok })()
 
@@ -151,6 +154,40 @@ const TASK = async ({ name, arg }) => {
       for (let i = 0; i < 16; i += 1) { await sleep(50); sampledMaster = Math.max(sampledMaster, engine.getMasterLevel()) }
       const sampledOn = engine.diagnostics()
       engine.stop()
+      // IEUM WAVE: the synth exists only in the engine (docs/IEUM_WAVE.md). It plays, a preset change while playing
+      // stays on the engine (the running synth adopts the new patch), the editor bridge applies a patch and
+      // auditions notes while stopped, and the export renders on the engine.
+      const waveTest = fixtures.waveProject('init')
+      const waveTrack = waveTest.project.tracks[0].id
+      engine.setProject(waveTest.project)
+      await engine.play()
+      let waveMaster = 0
+      for (let i = 0; i < 12; i += 1) { await sleep(50); waveMaster = Math.max(waveMaster, engine.getMasterLevel()) }
+      const waveOn = engine.diagnostics()
+      const presetTest = fixtures.waveProject('glass-stream')
+      engine.setProject(presetTest.project)
+      let presetMaster = 0
+      for (let i = 0; i < 12; i += 1) { await sleep(50); presetMaster = Math.max(presetMaster, engine.getMasterLevel()) }
+      const presetOn = engine.diagnostics()
+      engine.stop()
+      const editor = { status: engine.wavetable.getStatus() }
+      const track = presetTest.project.tracks[0]
+      try {
+        editor.applied = (await engine.wavetable.applyPatch(waveTrack, combineWavetablePatch(track.instrumentParams, track.instrumentState), 1)).revision
+        // Stopped, the meters read the preview graph: the worklet's own status shows the note (live events played,
+        // master peak).
+        const before = engine.diagnostics().status.livePlayed
+        engine.wavetable.previewNoteOn(waveTrack, 60, 0.9)
+        let peak = 0
+        for (let i = 0; i < 8; i += 1) { await sleep(40); peak = Math.max(peak, engine.diagnostics().status.peak) }
+        editor.peak = peak
+        editor.livePlayed = engine.diagnostics().status.livePlayed - before
+        engine.wavetable.previewNoteOff(waveTrack, 60)
+        engine.wavetable.allNotesOff(waveTrack)
+      } catch (error) { editor.error = String(error) }
+      editor.playing = engine.diagnostics().playing
+      const waveRender = await engine.renderAudio(presetTest.project, { bitDepth: 32 })
+      const waveExport = { engine: engine.diagnostics().lastRender?.engine, peak: (await decode(waveRender.blob)).left.reduce((m, x) => Math.max(m, Math.abs(x)), 0) }
       // A project the engine refuses (the test-only refusal, garak.rustEngineRefuseInsert): plays on Web Audio,
       // with a console note.
       const refusedType = playTest.project.tracks.flatMap(track => track.devices)[0].type
@@ -174,6 +211,7 @@ const TASK = async ({ name, arg }) => {
         quanta: playing.status.quanta, afterSeek, paused: paused.playing, pausedBeat: paused.beat, pausedLater, exportEngine: exportInfo?.engine, exportBytes: exported.blob.size,
         fallback: { playingOn: fallback.playing, accepted: fallback.accepted, reason: fallback.reason }, resumed,
         sampled: { playingOn: sampledOn.playing, accepted: sampledOn.accepted, reason: sampledOn.reason, master: sampledMaster },
+        wave: { playingOn: waveOn.playing, accepted: waveOn.accepted, reason: waveOn.reason, master: waveMaster, presetOn: presetOn.playing, presetMaster, editor, export: waveExport },
       }
       return { ab, realtime }
       }
@@ -297,6 +335,17 @@ try {
     assert.equal(r.fallback.playingOn, 'web-audio', 'a refused project must fall back to Web Audio')
     assert.equal(r.sampled.playingOn, 'rust', `a sampled-instrument project stays on the Rust engine (${r.sampled.reason})`)
     assert(r.sampled.master > 0.01, `the sampled kit is audible on the engine (master ${r.sampled.master})`)
+    assert.equal(r.wave.playingOn, 'rust', `an IEUM WAVE project plays on the Rust engine (${r.wave.reason})`)
+    assert(r.wave.master > 0.01, `IEUM WAVE is audible on the engine (master ${r.wave.master})`)
+    assert.equal(r.wave.presetOn, 'rust', 'an IEUM WAVE preset change stays on the engine')
+    assert(r.wave.presetMaster > 0.005, `IEUM WAVE keeps sounding after a preset change (master ${r.wave.presetMaster})`)
+    assert.equal(r.wave.editor.status.available, true, `the WAVE editor sees the engine (${r.wave.editor.status.reason})`)
+    assert.equal(r.wave.editor.error, undefined)
+    assert.equal(r.wave.editor.applied, 1, 'the WAVE editor patch is acknowledged')
+    assert(r.wave.editor.livePlayed >= 1 && r.wave.editor.peak > 0.001, `a WAVE editor note sounds while stopped (${r.wave.editor.livePlayed} live events, peak ${r.wave.editor.peak})`)
+    assert.equal(r.wave.editor.playing, null, 'editor notes do not start the transport')
+    assert.equal(r.wave.export.engine, 'rust', 'IEUM WAVE exports on the engine')
+    assert(r.wave.export.peak > 0.01, `the IEUM WAVE export is audible (peak ${r.wave.export.peak})`)
     assert.equal(r.resumed, 'rust', 'a supported project must return to the Rust engine')
     for (const [name, entry] of Object.entries(result.ab)) {
       assert.equal(entry.rustEngine, 'rust', `${name}: exported on the Rust engine`)

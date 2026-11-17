@@ -1,6 +1,7 @@
 //! Instrument additions to the engine C ABI (header `include/garak_engine_instruments.h`): sample
-//! set registration (`samples.register`), live MIDI to instrument tracks, and the instrument
-//! parity projects of `garak_engine::testkit::instruments`. Same thread rules as the rest of
+//! set registration (`samples.register`), live MIDI to instrument tracks, IEUM WAVE's handshake and
+//! patch validation (the synth renders only in this engine since 0.3.3, docs/IEUM_WAVE.md), and the
+//! instrument parity projects of `garak_engine::testkit::instruments`. Same thread rules as the rest of
 //! `garak_rs_engine_*`: every function here is the control half.
 
 use alloc::boxed::Box;
@@ -159,6 +160,80 @@ pub unsafe extern "C" fn garak_rs_testkit_sample_set(
         *out = s.len();
     }
     s.as_ptr()
+}
+
+/// IEUM WAVE's patch schema fingerprint (the `wavetable.schemaFingerprint` of the host handshake).
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_rs_wave_schema_fingerprint() -> u32 {
+    garak_engine::wave_host::SCHEMA_FINGERPRINT
+}
+
+/// Validates an IEUM WAVE patch (IEWAVE01 pack) on the control thread. Returns 0 and writes the
+/// patch's export tail (seconds) to `tail_seconds`, or -1 and writes the reason (UTF-8, truncated to
+/// `capacity`) to `error`. Either way returns through `error_len` the full reason length (0 on success).
+///
+/// # Safety
+/// `patch` is null or valid for `len` reads; `tail_seconds` and `error_len` are null or valid for
+/// one write; `error` is null or valid for `capacity` writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_wave_check_patch(
+    patch: *const u8,
+    len: usize,
+    tail_seconds: *mut f64,
+    error: *mut u8,
+    capacity: usize,
+    error_len: *mut usize,
+) -> i32 {
+    // SAFETY: caller contract.
+    let data = unsafe { bytes(patch, len) };
+    let (status, tail, message) = match garak_engine::wave_host::check_patch(data) {
+        Ok(tail) => (0, tail, alloc::string::String::new()),
+        Err(e) => (GARAK_RS_ENGINE_ERROR, 0.0, e),
+    };
+    // SAFETY: caller contract.
+    if let Some(out) = unsafe { tail_seconds.as_mut() } {
+        *out = tail;
+    }
+    let n = message.len().min(capacity);
+    if !error.is_null() && n > 0 {
+        // SAFETY: `error` holds `capacity >= n` bytes; the regions cannot overlap.
+        unsafe { core::ptr::copy_nonoverlapping(message.as_ptr(), error, n) };
+    }
+    // SAFETY: caller contract.
+    if let Some(out) = unsafe { error_len.as_mut() } {
+        *out = message.len();
+    }
+    status
+}
+
+/// The default IEUM WAVE patch as an IEWAVE01 pack (tests build patches from it). Writes up to
+/// `capacity` bytes to `out` (null to query) and returns the pack's length.
+///
+/// # Safety
+/// `out` is null or valid for `capacity` writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_wave_default_patch(out: *mut u8, capacity: usize) -> usize {
+    let pack = garak_engine::wave_host::default_patch();
+    let n = pack.len().min(capacity);
+    if !out.is_null() && n > 0 {
+        // SAFETY: `out` holds `capacity >= n` bytes; the regions cannot overlap.
+        unsafe { core::ptr::copy_nonoverlapping(pack.as_ptr(), out, n) };
+    }
+    pack.len()
+}
+
+/// The wire index of IEUM WAVE parameter `id` (schema.json `params[].id`, UTF-8), or -1.
+///
+/// # Safety
+/// `id` is null or valid for `len` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_wave_parameter_index(id: *const u8, len: usize) -> i32 {
+    // SAFETY: caller contract.
+    let name = unsafe { bytes(id, len) };
+    core::str::from_utf8(name)
+        .ok()
+        .and_then(garak_engine::wave_host::parameter_index)
+        .map_or(-1, |i| i as i32)
 }
 
 #[cfg(test)]

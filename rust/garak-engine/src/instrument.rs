@@ -183,8 +183,8 @@ pub(crate) struct Builtin {
 enum PluginEngine {
     /// 옥구슬 EP / 한밤 106 (rust_instrument.hpp `RustInstrumentProcessor`).
     Vintage { instrument: Box<Instrument>, converted: Vec<InstrumentEvent>, left: Vec<f32>, right: Vec<f32> },
-    /// IEUM WAVE (native/src/wavetable.cpp `WavetableProcessor`). None until a rebuilt track takes
-    /// its predecessor's processor (engine.cpp `reuseInstrument`: the same patch is not rebuilt).
+    /// IEUM WAVE (wave::Processor, the former native/src/wavetable.cpp). None until a rebuilt track takes
+    /// its predecessor's processor (the same patch is not rebuilt).
     Wave { processor: Option<Box<Processor>>, host: Vec<HostEvent> },
 }
 
@@ -770,8 +770,8 @@ impl Vintage {
     }
 
     /// One block: pending + timeline + live auto-off events, sorted, through the instrument
-    /// (rust_instrument.hpp `RustInstrumentProcessor::process`, wavetable.cpp
-    /// `WavetableProcessor::process`). Overwrites `buf`. `context`: tempo, transport playing.
+    /// (rust_instrument.hpp `RustInstrumentProcessor::process`, IEUM WAVE:
+    /// `wave::Processor::process`). Overwrites `buf`. `context`: tempo, transport playing.
     fn render(
         &mut self,
         buf: &mut [f32],

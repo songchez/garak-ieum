@@ -2,9 +2,9 @@
 // docs/NATIVE_AUDIO.md). Since 0.3.3 every track renders in rust/garak-engine (rust_engine.inc), master bus and
 // metronome included. This file keeps the shell: the control-thread queues and graph swaps, transport, cycle and
 // count-in timing, live MIDI forwarding, monitored input and capture, the worker pool and render-ahead rings,
-// snapshots, and the host nodes the Rust graph calls back: VST3 instruments and inserts and IEUM WAVE (HostTrack).
+// snapshots, and the host nodes the Rust graph calls back: VST3 instruments and inserts (HostTrack). IEUM WAVE renders
+// in the Rust graph too; the shell only validates its patches (docs/IEUM_WAVE.md).
 #include "garak/engine.hpp"
-#include "wavetable.hpp"
 #include "garak_engine.h"
 #include "garak_engine_instruments.h"
 
@@ -29,7 +29,6 @@
 namespace garak {
 namespace {
 constexpr std::size_t maxVoices = 128, maxPluginEvents = 2048;
-constexpr std::size_t memoryLimit = 512u * 1024u * 1024u;
 constexpr std::int64_t unlimitedFrame = std::numeric_limits<std::int64_t>::max() / 4;
 constexpr double pi = 3.14159265358979323846264338327950288;
 
@@ -274,11 +273,10 @@ struct InsertRuntime {
 };
 
 // The shell's part of one graph track: the host nodes the Rust graph calls back (docs/RUST_ENGINE.md 4) and the
-// shell's bookkeeping. A VST3 or IEUM WAVE instrument receives sample-accurate events (timeline notes and
-// controllers, chased notes, live and audition notes, the live sustain pedal for IEUM WAVE, instrument parameter
-// points); VST3 inserts receive their parameter points. The track also carries its render-ahead ring, its
-// published meter and live ownership. Built-in instruments, effects, windows, routes, sends and the mix are the
-// Rust graph's: for such a track this holds no processor at all.
+// shell's bookkeeping. A VST3 instrument receives sample-accurate events (timeline notes and controllers, chased
+// notes, live and audition notes, instrument parameter points); VST3 inserts receive their parameter points. The track also carries its render-ahead ring, its
+// published meter and live ownership. Built-in instruments, IEUM WAVE, effects, windows, routes, sends and the mix
+// are the Rust graph's: for such a track this holds no processor at all.
 struct HostTrack {
   HostTrack() = default;
   HostTrack(const HostTrack&) = delete;
@@ -289,24 +287,17 @@ struct HostTrack {
   TrackTimeline timeline;
   std::vector<InsertRuntime> inserts;
   std::shared_ptr<PluginProcessor> instrument;
-  std::shared_ptr<WavetableProcessor> wavetable;
   std::vector<TimedPluginEvent> events;
   std::array<PluginEvent,maxPluginEvents> blockEvents{};
   std::array<PluginEvent,maxVoices> pendingEvents{};
   std::size_t pendingCount=0;
-  bool releaseAudition=false;
   struct LivePluginNote { bool active=false;std::int32_t id=-1;std::uint8_t pitch=60;std::int64_t remaining=0; };
   std::array<LivePluginNote,maxVoices> pluginNotes{};
-  // Live sustain pedal (CC64 from controlChange). VST3 instruments get the controller itself; IEUM WAVE notes have
-  // their live note-offs deferred here until the pedal lifts.
+  // Live sustain pedal (CC64 from controlChange): the VST3 instrument gets the controller itself.
   bool livePedal=false;
-  struct DeferredOff { std::int32_t id=-1; std::uint8_t pitch=60; };
-  std::array<DeferredOff,maxVoices> deferredOffs{};
-  std::size_t deferredCount=0;
-  [[nodiscard]] bool vst3()const noexcept{return instrument&&!wavetable;}
+  [[nodiscard]] bool vst3()const noexcept{return instrument!=nullptr;}
   std::size_t nextNote=0,nextEvent=0;
   std::uint32_t latency=0; // VST3 instrument + VST3 inserts (host nodes only).
-  std::int64_t projectLength=0;
   // Render-ahead and multi-core bookkeeping. A block task writes only its own track.
   std::unique_ptr<AheadState> ahead; // Render-ahead ring when eligible (no VST3).
   const float* mix=nullptr;          // This block's ring output (ahead->out).
@@ -337,7 +328,6 @@ struct HostTrack {
   std::int32_t predecessor=-1;            // Index in the previous graph, or -1 (a new track).
   bool identical=false;                   // Same events/source/enabled: cursors and a render-ahead ring carry over.
   bool sameSource=false;                  // Same instrument identity: the instrument and its live notes carry over.
-  bool reuseInstrument=false;             // The instrument was not built: take the predecessor's (update()).
   bool aheadEligible=false;               // May take the predecessor's (idle) render-ahead ring (update()).
   std::vector<std::int32_t> insertOrigin; // Per runtime insert: the predecessor's runtime insert (same id/type), or -1.
   std::vector<RemovedNote> removedNotes;  // Predecessor notes absent here: released if sounding.
@@ -350,12 +340,9 @@ struct HostTrack {
   void adopt(HostTrack& previous,std::int64_t frame,bool sameEvents,bool replaced)noexcept {
     meter=previous.meter;liveUntil=previous.liveUntil;
     if(sameSource) {
-      livePedal=previous.livePedal;deferredOffs=previous.deferredOffs;deferredCount=previous.deferredCount;
+      livePedal=previous.livePedal;
       pendingEvents=previous.pendingEvents;pendingCount=previous.pendingCount;pluginNotes=previous.pluginNotes;
-      releaseAudition=previous.releaseAudition;
-      if(reuseInstrument){instrument.swap(previous.instrument);wavetable.swap(previous.wavetable);}
-      else if(wavetable&&previous.wavetable)wavetable->takeStateFrom(*previous.wavetable);
-      else if(instrument&&previous.instrument&&!wavetable&&!previous.wavetable)instrument.swap(previous.instrument);
+      if(instrument&&previous.instrument)instrument.swap(previous.instrument);
     } else if(instrument&&instrument==previous.instrument)instrument->requestReset();
     for(std::size_t i=0;i<inserts.size()&&i<insertOrigin.size();++i) {
       const auto from=insertOrigin[i];
@@ -379,8 +366,6 @@ struct HostTrack {
   // Live and chased notes for the instrument (built-in instruments receive theirs in the Rust graph).
   void spawn(int pitch,float velocity,std::int64_t duration,std::int64_t available,std::int32_t id,bool live,std::uint64_t& overflows)noexcept {
     if(!instrument||velocity<=0||duration<=0||available<=0||!timeline.enabled)return;
-    // Re-striking a key that only rings because of the pedal ends that sustained note first.
-    if(live&&!timeline.source.isKit)retriggerSustained(pitch,overflows);
     if(pendingCount==pendingEvents.size()){++overflows;return;}
     if(live){
       auto slot=std::find_if(pluginNotes.begin(),pluginNotes.end(),[](const LivePluginNote&n){return !n.active;});
@@ -389,42 +374,18 @@ struct HostTrack {
     }
     // Chased timeline notes already have an exact scheduled note-off. Only live/preview notes need a
     // callback-local countdown.
-    pendingEvents[pendingCount++]={PluginEvent::Type::NoteOn,0,id,static_cast<std::uint8_t>(pitch),0,wavetable?velocity:std::min(1.f,velocity),0,live};
+    pendingEvents[pendingCount++]={PluginEvent::Type::NoteOn,0,id,static_cast<std::uint8_t>(pitch),0,std::min(1.f,velocity),0,live};
   }
-  void retriggerSustained(int pitch,std::uint64_t& overflows)noexcept {
-    if(!wavetable)return;
-    for(std::size_t i=0;i<deferredCount;){
-      if(deferredOffs[i].pitch==pitch){const auto off=deferredOffs[i];deferredOffs[i]=deferredOffs[--deferredCount];noteOff(off.pitch,off.id,overflows,true);}
-      else ++i;
-    }
-  }
-  // Live MIDI controller (docs/MIDI_CONTROLLERS.md). VST3 instruments receive every controller and IEUM WAVE
-  // every one but the pedal, which defers its live note-offs here.
+  // Live MIDI controller (docs/MIDI_CONTROLLERS.md): the VST3 instrument receives every controller.
   void controlChange(int controller,int value,std::uint64_t& overflows)noexcept {
     if(!instrument)return;
-    if(vst3()||controller!=sustainController){
-      if(controller==bendRangeController)return; // Meta controller of the built-in sources only.
-      if(pendingCount<pendingEvents.size()){PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=static_cast<std::uint32_t>(controller);e.value=normalizedControllerValue(controller,value);e.audition=true;pendingEvents[pendingCount++]=e;}
-      else ++overflows;
-      if(controller==sustainController)livePedal=pedalDown(value);
-      return;
-    }
-    const bool down=pedalDown(value);
-    if(down==livePedal)return;
-    livePedal=down;
-    if(!down)releaseSustained(overflows);
+    if(controller==bendRangeController)return; // Meta controller of the built-in sources only.
+    if(pendingCount<pendingEvents.size()){PluginEvent e{};e.type=PluginEvent::Type::Controller;e.parameterId=static_cast<std::uint32_t>(controller);e.value=normalizedControllerValue(controller,value);e.audition=true;pendingEvents[pendingCount++]=e;}
+    else ++overflows;
+    if(controller==sustainController)livePedal=pedalDown(value);
   }
-  void releaseSustained(std::uint64_t& overflows)noexcept {
-    const auto count=deferredCount;deferredCount=0;
-    for(std::size_t i=0;i<count;++i)noteOff(deferredOffs[i].pitch,deferredOffs[i].id,overflows,true);
-  }
-  void noteOff(int pitch,std::int32_t id,std::uint64_t& overflows,bool force=false)noexcept {
+  void noteOff(int pitch,std::int32_t id,std::uint64_t& overflows)noexcept {
     if(!instrument)return;
-    if(livePedal&&!force&&!vst3()&&!timeline.source.isKit) {
-      if(deferredCount<deferredOffs.size())deferredOffs[deferredCount++]={id,static_cast<std::uint8_t>(pitch)};
-      else noteOff(pitch,id,overflows,true);
-      return;
-    }
     bool cancelledPending=false;
     for(std::size_t i=0;i<pendingCount;){
       const auto&e=pendingEvents[i];
@@ -441,27 +402,16 @@ struct HostTrack {
   }
   void allNotesOff(std::uint64_t& overflows)noexcept {
     // A panic also lifts the (live) pedal: nothing may keep ringing afterwards.
-    livePedal=false;deferredCount=0;
+    livePedal=false;
     if(!instrument)return;
-    if(vst3())controlChange(sustainController,0,overflows);
-    if(wavetable) {
-      // Reserve no per-note queue slots: channel one belongs only to audition.
-      // Cancel its queued on/off events before emitting a single release event.
-      auto end=std::remove_if(pendingEvents.begin(),pendingEvents.begin()+static_cast<std::ptrdiff_t>(pendingCount),
-        [](const PluginEvent&e){return e.audition;});
-      pendingCount=static_cast<std::size_t>(end-pendingEvents.begin());
-      for(auto&n:pluginNotes)n.active=false;
-      releaseAudition=true;
-    } else {
-      for(auto&n:pluginNotes)if(n.active)noteOff(n.pitch,n.id,overflows,true);
-    }
+    controlChange(sustainController,0,overflows);
+    for(auto&n:pluginNotes)if(n.active)noteOff(n.pitch,n.id,overflows);
     // ...and returns the bend and the modulation to rest.
     controlChange(pitchBendController,0,overflows);controlChange(modWheelController,0,overflows);
   }
   void reset(std::int64_t frame,bool chase,bool resetEffects,std::uint64_t& overflows)noexcept {
     for(auto& n:pluginNotes) n.active=false;
-    pendingCount=0;deferredCount=0;
-    releaseAudition=false;
+    pendingCount=0;
     if(instrument)instrument->requestReset();
     // Timeline controllers (docs/MIDI_CONTROLLERS.md): chase the values in effect at the new position, or
     // return the resetting ones (mod wheel, expression, pedal, pressure, bend) to rest when stopping.
@@ -484,20 +434,14 @@ struct HostTrack {
     nextEvent=static_cast<std::size_t>(std::lower_bound(events.begin(),events.end(),frame,[](const TimedPluginEvent&e,std::int64_t f){return e.frame<f;})-events.begin());
     if(chase&&!timeline.source.isKit&&timeline.enabled)for(std::size_t i=0;i<nextNote;++i){const auto& n=timeline.notes[i];if(n.offFrame>frame)spawn(n.pitch,n.velocity,n.offFrame-frame,n.limitFrame-frame,n.id,false,overflows);}
   }
-  // The host source node: the instrument (IEUM WAVE or VST3) with this block's events, added into `out`.
+  // The host source node: the VST3 instrument with this block's events, added into `out`.
   void renderSource(float* out,std::int64_t frame,std::uint32_t frames,bool playing,const ProcessContext& context,std::uint64_t& overflows)noexcept {
     std::size_t eventCount=0;
-    if(releaseAudition) {
-      blockEvents[eventCount++]={PluginEvent::Type::AllNotesOff,0,-1,60,0,0,0,true};
-      releaseAudition=false;
-    }
     for(std::size_t i=0;i<pendingCount&&eventCount<blockEvents.size();++i) blockEvents[eventCount++]=pendingEvents[i];
     pendingCount=0;
     if(!instrument)return;
-    // A note ending exactly at the project boundary releases in the first tail block. This applies to live WAVE
-    // playback and offline export.
-    if(playing||(wavetable&&frame>=projectLength))while(nextEvent<events.size()&&events[nextEvent].frame<frame+frames){const auto& e=events[nextEvent++];if(e.frame>=frame){if(eventCount<blockEvents.size()){blockEvents[eventCount]=e.event;blockEvents[eventCount++].offset=static_cast<std::uint32_t>(e.frame-frame);}else ++overflows;}}
-    if(vst3())for(auto& l:lanes)if(l.insert<0)pluginPoints(l,frame,frames,[&](const PluginEvent& e){if(eventCount<blockEvents.size())blockEvents[eventCount++]=e;else ++overflows;});
+    if(playing)while(nextEvent<events.size()&&events[nextEvent].frame<frame+frames){const auto& e=events[nextEvent++];if(e.frame>=frame){if(eventCount<blockEvents.size()){blockEvents[eventCount]=e.event;blockEvents[eventCount++].offset=static_cast<std::uint32_t>(e.frame-frame);}else ++overflows;}}
+    for(auto& l:lanes)if(l.insert<0)pluginPoints(l,frame,frames,[&](const PluginEvent& e){if(eventCount<blockEvents.size())blockEvents[eventCount++]=e;else ++overflows;});
     for(auto& n:pluginNotes)if(n.active){if(n.remaining<frames){if(eventCount<blockEvents.size())blockEvents[eventCount++]={PluginEvent::Type::NoteOff,static_cast<std::uint32_t>(std::max<std::int64_t>(0,n.remaining)),n.id,n.pitch,0,0,0,true};else ++overflows;n.active=false;}else n.remaining-=frames;}
     std::sort(blockEvents.begin(),blockEvents.begin()+static_cast<std::ptrdiff_t>(eventCount),[](const PluginEvent&a,const PluginEvent&b){
       return a.offset<b.offset||(a.offset==b.offset&&eventOrder(a.type)<eventOrder(b.type));});
@@ -557,8 +501,6 @@ std::shared_ptr<const PcmAsset> resolveAsset(const AssetStore& assets,const std:
 // The callback never reads it; it receives a predecessor serial and per-track links, not a hash or JSON.
 struct ControlTrack {
   std::uint32_t latency=0;                  // Host-node plug-in delay (VST3 instrument + VST3 inserts).
-  double instrumentTail=0;                  // IEUM WAVE (a rebuilt track that keeps its processor reuses it).
-  std::size_t memory=0,wavetableMemory=0;   // Per-instance estimate (IEUM WAVE).
   bool routing=false,aheadEligible=false;   // Reads or feeds a tap in the same block / may render ahead.
   // Host nodes (rust_engine.inc): the instrument's delay, tail and stereo layout, and each VST3 insert's delay and
   // tail (indexed like TrackTimeline::inserts).
@@ -584,7 +526,7 @@ bool sameTiming(const ProjectTimeline& x,const ProjectTimeline& y) {
 }
 bool samePlugin(const PluginSpec&a,const PluginSpec&b){return a.instanceId==b.instanceId&&a.path==b.path&&a.classId==b.classId&&a.state==b.state&&a.controllerState==b.controllerState&&a.isInstrument==b.isInstrument;}
 // Instrument identity: equal sources keep their voices and instrument across an edit (parameters may differ;
-// IEUM WAVE crossfades a changed patch, VST3 instances are resolved by instance id).
+// the Rust graph crossfades a changed IEUM WAVE patch, VST3 instances are resolved by instance id).
 bool sameSourceIdentity(const TrackSource& x,const TrackSource& y) {
   return x.kind==y.kind&&x.instrumentId==y.instrumentId&&x.sampleSetId==y.sampleSetId&&x.isKit==y.isKit&&samePlugin(x.plugin,y.plugin);
 }
@@ -793,7 +735,6 @@ struct PreparedProject::Impl {
   // continues from the playhead), and each previous track's index here (-1: removed).
   bool headerChanged=false;
   std::vector<std::int32_t> successor;
-  std::size_t wavetableMemory=0,wavetableTableMemory=0;
   explicit Impl(const ProjectTimeline& p):timeline(headerOf(p)),tempo(p.bpm,p.tempoMap),meters(p.timeSigNumerator,p.timeSigDenominator,p.meterMap){}
   // Each track continues its predecessor (same id); a new track starts at the playhead like after a seek.
   void takeStateFrom(Impl& previous,std::int64_t frame,bool playing,std::uint64_t& overflows)noexcept {
@@ -801,10 +742,6 @@ struct PreparedProject::Impl {
       if(t.predecessor>=0&&static_cast<std::size_t>(t.predecessor)<previous.tracks.size())t.adopt(previous.tracks[static_cast<std::size_t>(t.predecessor)],frame,t.identical&&!headerChanged,false);
       else t.reset(frame,playing,true,overflows);
     }
-  }
-  bool readyToPreserve()noexcept {
-    for(auto& track:tracks)if(track.wavetable&&!track.wavetable->readyToTransfer())return false;
-    return true;
   }
 };
 PreparedProject::PreparedProject(std::unique_ptr<Impl> impl):impl_(std::move(impl)){}
@@ -834,7 +771,7 @@ struct RenderEngine::Impl {
   std::uint64_t rustAllowed=0;
   std::array<float,256> rustPeaks{};
   GarakRsTask rustTask=nullptr;void* rustJob=nullptr; // Current parallel Rust job (callback + pool workers).
-  // Host node callbacks (VST3, IEUM WAVE, device input) for the Rust graph. `user` is a RustScope: the block
+  // Host node callbacks (VST3, device input) for the Rust graph. `user` is a RustScope: the block
   // the callbacks render (the callback's, or a render-ahead producer's own).
   struct RustScope { Impl* e=nullptr; PreparedProject::Impl* graph=nullptr; const ProcessContext* context=nullptr; const float* input=nullptr;
     std::int64_t position=0; std::uint32_t cursor=0,channels=0; bool playing=false; };
@@ -860,9 +797,6 @@ struct RenderEngine::Impl {
   std::atomic<std::uint64_t>commandOverflows{0};
   std::unique_ptr<ControlRecipe>lastSubmittedRecipe;
   std::uint64_t lastSubmittedSerial=0;
-  WavetableResources wavetableResources;
-  std::size_t retainedWavetableMemory=0; // Control-thread graph ownership budget.
-  std::size_t lastSubmittedWavetableTableMemory=0;
   std::int64_t position=0;
   std::int64_t continuousFrame=0;
   bool playing=false,offline=false,recording=false;
@@ -925,7 +859,7 @@ struct RenderEngine::Impl {
         if(type==0x90&&ev.data2>0)t.spawn(ev.data1&0x7F,static_cast<float>(ev.data2&0x7F)/127.f,unlimitedFrame,unlimitedFrame,ev.noteId,true,voiceOverflows);
         else if(type==0x80||type==0x90)t.noteOff(ev.data1&0x7F,ev.noteId,voiceOverflows);
         else if(type==0xB0&&(ev.data1==120||ev.data1==123))t.allNotesOff(voiceOverflows);
-        // Controllers (CC64 defers IEUM WAVE note-offs), pitch bend, channel pressure, program change.
+        // Controllers, pitch bend, channel pressure, program change.
         else if(type==0xB0)t.controlChange(ev.data1&0x7F,ev.data2&0x7F,voiceOverflows);
         else if(type==0xE0)t.controlChange(pitchBendController,(((ev.data2&0x7F)<<7)|(ev.data1&0x7F))-8192,voiceOverflows);
         else if(type==0xD0)t.controlChange(channelPressureController,ev.data1&0x7F,voiceOverflows);
@@ -1011,11 +945,18 @@ struct RenderEngine::Impl {
   }
   // A live event for the Rust graph's track `track` (callback, after `own` of that track): its built-in instrument
   // plays it (kind 0 note on (a = id), 1 note off (a = id), 2 all notes off, 3 controller (pitch = controller,
-  // a = value), 4 preview (a = frames)). The host track gets the event too: a VST3 / IEUM WAVE instrument plays it.
+  // a = value), 4 preview (a = frames)). The host track gets the event too: a VST3 instrument plays it.
   void rustLive(std::uint32_t track,std::uint32_t kind,int pitch,int a,float velocity)noexcept {
     if(!rustRenders())return;
     rustPrepare(); // The event lands on the Rust graph this block renders.
     garak_rs_engine_live(rust->handle,track,kind,pitch,a,velocity);
+  }
+  // Callback: the Rust graph applied the commands this shell allowed and could take the next graph now (no
+  // IEUM WAVE table crossfade running).
+  bool rustSettled()noexcept {
+    if(!rustRenders())return true;
+    rustPrepare();
+    return garak_rs_engine_settled(rust->handle)!=0;
   }
   void rustStopAtEnd()noexcept {
     if(rustRenders())garak_rs_engine_stop_at_end(rust->handle);
@@ -1355,13 +1296,11 @@ struct RenderEngine::Impl {
           const bool projectChanged=!active||active->impl_->timeline.projectId!=c.graph->impl_->timeline.projectId;
           auto*previous=active;
           const bool preserve=previous&&c.graph->impl_->preserveFrom&&previous->impl_->serial==c.graph->impl_->preserveFrom;
-          // Keep at most two immutable table sets in one running synth. A
-          // rapid edit waits for the current 20 ms table crossfade, then moves
-          // completed ownership into the graph retired on the control thread.
-          // No worker may be inside either graph while its state is read, moved
-          // or retired (the next block's promote() lets them back in).
+          // No worker may be inside either graph while its state is read, moved or retired (the next block's
+          // promote() lets them back in). A rapid edit waits until the Rust graph took the previous one and
+          // its IEUM WAVE table crossfade (20 ms) finished, so both graphs swap in the same block.
           quiesce();
-          if(preserve&&!previous->impl_->readyToPreserve()){deferred=c;return;}
+          if(preserve&&!rustSettled()){deferred=c;return;}
           if(preserve) {
             // A track whose events change continues from the playhead: its render-ahead ring drains first.
             auto&next=*c.graph->impl_;bool wait=false;
@@ -1499,36 +1438,22 @@ namespace {
 struct TrackBuild {
   HostTrack track;
   ControlTrack info;
-  std::size_t wavetableTableMemory=0;
 };
-// The previous track's IEUM WAVE instrument is kept (identical source): update() swaps it in at the swap.
-struct ReusedInstrument { double tail=0; std::size_t memory=0; };
 TrackBuild buildTrack(const ProjectTimeline& p,const TrackTimeline& t,const AssetStore& assets,const SampleSetStore& sets,const PluginResolver& resolvePlugin,
-                      WavetableResources& wavetables,std::uint32_t maxBlock,std::set<const ieum::wave::PreparedWavetableSet*>& waveTables,const ReusedInstrument* reuse) {
+                      std::uint32_t maxBlock) {
   TrackBuild build;auto& track=build.track;auto& info=build.info;
-  track.timeline=t;track.projectLength=p.lengthFrames;
+  track.timeline=t;
   require(t.source.kind!=TrackSource::Kind::Audio||t.notes.empty(),"Audio tracks cannot contain instrument notes");
   require(t.source.kind==TrackSource::Kind::Audio||t.audio.empty(),"Instrument tracks cannot contain audio windows");
   // An explicitly disabled source is retained in the immutable recipe but
   // needs neither its sample library nor a loadable third-party plug-in.
   if(!t.enabled)return build;
   double trackTail=0;
-  const bool wave=t.source.kind==TrackSource::Kind::NativeWavetable;
-  if(wave) {
-    require(p.sampleRate>=22050,"IEUM WAVE requires a sample rate of 22050..192000 Hz");
+  if(t.source.kind==TrackSource::Kind::NativeWavetable) {
+    // IEUM WAVE renders only in the Rust graph (docs/IEUM_WAVE.md): the patch is validated here, before the graph
+    // changes (its tail comes with the Rust graph's details); the host track keeps no processor for it.
     require(t.source.instrumentId=="wavetable"&&!t.source.isKit,"Invalid IEUM WAVE source");
-    if(reuse) {
-      track.reuseInstrument=true;trackTail=reuse->tail;
-      info.instrumentTail=reuse->tail;info.wavetableMemory=reuse->memory;
-    } else {
-      auto prepared=wavetables.prepare(t.source.patchData);
-      const auto tableBytes=waveTables.insert(prepared.tables.get()).second?prepared.tables->bytes():0;
-      const auto bytes=WavetableProcessor::instanceMemory(p.sampleRate,maxBlock)+tableBytes+t.source.patchData.size()*3;
-      info.wavetableMemory=bytes;build.wavetableTableMemory=tableBytes;
-      track.wavetable=std::make_shared<WavetableProcessor>(std::move(prepared),p.sampleRate,maxBlock);
-      track.instrument=track.wavetable;trackTail=track.wavetable->tailSeconds();info.instrumentTail=trackTail;
-    }
-    info.memory+=info.wavetableMemory;
+    (void)checkWavetablePatch(p.sampleRate,t.source.patchData);
   }
   // Sample sets render in the Rust graph; the shell only notes which set and PCM objects the track resolved, so a
   // re-registered set or asset under the same id rebuilds it (update()).
@@ -1540,12 +1465,12 @@ TrackBuild buildTrack(const ProjectTimeline& p,const TrackTimeline& t,const Asse
     }
   }
   if(t.source.kind==TrackSource::Kind::Vst3){require(static_cast<bool>(resolvePlugin),"No native VST3 host is available");track.instrument=resolvePlugin(t.source.plugin,p.sampleRate,maxBlock);require(static_cast<bool>(track.instrument),"VST3 instrument could not be prepared");track.latency=track.instrument->latencyFrames();trackTail=checked(track.instrument->tailSeconds(),0,3600,"Invalid plugin tail time");require(track.latency<=p.sampleRate*30,"Plugin latency exceeds native memory budget");}
-  info.sourceLatency=track.latency;info.sourceTail=trackTail;info.sourceStereo=track.instrument!=nullptr||track.reuseInstrument;
-  // Plug-in instruments (VST3, IEUM WAVE) take notes and controllers as sample-accurate events.
-  const bool pluginSource=track.instrument!=nullptr||track.reuseInstrument;
+  info.sourceLatency=track.latency;info.sourceTail=trackTail;info.sourceStereo=track.instrument!=nullptr;
+  // VST3 instruments take notes and controllers as sample-accurate events.
+  const bool pluginSource=track.instrument!=nullptr;
   std::set<std::int32_t>noteIds;
   for(const auto&n:t.notes){require(noteIds.insert(n.id).second&&n.pitch>=0&&n.pitch<=127&&n.onFrame>=-p.lengthFrames&&n.offFrame>n.onFrame&&n.offFrame>0&&n.offFrame<=p.lengthFrames&&n.limitFrame>=n.offFrame&&n.limitFrame<=p.lengthFrames,"Invalid native note event");checked(n.velocity,0,2,"Invalid native note velocity");
-    if(pluginSource&&n.velocity>0){track.events.push_back({n.onFrame,{PluginEvent::Type::NoteOn,0,n.id,static_cast<std::uint8_t>(n.pitch),0,wave?n.velocity:std::min(1.f,n.velocity),0}});track.events.push_back({n.offFrame,{PluginEvent::Type::NoteOff,0,n.id,static_cast<std::uint8_t>(n.pitch),0,0,0}});}
+    if(pluginSource&&n.velocity>0){track.events.push_back({n.onFrame,{PluginEvent::Type::NoteOn,0,n.id,static_cast<std::uint8_t>(n.pitch),0,std::min(1.f,n.velocity),0}});track.events.push_back({n.offFrame,{PluginEvent::Type::NoteOff,0,n.id,static_cast<std::uint8_t>(n.pitch),0,0,0}});}
   }
   std::stable_sort(track.timeline.notes.begin(),track.timeline.notes.end(),[](const NotePair&a,const NotePair&b){return a.onFrame<b.onFrame||(a.onFrame==b.onFrame&&a.id<b.id);});
   for(std::size_t i=0;i<t.controls.size();++i){
@@ -1629,8 +1554,7 @@ std::unique_ptr<PreparedProject> RenderEngine::prepareGraph(const ProjectTimelin
   checked(p.bpm,20,400,"Invalid native tempo");checked(p.masterGain,0,2,"Invalid native master gain");
   require(p.timeSigNumerator>=1&&p.timeSigNumerator<=32&&(p.timeSigDenominator==2||p.timeSigDenominator==4||p.timeSigDenominator==8||p.timeSigDenominator==16),"Invalid native meter");
   if(p.cycle)require(p.cycle->at(0)>=0&&p.cycle->at(1)<=p.lengthFrames&&p.cycle->at(1)>p.cycle->at(0),"Invalid native cycle");
-  std::size_t estimated=0,noteCount=0,windowCount=0;
-  std::set<const ieum::wave::PreparedWavetableSet*> waveTables;
+  std::size_t noteCount=0,windowCount=0;
   std::set<std::string>ids,pluginIds;
   for(const auto&t:p.tracks){require(!t.id.empty()&&t.id.size()<=200&&ids.insert(t.id).second,"Invalid or duplicate native track ID");
     noteCount+=t.notes.size();windowCount+=t.audio.size();require(t.inserts.size()<=64&&t.audio.size()<=2048,"Native track exceeds limits");
@@ -1642,9 +1566,7 @@ std::unique_ptr<PreparedProject> RenderEngine::prepareGraph(const ProjectTimelin
   auto result=std::make_unique<PreparedProject::Impl>(p);result->tracks.reserve(p.tracks.size());
   auto recipe=std::make_unique<ControlRecipe>();recipe->timeline=headerOf(p);recipe->timeline.tracks.reserve(p.tracks.size());recipe->tracks.reserve(p.tracks.size());
   for(const auto&t:p.tracks) {
-    auto build=buildTrack(p,t,assets,sets,resolvePlugin,impl_->wavetableResources,impl_->maxBlock,waveTables,nullptr);
-    if(build.info.wavetableMemory){estimated+=build.info.wavetableMemory;require(estimated<=memoryLimit,"IEUM WAVE exceeds native memory budget");}
-    result->wavetableMemory+=build.info.wavetableMemory;result->wavetableTableMemory+=build.wavetableTableMemory;
+    auto build=buildTrack(p,t,assets,sets,resolvePlugin,impl_->maxBlock);
     recipe->tracks.push_back(std::move(build.info));recipe->timeline.tracks.push_back(t);
     result->tracks.push_back(std::move(build.track));
   }
@@ -1712,20 +1634,12 @@ std::uint64_t RenderEngine::submit(std::unique_ptr<PreparedProject> project) {
   const bool continues=last&&last->timeline.projectId==recipe->timeline.projectId&&last->timeline.sampleRate==recipe->timeline.sampleRate;
   graph.preserveFrom=continues?impl_->lastSubmittedSerial:0;
   if(continues)linkGraph(graph.tracks,graph.headerChanged,graph.successor,*recipe,*last);
-  // A graph can keep its predecessor's table set through the 20 ms crossfade
-  // after that predecessor is collected. Include those bytes until this graph
-  // retires; shared tables are intentionally conservatively counted twice.
-  if(graph.preserveFrom)graph.wavetableMemory+=impl_->lastSubmittedWavetableTableMemory;
-  require(impl_->retainedWavetableMemory+graph.wavetableMemory<=memoryLimit,
-    "Pending IEUM WAVE updates exceed native memory budget");
   Impl::Command c;c.kind=Impl::Kind::Graph;c.graph=project.get();
   const auto serial=impl_->enqueue(c);
   if(!serial)throw std::runtime_error("Native graph command queue is full");
   // The Rust graph prepare() queued applies in the same block as this graph.
   (void)impl_->enqueueRustSync();
   impl_->lastSubmittedRecipe=std::move(recipe);impl_->lastSubmittedSerial=serial;
-  impl_->lastSubmittedWavetableTableMemory=graph.wavetableTableMemory;
-  impl_->retainedWavetableMemory+=graph.wavetableMemory;
   (void)project.release();
   return serial;
 }
@@ -1805,7 +1719,6 @@ UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& ass
   // Build replacements (control thread); any that would change the host nodes' delay falls back to a full graph.
   struct Replacement { std::size_t index; std::unique_ptr<HostTrack> runtime; ControlTrack info; TrackTimeline timeline; };
   std::vector<Replacement> replacements;
-  std::set<const ieum::wave::PreparedWavetableSet*> waveTables;
   for(std::size_t i=0;i<p.tracks.size();++i) {
     if(!plans[i].replace)continue;
     if(e.replacementsInFlight+replacements.size()+1>=Impl::retiredTrackCapacity)return full();
@@ -1815,8 +1728,7 @@ UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& ass
     const bool sameWave=neu.source==old.source&&neu.enabled&&old.enabled;
     if(wave&&!sameWave)return full(); // IEUM WAVE patch changes keep their table crossfade on the graph path.
     auto removed=renumberNotes(old.notes,neu.notes);
-    ReusedInstrument reuse{info.instrumentTail,info.wavetableMemory};
-    auto build=buildTrack(p,neu,assets,sets,resolvePlugin,e.wavetableResources,e.maxBlock,waveTables,wave?&reuse:nullptr);
+    auto build=buildTrack(p,neu,assets,sets,resolvePlugin,e.maxBlock);
     if(build.info.latency!=info.latency)return full(); // Plug-in delay compensation of the whole graph changes.
     auto runtime=std::make_unique<HostTrack>(std::move(build.track));
     auto&t=*runtime;
@@ -1829,12 +1741,6 @@ UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& ass
     build.info.aheadEligible=aheadCandidate(t)&&!info.routing;
     t.aheadEligible=build.info.aheadEligible;
     replacements.push_back({i,std::move(runtime),std::move(build.info),std::move(neu)});
-  }
-  if(!replacements.empty()) {
-    // IEUM WAVE memory of the graph with the replacements in place (the Rust engine budgets its own).
-    std::size_t memory=0;
-    for(std::size_t i=0,r=0;i<last->tracks.size();++i)memory+=(r<replacements.size()&&replacements[r].index==i?replacements[r++].info:last->tracks[i]).memory;
-    require(memory<=memoryLimit,"Native project exceeds bounded memory/event limits");
   }
   // The Rust graph first, with the replacements' host-node delays: a refusal throws here and leaves both graphs as
   // they are (nothing is queued yet).
@@ -1886,7 +1792,7 @@ UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& ass
 
 void RenderEngine::collectRetired(){
   if(impl_->rust)impl_->rust->collect();
-  PreparedProject*p=nullptr;while(impl_->retired.pop(p)){impl_->retainedWavetableMemory-=p->impl_->wavetableMemory;delete p;}
+  PreparedProject*p=nullptr;while(impl_->retired.pop(p))delete p;
   HostTrack*t=nullptr;while(impl_->retiredTracks.pop(t)){delete t;if(impl_->replacementsInFlight)--impl_->replacementsInFlight;}
 }
 std::uint64_t RenderEngine::play(std::int64_t countIn){require(countIn>=0&&countIn<=std::int64_t(impl_->rate)*120,"Invalid count-in length");Impl::Command c;c.kind=Impl::Kind::Play;c.frame=countIn;return impl_->enqueue(c);}

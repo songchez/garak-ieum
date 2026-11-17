@@ -1,6 +1,6 @@
 //! One track at runtime (engine.cpp `TrackRuntime`) and its control-thread construction
 //! (`buildTrack` + `prepareAutomation`): windows (frozen ones included) -> the source (a built-in instrument,
-//! instrument.rs, or a host source: VST3 / IEUM WAVE through the host callback) -> monitored input (device
+//! instrument.rs, IEUM WAVE included, or a host source: VST3 through the host callback) -> monitored input (device
 //! input, route input or a return's send mix) -> inserts (built-in or host VST3) -> plug-in delay
 //! compensation -> fader/pan/mute (smoothed or automated per sample) -> output delay, with the pre-FX,
 //! post-FX and post-fader taps sends and routes read.
@@ -121,7 +121,7 @@ pub(crate) struct Track {
     pub index: usize,
     pub windows: Vec<Window>,
     pub inserts: Vec<Stage>,
-    /// The host renders this track's instrument (VST3, IEUM WAVE).
+    /// The host renders this track's instrument (VST3).
     host_source: Option<HostNode>,
     pub lanes: Vec<LaneRuntime>,
     volume_lane: Option<usize>,
@@ -299,8 +299,7 @@ impl Track {
         }
         let mut tail = built.tail;
         if let Some(host) = hosted {
-            // Instruments the host renders (VST3, IEUM WAVE on the desktop): its processor's delay and tail
-            // come with the plan.
+            // Instruments the host renders (VST3 on the desktop): its processor's delay and tail come with the plan.
             require(
                 f64::from(host.latency) <= sample_rate * 30.0,
                 "Plugin latency exceeds native memory budget",

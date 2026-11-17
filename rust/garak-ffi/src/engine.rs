@@ -409,6 +409,18 @@ pub unsafe extern "C" fn garak_rs_engine_render_block(
     r.render_block(out, position, playing != 0, allowed, peaks, parallel.as_ref());
 }
 
+/// Audio thread (host shell): 1 when the next graph of the same project could swap in now (nothing
+/// deferred, no IEUM WAVE table crossfade running), else 0. Call after consuming the allowed commands.
+///
+/// # Safety
+/// As `garak_rs_engine_render`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_settled(e: *mut GarakRsEngine) -> i32 {
+    // SAFETY: caller contract: the render half is only touched by the audio thread.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return 1 };
+    i32::from(r.host_settled())
+}
+
 /// The shell's block (garak_engine.h `GarakRsBlock`).
 #[repr(C)]
 #[derive(Debug)]
