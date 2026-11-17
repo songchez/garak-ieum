@@ -40,7 +40,9 @@ pub mod tempo;
 pub mod testkit;
 mod track;
 
-pub use engine::{Applied, Controller, EngineConfig, Renderer, Snapshot, engine};
+pub use engine::{
+    Applied, Controller, DynamicsReading, EngineConfig, HostTask, Parallel, Renderer, Snapshot, engine,
+};
 pub use error::Error;
 pub use offline::{OfflineRender, render_offline};
 pub use plan::{PcmAsset, Plan};

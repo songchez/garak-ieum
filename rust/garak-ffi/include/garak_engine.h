@@ -49,6 +49,28 @@ void garak_rs_engine_snapshot(GarakRsEngine* engine, uint64_t* last_applied, int
 /* Audio thread: `frames` interleaved stereo frames. */
 void garak_rs_engine_render(GarakRsEngine* engine, float* out, uint32_t frames);
 
+/* ---- Host shell (docs/RUST_ENGINE.md 10, GARAK_RUST_ENGINE=1) ----------------------------------
+ * The C++ RenderEngine keeps transport, count-in, metronome, live MIDI, capture and the master bus,
+ * and asks the Rust graph for each block's track mix at its own position. */
+/* Control: the last ticket queued by set/patch/transport. */
+uint64_t garak_rs_engine_ticket(GarakRsEngine* engine);
+/* The host's worker pool: calls task(job, i) once for every i < count (any thread) and returns when
+ * all completed, without allocating or locking. */
+typedef void (*GarakRsTask)(void* job, uint32_t index);
+typedef void (*GarakRsParallelRun)(void* host, uint32_t count, GarakRsTask task, void* job);
+/* Audio thread: apply commands up to `allowed`, then write the track mix (no master gain/processor)
+ * of `frames` frames at project frame `position` into `out`. `peaks` gets per-track block peaks.
+ * `run` may be null (single thread); the output is bit-identical either way. */
+void garak_rs_engine_render_block(GarakRsEngine* engine, float* out, uint32_t frames, int64_t position, int32_t playing,
+                                  uint64_t allowed, float* peaks, uint32_t peak_capacity, GarakRsParallelRun run,
+                                  void* host);
+/* Audio thread, after render_block: compressor/limiter/gate detector peak and lowest gain since the last
+ * call, in track then chain order (`insert` indexes the track plan's inserts). Returns the count. */
+typedef struct GarakRsDynamicsReading { uint16_t track, insert; float input, gain; } GarakRsDynamicsReading;
+uint32_t garak_rs_engine_take_dynamics(GarakRsEngine* engine, GarakRsDynamicsReading* out, uint32_t capacity);
+/* Audio thread: transport reset; effects != 0 also clears tails and delay lines. */
+void garak_rs_engine_reset(GarakRsEngine* engine, int32_t effects);
+
 /* The deterministic parity project (rust/garak-engine/src/testkit.rs): timeline JSON + PCM. */
 GarakRsTestProject* garak_rs_testkit_create(uint32_t tracks, double seconds, uint32_t sample_rate);
 void garak_rs_testkit_destroy(GarakRsTestProject* project);

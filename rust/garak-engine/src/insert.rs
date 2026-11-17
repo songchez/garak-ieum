@@ -203,6 +203,11 @@ impl Insert {
         self.fx.latency_frames()
     }
 
+    /// Compressor/limiter/gate detector peak and lowest gain since the last call (C++ `DynamicsTap::take`).
+    pub fn take_meter(&mut self) -> Option<(f32, f32)> {
+        self.fx.take_meter()
+    }
+
     pub fn tail(&self) -> f64 {
         self.fx.tail_seconds()
     }

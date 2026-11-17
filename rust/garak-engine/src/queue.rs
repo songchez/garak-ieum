@@ -86,6 +86,20 @@ impl<T> Producer<T> {
 }
 
 impl<T> Consumer<T> {
+    /// The value `pop` would return next, left in the queue (a host gating commands by ticket).
+    pub fn peek(&self) -> Option<&T> {
+        let r = &*self.0;
+        let head = r.head.load(Ordering::Relaxed);
+        let tail = r.tail.load(Ordering::Acquire);
+        if head == tail {
+            return None;
+        }
+        let slot = r.slots.get(head % r.slots.len())?;
+        // SAFETY: published through `tail` and not released yet; only this consumer reads it, and
+        // the borrow of `self` keeps `pop` from moving it out meanwhile.
+        Some(unsafe { (*slot.get()).assume_init_ref() })
+    }
+
     pub fn pop(&mut self) -> Option<T> {
         let r = &*self.0;
         let head = r.head.load(Ordering::Relaxed);
@@ -115,7 +129,9 @@ mod tests {
         }
         assert!(p.is_full());
         assert_eq!(p.push(Box::new(9)).map_err(|b| *b), Err(9));
+        assert_eq!(c.peek().map(|b| **b), Some(0));
         assert_eq!(c.pop().map(|b| *b), Some(0));
+        assert_eq!(c.peek().map(|b| **b), Some(1));
         assert!(p.push(Box::new(3)).is_ok());
         let rest: Vec<u32> = core::iter::from_fn(|| c.pop().map(|b| *b)).collect();
         assert_eq!(rest, [1, 2, 3]);
