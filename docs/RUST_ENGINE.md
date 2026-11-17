@@ -259,7 +259,7 @@ RenderEngine (C++) ─ 전송(재생/정지/탐색·사이클·카운트인), �
 | 테스트 | 내용 | 결과 (MinGW GCC 16, 이 PC) |
 |---|---|---|
 | `native/tests/rust_engine_host_test.cpp` (`ctest -R native-rust-engine-host`) | C++ 엔진 ↔ Rust 셸: 오프라인 내보내기 3종, 마스터 바이패스, 프리페이더 트랙, 리턴 스템, 재생 중 diff·트랙 재준비·탐색·사이클·일시정지·마스터 게인, 멀티코어 0 ↔ N 워커(라이브·오프라인 24트랙), 폴백/strict | 전부 **비트 동일** (폴백 후 탐색 비교만 -141 dBFS) |
-| 같은 테스트의 호스트 노드 경우 | 상태 있는 대역 플러그인으로 VST3 악기(음표·서스테인·CC1·악기 파라미터 오토메이션) → 지연 11 VST3 인서트(오토메이션)·EQ, 지연 5 VST3 인서트의 오디오 트랙, 지연 7 VST3 인서트의 리턴, 포스트페이더 라우트·마스터 리샘플러·모니터링하는 모노 입력, 라우트/물리 녹음 테이크, 라이브 MIDI, 탐색·사이클·편집; 오프라인 내보내기; 0 ↔ N 워커; 꼬리 있는 얼린 윈도; render-ahead(Normal·High) C++ ↔ Rust ↔ 콜백 렌더 | 출력·테이크 모두 **비트 동일** |
+| 같은 테스트의 호스트 노드 경우 | 상태 있는 대역 플러그인으로 VST3 악기(음표·서스테인·CC1·악기 파라미터 오토메이션) → 지연 11 VST3 인서트(오토메이션)·EQ, 지연 5 VST3 인서트의 오디오 트랙, 지연 7 VST3 인서트의 리턴, 포스트페이더 라우트·마스터 리샘플러·모니터링하는 모노 입력, 라우트/물리 녹음 테이크, 라이브 MIDI, 탐색·사이클·편집; 오프라인 내보내기; 0 ↔ N 워커; 꼬리 있는 얼린 윈도; render-ahead(Normal·High) C++ ↔ Rust ↔ 콜백 렌더 | 출력·테이크 모두 **비트 동일** (macOS arm64는 C++ 이펙트의 FMA 축약 차이로 -144.5 dBFS, 게이트 ≤ -90; Rust ↔ Rust는 어디서나 비트 동일) |
 | 같은 테스트의 메트로놈 경우 | `garak_rs_metronome_render` ↔ `metronome.hpp`(RenderEngine::renderClicks와 같은 구동): 4/4, 6/8+템포 램프, 박자 맵+템포 맵, 곡 중간 12/8-5/4-9/16, 매핑된 위치의 카운트인, 3/4 카운트인 | 전부 **비트 동일** |
 | `rust/garak-engine/tests/host.rs` | `render_block`: 엔진 자체 전송과 같은 진행, 티켓 게이트, 병렬 센더 비트 동일, 힙 사용 0 | 통과 |
 | `scripts/rust-engine-suite.mjs` (rust.yml) | `engine_test.cpp` 전체를 `GARAK_RUST_ENGINE=1`(전부 통과해야 함), `strict`(목록에 있는 차단 요인만 실패 허용, `native/tests/rust_engine_expected_failures.txt`), `strict` + `GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1`(전부 통과해야 함)로 실행, 케이스별 Rust 렌더 블록 수를 잡 요약에 | 1: **43/43**, strict: 12개가 Rust 그래프로 통과, 7개는 그래프 렌더 없이 통과, 24개 예상 실패(전부 내장 악기), strict + 호스트 악기: **43/43** |

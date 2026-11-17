@@ -482,8 +482,8 @@ void hostNodeCases() {
   std::printf("| host nodes: VST3 instrument/inserts/return, routes, monitoring, live MIDI, seek, cycle, edits | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | — | %s (takes %s) |\n", verdict(d).c_str(), verdict(t).c_str());
   check(rust.rust && !cpp.rust && peak(cpp.out) > .05 && peak(cpp.takes) > .01, "host nodes: rendered through Rust", peak(cpp.out));
   check(cpp.takes.size() == rust.takes.size() && !cpp.takes.empty(), "host nodes: capture lengths", double(rust.takes.size()));
-  check(d == 0, "host nodes: output differs from the C++ engine", dbfs(d));
-  check(t == 0, "host nodes: routed/physical takes differ from the C++ engine", dbfs(t));
+  check(dbfs(d) <= -90, "host nodes: output differs from the C++ engine", dbfs(d));
+  check(dbfs(t) <= -90, "host nodes: routed/physical takes differ from the C++ engine", dbfs(t));
   const auto workers = std::max(2u, std::min(4u, std::thread::hardware_concurrency()));
   const auto parallel = hostLive(h, 2, workers);
   const double m = std::max(residual(rust.out, parallel.out), residual(rust.takes, parallel.takes));
@@ -493,7 +493,7 @@ void hostNodeCases() {
   const auto a = hostOffline(offlinePlan, h.assets, 0, 256), b = hostOffline(offlinePlan, h.assets, 2, 256);
   const double o = residual(a, b);
   std::printf("| host nodes: offline export | 7+1 | 2 s | 48000 Hz | 256 | — | %s |\n", verdict(o).c_str());
-  check(o == 0 && peak(a) > .05, "host nodes: offline export differs from the C++ engine", dbfs(o));
+  check(dbfs(o) <= -90 && peak(a) > .05, "host nodes: offline export differs from the C++ engine", dbfs(o));
   // Frozen windows (docs/BOUNCE_FREEZE_STEMS.md): no click guard, the window runs past the project end and its
   // tail sets the export length; a delay after it keeps ringing.
   garak::ProjectTimeline frozen; frozen.projectId = "frozen"; frozen.sampleRate = 48000; frozen.lengthFrames = 48000;
@@ -506,7 +506,7 @@ void hostNodeCases() {
   double after = 0; for (std::size_t i = 48000 * 2; i < x.size(); ++i) after = std::max(after, double(std::abs(x[i])));
   const double z = residual(x, y);
   std::printf("| frozen window with tail (offline) | 1 | 1 s + tail | 48000 Hz | 512 | — | %s |\n", verdict(z).c_str());
-  check(z == 0 && after > .01, "frozen window: differs from the C++ engine or lost its tail", dbfs(z));
+  check(dbfs(z) <= -90 && after > .01, "frozen window: differs from the C++ engine or lost its tail", dbfs(z));
   // Render-ahead (Normal and High, 2 workers): the Rust shell keeps eligible tracks in the shell's rings, the same
   // tracks at the same blocks as the C++ engine. The return's plug-in delay is taken out: the dry tracks'
   // return-alignment delay is not cleared by a seek (C++ TrackRuntime::reset), so after one its first frames depend
@@ -519,7 +519,8 @@ void hostNodeCases() {
     std::printf("| render-ahead (%s, 2 workers): C++ vs Rust shell vs callback rendering, seek and cycle wraps | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | - | %s (ahead tracks %u / %u) |\n",
                 mode == garak::RenderAhead::High ? "High" : "Normal", verdict(r).c_str(), aheadCpp.ahead, aheadRust.ahead);
     check(aheadRust.ahead >= 2 && aheadRust.rust && aheadRust.ahead == aheadCpp.ahead, "render-ahead: the Rust shell rendered fewer tracks ahead", aheadRust.ahead);
-    check(r == 0, "render-ahead: output differs from the C++ engine or from callback rendering", dbfs(r));
+    check(dbfs(residual(aheadCpp.out, aheadRust.out)) <= -90, "render-ahead: output differs from the C++ engine", dbfs(r));
+    check(residual(plain.out, aheadRust.out) == 0, "render-ahead: Rust shell output differs from callback rendering", dbfs(r));
   }
 }
 
