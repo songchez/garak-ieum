@@ -70,6 +70,8 @@ export class WebAudioEngine implements AudioEngine {
   protected assets = new Map<string, AudioAsset>()
   /** PCM of the assets the Web Audio graph is playing: resolved before Play, dropped on pause/stop (src/audio/assetPcm.ts). */
   private playable = new Map<string, PlayableAsset>()
+  private playableReload: Promise<void> | null = null
+  private playableStale = false
   protected context: AudioContext | null = null
   private decodeContext: OfflineAudioContext | null = null
   private graph: EngineGraph | null = null
@@ -465,11 +467,19 @@ export class WebAudioEngine implements AudioEngine {
 
   /** While playing: decodes what the graph lacks, then restarts at the heard beat. */
   private reloadPlayable(): void {
-    const project = this.project, request = this.transportRequest
-    if (!project) return
-    void this.loadPlayable(project, this.playable).then(() => {
+    // Edits during a reload only mark it stale: one more pass runs after it (no decode or restart per edit).
+    if (this.playableReload) { this.playableStale = true; return }
+    const request = this.transportRequest
+    const task = (async () => {
+      do {
+        this.playableStale = false
+        if (this.project) await this.loadPlayable(this.project, this.playable)
+      } while (this.playableStale && request === this.transportRequest)
       if (this.playing && request === this.transportRequest && this.project) this.restartAt(this.currentBeat())
-    }, error => console.warn('[가락이음] 오디오 자산을 디코드하지 못했습니다:', error))
+    })()
+    this.playableReload = task
+    void task.catch(error => console.warn('[가락이음] 오디오 자산을 디코드하지 못했습니다:', error))
+      .finally(() => { if (this.playableReload === task) this.playableReload = null })
   }
   private sourceProject: Project | null = null
 
