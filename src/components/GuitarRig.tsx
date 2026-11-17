@@ -8,7 +8,6 @@ import { useHistoryGesture } from '../core/historyGesture'
 import { guitarRigMaxInstances, guitarRigOrder, guitarRigOrderParams, nextRigInstance, parseRigSlot, rigParam, GUITAR_RIG_DEFAULTS, GUITAR_RIG_MODULE_PARAMS, GUITAR_RIG_MODULES, GUITAR_RIG_PARAMS, GUITAR_RIG_PRESETS, GUITAR_RIG_SECTIONS, GUITAR_RIG_RACK_CAPACITY, GUITAR_RIG_SOUND_DESCRIPTION, type GuitarRigModuleId, type GuitarRigSlot, type GuitarRigSlotKey } from '../devices/guitar-rig/definition'
 import { loadUserPresets, MAX_PRESET_NAME, putUserPreset, removeUserPreset, saveUserPresets, USER_PRESET_STORAGE_KEY, type GuitarRigUserPreset } from '../devices/guitar-rig/userPresets'
 import { detectPitch, guitarTunerTap, tunerReading, TUNER_A4, type TunerReading } from '../devices/guitar-rig/tuner'
-import { isDesktopApp } from '../platform/desktop'
 import { Icon } from './Icon'
 import { Knob } from './Knob'
 import { RigPresetPicker } from './RigPresetPicker'
@@ -715,21 +714,19 @@ function CabinetFace({ pk, params, onParam }: { pk: ParamKey; params: Record<str
   </div>
 }
 
-type TunerState = { kind: 'off' } | { kind: 'native' } | { kind: 'waiting' } | { kind: 'silent' } | { kind: 'reading'; reading: TunerReading }
+type TunerState = { kind: 'off' } | { kind: 'waiting' } | { kind: 'silent' } | { kind: 'reading'; reading: TunerReading }
 /** Keep the last note on screen briefly so a decaying string does not flicker to "no signal". */
 const TUNER_HOLD_MS = 450
 const TUNER_INTERVAL_MS = 60
 
 /**
  * Pedal tuner. Engaging it mutes the rig output (DSP side); while engaged the editor polls the rig's
- * analyser tap and shows note + cents. Only the Web Audio engine streams that tap to the UI.
+ * tuner tap (an engine analysis tap, web and desktop) and shows note + cents.
  */
 function useTuner(deviceId: string, enabled: boolean): TunerState {
-  const native = isDesktopApp()
   const [state, setState] = useState<TunerState>({ kind: 'off' })
   useEffect(() => {
     if (!enabled) { setState({ kind: 'off' }); return }
-    if (native) { setState({ kind: 'native' }); return }
     let frame = 0, last = 0, lastHit = -Infinity
     let buffer: Float32Array<ArrayBuffer> | null = null
     let held: TunerReading | null = null
@@ -755,7 +752,7 @@ function useTuner(deviceId: string, enabled: boolean): TunerState {
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [deviceId, enabled, native])
+  }, [deviceId, enabled])
   return state
 }
 
@@ -766,7 +763,7 @@ function TunerPedal({ deviceId, onToggle, enabled }: { deviceId: string; onToggl
   const [left, top, width, height] = TUNER_WINDOW
   const reading = state.kind === 'reading' ? state.reading : null
   const inTune = reading ? Math.abs(reading.cents) <= 3 : false
-  const message = state.kind === 'off' ? '꺼짐 · 통과' : state.kind === 'native' ? '음소거 · 데스크톱 미지원' : state.kind === 'waiting' ? '엔진 대기 중' : state.kind === 'silent' ? '줄을 튕겨 주세요' : ''
+  const message = state.kind === 'off' ? '꺼짐 · 통과' : state.kind === 'waiting' ? '엔진 대기 중' : state.kind === 'silent' ? '줄을 튕겨 주세요' : ''
   return <div className="gr-pedal-stage gr-pedal-tuner" data-bypassed={!enabled}>
     <img className="gr-pedal-art" src={meta.image} alt="" width={360} height={600} draggable={false}/><span className="gr-port gr-port-in" aria-hidden="true"/><span className="gr-port gr-port-out" aria-hidden="true"/>
     <div className="gr-tuner-screen" data-state={state.kind} data-in-tune={inTune} role="status" aria-label={reading ? `${reading.note}${reading.octave}, ${reading.cents.toFixed(0)} 센트` : message} style={{ left, top, width, height }}>

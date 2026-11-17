@@ -77,7 +77,7 @@ struct ProcessContext {
 struct PluginEvent {
   // Controller: MIDI controller; parameterId is the controller number (ControlEvent numbering: 0..127 CC,
   // 128 channel pressure, 129 pitch bend, 130 program change) and value is normalizedControllerValue().
-  // VST3 delivers it through the plug-in's IMidiMapping; IEUM WAVE interprets it itself.
+  // VST3 delivers it through the plug-in's IMidiMapping; the vintage instruments interpret it themselves.
   enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff, Controller };
   Type type = Type::NoteOn;
   std::uint32_t offset = 0;
@@ -85,7 +85,7 @@ struct PluginEvent {
   std::uint8_t pitch = 60, channel = 0;
   float value = 1;
   std::uint32_t parameterId = 0;
-  bool audition = false; // Separate WAVE live/editor note ownership from the timeline.
+  bool audition = false; // Live/editor note ownership, separate from the timeline's.
 };
 class PluginProcessor {
  public:
@@ -112,7 +112,7 @@ struct TrackSource {
   bool isKit = false;
   Parameters params;
   PluginSpec plugin;
-  std::vector<std::uint8_t> patchData; // Validated IEWAVE01 pack, decoded off the callback.
+  std::vector<std::uint8_t> patchData; // IEUM WAVE: IEWAVE01 pack, validated and rendered by the Rust engine.
   bool operator==(const TrackSource&) const = default;
 };
 struct BuiltinInsert {
@@ -304,6 +304,13 @@ struct MetronomeClicks {
 // offset is callback-relative; 0x90 data2 is the MIDI velocity (0 = note off),
 // 0x80 is note off, 0xB0 with data1 120/123 releases this track's live notes.
 // noteId pairs a note-off with its note-on (-1 matches by pitch).
+// One analysis tap (RenderEngine::setAnalysis).
+struct AnalysisTap {
+  std::int32_t track = -1, insert = -1;
+  bool tuner = false;
+};
+inline constexpr std::uint32_t analysisSlots = 4, analysisFrames = 8192;
+
 struct LiveMidiEvent {
   std::uint32_t offset = 0;
   std::uint32_t track = 0;
@@ -338,10 +345,8 @@ struct EngineSnapshot {
   // ring had to be dropped mid-playback because it lost sync (never expected).
   std::uint32_t workerThreads = 0, renderAheadTracks = 0;
   std::uint64_t renderAheadResyncs = 0;
-  // GARAK_RUST_ENGINE (docs/RUST_ENGINE.md 10): the last block's tracks rendered in the Rust engine, and how many
-  // graphs/updates the Rust engine refused (they render in C++; RenderEngine::lastRustRefusal has the reason).
+  // The Rust render engine (docs/RUST_ENGINE.md 10) has rendered this engine's graph (diagnostics).
   bool rustEngine = false;
-  std::uint64_t rustRefusals = 0;
 };
 
 // Multi-core track processing (Logic "Processing Threads") and render-ahead of
@@ -462,11 +467,16 @@ struct UpdateResult {
   std::uint32_t replacedTracks = 0, commands = 0;
 };
 
-// True when this build links the Rust render engine (GARAK_RUST=ON).
-[[nodiscard]] bool rustEngineAvailable() noexcept;
+// IEUM WAVE renders only in the Rust engine since 0.3.3 (docs/IEUM_WAVE.md): its patch schema fingerprint, which
+// the renderer checks before it sends a patch.
+[[nodiscard]] std::uint32_t wavetableSchemaFingerprint() noexcept;
 // Blocks rendered by the Rust graph in this process, all engines (diagnostics and the regression suite's report).
 [[nodiscard]] std::uint64_t rustEngineBlocks() noexcept;
 
+// The desktop host's real-time engine: a shell around the unified Rust render engine (rust/garak-engine,
+// docs/RUST_ENGINE.md 10). The Rust graph renders every track, the master bus and the metronome; this class keeps
+// transport, count-in timing, live MIDI forwarding, monitored input and capture, render-ahead rings, the worker pool,
+// snapshots, and the VST3 / IEUM WAVE processors the Rust graph calls back (host nodes).
 class RenderEngine {
  public:
   explicit RenderEngine(std::uint32_t sampleRate = 48000, std::uint32_t maxBlockFrames = 4096,
@@ -474,6 +484,9 @@ class RenderEngine {
   ~RenderEngine(); // Device must be stopped before destruction.
   RenderEngine(const RenderEngine&) = delete;
   RenderEngine& operator=(const RenderEngine&) = delete;
+  // Control thread: builds the host nodes (VST3, IEUM WAVE) and hands the plan to this engine's Rust graph, queued
+  // until submit() (its latency and tails come from there). Throws on invalid input or when the Rust engine refuses
+  // the plan. Submit the result to the same engine.
   [[nodiscard]] std::unique_ptr<PreparedProject> prepare(const ProjectTimeline&, const AssetStore&,
       const SampleSetStore& = {}, const PluginResolver& = {}) const;
   // Control-thread only; throws if the bounded graph queue is full. Ownership is
@@ -484,7 +497,8 @@ class RenderEngine {
   // whose events, chain or source changed is rebuilt alone and swapped in at a block boundary, keeping its
   // voices, effect tails and controllers; tempo/length/cycle, track order and routing changes submit a new
   // graph whose tracks continue their predecessors by id. Notes equal to running ones keep their ids.
-  // Throws like prepare() on invalid input; the running graph is then unchanged.
+  // Throws like prepare() on invalid input or when the Rust engine refuses the plan; the running graph is then
+  // unchanged.
   UpdateResult update(const ProjectTimeline& project, const AssetStore& assets, const SampleSetStore& sets = {},
                       const PluginResolver& resolver = {});
   void collectRetired();
@@ -549,21 +563,21 @@ class RenderEngine {
   // Offline only: skip master gain and the master processor (pre-master stems, freeze and bounce renders).
   // Set only while stopped, before submitting/playing a project.
   void setMasterBypass(bool bypass) noexcept;
+  // Control thread: the analysis taps the open editors show (the EQ/filter spectrum, the utility's stereo scope,
+  // the guitar-rig tuner; at most analysisSlots; docs/RUST_ENGINE.md 5.7). Each is the signal after insert `insert`
+  // of graph track `track`, or with `tuner` a guitar rig's tuner input there. An empty list turns them off.
+  std::uint64_t setAnalysis(std::span<const AnalysisTap> taps);
+  // Control thread: slot `slot`'s latest analysisFrames interleaved stereo frames, oldest first, into `out`
+  // (at least analysisFrames * 2 values). Returns how many renders have published so far (0: nothing yet, or the
+  // callback kept writing).
+  [[nodiscard]] std::uint64_t readAnalysis(std::uint32_t slot, std::span<float> out) const noexcept;
   // Control thread, before the first submit and before the device starts:
   // creates the worker pool (threads > 0, or 1 when only rendering ahead).
   // Graphs prepared afterwards carry render-ahead rings within a memory budget.
   void setProcessing(const ProcessingOptions& options);
-  // Rust render engine (docs/RUST_ENGINE.md 10). The environment variable GARAK_RUST_ENGINE ("1" or "strict")
-  // sets the mode at construction; setRustEngine overrides it before the first submit (0 off, 1 Rust with C++
-  // fallback for graphs it refuses, 2 strict: a refused graph throws). This engine stays the shell: transport,
-  // count-in, metronome, live MIDI, monitoring, capture, master bus, snapshots.
-  void setRustEngine(int mode);
-  [[nodiscard]] bool rustEngineRequested() const noexcept;
-  // Control thread: why the Rust engine refused the last graph or update (empty when it accepted it).
-  [[nodiscard]] std::string lastRustRefusal() const;
  private:
-  UpdateResult updateGraph(const ProjectTimeline& project, const AssetStore& assets, const SampleSetStore& sets,
-                           const PluginResolver& resolver);
+  std::unique_ptr<PreparedProject> prepareGraph(const ProjectTimeline& project, const ProjectTimeline& plan, const AssetStore& assets,
+                                                const SampleSetStore& sets, const PluginResolver& resolver) const;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

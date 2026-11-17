@@ -2,7 +2,7 @@
 // Included by engine_test.cpp (uses its check/near helpers).
 
 // Magnitude in dB of an effect's (left-channel) impulse response at `hz`.
-double effectResponseDb(dsp::StereoProcessor& effect, double hz, std::size_t frames = 32768) {
+double effectResponseDb(dsp::Effect& effect, double hz, std::size_t frames = 32768) {
   std::vector<float> buffer(frames * 2);buffer[0] = buffer[1] = 1;
   for (std::size_t at = 0; at < frames; at += 256) effect.process(buffer.data() + 2 * at, static_cast<std::uint32_t>(std::min<std::size_t>(256, frames - at)));
   double re = 0, im = 0;
@@ -17,7 +17,7 @@ void parametricEqAndSweep() {
   auto legacy = dsp::makeEffect("eq", {{"low", 6}, {"mid", -4}, {"midFreq", 800}, {"high", 3}}, 48000, 120);auto got = input;
   for (std::size_t at = 0; at < 9000; at += 300) legacy->process(got.data() + 2 * at, 300);
   dsp::Biquad ref[3];ref[0].configure(dsp::Filter::LowShelf, 48000, 220, 1, 6);ref[1].configure(dsp::Filter::Peak, 48000, 800, .9, -4);ref[2].configure(dsp::Filter::HighShelf, 48000, 4500, 1, 3);
-  auto want = input;for (auto& f : ref) for (std::size_t i = 0; i < 9000; ++i) { want[2 * i] = f.sample(want[2 * i], 0); want[2 * i + 1] = f.sample(want[2 * i + 1], 1); }
+  auto want = input;for (auto& f : ref) for (std::size_t i = 0; i < 9000; ++i) { want[2 * i] = f.sampleChannel(want[2 * i], 0); want[2 * i + 1] = f.sampleChannel(want[2 * i + 1], 1); }
   for (std::size_t i = 0; i < want.size(); ++i) check(got[i] == want[i], "Legacy 3-band EQ no longer renders identically");
   // Default EQ is transparent.
   near(eqDb({}, 100), 0, 1e-6, "Default EQ is not flat at 100 Hz");near(eqDb({}, 5000), 0, 1e-6, "Default EQ is not flat at 5 kHz");

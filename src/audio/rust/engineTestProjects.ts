@@ -1,9 +1,11 @@
-// Deterministic projects for the Rust engine A/B tests (engineAB.test.ts in Node, and
-// scripts/rust-engine-smoke.mjs in Chromium against the Web Audio engine). Test support only: the
+// Deterministic projects for the engine tests (engineAB.test.ts and effects.test.ts in Node, and
+// scripts/rust-engine-smoke.mjs in Chromium). Test support only: the
 // app never imports this file.
 
-import { createDevice, createEmptyProject, createTrack } from '../../core/project'
+import { createDevice, createEmptyProject, createTrack, withWavetablePatch } from '../../core/project'
 import type { AudioClip, Project, Track } from '../../core/types'
+import { createDefaultWavetablePatch } from '../../devices/wavetable-synth/model'
+import { getWavetablePreset } from '../../devices/wavetable-synth/presets'
 
 /** Planar PCM by asset id (a Node test has no AudioBuffer; the browser builds one from this). */
 export type TestPcm = Map<string, { sampleRate: number; channels: Float32Array[] }>
@@ -116,6 +118,24 @@ export function instrumentProject(): TestProject {
   track.clips = [{ id: id('clip'), name: 'notes', kind: 'midi', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: id('note'), pitch: 60, start: 0, duration: 2, velocity: 0.8 }] } as unknown as Track['clips'][number]]
   project.tracks = [track]
   return { name: 'instrument', project, pcm: new Map(), note: 'built-in synth' }
+}
+
+/**
+ * IEUM WAVE (docs/IEUM_WAVE.md): a held chord and a melody on one WAVE track (fixed project and track ids, so a preset change
+ * edits the same track: the engine crossfades its table sets over 20 ms). `preset`: a WAVE_PRESETS id, else
+ * the default patch. The synth exists only in the engine (no Web Audio fallback).
+ */
+export function waveProject(preset?: string): TestProject {
+  const project = { ...base('IEUM WAVE', 120, 8), id: 'wave-project' }
+  const patch = preset ? getWavetablePreset(preset) : createDefaultWavetablePatch()
+  const track = { ...withWavetablePatch(createTrack('instrument', 'wavetable'), patch), id: 'wave-track', name: 'IEUM WAVE' }
+  const notes = [
+    ...[48, 55, 64].map(pitch => ({ id: `wave-chord-${pitch}`, pitch, start: 0, duration: 7.5, velocity: 0.8 })),
+    ...[72, 74, 76, 79, 76, 74].map((pitch, k) => ({ id: `wave-melody-${k}`, pitch, start: 0.5 + k, duration: 0.75, velocity: 0.7 })),
+  ]
+  track.clips = [{ id: 'wave-clip', name: 'wave', kind: 'midi', startBeat: 0, lengthBeats: 8, gain: 1, notes } as unknown as Track['clips'][number]]
+  project.tracks = [track]
+  return { name: 'wave', project, pcm: new Map(), note: `IEUM WAVE (${preset ?? 'default patch'})` }
 }
 
 /**

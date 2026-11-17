@@ -4,7 +4,7 @@ import { FREEZE_ASSET_PREFIX, canonicalJson, freezeSignature, freezeStatus, froz
 import { ProjectSession } from './ProjectSession'
 import { setTempoAt } from './tempoMap'
 import { compileNativeTimeline } from '../audio/native/timeline'
-import { renderTailSeconds, trackTailSeconds } from '../audio/graph'
+import { renderTailSeconds, trackTailSeconds } from '../audio/renderTail'
 import type { MidiClip, Project, Track, TrackFreeze } from './types'
 
 const midi = (id: string, patch: Partial<MidiClip> = {}): MidiClip => ({

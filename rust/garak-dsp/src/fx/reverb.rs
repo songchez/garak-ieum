@@ -1,4 +1,4 @@
-//! Convolution reverb: native/src/dsp.cpp `impulse`, `Fft`, `ConvolutionGroup`, `Convolver`,
+//! Convolution reverb: the former C++ DSP (0.3.2) `impulse`, `Fft`, `ConvolutionGroup`, `Convolver`,
 //! `Reverb`. The impulse response is synthesised exactly like the C++ (and
 //! src/devices/effects/reverb.ts `reverbImpulse`), so a precomputed / cached IR from either side can
 //! be handed in instead (`prepare_kernels` takes any IR of `ir_len` frames).
@@ -49,7 +49,7 @@ pub fn ir_scratch_len(sample_rate: f64, space: usize) -> usize {
     2 * impulse_len(sample_rate, spec(space).0)
 }
 
-/// dsp.cpp `impulse()`: seeded noise shaped per space, normalised to a fixed RMS.
+/// the former C++ DSP (0.3.2) `impulse()`: seeded noise shaped per space, normalised to a fixed RMS.
 fn impulse(sample_rate: f64, mut seed: u32, space: usize, left: &mut [f32], right: &mut [f32]) {
     let length = left.len().min(right.len());
     let comb = math::floor(0.0293 * sample_rate + 0.5) as usize;
@@ -88,7 +88,7 @@ fn impulse(sample_rate: f64, mut seed: u32, space: usize, left: &mut [f32], righ
     }
 }
 
-/// The reverb's impulse response for `space` and `size` (dsp.cpp `Reverb` constructor): the long
+/// The reverb's impulse response for `space` and `size` (the former C++ DSP (0.3.2) `Reverb` constructor): the long
 /// and short variants cross-faded by size. `left` / `right` hold `ir_len` frames, `scratch`
 /// `ir_scratch_len` floats. Returns false (and leaves the output untouched) when a buffer is short.
 pub fn generate_ir(
@@ -126,7 +126,7 @@ fn cmul(a: C32, b: C32) -> C32 {
     [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]]
 }
 
-/// Radix-2 FFT of `n = roots.len() * 2` points (dsp.cpp `Fft::run`).
+/// Radix-2 FFT of `n = roots.len() * 2` points (the former C++ DSP (0.3.2) `Fft::run`).
 fn fft(data: &mut [C32], roots: &[C32], inverse: bool) {
     let n = data.len();
     if n < 2 || !n.is_power_of_two() {
@@ -192,7 +192,7 @@ impl GroupSpec {
 
 const HEAD: usize = 64;
 
-/// dsp.cpp `Convolver`: 64-tap direct head, then groups at 64 / 512 / 4096 frames.
+/// the former C++ DSP (0.3.2) `Convolver`: 64-tap direct head, then groups at 64 / 512 / 4096 frames.
 fn group_specs(ir_len: usize) -> [Option<GroupSpec>; 3] {
     let make = |offset: usize, max: usize, block: usize| {
         (ir_len > offset).then(|| {
@@ -505,7 +505,7 @@ impl<'a> Convolver<'a> {
 }
 
 /// A reverb's two convolvers without its pre-delay, filters and mix (the guitar rig's plate,
-/// dsp.cpp `RigReverb`). Kernels from `prepare_kernels`, state from the caller's storage.
+/// the former C++ DSP (0.3.2) `RigReverb`). Kernels from `prepare_kernels`, state from the caller's storage.
 #[derive(Debug)]
 pub(crate) struct StereoConvolver<'a> {
     channels: [Convolver<'a>; 2],

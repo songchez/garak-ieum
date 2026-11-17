@@ -1,5 +1,5 @@
 import type { EffectType } from '../../core/types.js'
-import type { EffectDef, RealtimeEffectModule } from '../contracts.js'
+import type { EffectDef, EffectModule } from '../contracts.js'
 import { eqEffect } from './eq.js'
 import { filterEffect } from './filter.js'
 import { compressorEffect } from './compressor.js'
@@ -26,7 +26,7 @@ export const EFFECT_MODULES = {
   tape: tapeEffect,
   bitcrusher: bitcrusherEffect,
   utility: utilityEffect,
-} satisfies Record<EffectType, RealtimeEffectModule>
+} satisfies Record<EffectType, EffectModule>
 
 export const EFFECT_TYPES = Object.keys(EFFECT_MODULES) as EffectType[]
 export const EFFECT_DEFS = Object.fromEntries(

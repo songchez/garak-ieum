@@ -146,7 +146,7 @@ export function remapCopiedSends(copies: Track[], idMap: ReadonlyMap<string, str
 /** Tracks that feed `returnId` with a send entry (any level: the graph is built for every entry). */
 export const sendersOf = (tracks: readonly Track[], returnId: string): Track[] => tracks.filter(track => sendsOf(track).some(send => send.returnId === returnId))
 
-/** Graph topology of the sends (rebuilds the Web Audio graph when it changes; levels are parameters). */
+/** Graph topology of the sends (a change rebuilds the engine's routing; levels are parameters). */
 export function sendLayoutKey(track: Track): string {
   const sends = sendsOf(track)
   return sends.length ? '>' + sends.map(send => `${send.returnId}${send.pre ? '^' : ''}`).join(',') : ''

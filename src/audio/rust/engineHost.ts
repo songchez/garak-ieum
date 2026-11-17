@@ -1,11 +1,11 @@
-/// <reference path="../../devices/guitar-rig/worklet-assets.d.ts" />
+/// <reference path="../worklet-assets.d.ts" />
 // Main-thread side of the Rust engine worklet (docs/RUST_ENGINE.md 5): module loading, the
 // AudioWorkletNode bridge (PCM, project.set/patch, transport, status) and the export worker.
 
 import { packAudioBuffer } from '../native/pcmTransfer'
 import { GarakEngineError, utf8Encode, type EngineApplied, type EngineKernel, type EngineTransport, ENGINE_TRANSPORT, ENGINE_ABI_VERSION, LIVE_EVENT, type LiveEventKind } from './garakEngineWasm'
 import {
-  CommandRing, createSharedChannel, emptyStatus, ENGINE_PROCESSOR, MeterReader, RING_LIVE, StatusReader, TAP_CHANNELS,
+  AnalysisReader, CommandRing, createSharedChannel, emptyStatus, ENGINE_PROCESSOR, MeterReader, RING_LIVE, StatusReader, TAP_CHANNELS,
   type EngineMeters, type EngineProcessorOptions, type EngineReply, type EngineRequest, type EngineStatus, type SharedChannel,
 } from './engineChannel'
 import type { EngineRenderRequest, EngineRenderResult } from './engineOffline'
@@ -22,27 +22,36 @@ export async function loadGarakEngineModule(base = baseUrl(), fetchImpl: typeof 
     if (!response.ok) return null
     const module = await WebAssembly.compile(await response.arrayBuffer())
     // Checked without instantiating (every instance reserves its own memory): ABI 3 adds the count-in,
-    // meters, monitoring input, route taps, live events and staged updates; ABI 4 the built-in instruments.
+    // meters, monitoring input, route taps, live events and staged updates; ABI 4 the built-in instruments; ABI 5
+    // live events at sample offsets.
     // The worklet still verifies garak_engine_abi_version().
     const exports = new Set(WebAssembly.Module.exports(module).map(entry => entry.name))
-    return ENGINE_ABI_VERSION === 4 && exports.has('garak_engine_render_planar_io') && exports.has('garak_engine_stage') && exports.has('garak_engine_register_samples') ? module : null
+    return ENGINE_ABI_VERSION === 5 && exports.has('garak_engine_render_planar_io') && exports.has('garak_engine_stage') && exports.has('garak_engine_register_samples') && exports.has('garak_engine_live_at') ? module : null
   } catch {
     return null
   }
 }
 
 let shared: Promise<WebAssembly.Module | null> | null = null
-/** The page's garak-engine module, fetched once (only when the flag is on). */
+/** The page's garak-engine module, fetched once; a failed load is fetched again by the next caller. */
 export function sharedGarakEngineModule(): Promise<WebAssembly.Module | null> {
-  shared ??= loadGarakEngineModule()
+  if (!shared) {
+    const task = loadGarakEngineModule()
+    shared = task
+    void task.then(module => { if (!module && shared === task) shared = null })
+  }
   return shared
 }
+
+/** Shown when the browser cannot run the engine worklet at all (no AudioWorklet, e.g. an insecure origin). */
+export const ENGINE_WORKLET_UNSUPPORTED = '이 브라우저는 오디오 엔진에 필요한 AudioWorklet을 지원하지 않습니다. 최신 Chrome, Edge, Firefox 또는 Safari에서 보안 연결(https)로 열어 주세요.'
 
 const registered = new WeakMap<BaseAudioContext, Promise<void>>()
 function registerProcessor(context: BaseAudioContext): Promise<void> {
   let task = registered.get(context)
   if (!task) {
     task = import('./engineWorkletUrl').then(({ default: url }) => context.audioWorklet.addModule(url))
+    task.catch(() => { if (registered.get(context) === task) registered.delete(context) })
     registered.set(context, task)
   }
   return task
@@ -86,6 +95,9 @@ export class RustEngineNode {
   private readonly meterReader: MeterReader | null
   private meters: EngineMeters | null = null
   private readonly ring: CommandRing | null
+  private readonly analysisReader: AnalysisReader | null
+  private posted: Float32Array[] = []
+  private postedVersion = 0
   private fatal: string | null = null
   private disposed = false
 
@@ -101,6 +113,7 @@ export class RustEngineNode {
     this.reader = channel ? new StatusReader(channel.status) : null
     this.meterReader = channel ? new MeterReader(channel.meters) : null
     this.ring = channel ? new CommandRing(channel.ring) : null
+    this.analysisReader = channel ? new AnalysisReader(channel.analysis) : null
     this.sharedChannel = !!channel
     this.node.port.onmessage = event => this.receive(event.data as EngineReply)
     this.node.onprocessorerror = () => this.fail('The engine worklet stopped (processor error)')
@@ -108,6 +121,7 @@ export class RustEngineNode {
   }
 
   static async create(context: AudioContext, module: WebAssembly.Module): Promise<RustEngineNode> {
+    if (!context.audioWorklet || typeof AudioWorkletNode === 'undefined') throw new Error(ENGINE_WORKLET_UNSUPPORTED)
     await registerProcessor(context)
     return new RustEngineNode(context, module, createSharedChannel())
   }
@@ -127,6 +141,7 @@ export class RustEngineNode {
         if (reply.meters) this.meters = mergeMeters(this.meters, reply.meters)
         return
       case 'fatal': this.fail(reply.message); return
+      case 'analysis': this.posted = reply.slots; this.postedVersion += 1; return
       case 'ack': case 'error': {
         const pending = this.pending.get(reply.seq)
         if (!pending) return
@@ -193,13 +208,35 @@ export class RustEngineNode {
     return this.send({ type: 'taps', seq: ++this.seq, tracks }).then(() => undefined)
   }
 
-  /** A live note/controller event for a track (graph index); next quantum through the shared ring. */
-  live(track: number, kind: LiveEventKind, pitch = 0, value = 0, id = 0): number {
+  /** Analysis taps (at most ANALYSIS_SLOTS): what the open editors show. An empty list turns them off. */
+  analysis(taps: { track: number; insert: number; tuner: boolean }[]): Promise<void> {
+    this.posted = []
+    return this.send({ type: 'analysis', seq: ++this.seq, taps }).then(() => undefined)
+  }
+
+  /** Changes whenever the worklet published new analysis data. */
+  get analysisVersion(): number { return this.analysisReader ? this.analysisReader.version : this.postedVersion }
+
+  /** Analysis tap `slot`, the latest ANALYSIS_FRAMES interleaved stereo frames oldest first, into `out`. */
+  readAnalysis(slot: number, out: Float32Array): boolean {
+    if (this.analysisReader) return this.analysisReader.read(slot, out)
+    const data = this.posted[slot]
+    if (!data) return false
+    out.set(data)
+    return true
+  }
+
+  /**
+   * A live note/controller event for a track (graph index) through the shared ring. `at`: the context frame it
+   * sounds at (liveTiming.ts; the worklet starts it on that sample of the quantum that holds it), 0 for the next
+   * quantum's first frame.
+   */
+  live(track: number, kind: LiveEventKind, pitch = 0, value = 0, id = 0, at = 0): number {
     const seq = ++this.seq
     if (this.disposed || this.fatal) return seq
     const code = LIVE_EVENT[kind]
-    if (this.ring?.push({ command: RING_LIVE, frame: id, afterSeq: seq - 1, seq, a: track, b: code, c: pitch, d: value })) return seq
-    void this.send({ type: 'live', seq, track, kind: code, pitch, value, id }).catch(() => undefined)
+    if (this.ring?.push({ command: RING_LIVE, frame: id, afterSeq: seq - 1, seq, a: track, b: code, c: pitch, d: value, e: at })) return seq
+    void this.send({ type: 'live', seq, track, kind: code, pitch, value, id, at }).catch(() => undefined)
     return seq
   }
 

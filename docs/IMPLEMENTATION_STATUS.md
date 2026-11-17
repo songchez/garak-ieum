@@ -1,17 +1,30 @@
 # 구현 상태
 
-2026-11-04 (KST) · 가락이음 0.1.1 개발 프리뷰
+2026-11-17 (KST) · 0.3.3 기준. 아래의 날짜별 절은 당시 기록입니다.
 
 이 문서는 현재 소스에 연결된 기능과 이번에 실행한 검증을 기록합니다. [상호작용 명세](INTERACTION_SPEC.md)와 [Logic 비교 명세](LOGIC_GAP.md)는 구현 목표도 포함하므로, 그 문서의 항목이 모두 완성됐다는 뜻은 아닙니다.
 
 현재 문서는 기존 테마·공통 명령/MCP·모듈형 이펙트·단선율 피치 편집기에 이어 **음계 보정·실험적 포먼트 도구·전역 Space와 로고 메뉴**, **URL 기반 프로젝트 목록·국악 샘플 3종**, **인접 리전 경계·확대 그리드·비파괴 MIDI 트림·수동 루프·편집 패널 조절**, **BPM 직접 입력·프로젝트 박자표 변경·Workers 배포 설정**을 포함합니다. 아래에는 현재 코드의 범위와 각 패스 당시의 실행 기록을 구분했습니다. 실제 Logic/Melodyne 앱과의 기능·음질 동등성이나 실기기 검증 완료를 뜻하지 않습니다.
 
+## 0.3.3 정리 (2026-11-17)
+
+0.3.2에서 비상 경로로만 남긴 이전 엔진을 지우고, 같은 엔진 위에서 남았던 일을 마무리했습니다.
+
+- **데스크톱:** C++ 트랙 경로·C++ 이펙트 DSP·C++ IEUM WAVE 신스와 스위치(`GARAK_RUST_ENGINE`, `GARAK_RUST_EFFECTS`, `GARAK_RUST=OFF` 빌드)를 삭제했습니다. 마스터 버스와 메트로놈·카운트인 클릭도 Rust 엔진이 렌더합니다. `RenderEngine`의 `HostTrack`은 VST3 악기·인서트만 담고, IEUM WAVE는 셸이 패치를 검증한 뒤(`garak_rs_wave_check_patch`) Rust 그래프가 렌더합니다. [RUST_ENGINE 10장](RUST_ENGINE.md#10-데스크톱-호스트-경로-셸--rust-그래프)
+- **웹:** `RustWebAudioEngine`을 `WebAudioEngine` 하나로 합치고 Web Audio 그래프(`graph.ts`)·TS 커널·Web Audio 기타 랙·빈티지 Web Audio 경로·웹용 `garak-dsp.wasm`(`rust/garak-wasm`)과 스위치 `garak.rustEngine`·`garak.rustDsp`·`VITE_GARAK_RUST_*`를 삭제했습니다. 엔진을 불러오지 못하면 분명한 오류를 보여 주고, 엔진이 거부한 프로젝트는 대체 없이 재생·내보내기가 실패합니다. IEUM WAVE는 웹에서도 엔진으로 재생·편집·내보내기합니다. WASM 스택은 256 KiB(기타 랙 인서트가 64 KiB에서 넘침).
+- **패리티:** 삭제한 코드의 출력을 지우기 전에 골든 레퍼런스로 기록했습니다(`native/tests/golden/`, `rust/garak-engine/tests/golden/ieum-wave/`). Windows x64는 비트 동일, 그 밖은 잔차 ≤ -90 dBFS가 게이트입니다. CI의 `Rust engine (Windows MSVC x64 / macOS arm64)` 작업이 검사합니다.
+- **라이브 MIDI 샘플 오프셋:** 장치 MIDI·Web MIDI·컴퓨터 키보드의 노트·CC·피치벤드·애프터터치·프로그램 체인지가 블록 경계가 아니라 자기 샘플에서 시작합니다(`garak_rs_engine_live_at`, wasm ABI 5, VST3는 `sampleOffset`). [RUST_ENGINE 5.8](RUST_ENGINE.md#58-라이브-midi-샘플-정확도)
+- **자산 메모리:** `AudioAsset`은 원본 바이트·메타데이터·320점 개요·파형 피라미드만 갖고, PCM은 엔진 한 벌만 둡니다. 화면이 PCM을 필요로 하면 `assetPcm`이 원본에서 디코드합니다(192 MiB LRU).
+- **분석 탭:** EQ·필터 스펙트럼, 유틸리티 스코프, 기타 랙 튜너를 엔진 분석 탭(`Controller::set_analysis`)에서 읽습니다. 웹은 워크릿이, 데스크톱은 호스트 프로토콜 `analysis.set`/`analysis.read`가 전합니다.
+- **자동 저장:** 편집이 이어져도 최대 5초 안에 저장하고, 창 닫기·숨기기·Ctrl+S에서 바로 저장합니다(`pnpm autosave:smoke`). 기타 랙 마이크 편집이 새로 고침 뒤 되돌아가던 문제를 고쳤습니다.
+- **남은 일:** 소크 테스트, 디스크 기반 자산 스트리밍, IEUM WAVE 테이블 메모리의 예산 반영, render-ahead 중인 트랙의 분석 탭. [로드맵](ROADMAP.md)
+
 ## 통합 Rust 엔진 (0.3.2, 2026-11-17)
 
-오디오 렌더를 **하나의 Rust 엔진**(`rust/garak-engine`)으로 합쳤습니다. 데스크톱은 C ABI(`rust/garak-ffi`)로 링크하고 C++ `RenderEngine`은 장치 I/O·전송·마스터·메트로놈·VST3/IEUM WAVE 호스트 노드·render-ahead 링·녹음을 맡는 셸이 됩니다. 트랙·내장 악기·기타 랙·시김새·센드/리턴·트랙 라우트는 Rust 엔진이 처리 레벨마다 멀티코어로 렌더합니다. 웹은 같은 엔진을 AudioWorklet(`garak-engine-wasm`)에서 돌리고(미터 블록, 라이브 이벤트 링, 입력 모니터링, 녹음 탭), Web Audio 그래프는 엔진이 거부한 프로젝트의 자동 대체 경로입니다. 이펙트와 악기 보이스는 `rust/garak-dsp`(`no_std`, `garak-dsp.wasm`)에 있습니다. 입력은 [렌더-diff 프로토콜](RENDER_DIFF_PROTOCOL.md) 그대로이며 `Controller`/`Renderer`가 lock-free 큐로만 통신합니다.
+오디오 렌더를 **하나의 Rust 엔진**(`rust/garak-engine`)으로 합쳤습니다. 데스크톱은 C ABI(`rust/garak-ffi`)로 링크하고 C++ `RenderEngine`은 장치 I/O·전송·마스터·메트로놈·VST3 호스트 노드·render-ahead 링·녹음을 맡는 셸이 됩니다. 트랙·내장 악기·기타 랙·시김새·센드/리턴·트랙 라우트는 Rust 엔진이 처리 레벨마다 멀티코어로 렌더합니다. 웹은 같은 엔진을 AudioWorklet(`garak-engine-wasm`)에서 돌립니다(미터 블록, 라이브 이벤트 링, 입력 모니터링, 녹음 탭). 이펙트와 악기 보이스는 `rust/garak-dsp`(`no_std`)에 있습니다. 입력은 [렌더-diff 프로토콜](RENDER_DIFF_PROTOCOL.md) 그대로이며 `Controller`/`Renderer`가 lock-free 큐로만 통신합니다.
 
-- 0.3.2에 한한 숨은 대체 경로: 데스크톱 `GARAK_RUST_ENGINE=0`(+ `GARAK_RUST_EFFECTS=none`), 웹 `localStorage` `garak.rustEngine=0`·`garak.rustDsp=0`. 이전 TS·C++ 엔진은 다음 패치에서 삭제할 예정입니다.
-- 패리티·CPU·남은 일(웹의 샘플 세트 등록, 데스크톱 IEUM WAVE의 C++ 호스트 노드 유지, 블록 경계의 라이브 MIDI)은 [RUST_ENGINE](RUST_ENGINE.md)과 [RUST](RUST.md)에 기록합니다. 아래 2026-11-04 항목의 C++ 렌더 설명은 당시 구조입니다.
+- 0.3.3에서 이전 엔진과 비상 경로를 모두 지웠습니다(위 절).
+- 패리티·CPU·남은 일은 [RUST_ENGINE](RUST_ENGINE.md)과 [RUST](RUST.md)에 기록합니다. 아래 2026-11-04 항목의 C++ 렌더 설명은 당시 구조입니다.
 
 ## 데스크톱 네이티브 오디오 전환 (2026-11-04)
 
@@ -63,7 +76,7 @@ Ableton Live의 Warp처럼 오디오 리전을 프로젝트 템포에 맞추고,
 | 리전 편집 | 다중·사각형 선택, 복사/잘라내기/붙여넣기, 같은 종류 트랙 간 이동, Alt 복사, 비파괴 MIDI/오디오 좌우 트림, 분할·합치기·반복 붙이기, 뮤트·수동 끝점 루프. 인접 경계 자석 스냅과 정렬선. 리전 일부를 편집하는 시간 범위 선택은 후속입니다. |
 | 리전 인스펙터 | MIDI 뮤트·루프·퀀타이즈·스윙·트랜스포즈·벨로시티·딜레이, 오디오 뮤트·루프·게인·딜레이·페이드. 혼합값 표시와 다중 편집. `RegionInspector.tsx`. |
 | 트랙 인스펙터 | 이름·아이콘·악기·트랜스포즈·벨로시티 오프셋·키/벨로시티 제한·딜레이. 악기·오디오 트랙의 지원 항목을 구분합니다. `TrackInspector.tsx`. |
-| 재생 변환 | 리전 루프, MIDI 퀀타이즈·스윙·트랙/리전 이조·벨로시티·제한·틱 딜레이를 재생 시 적용합니다. 원본 MIDI 값은 유지합니다. `core/playback.ts` → `audio/native/timeline.ts` → 통합 Rust 엔진(데스크톱·웹 공통; 웹 대체 경로는 `audio/graph.ts`). |
+| 재생 변환 | 리전 루프, MIDI 퀀타이즈·스윙·트랙/리전 이조·벨로시티·제한·틱 딜레이를 재생 시 적용합니다. 원본 MIDI 값은 유지합니다. `core/playback.ts` → `audio/native/timeline.ts` → 통합 Rust 엔진(데스크톱·웹 공통). |
 | 피아노롤 | 선택/사각형 선택, 음표 생성·이동·길이·벨로시티, 클립 간 복사/붙여넣기, Q/Shift+Q, 우클릭 메뉴. 기본 마우스는 자유 이동·길이 편집이며 스냅을 직접 선택할 수 있습니다. 좌우 방향키는 보이는 격자 한 칸, 위아래는 반음(드럼은 패드 한 행), Shift+방향키는 선택 확장입니다. |
 | 악기·이펙트 | 합성 6종과 샘플 10종(피아노 2종·Wurlitzer·드럼 3종·국악 4종), 순서를 바꿀 수 있는 EQ/필터/컴프레서/드라이브/딜레이/리버브 체인. 출처는 [SAMPLES](SAMPLES.md)와 [제3자 자산 안내](../THIRD_PARTY_NOTICES.md)를 따릅니다. |
 | 피치 편집 | 단선율 음표/곡선 분석, 드래그·센트 이동·분할/합치기, 선택 음표의 음계·강도 보정, 실험적 포먼트 보존·이동, Worker 재합성, 원본 복원, 재생·Undo·저장·WAV 출력. `devices/pitch-editor/`. 원본 60초·1~2채널·±12반음. |
@@ -466,13 +479,13 @@ Node 서버는 loopback에서만 브리지를 열고, 허용한 앱 Origin·연�
 
 | 항목 | 현재 한계 |
 |---|---|
-| 메트로놈·카운트인 | 구현됨: 헤더 버튼·`K`, 기본·국악 타악기 소리, 녹음 카운트인. 웹·네이티브 모두 샘플 단위 타이밍이며 녹음·내보내기에 들어가지 않습니다. 템포 맵을 따르는 클릭은 템포 맵과 함께 남았습니다. [METRONOME.md](METRONOME.md) |
+| 메트로놈·카운트인 | 구현됨: 헤더 버튼·`K`, 기본·국악 타악기 소리, 녹음 카운트인, 템포 맵·박자 맵을 따르는 클릭. 두 호스트 모두 엔진이 샘플 단위로 치며 녹음·내보내기에 들어가지 않습니다. [METRONOME.md](METRONOME.md) |
 | 시간 범위·연결부 편집 | 사각형 선택은 리전 전체를 고릅니다. 리전 일부의 Marquee 편집, 타임라인 직접 페이드/크로스페이드는 후속입니다. 제자리 바운스·트랙 얼리기·스템 내보내기는 [BOUNCE_FREEZE_STEMS.md](BOUNCE_FREEZE_STEMS.md)를 보세요. 수동 루프 끝점은 구현됐습니다. |
-| 외부 MIDI·고급 장치 기능 | USB MIDI 입력·MIDI 파일 입출력·물리 다중 I/O·다중 입력 녹음·지연 자동 측정/정밀 보상은 남았습니다. 브라우저의 장치 선택·수동 ms 정렬과 데스크톱의 선택된 1/2채널·ASIO 드라이버 보고 지연/그래프 보정은 연결돼 있습니다. 물리 루프백 자동 측정은 없습니다. |
+| 외부 MIDI·고급 장치 기능 | MIDI 키보드 입력(0.1.9)과 MIDI 파일 가져오기·내보내기(0.1.2, 0.2.0)는 구현됐습니다. 물리 다중 입력 동시 녹음·지연 자동 측정/정밀 보상은 남았습니다. 브라우저의 장치 선택·수동 ms 정렬과 데스크톱의 선택된 1/2채널·ASIO 드라이버 보고 지연/그래프 보정은 연결돼 있습니다. 물리 루프백 자동 측정은 없습니다. |
 | 편집 명세 전체 | E/P 편집기 단축키, 도구 메뉴·명령 검색·사용자 키맵, MIDI alias·다중 리전 피아노롤, 탐색 화면 복귀 등은 추가 작업입니다. 비파괴 MIDI 트림과 주요 조절기의 제스처 Undo는 연결됐습니다. |
 | 오디오 변형 | 리전 단위 워프(프로젝트 템포 맞춤·템포 감지)는 구현됐습니다. 오디오 리전 퀀타이즈·트랜스포즈, 워프 마커·Flex는 없습니다. 템포 맵(계단·램프, 글로벌 `템포` 트랙)은 구현됐습니다([TEMPO_MAP.md](TEMPO_MAP.md)). |
-| 믹서·라우팅 | 센드·Aux·버스·채널 공유·오토메이션·그룹은 없습니다. 현재 선택 채널과 Stereo Out 중심입니다. |
-| 규모·엔진 | 통합 Rust 엔진(데스크톱·웹)과 멀티코어 렌더를 구현했으나 장시간/수백 트랙 성능 기준·디스크 기반 자산 스트리밍과 실제 장치 스트레스 검증은 남았습니다. |
+| 믹서·라우팅 | 센드·리턴 트랙, 트랙 입력 라우트, 오토메이션은 구현됐습니다([SENDS_RETURNS.md](SENDS_RETURNS.md), [TRACK_INPUT_ROUTING.md](TRACK_INPUT_ROUTING.md), [AUTOMATION.md](AUTOMATION.md)). 그룹·VCA·버스 폴더는 없습니다. |
+| 규모·엔진 | 통합 Rust 엔진이 두 호스트의 유일한 렌더러이고 멀티코어·render-ahead를 갖췄습니다. 장시간 소크 테스트, 수백 트랙 성능 기준, 디스크 기반 자산 스트리밍, 실제 장치 스트레스 검증은 남았습니다. |
 | 네이티브 플러그인 | VST3 호스트와 fixture 회귀를 구현했습니다. 실제 타사 제품별 호환성·native editor 실기 확인, VST2/AU/CLAP·sidechain·플러그인 MIDI output 라우팅은 남았습니다. |
 | 서버 기능 | 계정·클라우드 동기화·실시간 협업은 없습니다. |
 

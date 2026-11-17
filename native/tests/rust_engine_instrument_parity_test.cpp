@@ -1,8 +1,9 @@
-// Render-engine instrument parity (docs/RUST_ENGINE.md 6-7, gate G2): the built-in instruments
-// through the C++ RenderEngine and the Rust engine (rust/garak-engine via garak-ffi).
+// Render-engine instrument parity (docs/RUST_ENGINE.md 6-7, gate G2): the built-in instruments through the Rust
+// engine (rust/garak-engine via garak-ffi) against golden references of the C++ RenderEngine track path it replaced
+// in 0.3.3 (native/tests/golden.hpp; bit-identical on Windows x64, residual <= -90 dBFS elsewhere).
 //
 // Projects: rust/garak-engine/src/testkit/instruments.rs (timeline JSON + synthesized PCM +
-// samples.register JSON), fetched through the C ABI and fed to both engines: the five synths and
+// samples.register JSON), fetched through the C ABI: the five synths and
 // the drum kit, sample instruments (layered grand with release zones and a codec offset, a looped
 // 44.1 kHz bowed string, a choke-group kit), 옥구슬 EP / 한밤 106, and all of them at once. Notes
 // cover chords, overlapping repeats, cut-offs at clip/project ends and a note that starts before the
@@ -10,13 +11,12 @@
 // every track automates an instrument parameter. Offline exports (host renderStopped) at several
 // blocks and rates, then a live engine with a cycle: knob edits, note moves / deletions / additions
 // across the playhead, a seek into held notes and the pedal, cycle wraps (note and pedal chasing),
-// live MIDI, stop/replay. Gate: residual <= -90 dBFS, equal latency / length / diff classification.
+// live MIDI, stop/replay. Gate: as recorded from the C++ engine, plus equal latency / length / diff classification.
 //
-// `garak-rust-engine-instrument-parity-test bench [seconds] [repeats] [block]` prints the CPU
-// comparison for the instrument-heavy project instead.
-#include "cpp_reference_engine.hpp"
-#include "garak/dsp.hpp"
+// `garak-rust-engine-instrument-parity-test bench [seconds] [repeats] [block]` prints the engine's CPU use for the
+// instrument-heavy project instead.
 #include "garak/engine.hpp"
+#include "golden.hpp"
 #include "garak_engine_instruments.h"
 #include "protocol.hpp"
 
@@ -32,6 +32,7 @@
 #include <vector>
 
 namespace {
+golden::Suite goldens("rust-engine-instruments");
 int failures = 0;
 void check(bool ok, const std::string& what, double detail = 0) {
   if (!ok) { ++failures; std::fprintf(stderr, "FAIL %s (%.6g)\n", what.c_str(), detail); }
@@ -76,28 +77,6 @@ Project instrumentProject(std::uint32_t which, double seconds, std::uint32_t rat
 garak::ProjectTimeline parse(const std::string& json) { return garak::protocol::timeline(garak::protocol::Json::parse(json)); }
 
 struct Render { std::vector<float> samples; std::uint32_t latency = 0; std::uint64_t frames = 0; };
-
-// native/src/host.cpp renderStopped, minus the int16 conversion.
-Render renderCpp(const Project& project, std::uint32_t block) {
-  auto timeline = parse(project.json); timeline.cycle.reset();
-  garak::RenderEngine engine(timeline.sampleRate, block); engine.setOffline(true);
-  auto prepared = engine.prepare(timeline, project.assets, project.store);
-  const double tail = std::min(30.0, prepared->tailSeconds());
-  Render r; r.latency = prepared->latencyFrames();
-  r.frames = std::uint64_t(timeline.lengthFrames) + std::uint64_t(std::ceil(tail * timeline.sampleRate));
-  engine.submit(std::move(prepared)); (void)engine.play();
-  std::vector<float> chunk(std::size_t(block) * 2);
-  r.samples.reserve(r.frames * 2);
-  for (std::uint64_t done = 0; done < r.frames + r.latency;) {
-    const auto frames = std::uint32_t(std::min<std::uint64_t>(block, r.frames + r.latency - done));
-    engine.render(chunk.data(), nullptr, frames, 0);
-    const auto skip = std::uint32_t(std::min<std::uint64_t>(frames, done < r.latency ? r.latency - done : 0));
-    r.samples.insert(r.samples.end(), chunk.begin() + skip * 2, chunk.begin() + frames * 2);
-    done += frames;
-  }
-  engine.collectRetired();
-  return r;
-}
 
 std::string rustError(GarakRsEngine* e) {
   std::string message(512, '\0');
@@ -144,32 +123,21 @@ Render renderRust(const Project& project, std::uint32_t rate, std::uint32_t bloc
   return r;
 }
 
-double residual(const std::vector<float>& a, const std::vector<float>& b) {
-  if (a.size() != b.size()) return 1e9;
-  double m = 0;
-  for (std::size_t i = 0; i < a.size(); ++i) m = std::max(m, double(std::abs(a[i] - b[i])));
-  return m;
-}
 double peak(const std::vector<float>& a) {
   double m = 0;
   for (const auto x : a) m = std::max(m, double(std::abs(x)));
   return m;
 }
-std::string verdict(double d) { return d == 0 ? "bit-identical" : std::to_string(dbfs(d)).substr(0, 7) + " dBFS"; }
 
-void offlineCase(std::uint32_t which, double seconds, std::uint32_t rate, std::uint32_t block, bool rustEffects) {
-  garak::dsp::setEffectBackend("all", rustEffects ? garak::dsp::EffectBackend::Rust : garak::dsp::EffectBackend::Cpp);
+void offlineCase(std::uint32_t which, double seconds, std::uint32_t rate, std::uint32_t block) {
   const auto project = instrumentProject(which, seconds, rate);
-  const auto cpp = renderCpp(project, block);
   const auto rust = renderRust(project, rate, block);
-  const double diff = residual(cpp.samples, rust.samples);
-  std::printf("| offline: %s | %.1f s | %u Hz | %u | %s | %u / %u | %.2f | %s |\n", caseName(which), seconds, rate, block,
-              rustEffects ? "Rust" : "C++", cpp.latency, rust.latency, dbfs(peak(cpp.samples)), verdict(diff).c_str());
+  const auto r = goldens.check(std::string("offline ") + caseName(which) + " " + std::to_string(seconds) + "/" + std::to_string(rate) + "/" + std::to_string(block),
+                               rust.samples, {double(rust.latency), double(rust.frames)});
+  std::printf("| offline: %s | %.1f s | %u Hz | %u | %u | %.2f | %s |\n", caseName(which), seconds, rate, block, rust.latency, dbfs(peak(rust.samples)), r.verdict().c_str());
   const std::string name = std::string("offline ") + caseName(which) + " @" + std::to_string(rate) + "/" + std::to_string(block);
-  check(cpp.latency == rust.latency, name + ": latency", double(rust.latency));
-  check(cpp.frames == rust.frames, name + ": length", double(rust.frames));
-  check(peak(cpp.samples) > .05, name + ": silent render", peak(cpp.samples));
-  check(dbfs(diff) <= -90, name + ": residual", dbfs(diff));
+  check(peak(rust.samples) > .05, name + ": silent render", peak(rust.samples));
+  check(r.ok, r.message, r.residual);
 }
 
 std::string edit(std::string text, const std::string& from, const std::string& to, std::size_t from_pos = 0) {
@@ -220,12 +188,16 @@ std::string moveNote(const std::string& json, const std::string& track, std::int
 }
 std::string withRevision(const std::string& json, int from, int to) { return edit(json, "\"revision\":" + std::to_string(from), "\"revision\":" + std::to_string(to)); }
 
-const char* kindName(garak::UpdateResult::Kind k) { return k == garak::UpdateResult::Kind::None ? "none" : k == garak::UpdateResult::Kind::Diff ? "diff" : k == garak::UpdateResult::Kind::Tracks ? "tracks" : "full"; }
+const char* kindName(int k) { return k == 0 ? "none" : k == 1 ? "diff" : k == 2 ? "tracks" : k == 3 ? "full" : "refused"; }
+// The classification of each live edit, as the C++ engine and the Rust engine agreed on it until 0.3.2.
+int expectedKind(const std::string& what) {
+  if (what == "mix") return 1;
+  if (what == "instrument knobs" || what == "note edits" || what == "instrument change") return 2;
+  return 3; // IEUM WAVE patch, tempo during the WAVE crossfade, tempo, track removed.
+}
 
-// Live engines with a cycle: mid-play edits through RenderEngine::update and garak_rs_engine_set,
-// transport commands and live MIDI at the same frames.
-void liveCase(bool rustEffects) {
-  garak::dsp::setEffectBackend("all", rustEffects ? garak::dsp::EffectBackend::Rust : garak::dsp::EffectBackend::Cpp);
+// A live engine with a cycle: mid-play edits through garak_rs_engine_set, transport commands and live MIDI.
+void liveCase() {
   constexpr std::uint32_t rate = 48000, block = 128, call = 256;
   auto project = instrumentProject(3, 6, rate);
   // Cycle 1.0 s .. 4.0 s: wraps chase notes, controllers and the pedal.
@@ -237,25 +209,22 @@ void liveCase(bool rustEffects) {
     const auto at = waveProject.json.find("\"patchData\":\"", trackStart(waveProject.json, "wave-default")) + 13;
     defaultWave = waveProject.json.substr(at, waveProject.json.find('"', at) - at);
   }
-  garak::RenderEngine cpp(rate, block);
   auto* rust = rustEngine(project, rate, block, false);
-  check(cpp.update(parse(project.json), project.assets, project.store).kind == garak::UpdateResult::Kind::Full, "live: c++ initial graph");
   check(setRust(rust, project.json) == GARAK_RS_APPLIED_FULL, "live: rust initial graph " + rustError(rust));
-  (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
+  garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
   const std::uint32_t total = rate * 9;
-  std::vector<float> a(std::size_t(total) * 2), b(std::size_t(total) * 2);
+  std::vector<float> b(std::size_t(total) * 2);
   std::string current = project.json;
   int revision = 1, stage = 0, deleted = 0;
   std::string summary;
   std::int64_t position = 0; // Project frame of the next render (follows the cycle).
   const auto apply = [&](const std::string& next, const char* what) {
-    const auto kind = cpp.update(parse(next), project.assets, project.store).kind;
     const auto applied = setRust(rust, next);
-    const int expected = kind == garak::UpdateResult::Kind::None ? 0 : kind == garak::UpdateResult::Kind::Diff ? 1 : kind == garak::UpdateResult::Kind::Tracks ? 2 : 3;
-    check(applied == expected, std::string("live: classification of ") + what + " (c++ " + kindName(kind) + ")", applied);
+    const int expected = expectedKind(what);
+    check(applied == expected, std::string("live: classification of ") + what + " (expected " + kindName(expected) + ")", applied);
     if (applied < 0) check(false, "live: rust refused " + std::string(what) + ": " + rustError(rust));
     if (!summary.empty()) summary += ", ";
-    summary += std::string(what) + " = " + kindName(kind);
+    summary += std::string(what) + " = " + kindName(applied);
     current = next;
   };
   for (std::uint32_t done = 0; done < total; done += call) {
@@ -289,32 +258,32 @@ void liveCase(bool rustEffects) {
       apply(next, "mix"); ++stage;
     } else if (stage == 3 && seconds >= 2.6) {
       // Seek into held notes and pedal presses (chase), then live MIDI on the EP and the keys.
-      (void)cpp.seek(96000); garak_rs_engine_transport(rust, GARAK_RS_SEEK, 96000); position = 96000;
-      (void)cpp.noteOn(0, 72, .7f, 77); garak_rs_engine_note_on(rust, 0, 72, .7f, 77);
-      (void)cpp.noteOn(9, 60, .8f, 5); garak_rs_engine_note_on(rust, 9, 60, .8f, 5); // 옥구슬 EP
-      (void)cpp.controlChange(9, 64, 127); garak_rs_engine_control_change(rust, 9, 64, 127);
+      garak_rs_engine_transport(rust, GARAK_RS_SEEK, 96000); position = 96000;
+      garak_rs_engine_note_on(rust, 0, 72, .7f, 77);
+      garak_rs_engine_note_on(rust, 9, 60, .8f, 5); // 옥구슬 EP
+      garak_rs_engine_control_change(rust, 9, 64, 127);
       ++stage;
     } else if (stage == 4 && seconds >= 3.0) {
-      (void)cpp.controlChange(0, 64, 127); garak_rs_engine_control_change(rust, 0, 64, 127);
-      (void)cpp.controlChange(0, 129, 3000); garak_rs_engine_control_change(rust, 0, 129, 3000);
-      (void)cpp.noteOff(0, 72, 77); garak_rs_engine_note_off(rust, 0, 72, 77);
-      (void)cpp.noteOff(9, 60, 5); garak_rs_engine_note_off(rust, 9, 60, 5);
-      (void)cpp.noteOn(10, 48, .6f, 6); garak_rs_engine_note_on(rust, 10, 48, .6f, 6); // 한밤 106
-      (void)cpp.noteOn(11, 62, 1.5f, 8); garak_rs_engine_note_on(rust, 11, 62, 1.5f, 8); // IEUM WAVE (velocity above 1)
-      (void)cpp.controlChange(11, 7, 90); garak_rs_engine_control_change(rust, 11, 7, 90);
-      (void)cpp.controlChange(11, 129, -4000); garak_rs_engine_control_change(rust, 11, 129, -4000);
-      (void)cpp.controlChange(11, 64, 127); garak_rs_engine_control_change(rust, 11, 64, 127);
+      garak_rs_engine_control_change(rust, 0, 64, 127);
+      garak_rs_engine_control_change(rust, 0, 129, 3000);
+      garak_rs_engine_note_off(rust, 0, 72, 77);
+      garak_rs_engine_note_off(rust, 9, 60, 5);
+      garak_rs_engine_note_on(rust, 10, 48, .6f, 6); // 한밤 106
+      garak_rs_engine_note_on(rust, 11, 62, 1.5f, 8); // IEUM WAVE (velocity above 1)
+      garak_rs_engine_control_change(rust, 11, 7, 90);
+      garak_rs_engine_control_change(rust, 11, 129, -4000);
+      garak_rs_engine_control_change(rust, 11, 64, 127);
       ++stage;
     } else if (stage == 5 && seconds >= 3.4) {
-      (void)cpp.controlChange(0, 64, 0); garak_rs_engine_control_change(rust, 0, 64, 0);
-      (void)cpp.controlChange(9, 64, 0); garak_rs_engine_control_change(rust, 9, 64, 0);
-      (void)cpp.controlChange(10, 1, 100); garak_rs_engine_control_change(rust, 10, 1, 100);
-      (void)cpp.noteOff(10, 48, 6); garak_rs_engine_note_off(rust, 10, 48, 6);
-      (void)cpp.noteOff(11, 62, 8); garak_rs_engine_note_off(rust, 11, 62, 8);
-      (void)cpp.previewNote(11, 70, .7f, 3000); garak_rs_engine_preview_note(rust, 11, 70, .7f, 3000);
-      (void)cpp.controlChange(11, 1, 80); garak_rs_engine_control_change(rust, 11, 1, 80);
-      (void)cpp.allNotesOff(11); garak_rs_engine_all_notes_off(rust, 11);
-      (void)cpp.previewNote(1, 40, .9f, 6000); garak_rs_engine_preview_note(rust, 1, 40, .9f, 6000);
+      garak_rs_engine_control_change(rust, 0, 64, 0);
+      garak_rs_engine_control_change(rust, 9, 64, 0);
+      garak_rs_engine_control_change(rust, 10, 1, 100);
+      garak_rs_engine_note_off(rust, 10, 48, 6);
+      garak_rs_engine_note_off(rust, 11, 62, 8);
+      garak_rs_engine_preview_note(rust, 11, 70, .7f, 3000);
+      garak_rs_engine_control_change(rust, 11, 1, 80);
+      garak_rs_engine_all_notes_off(rust, 11);
+      garak_rs_engine_preview_note(rust, 1, 40, .9f, 6000);
       // A track change: new instrument on the bass track (different source: fresh voices).
       auto next = withRevision(current, revision, revision + 1); ++revision;
       next = edit(next, "\"instrumentId\":\"bass\",\"isKit\":false,\"params\":{\"level\":0.7,\"sub\":0.5,\"tone\":-0.3}", "\"instrumentId\":\"pluck\",\"isKit\":false,\"params\":{\"level\":0.5}");
@@ -337,18 +306,18 @@ void liveCase(bool rustEffects) {
       next = edit(next, "\"bpm\":104", "\"bpm\":112");
       apply(next, "tempo"); ++stage;
     } else if (stage == 9 && seconds >= 5.9) {
-      (void)cpp.pause(); garak_rs_engine_transport(rust, GARAK_RS_PAUSE, 0);
+      garak_rs_engine_transport(rust, GARAK_RS_PAUSE, 0);
       ++stage;
     } else if (stage == 10 && seconds >= 6.1) {
-      (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
+      garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
       ++stage;
     } else if (stage == 11 && seconds >= 6.5) {
-      (void)cpp.allNotesOff(0); garak_rs_engine_all_notes_off(rust, 0);
-      (void)cpp.allNotesOff(10); garak_rs_engine_all_notes_off(rust, 10);
-      (void)cpp.stop(); garak_rs_engine_transport(rust, GARAK_RS_STOP, 0); position = 0;
+      garak_rs_engine_all_notes_off(rust, 0);
+      garak_rs_engine_all_notes_off(rust, 10);
+      garak_rs_engine_transport(rust, GARAK_RS_STOP, 0); position = 0;
       ++stage;
     } else if (stage == 12 && seconds >= 7.0) {
-      (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
+      garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
       ++stage;
     } else if (stage == 13 && seconds >= 7.6) {
       // Removing a track rebuilds the graph; every other track keeps sounding.
@@ -359,80 +328,64 @@ void liveCase(bool rustEffects) {
       apply(next, "track removed"); ++stage;
     }
     const auto frames = std::min(call, total - done);
-    cpp.render(a.data() + std::size_t(done) * 2, nullptr, frames, 0);
     garak_rs_engine_render(rust, b.data() + std::size_t(done) * 2, frames);
-    cpp.collectRetired(); garak_rs_engine_collect(rust);
-    const auto snap = cpp.snapshot(); position = snap.frame;
+    garak_rs_engine_collect(rust);
     std::uint64_t applied = 0; std::int64_t frame = 0; garak_rs_engine_snapshot(rust, &applied, &frame);
-    check(frame == snap.frame, "live: transport position", double(frame - snap.frame));
+    position = frame;
   }
   garak_rs_engine_destroy(rust);
-  const double d = residual(a, b);
-  std::printf("| live: all instruments, cycle, edits, seek, live MIDI | 9.0 s | %u Hz | %u | %s | — | %.2f | %s |\n", rate, block,
-              rustEffects ? "Rust" : "C++", dbfs(peak(a)), verdict(d).c_str());
-  if (!rustEffects) std::printf("\nLive edits (%d sounding notes deleted): %s\n\n", deleted, summary.c_str());
+  const auto r = goldens.check("live all instruments", b);
+  std::printf("| live: all instruments, cycle, edits, seek, live MIDI | 9.0 s | %u Hz | %u | — | %.2f | %s |\n", rate, block, dbfs(peak(b)), r.verdict().c_str());
+  std::printf("\nLive edits (%d sounding notes deleted): %s\n\n", deleted, summary.c_str());
   check(deleted >= 3, "live: too few sounding notes deleted", deleted);
-  check(peak(a) > .05, "live: silent", peak(a));
-  check(dbfs(d) <= -90, std::string("live instruments: residual (") + (rustEffects ? "Rust" : "C++") + " effects)", dbfs(d));
+  check(peak(b) > .05, "live: silent", peak(b));
+  check(r.ok, r.message, r.residual);
 }
 
-// CPU: the instrument-heavy project (every instrument, dense chords) through both engines.
+// CPU: the instrument-heavy project (every instrument, dense chords) through the engine.
 int bench(double seconds, int repeats, std::uint32_t block) {
   const std::uint32_t rate = 48000;
   const auto project = instrumentProject(3, seconds, rate);
   const auto frames = std::uint32_t(seconds * rate);
   std::vector<float> out(std::size_t(block) * 2);
-  const auto time = [&](auto&& run) { double best = 1e30; for (int r = 0; r < repeats; ++r) { const auto t0 = std::chrono::steady_clock::now(); run(); best = std::min(best, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()); } return best; };
-  double cppTime[2] = {0, 0};
-  for (int backend = 0; backend < 2; ++backend) {
-    garak::dsp::setEffectBackend("all", backend ? garak::dsp::EffectBackend::Rust : garak::dsp::EffectBackend::Cpp);
-    cppTime[backend] = time([&] {
-      garak::RenderEngine e(rate, block);
-      e.submit(e.prepare(parse(project.json), project.assets, project.store)); (void)e.play();
-      for (std::uint32_t done = 0; done < frames; done += block) e.render(out.data(), nullptr, std::min(block, frames - done), 0);
-    });
-  }
-  const double rustTime = time([&] {
+  double best = 1e30;
+  for (int round = 0; round < repeats; ++round) {
+    const auto t0 = std::chrono::steady_clock::now();
     auto* e = rustEngine(project, rate, block, false);
     setRust(e, project.json); garak_rs_engine_transport(e, GARAK_RS_PLAY, 0);
     for (std::uint32_t done = 0; done < frames; done += block) garak_rs_engine_render(e, out.data(), std::min(block, frames - done));
     garak_rs_engine_destroy(e);
-  });
+    best = std::min(best, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+  }
   const auto tracks = parse(project.json).tracks.size();
-  const double blocks = double(frames) / block;
-  std::printf("| Tracks | C++ engine + C++ effects | C++ engine + Rust effects | Rust engine | µs per block (C++ / Rust) |\n|---|---|---|---|---|\n");
-  std::printf("| %zu instrument tracks + return | %.1fx realtime | %.1fx | **%.1fx** (%.2fx faster) | %.0f / %.0f |\n", tracks - 1,
-              seconds / cppTime[0], seconds / cppTime[1], seconds / rustTime, cppTime[0] / rustTime, cppTime[0] / blocks * 1e6, rustTime / blocks * 1e6);
-  garak::dsp::setEffectBackend("all", garak::dsp::EffectBackend::Cpp);
+  std::printf("| Tracks | Rust engine | µs per block |\n|---|---|---|\n");
+  std::printf("| %zu instrument tracks + return | %.1fx realtime | %.0f |\n", tracks - 1, seconds / best, best / (double(frames) / block) * 1e6);
   return 0;
 }
 } // namespace
 
 int main(int argc, char** argv) {
-  pinCppReferenceEngine();
   if (argc > 1 && std::string(argv[1]) == "bench")
     return bench(argc > 2 ? std::atof(argv[2]) : 10, argc > 3 ? std::atoi(argv[3]) : 3, argc > 4 ? std::uint32_t(std::atoi(argv[4])) : 128);
-  std::printf("| Case | Length | Rate | Block | Effects in C++ engine | Latency C++ / Rust | Peak dBFS | Residual |\n");
-  std::printf("|---|---|---|---|---|---|---|---|\n");
+  std::printf("| Case | Length | Rate | Block | Latency | Peak dBFS | vs golden (C++ engine) |\n");
+  std::printf("|---|---|---|---|---|---|---|\n");
   try {
-    for (const bool rustEffects : {true, false}) {
-      offlineCase(0, 4, 48000, 4096, rustEffects);
-      offlineCase(0, 3, 48000, 128, rustEffects);
-      offlineCase(1, 4, 48000, 4096, rustEffects);
-      offlineCase(1, 3, 44100, 512, rustEffects);
-      offlineCase(2, 4, 48000, 4096, rustEffects);
-      offlineCase(2, 3, 48000, 128, rustEffects);
-      offlineCase(3, 3, 48000, 1024, rustEffects);
-      offlineCase(4, 4, 48000, 4096, rustEffects);
-      offlineCase(4, 3, 48000, 128, rustEffects);
-      offlineCase(4, 3, 44100, 512, rustEffects);
-      liveCase(rustEffects);
-    }
+    check(goldens.size() > 0, "no golden references (native/tests/golden/rust-engine-instruments.golden)");
+    offlineCase(0, 4, 48000, 4096);
+    offlineCase(0, 3, 48000, 128);
+    offlineCase(1, 4, 48000, 4096);
+    offlineCase(1, 3, 44100, 512);
+    offlineCase(2, 4, 48000, 4096);
+    offlineCase(2, 3, 48000, 128);
+    offlineCase(3, 3, 48000, 1024);
+    offlineCase(4, 4, 48000, 4096);
+    offlineCase(4, 3, 48000, 128);
+    offlineCase(4, 3, 44100, 512);
+    liveCase();
   } catch (const std::exception& error) {
     check(false, std::string("exception: ") + error.what());
   }
-  garak::dsp::setEffectBackend("all", garak::dsp::EffectBackend::Cpp);
   if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
-  std::printf("\nInstrument render-engine parity: all cases within -90 dBFS.\n");
+  std::printf("\nInstrument render-engine parity: every case matches its golden reference.\n");
   return 0;
 }

@@ -138,6 +138,10 @@ fn source(value: &Json) -> Result<Source, Error> {
     if s.kind != SourceKind::Audio {
         s.host = host_node(value)?;
     }
+    // IEUM WAVE renders only in this engine since 0.3.3: no host processor exists for it any more.
+    if s.kind == SourceKind::NativeWavetable && s.host.is_some() {
+        return Err(err("IEUM WAVE renders in the engine, not as a host node"));
+    }
     Ok(s)
 }
 

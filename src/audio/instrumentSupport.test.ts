@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createEmptyProject, createTrack } from '../core/project'
 import { WebAudioEngine } from './WebAudioEngine'
-import { canPlayInstrument, unsupportedWebAudioInstruments } from './instrumentSupport'
+import { canPlayInstrument, instrumentUnavailableReason, unsupportedWebAudioInstruments } from './instrumentSupport'
+import type { AudioEngine } from '../core/types'
+import type { WavetableBridgeStatus, WavetableNativeBridge } from '../devices/wavetable-synth/bridge'
 
 function fixture() {
   const track = createTrack('instrument', 'wavetable')
@@ -16,16 +18,30 @@ describe('native instrument availability', () => {
     const audio = vi.fn(), offline = vi.fn()
     vi.stubGlobal('AudioContext', audio)
     vi.stubGlobal('OfflineAudioContext', offline)
-    const engine = new WebAudioEngine(fixture())
+    const project = fixture()
+    const engine = new WebAudioEngine(project)
     expect(canPlayInstrument(engine, 'wavetable')).toBe(false)
     expect(canPlayInstrument(engine, 'keys')).toBe(true)
-    await expect(engine.previewNote('wavetable', 60)).rejects.toThrow(/네이티브/)
+    await expect(engine.previewNote('wavetable', 60)).rejects.toThrow(/트랙이 필요/)
+    await expect(engine.previewNote('wavetable', 60, 0.8, project.tracks[0].id)).rejects.toThrow(/IEUM WAVE|오디오 엔진/)
     await expect(engine.play()).rejects.toThrow(/네이티브/)
     await expect(engine.exportWav()).rejects.toThrow(/네이티브/)
     expect(audio).not.toHaveBeenCalled()
     expect(offline).not.toHaveBeenCalled()
     expect(engine.getSnapshot().playing).toBe(false)
     engine.dispose()
+  })
+
+  it('follows the engine\'s IEUM WAVE capability, whichever engine supplies it (desktop host or browser Rust engine)', () => {
+    let status: WavetableBridgeStatus = { available: false, reason: 'garak-engine.wasm을 불러오는 중' }
+    const wavetable = { protocolVersion: 1, getStatus: () => status } as unknown as WavetableNativeBridge
+    const browser = { kind: 'web-audio', wavetable } as unknown as AudioEngine
+    expect(canPlayInstrument(browser, 'wavetable')).toBe(false)
+    expect(instrumentUnavailableReason(browser, 'wavetable')).toBe('garak-engine.wasm을 불러오는 중')
+    status = { available: true }
+    expect(canPlayInstrument(browser, 'wavetable')).toBe(true)
+    expect(instrumentUnavailableReason(browser, 'wavetable')).toBe('')
+    expect(canPlayInstrument({ kind: 'native' } as unknown as AudioEngine, 'wavetable')).toBe(false)
   })
 
   it('lets empty, muted, disabled or excluded tracks coexist with browser instruments', () => {

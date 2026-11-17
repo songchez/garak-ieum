@@ -1,7 +1,7 @@
 # MIDI 리전 벤치마크 — Ableton Live 12 · Logic Pro 11 대비 가락이음
 
 작성: 2026-11-15 · 범위: MIDI 클립/리전과 그 편집기(피아노롤 등), 녹음·입력, 컨트롤러 데이터, 변환·생성 도구, 가져오기/내보내기.
-이 문서는 조사·격차 분석 문서입니다. 코드는 바꾸지 않았습니다. 현재 구현 판정은 2026-11-15 `feat/sustain-pedal` 체크아웃(커밋 `ca79867` + 진행 중인 서스테인 작업)의 코드를 직접 읽어 내렸습니다.
+이 문서는 조사·격차 분석 문서입니다. 코드는 바꾸지 않았습니다. (이후 0.3.2에서 두 호스트가 통합 Rust 엔진을 쓰게 됐고, 0.3.3에서 브라우저 `audio/graph.ts`·`graph.test.ts`는 삭제됐습니다.) 현재 구현 판정은 2026-11-15 `feat/sustain-pedal` 체크아웃(커밋 `ca79867` + 진행 중인 서스테인 작업)의 코드를 직접 읽어 내렸습니다.
 
 표기:
 
@@ -47,7 +47,7 @@
 | 내보내기 | `.mid` 내보내기 없음(`.garak` 번들·오디오 내보내기만) | `core/storage.ts` |
 | MIDI 입력/녹음 | **없음.** `requestMIDIAccess`·네이티브 MIDI 입력 없음, 악기 트랙 녹음 시 알림 후 중단, 입력 모니터링 I는 악기 트랙에서 상태만 | `App.tsx:1176`, `LOGIC_GAP.md` H-19 |
 | 오토메이션 | 트랙·리전 오토메이션 없음. 오디오 리전 게인/페이드 엔벨로프만 | `core/clipEnvelope.ts`, `IMPLEMENTATION_STATUS.md:467` |
-| 엔진 이벤트 | 이음웨이브 네이티브 신스: `NoteOn/NoteOff/Parameter/PitchBend/Sustain/AllNotesOff/AllSoundOff`. VST3 호스트는 MIDI 이벤트 오프셋 지원 | `native/devices/wavetable-synth/include/ieum_wave/synth.hpp`, `native/src/vst3.cpp` |
+| 엔진 이벤트 | 이음웨이브 네이티브 신스: `NoteOn/NoteOff/Parameter/PitchBend/Sustain/AllNotesOff/AllSoundOff`. VST3 호스트는 MIDI 이벤트 오프셋 지원 | `rust/garak-engine/src/wave/synth.rs`, `native/src/vst3.cpp` |
 | 자동화 외부 | MCP: MIDI 리전 추가·이동·반복·뮤트·이조, 음표 쓰기 | `core/commands.ts`, `docs/MCP.md` |
 
 ---

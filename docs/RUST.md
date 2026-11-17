@@ -1,8 +1,8 @@
 # Rust 오디오 코어
 
-> **상태:** 0.3.2부터 **데스크톱과 웹 모두 트랙·악기·시김새·기타 랙·믹스를 통합 Rust 엔진(`rust/garak-engine`) 하나로 렌더링합니다**([RUST_ENGINE.md](RUST_ENGINE.md)). 비상시 데스크톱은 `GARAK_RUST_ENGINE=0`, 웹은 `localStorage.setItem('garak.rustEngine', '0')`으로 이전 엔진을 쓸 수 있고, 이전 TS·C++ 엔진은 다음 패치에서 지웁니다. 아래는 단계별 기록입니다. 0.3.0부터 **데스크톱 앱은 모든 내장 이펙트를 Rust로 처리합니다**(기타 랙은 [2단계](#2단계-기타-랙)부터). `scripts/build-native-audio.mjs`가 데스크톱 빌드에서 `GARAK_RUST=ON` + `GARAK_RUST_EFFECTS=all`로 구성하고, Windows·macOS 배포 워크플로가 고정 툴체인을 설치합니다. 실행 중 C++ 경로로 되돌리려면 환경 변수 `GARAK_RUST_EFFECTS=none`으로 앱을 띄웁니다. Rust 없이 호스트를 빌드하려면 `GARAK_RUST=0 pnpm native:build`. **3단계(웹)부터 웹도 같은 Rust 커널이 기본입니다**: 시김새 10종에 더해 EQ·필터·컴프레서·드라이브·리버브와 기타 랙도 Web Audio 내장 노드 대신 Rust 워크릿으로 돌아 웹과 데스크톱 소리가 같습니다([3단계(웹)](#3단계웹-rust-wasm이-웹-기본-경로)). `pnpm build`가 WASM을 함께 만들고, 모듈이 없거나 실패하면 TS 커널·내장 노드로 조용히 돌아갑니다. 끄려면 `localStorage.setItem('garak.rustDsp', '0')` 또는 `VITE_GARAK_RUST_DSP=0`. C++·TS 커널 삭제("두 벌 유지" 종료)는 청취 확인 뒤에 합니다. 패리티 하네스가 C++·TS 커널과의 차이를 -90 dBFS 이하로 묶습니다([1단계 결과](#1단계-결과-패리티벤치마크크기)).
+> **상태:** 0.3.2부터 **데스크톱과 웹 모두 트랙·악기·시김새·기타 랙·믹스를 통합 Rust 엔진(`rust/garak-engine`) 하나로 렌더링합니다**([RUST_ENGINE.md](RUST_ENGINE.md)). 0.3.3에서 데스크톱의 C++ 트랙 경로와 C++ 이펙트 DSP(`dsp.cpp`, `sigimsae_effects.inc`, `eq_effects.inc`, C++ 기타 랙, `rust_effects.inc`)를 지웠습니다: 모든 네이티브 빌드가 `garak-ffi`를 필수로 링크하고, 스위치(`GARAK_RUST`, `GARAK_RUST_EFFECTS`, `GARAK_RUST_ENGINE`)는 없습니다. C++ 커널과의 패리티는 지운 코드의 출력을 한 번 기록한 골든 레퍼런스로 검사합니다([테스트·패리티 전략](#테스트패리티-전략)). 웹은 0.3.3부터 이 엔진이 유일한 렌더러입니다: Web Audio 그래프·TS 커널·웹용 `garak-dsp.wasm`(`rust/garak-wasm`)과 `garak.rustEngine`/`garak.rustDsp` 스위치는 삭제됐고, `garak-engine.wasm`을 불러오지 못하면 대체 없이 오류를 보여 줍니다. 아래는 단계별 기록이며, C++ 커널·웹 TS 커널·Web Audio 노드·`garak-dsp.wasm`을 말하는 부분은 0.3.3 이전 상태입니다. 0.3.0부터 **데스크톱 앱은 모든 내장 이펙트를 Rust로 처리합니다**(기타 랙은 [2단계](#2단계-기타-랙)부터). Windows·macOS 배포 워크플로가 고정 툴체인을 설치합니다. **3단계(웹)부터 웹도 같은 Rust 커널이 기본입니다**: 시김새 10종에 더해 EQ·필터·컴프레서·드라이브·리버브와 기타 랙도 Web Audio 내장 노드 대신 Rust 워크릿으로 돌아 웹과 데스크톱 소리가 같습니다([3단계(웹)](#3단계웹-rust-wasm이-웹-기본-경로)). (당시에는 모듈이 없거나 실패하면 TS 커널·내장 노드로 조용히 돌아갔고 `garak.rustDsp`/`VITE_GARAK_RUST_DSP`로 끌 수 있었지만, 0.3.3에서 둘 다 삭제됐습니다.) 패리티 하네스가 C++·TS 커널과의 차이를 -90 dBFS 이하로 묶습니다([1단계 결과](#1단계-결과-패리티벤치마크크기)).
 >
-> **4단계(렌더 엔진):** 타임라인부터 마스터까지를 Rust로 옮기는 작업은 [RUST_ENGINE.md](RUST_ENGINE.md)에 있습니다(`rust/garak-engine`, 앱 미사용).
+> **4단계(렌더 엔진):** 타임라인부터 마스터까지를 Rust로 옮기는 작업은 [RUST_ENGINE.md](RUST_ENGINE.md)에 있습니다(`rust/garak-engine`, 0.3.2부터 두 호스트의 기본 렌더러, 0.3.3부터 유일한 렌더러).
 
 ## 왜 Rust인가
 
@@ -39,14 +39,16 @@ rust/
   garak-ffi/             C ABI staticlib (#![no_std]) + include/garak_rust.h (손으로 작성)
     src/fx.rs            garak_rs_fx_* / garak_rs_reverb_*
     src/rig.rs           garak_rs_rig_* (기타 랙)
-  garak-wasm/            워크릿용 cdylib: 원시 extern "C" 내보내기, 정적 메모리
+  garak-wasm/            워크릿용 cdylib: 원시 extern "C" 내보내기, 정적 메모리 (0.3.3에서 삭제)
     src/fx.rs            garak_fx_* (슬롯 모델), garak_reverb_build / garak_fx_create_reverb (메인 스레드에서 만든 리버브 커널)
     src/rig.rs           garak_rig_* (기타 랙, 튜너 탭 버퍼, 메인 스레드에서 만든 플레이트 커널)
     src/arena.rs         이펙트 버퍼용 영역 할당(생성 시에만 memory.grow)
-native/cmake/GarakRust.cmake      -DGARAK_RUST=ON일 때 cargo로 garak-ffi 빌드, garak_core에 링크, 패리티 테스트·벤치
-native/src/rust_effects.inc       RustEffect · RustGuitarRig: StereoProcessor를 Rust로 구현하는 어댑터 + 이펙트별 스위치
-native/tests/rust_parity_test.cpp Rust ↔ 기존 C++ 커널 비교(모든 이펙트, 기타 랙 포함)
-native/tests/rust_bench.cpp       CPU 기준선(이펙트별 frames/s, C++ vs Rust)
+native/cmake/GarakRust.cmake      cargo로 garak-ffi 빌드, garak_core에 링크(항상)
+native/cmake/GarakRustTests.cmake 골든 레퍼런스 테스트(커널·엔진·셸·악기)
+native/tests/rust_fx.hpp          테스트 전용: Rust 커널을 이전 makeEffect()/EffectControl 인터페이스로(카탈로그·검증·자동화·인계)
+native/tests/rust_parity_test.cpp Rust 커널 ↔ 0.3.2 C++ 커널 골든 레퍼런스(모든 이펙트, 기타 랙 포함)
+native/tests/golden.hpp, golden/  골든 레퍼런스 형식과 파일(아래 테스트·패리티 전략)
+# 아래 웹 파일들(garakWasm.ts ~ bench.test.ts)은 0.3.3에서 삭제됐습니다. 지금 웹은 garak-engine.wasm(RUST_ENGINE.md 5장)
 src/audio/rust/garakWasm.ts       워크릿에서도 쓸 수 있는 WASM 로더(createEffect, buildReverbKernels, Math 임포트)
 src/audio/rust/sigimsaeRust.ts    워크릿 어댑터: Rust 이펙트를 SigimsaeKernel로(인스턴스 공유, 재구성)
 src/audio/rust/flag.ts            스위치(기본 켜짐, '0'으로 끔)
@@ -55,7 +57,7 @@ src/audio/rust/effectsParity.test.ts  Rust(WASM) EQ·필터·컴프·드라이�
 src/audio/rust/guitarRigRust.ts   기타 랙 워크릿 어댑터(인스턴스 공유, 구조 편집 = 새 랙 + takeStateFrom)
 src/audio/rust/guitarRig.test.ts  기타 랙 WASM ↔ 네이티브 Rust 장면, 워크릿 프로세서, 웹 그래프
 src/devices/guitar-rig/rustRig.ts 웹 기타 랙: Rust 워크릿 노드(garak-guitar-rig-v1) + 튜너 탭, 실패 시 Web Audio 랙
-src/devices/effects/sigimsae.ts   웹 경로 선택, 워크릿 그래프(createWorkletGraph), 리버브 IR 캐시
+src/devices/effects/sigimsae.ts   웹 경로 선택, 워크릿 그래프(createWorkletGraph), 리버브 IR 캐시 (지금은 카탈로그 정의만)
 scripts/rust-dsp-smoke.mjs        브라우저 확인: 앱 로드 → 이펙트 7개 트랙 → 재생·내보내기, Rust 경로·레벨 확인
 src/audio/rust/bench.test.ts      워크릿 CPU 기준선(TS 커널 vs Rust WASM, 기본 건너뜀)
 scripts/setup-rust.ps1 / .sh      한 번에 설치
@@ -89,23 +91,21 @@ sh scripts/setup-rust.sh
 |---|---|
 | `pnpm rust:test` | `cargo test --workspace` (커널 단위 테스트, FFI 헤더 누락 검사) |
 | `pnpm rust:check` | `cargo fmt --check` + clippy(호스트, wasm32) `-D warnings` |
-| `pnpm rust:wasm` | `garak-wasm`을 빌드해 `public/wasm/garak-dsp.wasm`에 복사, 크기 예산(208 KiB, gzip 80 KB) 확인. `pnpm build`도 먼저 실행 |
+| `pnpm rust:wasm` | `garak-engine-wasm`을 빌드해 `public/wasm/garak-engine.wasm`에 복사, 크기 예산(528 KiB, gzip 212 KB) 확인. `pnpm build`도 먼저 실행 |
 | `pnpm rust:build` | 네이티브 `garak-ffi` 정적 라이브러리(release) |
-| `pnpm exec vitest run src/audio/rust` | WASM ↔ TS 패리티 |
-| CMake `-DGARAK_RUST=ON` 후 `ctest -R native-rust-parity` | Rust ↔ C++ 패리티(표 출력). 인자로 이펙트 하나만: `garak-rust-parity-test delay` |
-| `garak-rust-bench [초] [이펙트…]` | 이펙트별 CPU 기준선(Markdown 표). C++/Rust를 번갈아 5라운드 돌려 최고값, "automated" 열은 매 블록 파라미터 자동화 |
-| `GARAK_WASM_BENCH=1 pnpm exec vitest run src/audio/rust/bench.test.ts` | 워크릿 CPU 기준선(TS 커널 vs Rust WASM, `pnpm rust:wasm` 후) |
-| `GARAK_RUST_EFFECTS=all ctest -R native-engine` | 엔진 회귀 테스트 전체를 Rust 이펙트로 |
-| `node scripts/rust-dsp-smoke.mjs` | 브라우저(Playwright)에서 웹 Rust 경로 확인: 이펙트 7개 트랙 재생·내보내기, 끈 경로와 비교 |
-| `pnpm vintage:smoke` | 브라우저(Playwright)에서 옥구슬 EP·한밤 106 확인: 시김새와 같은 `garak-dsp.wasm` 모듈로 로드, 내보내기·실시간 재생이 들리는지, `garak.rustDsp=0`에서도 소리가 나는지. `GARAK_CHROMIUM_EXECUTABLE` 선택 |
+| `pnpm exec vitest run src/audio/rust` | 엔진 WASM 테스트(WASM ↔ 네이티브 Rust, 웹 경로 A/B, 내장 이펙트·카탈로그 전부 `effects.test.ts`) |
+| CMake 후 `ctest -R native-rust-parity` | Rust 커널 ↔ 골든 레퍼런스(표 출력). 인자로 이펙트 하나만: `garak-rust-parity-test delay` |
+| `garak-rust-engine-host-test --bench` | 셸 CPU(1스레드 ↔ N워커) |
+| `pnpm rust:engine-smoke` | 브라우저(Playwright)에서 웹 엔진 확인: A/B 고정 프로젝트·내장 이펙트 전부 내보내기, 실시간 재생·탐색, 샘플 킷, CPU, 웹 호스트 경로([RUST_ENGINE 5장](RUST_ENGINE.md#5-wasm-호스트-audioworklet--5단계-웹-호스트)) |
+| `pnpm vintage:smoke` | 브라우저(Playwright)에서 옥구슬 EP·한밤 106 확인: `garak-engine.wasm`을 불러오면 쓸 수 있는지(회색 아님), 엔진으로 내보내기·실시간 재생이 들리는지. `GARAK_CHROMIUM_EXECUTABLE` 선택 |
 | `node scripts/rust.mjs web-build` | `pnpm build`가 부르는 단계(아래 [빌드](#빌드와-rust-없는-개발)) |
 
 `cargo`를 직접 쓰려면 `rust/`에서 실행하세요. 추가 인자는 그대로 넘어갑니다: `pnpm rust:test -- biquad`.
 
-C++ 패리티 테스트(코어만, 장치·VST3 없이):
+커널 골든 테스트(코어만, 장치·VST3 없이):
 
 ```sh
-cmake -S native -B build/native-rust -DGARAK_RUST=ON -DGARAK_ENABLE_DEVICES=OFF -DGARAK_ENABLE_ASIO=OFF -DGARAK_ENABLE_VST3=OFF
+cmake -S native -B build/native-rust -DGARAK_ENABLE_DEVICES=OFF -DGARAK_ENABLE_ASIO=OFF -DGARAK_ENABLE_VST3=OFF
 cmake --build build/native-rust --config Release --target garak-rust-parity-test
 ctest --test-dir build/native-rust -C Release -R native-rust-parity --output-on-failure
 ```
@@ -114,15 +114,12 @@ ctest --test-dir build/native-rust -C Release -R native-rust-parity --output-on-
 
 ## 빌드와 Rust 없는 개발
 
-- WASM 결과물은 **커밋하지 않습니다**(`/public/wasm/`는 gitignore). 대신 **`pnpm build`가 Vite 전에 `node scripts/rust.mjs web-build`로 만듭니다**(웹 배포·데스크톱 번들 모두 `pnpm build`를 거치므로 항상 포함). 규칙:
-  - `GARAK_RUST_DSP=0` 또는 `VITE_GARAK_RUST_DSP=0`이면 건너뜁니다(앱은 TS 커널).
-  - Rust가 있으면 빌드하고, 실패하거나 크기 예산을 넘으면 빌드가 실패합니다.
-  - CI(`CI` 환경 변수)인데 Rust가 없으면(macOS·Linux) `scripts/setup-rust.sh --skip-verify`로 고정 툴체인을 설치한 뒤 빌드합니다. GitHub 워크플로(`checks.yml`, `desktop.yml`, `macos.yml`, `rust.yml`)는 먼저 설치하므로 이 경로는 툴체인을 직접 깔지 않는 Cloudflare Workers Builds([DEPLOYMENT](DEPLOYMENT.md))를 위한 것입니다. 설치도 실패하면 빌드 실패(배포를 막고 싶지 않으면 `GARAK_RUST_DSP=0`).
-  - 기여자 컴퓨터에 Rust가 없으면 안내만 출력하고 계속합니다.
-- **`pnpm dev`에는 Rust가 필요 없습니다.** `loadGarakWasmModule()`은 파일이 없거나 깨졌으면 예외 대신 `null`을 돌려주고, 콘솔에 한 줄(`Rust DSP 모듈 … TypeScript 커널과 Web Audio 노드로 처리합니다`)을 남긴 뒤 시김새 10종은 TS 커널, EQ·필터·컴프·드라이브·리버브는 기존 Web Audio 노드로 처리합니다. 만들려면 `pnpm rust:wasm` 후 새로고침.
-- 스위치 `rustDspRequested()`(`src/audio/rust/flag.ts`)는 기본 켜짐입니다. 청취 비교용으로 끄려면 브라우저 콘솔에서 `localStorage.setItem('garak.rustDsp', '0')` 후 새로고침(다시 켜려면 `removeItem`), 빌드 전체를 끄려면 `VITE_GARAK_RUST_DSP=0 pnpm dev`/`pnpm build`(Vite가 빌드 시 상수로 바꿉니다).
-- 어느 경로가 도는지는 `globalThis.__garakRustDsp`(`{ rust, fallback }`: 만들어진 워크릿 노드 수)로 확인합니다. 모듈은 있는데 Rust 이펙트를 못 만든 노드는 콘솔 경고를 남기고 TS 커널(시김새 10종) 또는 바이패스(EQ 등 5종: 그 경우 메인 스레드가 애초에 내장 노드를 고르므로 실제로는 거의 없음)로 처리합니다.
-- `pnpm test`의 패리티 묶음(`parity.test.ts`, `effectsParity.test.ts`)은 결과물이 없으면 건너뜁니다. `checks.yml`은 `pnpm rust:wasm` 후 `pnpm test`라 CI에서는 항상 돕니다.
+- WASM 결과물은 **커밋하지 않습니다**(`/public/wasm/`는 gitignore). 대신 **`pnpm build`가 Vite 전에 `node scripts/rust.mjs web-build`로 `public/wasm/garak-engine.wasm` 하나를 만듭니다**(웹 배포·데스크톱 번들 모두 `pnpm build`를 거치므로 항상 포함). 웹 앱은 이 모듈로만 소리를 내므로 끄는 옵션은 없습니다(0.3.3에서 `GARAK_RUST_DSP=0`·`VITE_GARAK_RUST_DSP` 삭제). 규칙:
+  - Rust가 있으면 빌드하고, 실패하거나 크기 예산(528 KiB raw / 212 KB gzip)을 넘으면 빌드가 실패합니다.
+  - CI(`CI` 환경 변수)인데 Rust가 없으면(macOS·Linux) `scripts/setup-rust.sh --skip-verify`로 고정 툴체인을 설치한 뒤 빌드합니다. GitHub 워크플로(`checks.yml`, `desktop.yml`, `macos.yml`, `rust.yml`)는 먼저 설치하므로 이 경로는 툴체인을 직접 깔지 않는 Cloudflare Workers Builds([DEPLOYMENT](DEPLOYMENT.md))를 위한 것입니다. 설치도 실패하거나 그래도 Rust가 없으면 빌드 실패입니다(모듈 없는 배포는 소리를 낼 수 없음).
+  - 기여자 컴퓨터에 Rust가 없으면 경고를 출력하고 모듈 없이 계속합니다. 그 빌드는 엔진 로드 오류를 보여 주며 배포하면 안 됩니다.
+- **웹 작업에도 Rust가 필요합니다.** `pnpm rust:wasm`으로 한 번 만든 뒤 `pnpm dev`를 씁니다. 모듈이 없거나 깨졌으면 콘솔에 안내(`garak-engine.wasm이 없거나 불러오지 못했습니다. 개발 중이면 pnpm rust:wasm으로 만드세요`)를 남기고, 오디오 설정이 "가락이음 오디오 엔진(garak-engine.wasm)을 불러오지 못해 소리를 낼 수 없습니다. …" 오류로 실패합니다. 만든 뒤 새로고침하면 됩니다.
+- `pnpm test`의 엔진 WASM 묶음(`engine.test.ts`, `engineAB.test.ts`, `effects.test.ts` 등)은 결과물이 없으면 건너뜁니다. `checks.yml`은 `pnpm rust:wasm` 후 `pnpm test`라 CI에서는 항상 돕니다.
 
 ## 툴체인·타깃 표
 
@@ -187,9 +184,11 @@ pub trait Kernel {                      // fx/mod.rs
 
 **리버브 IR.** `reverb::generate_ir`가 dsp.cpp `impulse()`와 같은 IR을 만들고, `reverb::prepare_kernels`가 *어떤* IR이든(직접 합성한 것이든 캐시에서 가져온 것이든) FFT 분할 커널로 만듭니다. 커널 저장 공간은 생성 후 읽기 전용이라 같은 IR을 쓰는 리버브끼리 공유할 수 있고, 상태 저장 공간만 리버브마다 따로 둡니다. 다른 브랜치의 IR 캐시가 들어오면 `prepare_kernels`에 캐시된 IR(또는 미리 만든 커널)을 넘기면 됩니다.
 
-### C++: `GARAK_RUST=ON`과 이펙트별 스위치
+### C++: 이전 어댑터와 이펙트별 스위치 (0.3.2까지, 0.3.3에서 삭제)
 
-- `GarakRust.cmake`가 `garak_core`에 `garak_rust`를 링크하고 `GARAK_RUST=1`로 `dsp.cpp`를 컴파일합니다. `native/src/rust_effects.inc`의 `RustEffect`가 `StereoProcessor`를 구현해 `garak_rs_fx_*`를 부릅니다: 생성 시 C++과 같은 `Reader` 검증(같은 예외), C++·Rust 카탈로그 id·순서 대조(다르면 `logic_error`), `automate(Reader)`, `setTempo`, `dynamics()` 탭, `latencyFrames`/`tailSeconds`, `takeStateFrom`(Rust가 두 상태 저장 공간을 통째로 맞바꿨으면 소유한 `std::vector`도 맞바꿈, O(1)).
+0.3.3부터 내장 이펙트는 Rust 엔진 그래프 안에서만 돌고, 아래 C++ 어댑터·스위치는 없습니다. 테스트는 `native/tests/rust_fx.hpp`가 같은 호출 순서로 `garak_rs_fx_*`/`garak_rs_rig_*`를 직접 부릅니다. 0.3.2까지의 구조:
+
+- `GarakRust.cmake`가 `garak_core`에 `garak_rust`를 링크하고 `GARAK_RUST=1`로 `dsp.cpp`를 컴파일했습니다. `native/src/rust_effects.inc`의 `RustEffect`가 `StereoProcessor`를 구현해 `garak_rs_fx_*`를 부릅니다: 생성 시 C++과 같은 `Reader` 검증(같은 예외), C++·Rust 카탈로그 id·순서 대조(다르면 `logic_error`), `automate(Reader)`, `setTempo`, `dynamics()` 탭, `latencyFrames`/`tailSeconds`, `takeStateFrom`(Rust가 두 상태 저장 공간을 통째로 맞바꿨으면 소유한 `std::vector`도 맞바꿈, O(1)).
 - **plain CMake 빌드의 기본값은 C++입니다**(데스크톱 배포 빌드는 `all`). `none`/`cpp`는 목록을 비웁니다(왼쪽부터 적용). Rust로 돌릴 이펙트는
   - 빌드 시: `-DGARAK_RUST_EFFECTS="chorus;delay"` 또는 `all`
   - 시작 시: 환경 변수 `GARAK_RUST_EFFECTS=all` (청취 비교용)
@@ -201,6 +200,8 @@ pub trait Kernel {                      // fx/mod.rs
 불투명 상태(`garak_rs_fx_size/align`) + 상태 저장 공간(`garak_rs_fx_storage_len`) + 리버브 커널(`garak_rs_reverb_ir_len/generate_ir/kernel_len/prepare_kernels`)을 호출자가 할당하고 `garak_rs_fx_init`으로 만듭니다. 오디오 스레드: `process`, `process_planar`, `automate`, `set_param`/`commit`, `set_tempo`, `reset`, `meter`, `take_state`. 언제든: `latency`, `tail`, `param`, 카탈로그 조회(`param_count/param_id/param_range`). Rust 소멸자가 없으므로(컴파일 시 `!needs_drop` 확인) C++은 메모리만 해제합니다.
 
 ### WASM과 워크릿 어댑터
+
+> 0.3.3에서 삭제된 경로입니다(`rust/garak-wasm`, `garakWasm.ts`, `sigimsaeRust.ts`, 이펙트 워크릿). 지금 웹 이펙트는 통합 엔진(`garak-engine.wasm`) 안에서 돌고, EQ/필터 스펙트럼·유틸리티 고니오미터 탭은 엔진이 아직 보내지 않아 비어 있습니다. 아래는 기록입니다.
 
 - `garak_fx_create(kind, sr, bpm, count)`가 슬롯 번호를 돌려줍니다(정적 `f64` 파라미터 버퍼로 값 전달, 카탈로그 순서). 나머지(`automate`, `set_param`/`commit`, `set_tempo`, `process`, `reset`, `latency`, `tail`, `meter`, `take_state`, `free`)는 기존 바이쿼드·Utility와 같은 슬롯 모델입니다. 리버브는 모듈 안에서 IR을 합성합니다.
 - 딜레이 라인·리버브 버퍼는 `arena.rs`(최적 맞춤 재사용 + 이웃 병합, 모자라면 `memory.grow`)에서 받습니다. 생성·해제는 제어 경로(워크릿 생성자, 모드 변경)에서만 일어납니다.
@@ -214,21 +215,21 @@ pub trait Kernel {                      // fx/mod.rs
 
 ## 테스트·패리티 전략
 
-정답 해시(golden) 대신 **같은 입력을 기존 커널과 Rust 커널에 넣고 허용 오차로 비교**합니다. 플랫폼 libm의 마지막 비트 차이와 float 출력 반올림은 허용하고, 공식이나 처리 순서가 바뀌면 바로 잡힙니다.
+0.3.2까지는 **같은 입력을 기존 C++ 커널과 Rust 커널에 넣고 허용 오차로 비교**했습니다. 0.3.3에서 C++ 커널을 지우면서 그 출력을 **골든 레퍼런스**로 한 번 기록했습니다(`native/tests/golden/rust-kernels.golden`, 1113개 렌더, 약 370 KB; 기록 당시 MinGW에서 모두 비트 동일). 형식은 `native/tests/golden.hpp`: 렌더 전체의 FNV-1a 64 해시(Windows x64에서 비트 동일 요구), 그리고 모든 플랫폼에서 같은 -90 dBFS 게이트로 저장한 표본·구간 RMS·피크·RMS 비교(|rms(a)−rms(b)| ≤ max|a−b|이므로 모든 샘플을 같은 기준으로 묶음, 기존 게이트보다 느슨하지 않음). 지연·꼬리·미터 값도 예전 허용 오차로 함께 저장합니다. 웹 쪽 TS 패리티는 그대로 허용 오차 비교입니다.
 
 | 테스트 | 비교 대상 | 내용 | 허용 오차 |
 |---|---|---|---|
 | `cargo test` (garak-dsp) | 이론값 | 차단 주파수 -3 dB, 피크·셸프 이득, 노치 깊이, 등전력 팬, 글라이드 수렴, 이상 입력, FFT 왕복, **분할 컨볼루션 = 직접 컨볼루션**, IR RMS 정규화, 모든 이펙트 생성·처리·미터·지연·꼬리, 저장 공간 부족·잘못된 샘플레이트 거절 | 식별 |
 | `cargo test` (garak-ffi) | 헤더 | 내보낸 모든 `garak_rs_*`가 `garak_rust.h`에 선언됐는지, `GARAK_RS_FX_*` 번호, ABI 버전, C ABI 왕복 | — |
-| `cargo test` (garak-wasm) | — | 슬롯 상한·재사용, 모든 이펙트 생성·처리·해제 후 힙 원상복구, `take_state` 소유권 교환, 영역 할당기 병합 | — |
-| `native-rust-parity` | C++ `makeEffect(..., Cpp)` vs `makeEffect(..., Rust)` (같은 `StereoProcessor` 인터페이스), 바이쿼드, 팬 법칙 | 이펙트마다: 기본값 + 무작위 템포 변경, 파라미터마다 최솟값·최댓값으로 생성, 파라미터마다 `EffectControl` 자동화 스윕(범위 밖 값 포함), 무작위 파라미터 세트 + 블록마다 무작위 자동화 + 템포 변경 + `reset` + `takeStateFrom` 인계, 44.1/96 kHz. 블록 크기는 1~37프레임과 64~512프레임 혼합 | 잔차 **≤ -90 dBFS**, 지연·꼬리 **동일**(1e-9 s), 미터 1e-5 |
-| `GARAK_RUST_EFFECTS=all` + `native-engine` | 엔진 회귀 테스트 전체 | 모든 내장 이펙트를 Rust로 바꾼 채 기존 엔진 테스트(자동화·템포 맵·send/return·PDC…) | 기존 기준 |
-| `effectsParity.test.ts` | C++ `Compressor`·`Saturator`/`Drive`·`BiquadChain`(EQ·필터)·`impulse()`를 TS로 그대로 옮긴 참조 vs WASM | EQ 4설정(8밴드·기울기·셸프·노치·컷), 필터 4설정(모드·기울기·공진), 컴프 3설정(미터 포함), 드라이브 3설정(지연 8), 리버브 4공간의 임펄스 응답(reverb.ts `reverbImpulse` + 정규화 + 톤 필터), 메인 스레드 커널 경로 = 자체 합성, 재구성 후 꼬리 유지 | 잔차 **≤ -90 dBFS**(리버브는 신호 대비) |
-| `parity.test.ts` | TS `sectionCoefficients`, `Biquad`, `UtilityKernel`, **kernels.ts 10종** vs WASM | 계수 격자, 글라이드, 커널마다 무작위 파라미터 4세트 × `configure()` 변경(빠진 값 = 기본값, 딜레이 모드 전환 포함) + 템포 변경 + `reset` + 홀수 블록, 미터, 생성 시 꼬리(`kernelTailSeconds`), 15종 모두 생성·처리·해제(힙 원상복구) | 잔차 **≤ -90 dBFS**, 미터 1e-5, 꼬리 1e-9 |
+| `cargo test` (garak-wasm, 0.3.3에서 크레이트 삭제) | — | 슬롯 상한·재사용, 모든 이펙트 생성·처리·해제 후 힙 원상복구, `take_state` 소유권 교환, 영역 할당기 병합 | — |
+| `native-rust-parity` | Rust 커널(`rust_fx.hpp`) vs 0.3.2 C++ 커널의 골든 레퍼런스, 바이쿼드, 팬 법칙 | 이펙트마다: 기본값 + 무작위 템포 변경, 파라미터마다 최솟값·최댓값으로 생성, 파라미터마다 `EffectControl` 자동화 스윕(범위 밖 값 포함), 무작위 파라미터 세트 + 블록마다 무작위 자동화 + 템포 변경 + `reset` + `takeStateFrom` 인계, 44.1/96 kHz. 블록 크기는 1~37프레임과 64~512프레임 혼합 | Windows x64 **비트 동일**, 그 밖 잔차 **≤ -90 dBFS**, 지연·꼬리 **동일**(1e-9 s), 미터 1e-5 |
+| `native-engine` | 엔진 회귀 테스트 전체 | Rust 엔진으로(자동화·템포 맵·send/return·PDC…), 이펙트 단위 검사는 `rust_fx.hpp` | 기존 기준 |
+| `effectsParity.test.ts` (0.3.3에서 삭제) | C++ `Compressor`·`Saturator`/`Drive`·`BiquadChain`(EQ·필터)·`impulse()`를 TS로 그대로 옮긴 참조 vs WASM | EQ 4설정(8밴드·기울기·셸프·노치·컷), 필터 4설정(모드·기울기·공진), 컴프 3설정(미터 포함), 드라이브 3설정(지연 8), 리버브 4공간의 임펄스 응답(reverb.ts `reverbImpulse` + 정규화 + 톤 필터), 메인 스레드 커널 경로 = 자체 합성, 재구성 후 꼬리 유지 | 잔차 **≤ -90 dBFS**(리버브는 신호 대비) |
+| `parity.test.ts` (0.3.3에서 삭제) | TS `sectionCoefficients`, `Biquad`, `UtilityKernel`, **kernels.ts 10종** vs WASM | 계수 격자, 글라이드, 커널마다 무작위 파라미터 4세트 × `configure()` 변경(빠진 값 = 기본값, 딜레이 모드 전환 포함) + 템포 변경 + `reset` + 홀수 블록, 미터, 생성 시 꼬리(`kernelTailSeconds`), 15종 모두 생성·처리·해제(힙 원상복구) | 잔차 **≤ -90 dBFS**, 미터 1e-5, 꼬리 1e-9 |
 
 검증: 코러스 지연 상수 14 ms → 14.1 ms, 딜레이 드라이브 2 → 2.01로 일부러 바꾸면 C++ 하네스에서 해당 이펙트의 렌더가 모두 실패하는 것(잔차 +2 dBFS 수준)을 확인했습니다. (기반 단계에서는 글라이드 상수 12 → 13 ms로 같은 확인.)
 
-엔진 팬 법칙은 `engine.cpp` 믹스 루프 안에 인라인으로 있어서, C++ 테스트에 그 식을 옮겨 적은 참조본을 두었습니다. 그 루프를 바꾸면 참조본과 `gain.rs`를 함께 고칩니다.
+엔진 팬 법칙은 이전 C++ 믹스 루프의 식을 C++ 테스트에 참조본으로 옮겨 두었고, `gain.rs`가 그 식을 지켜야 합니다.
 
 ## 1단계 결과: 패리티·벤치마크·크기
 
@@ -258,6 +259,8 @@ Windows는 두 툴체인 모두 15종 전부 비트 동일입니다. Rust가 C++
 
 ### Rust(WASM) ↔ TypeScript (`parity.test.ts`, Node 24)
 
+> 기록: TS 커널과 `parity.test.ts`는 0.3.3에서 삭제됐습니다.
+
 | 커널 | 최대 잔차 |
 |---|---:|
 | delay | -144.5 dBFS |
@@ -269,6 +272,8 @@ Windows는 두 툴체인 모두 15종 전부 비트 동일입니다. Rust가 C++
 TS 커널은 바이쿼드 출력을 float로 반올림하지 않고 f64로 다음 단에 넘기므로(C++·Rust는 float) 필터가 있는 커널에서 float 한 비트 정도 차이가 납니다. wasm32는 계속 `libm` 크레이트를 쓰므로(CPU 작업 전과 같은 수학) 이 표는 바뀌지 않았습니다.
 
 ### CPU 기준선 (`garak-rust-bench 5`)
+
+> 0.3.2 측정 기록입니다. 비교 대상인 C++ 커널과 벤치(`garak-rust-bench`)는 0.3.3에서 삭제했습니다.
 
 48 kHz 스테레오, 128프레임 블록, 바쁜 파라미터 세트(EQ 8밴드 모두 켬, 딜레이 핑퐁+에이지+로우컷 등). 이펙트마다 C++과 Rust를 번갈아 5라운드 돌려 각자 최고값을 씁니다(공유 CI 러너의 클럭 변동 상쇄). **automated** 열은 글라이드가 있는 이펙트에서 파라미터 하나를 매 블록 `EffectControl`로 바꿔 글라이드가 멈추지 않게 한 경우입니다(Rust는 멈춘 글라이드를 블록 단위로 건너뛰므로, 정지 파라미터 수치만 보면 과대평가됩니다). 비율은 Rust 처리량 / C++ 처리량이고 **게이트는 0.87 이상(Rust 시간 ≤ C++의 1.15배)** 입니다.
 
@@ -311,6 +316,8 @@ CI 러너 수치는 공유 머신이라 실행마다 ±10% 정도 움직입니�
 
 ### 워크릿 CPU: TS 커널 vs Rust WASM (`bench.test.ts`)
 
+> 기록: TS 커널과 `bench.test.ts`는 0.3.3에서 삭제됐습니다. 지금 웹 CPU는 `pnpm rust:engine-smoke`의 엔진 측정([RUST_ENGINE 5.4](RUST_ENGINE.md#54-ab와-cpu-이-pc-chrome-windows-x64))을 봅니다.
+
 브라우저 워크릿이 부르는 방식 그대로(평면 128프레임 블록, 48 kHz, 위와 같은 바쁜 설정) TS 커널과 `garak-dsp.wasm`의 같은 이펙트를 번갈아 5라운드. Node 24.21(V8), 같은 노트북, 각 20초:
 
 | 커널 | TS (Mframes/s) | Rust WASM (Mframes/s) | WASM / TS | CPU 작업 전 WASM / TS |
@@ -352,6 +359,8 @@ WASM 쪽 개선(1단계)은 위의 구조 변경(블록 루프, settled, 캐시)
 
 ### 크기
 
+> 기록: `garak-dsp.wasm`은 0.3.3에서 삭제됐습니다. 지금 웹 모듈은 `garak-engine.wasm` 하나(예산 528 KiB / 212 KB gzip)입니다.
+
 | 산출물 | 크기 | 예산 |
 |---|---|---|
 | `garak-dsp.wasm` 3단계(웹) | **107,779 바이트 (105.3 KiB)**, gzip 37,869 바이트 (`tan`/`exp`/`log`/`pow`를 임포트해 `libm` 코드가 빠지고, 리버브 커널 내보내기가 더해짐) | 128 KiB / gzip 80 KB |
@@ -362,7 +371,7 @@ WASM 쪽 개선(1단계)은 위의 구조 변경(블록 루프, settled, 캐시)
 
 ## 2단계: 기타 랙
 
-`makeEffect("guitar-rig")`(dsp.cpp `GuitarRig`)를 `garak-dsp`로 옮겼습니다. 데스크톱(`GARAK_RUST_EFFECTS=all`, 기본값), Rust 렌더 엔진, 웹이 모두 같은 Rust 랙을 씁니다.
+`makeEffect("guitar-rig")`(dsp.cpp `GuitarRig`, 0.3.3에서 삭제)를 `garak-dsp`로 옮겼습니다. 데스크톱(Rust 렌더 엔진)과 웹이 모두 같은 Rust 랙을 씁니다.
 
 ### 범위와 구조
 
@@ -387,11 +396,13 @@ WASM 쪽 개선(1단계)은 위의 구조 변경(블록 루프, settled, 캐시)
 ### 경계: C ABI, C++, 엔진, WASM
 
 - **C ABI** (`garak-ffi/src/rig.rs`, `garak_rust.h`에 추가, ABI 버전은 그대로 2): `garak_rs_rig_size/align`, 카탈로그(`param_count/param_id/param_range`), `reverb_ir_len/scratch_len/generate_ir`, `reverb_decays`, `storage_len`, `init`(커널 포인터 3개), `process`/`process_planar`, `automate`, `set_param`/`commit`/`param`, `reset`, `latency`, `tail`, `take_state`. 커널 길이·준비는 기존 `garak_rs_reverb_kernel_len/prepare_kernels`를 씁니다.
-- **C++** (`rust_effects.inc` `RustGuitarRig`): C++과 같은 `Reader` 검증, 카탈로그 대조, (샘플레이트, float Decay)별 플레이트 커널 캐시(`blendedKernel`처럼 쓰는 동안 + 최근 4개), `sharedResources`로 커널 메모리 보고. 리그는 `garak_rs_fx` 종류가 아니어서 선택 배열의 마지막 칸(`GARAK_RS_FX_COUNT`)을 씁니다. `GARAK_RUST_EFFECTS=all`(데스크톱 기본)과 `setEffectBackend("guitar-rig", …)`가 리그를 포함하고, `none`이면 C++ 랙입니다.
+- **C++** (0.3.2까지, `rust_effects.inc` `RustGuitarRig`, 0.3.3에서 삭제): C++과 같은 `Reader` 검증, 카탈로그 대조, (샘플레이트, float Decay)별 플레이트 커널 캐시(`blendedKernel`처럼 쓰는 동안 + 최근 4개), `sharedResources`로 커널 메모리 보고. 리그는 `garak_rs_fx` 종류가 아니어서 선택 배열의 마지막 칸(`GARAK_RS_FX_COUNT`)을 씁니다. `GARAK_RUST_EFFECTS=all`(데스크톱 기본)과 `setEffectBackend("guitar-rig", …)`가 리그를 포함하고, `none`이면 C++ 랙입니다.
 - **엔진** (`garak-engine/src/insert.rs`): `guitar-rig` 인서트를 받습니다(거부 제거). 라이브 노브는 Param diff, 구조 파라미터는 그 트랙만 재준비(상태 인계), 플레이트 커널은 리버브 캐시에서 공유, 렌더 중 힙 사용 0(`tests/guitar_rig.rs`).
-- **WASM** (`garak-wasm/src/rig.rs`): `garak_rig_*` 슬롯 모델(인스턴스당 16개), 전용 파라미터 버퍼(154개), 튜너 탭 버퍼, `garak_rig_create_prepared`(메인 스레드가 `garak_reverb_build(rate, 0, decay)`로 만든 커널을 복사만). 리그 상태·저장 공간·커널은 이펙트 영역 할당기에 있습니다.
+- **WASM** (`garak-wasm/src/rig.rs`, 0.3.3에서 삭제. 지금 웹은 엔진의 인서트): `garak_rig_*` 슬롯 모델(인스턴스당 16개), 전용 파라미터 버퍼(154개), 튜너 탭 버퍼, `garak_rig_create_prepared`(메인 스레드가 `garak_reverb_build(rate, 0, decay)`로 만든 커널을 복사만). 리그 상태·저장 공간·커널은 이펙트 영역 할당기에 있습니다.
 
 ### 웹: Rust 워크릿이 기본, Web Audio 랙은 대체 경로
+
+> 0.3.3 기준: 아래의 기타 랙 워크릿(`garak-guitar-rig-v1`, `rustRig.ts`, `guitarRigRust.ts`)과 Web Audio 랙은 모두 삭제됐습니다. 지금 웹의 기타 랙은 통합 엔진(`garak-engine.wasm`)의 `guitar-rig` 인서트로만 렌더하고 대체 경로가 없습니다. 튜너 표시는 엔진이 아직 분석 데이터를 보내지 않아 웹에서도 비어 있습니다(데스크톱과 같음). 0.3.2에서는 엔진 안에서 랙 인서트를 지을 때 64 KiB wasm 스택이 넘쳐 트랩했고 웹이 조용히 Web Audio 랙으로 대체됐습니다. 0.3.3에서 wasm32 스택을 256 KiB로 올렸습니다([RUST_ENGINE 5.5](RUST_ENGINE.md#55-크기)).
 
 이전 웹 랙은 C++과 다른 구현이었습니다(`WaveShaperNode` 커브 + 브라우저 오버샘플링, Web Audio 딜레이·컨볼버 두 개, 노드 그래프). 이제 `prepareGuitarRig`가 페이지의 `garak-dsp.wasm`을 받아 두고, 리그 내보내기가 있으면 `createRig`가 **워크릿 노드 하나**(`garak-guitar-rig-v1`, `src/devices/guitar-rig/rustRig.ts` + `src/audio/rust/guitarRigRust.ts`)로 데스크톱과 같은 Rust 랙을 돌립니다.
 
@@ -418,7 +429,7 @@ WASM 쪽 개선(1단계)은 위의 구조 변경(블록 루프, settled, 캐시)
 
 지연·꼬리는 세 플랫폼의 모든 렌더·블록에서 같았습니다. Windows는 두 툴체인 모두 631렌더 전부 비트 동일, macOS arm64는 AppleClang의 FMA 축약 때문에 float 반올림 수준의 차이(최악 -121.1 dBFS, 1단계 커널 표와 같은 원인)입니다. 검증: 리그 코러스 지연 14 → 14.1 ms, 캐비닛 하이패스 Q 0.72 → 0.73으로 일부러 바꾸면 해당 묶음이 -67 ~ -3.6 dBFS로 실패합니다. **렌더 엔진**(`garak-rust-engine-parity-test`): 리그 인서트(리버브·사본 포함, 앰프 게인 오토메이션)를 넣은 오프라인 내보내기 48 kHz/4096·44.1 kHz/128과, 재생 중 노브 diff + 랙 재배치(트랙 재준비) 모두 C++ 엔진과 **비트 동일**(C++·Rust 이펙트 양쪽, MinGW·MSVC. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 -134.9 ~ -138.5 dBFS). `GARAK_RUST_EFFECTS=all`의 엔진 회귀 테스트도 리그를 Rust로 돌려 통과합니다.
 
-**웹(WASM) ↔ 데스크톱(네이티브 Rust)** (`src/audio/rust/guitarRig.test.ts`, `cargo test -p garak-ffi`가 쓴 장면): 전체 랙 + 리버브 + 튜너, 노브 변경, 구조 재구성(커널은 메인 스레드 인스턴스에서) → **-327.6 dBFS**(오디오), **-343.2 dBFS**(튜너 탭).
+**웹(WASM) ↔ 데스크톱(네이티브 Rust)** (`src/audio/rust/guitarRig.test.ts`, 0.3.3에서 `garak-dsp.wasm`과 함께 삭제; `cargo test -p garak-ffi`가 쓴 장면): 전체 랙 + 리버브 + 튜너, 노브 변경, 구조 재구성(커널은 메인 스레드 인스턴스에서) → **-327.6 dBFS**(오디오), **-343.2 dBFS**(튜너 탭).
 
 **CPU** (`garak-rust-bench 5 guitar-rig`, 48 kHz, 128프레임, 같은 노트북 MinGW):
 
@@ -431,9 +442,11 @@ CI 러너(같은 벤치 3초, 두 번 실행): Windows MSVC 기본 랙 1.44(auto
 
 **크기.** 리그로 `garak-dsp.wasm`이 146 → **196.6 KiB(gzip 69.5 KB)**가 되어 원시 예산을 160 → 208 KiB로 올렸습니다(gzip 80 KB 예산은 그대로). 늘어난 것은 코드 약 43 KiB(모듈 11종, 랙, 인계)와 카탈로그 약 5 KiB입니다. 줄인 것: 카탈로그를 `const` 대신 `static`(사용처마다 복사되던 6.6 KiB), 제어 경로의 필터 설계를 한 함수로(`set_filter`, `#[inline(never)]`), wasm32에서만 바이쿼드·셰이퍼·컨볼버 호출을 인라인하지 않음(네이티브는 그대로 인라인, -10 KiB).
 
-**남은 일.** C++ `GuitarRig`와 TS Web Audio 랙 삭제(청취 확인 후, 다른 이펙트와 같은 "두 벌 유지" 정리), 웹 PDC(앰프·드라이브 지연), 튜너 분석을 Rust로(지금은 탭만 Rust, 음높이 추정은 TS `detectPitch`).
+**남은 일.** C++ `GuitarRig` 삭제(TS Web Audio 랙은 0.3.3에서 삭제), 튜너 분석을 엔진에서 UI로 보내기(0.3.3부터 웹 튜너 표시는 비어 있음).
 
 ## 3단계(웹): Rust WASM이 웹 기본 경로
+
+> 0.3.3 기준: 이 단계의 웹 경로(`garak-dsp.wasm` 이펙트 워크릿, TS 커널, Web Audio 내장 노드 대체, `garak.rustDsp`, `scripts/rust-dsp-smoke.mjs`, `effectsParity.test.ts`)는 모두 삭제됐습니다. 이펙트는 이제 통합 엔진(`garak-engine.wasm`) 안에서만 돌고, `src/audio/rust/effects.test.ts`가 내장 이펙트 전부와 카탈로그 전체(기타 랙 프리셋 포함)를 엔진으로 렌더해 유한·가청을 확인합니다. 아래는 기록입니다.
 
 | 항목 | 이전 (0.3.0) | 지금 |
 |---|---|---|
@@ -447,7 +460,7 @@ CI 러너(같은 벤치 3초, 두 번 실행): Windows MSVC 기본 랙 1.44(auto
 - **소리 동일성 근거.** `effectsParity.test.ts`에서 WASM의 EQ·필터·컴프레서·드라이브는 C++ 코드를 그대로 옮긴 TS 참조와 **비트 동일**, 리버브 임펄스 응답은 신호 대비 **-127.3 dBFS**(FFT float 반올림)입니다. 데스크톱은 같은 Rust 커널을 쓰고, Rust ↔ C++은 `garak-rust-parity-test`가 Windows에서 비트 동일로 묶습니다. 시김새 10종의 WASM ↔ TS 잔차는 위 표 그대로입니다(phaser·tremolo·limiter·gate·bitcrusher·utility 비트 동일, 나머지 ≤ -138.5 dBFS).
 - **이전 웹 소리와는 다릅니다**(의도한 변화). `node scripts/rust-dsp-smoke.mjs`의 같은 7이펙트 체인 내보내기에서 Rust 경로와 끈 경로(Web Audio 노드)의 차이는 -1.8 dB(신호 대비)로, 주로 `DynamicsCompressorNode`의 자동 메이크업 게인(Rust 쪽 RMS 0.021 vs 0.034)과 리버브 IR 구성 차이입니다. 청취 확인 전까지는 `garak.rustDsp=0`으로 이전 소리를 들을 수 있습니다.
 - **브라우저 확인**(`scripts/rust-dsp-smoke.mjs`, 로컬 Chrome): 앱 로드 → 새 프로젝트 → 오디오 트랙에 EQ·필터·컴프·드라이브·페이저·딜레이·리버브 → 내보내기 + 실시간 재생. Rust 워크릿 21개, 대체 0개, 내보내기 RMS 0.021(최대 0.23), 실시간 트랙 레벨 0.106·마스터 0.087, 콘솔 오류 없음. 끈 경우 Rust 0개(TS 워크릿 6개). `GARAK_CHROMIUM_EXECUTABLE`로 설치된 Chrome을 쓸 수 있습니다.
-- 남은 일: 청취 확인 후 `kernels.ts`·`sigimsae_effects.inc`·C++ EQ/컴프/드라이브/리버브 삭제와 내장 노드 대체 경로 정리, 웹 PDC(드라이브 8프레임, 기타 랙 앰프 16프레임).
+- 남은 일: 없음(C++ 커널은 0.3.3에서 삭제, `kernels.ts`와 웹 내장 노드 대체 경로도 0.3.3에서 삭제). 웹 PDC(드라이브 8프레임, 기타 랙 앰프 16프레임)는 엔진이 처리합니다.
 
 ## 빈티지 악기: Rust가 유일한 구현
 
@@ -470,17 +483,15 @@ rust/garak-dsp/src/instruments/
   poly.rs     한밤 106
   parity.golden  패리티 장면 체크섬(Rust 테스트·C++ 테스트·WASM 테스트가 모두 읽음)
 rust/garak-ffi/src/instruments.rs   garak_rs_instrument_* (호출자 소유 상태, 소멸자 없음)
-rust/garak-wasm/src/instruments.rs  garak_instrument_* (슬롯 4개, 정적 이벤트 버퍼 512개, .bss에 놓이도록 MaybeUninit)
-native/src/rust_instrument.hpp      RustInstrumentProcessor: PluginProcessor(IEUM WAVE처럼 샘플 정확한 이벤트)
-src/audio/rust/vintageWasm.ts       워크릿용 로더
-src/devices/vintage/                카탈로그(params.ts), 프리셋, 사용자 프리셋, 워크릿, 웹 연결(web.ts), 편집기 UI
+src/devices/vintage/                카탈로그(params.ts), 프리셋, 사용자 프리셋, 사용 가능 여부(availability.ts), 편집기 UI
+(웹 악기 보이스는 garak-engine의 instrument.rs가 garak-dsp instruments를 씁니다. 이전 native/src/rust_instrument.hpp, garak-wasm/src/instruments.rs, vintageWasm.ts, web.ts·queue.ts·vintage.worklet.ts는 0.3.3에서 삭제)
 ```
 
 **한 구현, 두 엔진.** 효과 커널은 네이티브에서 플랫폼 libm을, wasm32에서 `libm` 크레이트를 써서 마지막 비트가 다를 수 있지만, 악기는 `dmath.rs`의 함수만 씁니다. IEEE-754 사칙연산과 `sqrt`는 모든 타깃에서 같은 값을 내고 Rust는 부동소수점 연산을 스스로 합치거나(FMA) 재배열하지 않으므로, **C++ 엔진과 브라우저 워크릿이 비트 단위로 같은 샘플**을 냅니다. 제어 틱(EP 32프레임, 106 4프레임)은 블록과 무관한 프레임 카운터로 돌고 노이즈는 보이스마다 따로라서, 호스트가 블록을 어떻게 자르든 출력이 같습니다. 서브노멀 직전 값은 직접 0으로 내려 호스트의 FTZ/DAZ 설정과도 무관합니다.
 
-**네이티브.** 타임라인 컴파일러는 이 악기들을 `builtin-synth` 소스로 보내고, `engine.cpp`가 `GARAK_RUST=ON`(0.3.0부터 데스크톱 빌드 기본)이면 `RustInstrumentProcessor`를 만듭니다. 라이브 노트오프는 IEUM WAVE처럼 서스테인 페달 동안 미뤄지고(타임라인 페달은 노트오프에 이미 반영됨), 벤드 범위(131) 메타 컨트롤러도 받습니다. 파라미터 편집으로 트랙이 다시 만들어져도 `take_state`로 울리던 보이스·코러스 지연선을 이어받고, 악기 파라미터 자동화는 블록마다 값을 넣어 DSP 안에서 글라이드합니다. 호스트는 `hello.vintage.available`로 지원 여부를 알리고, Rust 없이 빌드한 호스트는 명확한 오류를 냅니다.
+**네이티브.** 타임라인 컴파일러는 이 악기들을 `builtin-synth` 소스로 보내고, Rust 렌더 엔진이 그래프 안에서 렌더합니다(0.3.2까지 있던 C++ 어댑터 `rust_instrument.hpp`는 0.3.3에서 삭제). 라이브 노트오프는 IEUM WAVE처럼 서스테인 페달 동안 미뤄지고(타임라인 페달은 노트오프에 이미 반영됨), 벤드 범위(131) 메타 컨트롤러도 받습니다. 파라미터 편집으로 트랙이 다시 만들어져도 `take_state`로 울리던 보이스·코러스 지연선을 이어받고, 악기 파라미터 자동화는 블록마다 값을 넣어 DSP 안에서 글라이드합니다. 호스트는 `hello.vintage.available`(항상 참)로 지원을 알립니다.
 
-**웹.** `prepareVintage()`가 시김새 커널과 **같은** `garak-dsp.wasm` 모듈(`sharedGarakWasmModule`, 페이지당 한 번 받아 컴파일)을 쓰고 워크릿을 등록합니다. 3단계(웹)부터 `pnpm build`가 이 모듈을 함께 만들므로 웹 배포에서도 악기가 소리를 냅니다. 모듈은 `Math.*` 초월 함수를 임포트하므로 악기 워크릿도 `MATH_IMPORTS`로 인스턴스를 만듭니다(악기 자체는 `dmath.rs`만 써서 샘플은 호스트 `Math`와 무관). `garak.rustDsp=0`은 이펙트만 TS로 돌리고 악기는 끄지 않습니다. 트랙 입력·악기마다 첫 음에서 `AudioWorkletNode`를 하나 만들고, 음표·컨트롤러·파라미터를 AudioContext 시각이 붙은 이벤트로 보내 렌더 퀀텀 안에서 샘플 단위로 적용합니다(`queue.ts`: 노트오프 이동, 아직 시작 안 한 음 취소). 오프라인 내보내기는 포트 메시지 도착 시점에 기대지 않도록 모든 이벤트를 모았다가 노드를 만들 때 `processorOptions`로 넘깁니다(`flushVintage`). TS 대체 경로는 없습니다: 모듈을 못 불러오면(Rust 없이 `pnpm dev`, AudioWorklet 없음) 악기는 라이브러리에 보이고 편집·저장되지만 회색으로 소리가 나지 않습니다(재생 시 이유를 알림).
+**웹.** 0.3.3부터 두 악기는 통합 엔진(`garak-engine.wasm`)의 일부라, 엔진 모듈을 불러오면 웹에서 쓸 수 있습니다. 모듈을 못 불러오면 오디오 설정 자체가 실패합니다(대체 경로 없음). 다음은 0.3.2까지의 Web Audio 경로 기록입니다: `prepareVintage()`가 시김새 커널과 **같은** `garak-dsp.wasm` 모듈(`sharedGarakWasmModule`, 페이지당 한 번 받아 컴파일)을 쓰고 워크릿을 등록합니다. 3단계(웹)부터 `pnpm build`가 이 모듈을 함께 만들므로 웹 배포에서도 악기가 소리를 냅니다. 모듈은 `Math.*` 초월 함수를 임포트하므로 악기 워크릿도 `MATH_IMPORTS`로 인스턴스를 만듭니다(악기 자체는 `dmath.rs`만 써서 샘플은 호스트 `Math`와 무관). `garak.rustDsp=0`은 이펙트만 TS로 돌리고 악기는 끄지 않습니다. 트랙 입력·악기마다 첫 음에서 `AudioWorkletNode`를 하나 만들고, 음표·컨트롤러·파라미터를 AudioContext 시각이 붙은 이벤트로 보내 렌더 퀀텀 안에서 샘플 단위로 적용합니다(`queue.ts`: 노트오프 이동, 아직 시작 안 한 음 취소). 오프라인 내보내기는 포트 메시지 도착 시점에 기대지 않도록 모든 이벤트를 모았다가 노드를 만들 때 `processorOptions`로 넘깁니다(`flushVintage`). TS 대체 경로는 없습니다: 모듈을 못 불러오면(Rust 없이 `pnpm dev`, AudioWorklet 없음) 악기는 라이브러리에 보이고 편집·저장되지만 회색으로 소리가 나지 않습니다(재생 시 이유를 알림).
 
 **테스트.**
 
@@ -488,17 +499,19 @@ src/devices/vintage/                카탈로그(params.ts), 프리셋, 사용�
 |---|---|---|
 | 단위: 감쇠·릴리즈·페달·벨로시티 밝기·오토팬·훔치기·레가토·자기 발진·블록 독립 | `cargo test -p garak-dsp instruments` | 통과 |
 | C++(FFI) 패리티 장면 = `parity.golden` | `native-rust-instruments` (`rust_instrument_test.cpp`) | 두 악기 비트 동일, 블록 크기(128/97) 독립 |
-| WASM 패리티 장면 = `parity.golden`, 카탈로그 = `params.ts`, 프리셋 전부 재생 | `src/audio/rust/vintage.test.ts` | 두 악기 비트 동일, 블록 크기(128/71) 독립 |
+| WASM 패리티 장면 = `parity.golden`, 카탈로그 = `params.ts`, 프리셋 전부 재생 | `src/audio/rust/vintage.test.ts` (`garak-dsp.wasm`용, 0.3.3에서 삭제) | 두 악기 비트 동일, 블록 크기(128/71) 독립 |
 | CPU: 8보이스 @ 48 kHz < 한 코어의 3 % | `native-rust-instruments` (CI 게이트) | EP 0.44 %, 106 1.31 %(최악 설정: 모든 오실레이터·레조넌스·코러스 I+II) |
-| 워크릿 CPU(참고) | `vintage.test.ts` | EP 0.53 %, 106 1.46 % |
+| 워크릿 CPU(참고) | `vintage.test.ts` (0.3.3에서 삭제) | EP 0.53 %, 106 1.46 % |
 | 엔진: 타임라인 음, 라이브 페달, 파라미터 편집 중 울림 유지, 알 수 없는 파라미터 거부 | `native-rust-instruments` | 통과 |
-| 웹 브라우저: 공유 모듈 로드, 내보내기·실시간 재생 | `pnpm vintage:smoke` (로컬 Chrome) | EP 내보내기 RMS 0.073·트랙 레벨 0.21, 106 RMS 0.048·0.08, `garak.rustDsp=0`에서도 같음 |
+| 웹 브라우저: 엔진 모듈 로드 후 사용 가능, 내보내기·실시간 재생 | `pnpm vintage:smoke` (로컬 Chrome, 0.3.3부터 엔진 경로) | (0.3.2, `garak-dsp.wasm` 경로) EP 내보내기 RMS 0.073·트랙 레벨 0.21, 106 RMS 0.048·0.08 |
 
-DSP를 바꾸면 체크섬이 바뀝니다. `cargo test -p garak-dsp parity_scene -- --nocapture`가 새 값을 출력하면 `parity.golden`을 고치고, C++·WASM 테스트가 같은 값에 닿는지 확인합니다.
+DSP를 바꾸면 체크섬이 바뀝니다. `cargo test -p garak-dsp parity_scene -- --nocapture`가 새 값을 출력하면 `parity.golden`을 고치고, C++ 테스트가 같은 값에 닿는지 확인합니다.
 
-**크기.** 두 악기로 `garak-dsp.wasm`이 커져 원시 크기 예산을 128 KiB에서 160 KiB로 올렸습니다(gzip 80 KB 예산은 그대로). 3단계(웹)의 수학 함수 임포트와 합친 빌드는 **148,879 바이트(145.4 KiB), gzip 52,556 바이트**입니다(3단계만 105.3 KiB). 차가운 경로(노트온·핸들러·계수 계산)는 `#[inline(never)]`로, 패닉 메시지가 부동소수점 포매터를 끌고 오지 않도록 `f64::clamp` 대신 `clampf`를 씁니다.
+**크기.** (0.3.3에서 삭제된 `garak-dsp.wasm` 기록. 지금은 `garak-engine.wasm` 예산에 포함) 두 악기로 `garak-dsp.wasm`이 커져 원시 크기 예산을 128 KiB에서 160 KiB로 올렸습니다(gzip 80 KB 예산은 그대로). 3단계(웹)의 수학 함수 임포트와 합친 빌드는 **148,879 바이트(145.4 KiB), gzip 52,556 바이트**입니다(3단계만 105.3 KiB). 차가운 경로(노트온·핸들러·계수 계산)는 `#[inline(never)]`로, 패닉 메시지가 부동소수점 포매터를 끌고 오지 않도록 `f64::clamp` 대신 `clampf`를 씁니다.
 
 ## WASM을 wasm-bindgen 없이 쓰는 이유
+
+아래 이유는 지금의 `garak-engine.wasm`(`garakEngineWasm.ts`, `engineHost.ts`의 `loadGarakEngineModule`)에도 그대로 적용됩니다. 함수 이름·슬롯 모델은 0.3.3에서 삭제된 `garak-dsp.wasm` 로더 기준의 기록입니다.
 
 - `AudioWorkletGlobalScope`에는 `fetch`가 없고 엔진에 따라 `TextDecoder`도 없습니다. wasm-bindgen이 만드는 접착 코드는 이를 가정하고, 워크릿 번들에 ES 모듈로 넣어야 합니다.
 - 오디오 경로는 숫자와 `f32` 블록만 오갑니다. 함수 ~40개와 정적 버퍼 몇 개(샘플 2개, 파라미터, 미터, 텍스트)면 충분해서 로더가 평범한 TS입니다(`garakWasm.ts`).
@@ -512,7 +525,8 @@ DSP를 바꾸면 체크섬이 바뀝니다. `cargo test -p garak-dsp parity_scen
 |---|---|---|
 | `dev` | opt-level 0, `garak-dsp`·`libm`만 1, incremental, 줄 번호 디버그 정보만, panic=abort | 편집·테스트 반복 |
 | `release` | opt-level 3, `lto = "thin"`, `codegen-units = 1`, panic=abort | 네이티브 staticlib (CMake는 항상 이 프로필) |
-| `wasm` | release 상속 + `lto = "fat"`, `strip` | `pnpm rust:wasm`. opt-level `"s"`는 82 KiB로 20 KiB 작지만, 예산 안이고 워크릿은 CPU가 병목이라 3을 유지 |
+| `wasm` | release 상속 + `lto = "fat"`, `strip` | `wasm-engine`의 바탕. (기록: 삭제된 `garak-dsp.wasm`은 이 프로필로 빌드했고, opt-level `"s"`는 82 KiB로 20 KiB 작지만 워크릿은 CPU가 병목이라 3을 유지) |
+| `wasm-engine` | `wasm` 상속 + opt-level `"s"`, `garak-dsp`만 3 | `pnpm rust:wasm` → `garak-engine.wasm` ([RUST_ENGINE 5.5](RUST_ENGINE.md#55-크기)) |
 
 ## 측정값
 
@@ -535,9 +549,9 @@ Windows 11, Rust 1.100.0 (`x86_64-pc-windows-gnu`), 로컬 노트북. 기반 단
 
 1. **기반 (완료).** 워크스페이스, 설치 스크립트, CI, 패리티 테스트. 작은 커널 세트: 바이쿼드, 게인·팬, Utility.
 2. **내장 이펙트 커널 (완료, 이 문서의 1단계).** 시김새 10종, EQ·필터, 컴프레서, 드라이브, 리버브(IR 생성은 제어 스레드 API로 분리, 캐시된 IR 수용). C++ 어댑터 + 이펙트별 스위치(`GARAK_RUST=ON`, 기본 C++), WASM 슬롯 + 워크릿 어댑터(플래그, 기본 꺼짐), 패리티 하네스(C++·TS 모두 ≤ -90 dBFS)와 CPU 기준선. CPU 게이트(이펙트마다 Rust 시간 ≤ C++의 1.15배)는 [CPU 기준선](#cpu-기준선-garak-rust-bench-5)을 봅니다.
-3. **경로 전환.** 네이티브는 0.3.0에서 데스크톱 빌드 `GARAK_RUST=ON` + `GARAK_RUST_EFFECTS=all`(완료). 웹은 [3단계(웹)](#3단계웹-rust-wasm이-웹-기본-경로)에서 Rust WASM이 기본이 되고(`pnpm build`가 WASM 포함), EQ·필터·컴프·드라이브·리버브도 Rust 워크릿으로 옮겼습니다(완료). 남은 것: 청취 확인 후 `kernels.ts`와 `sigimsae_effects.inc`(그리고 EQ·컴프·드라이브·리버브의 C++ 구현, 웹 내장 노드 대체 경로)를 지워 "두 벌 유지"를 끝냅니다.
+3. **경로 전환.** 네이티브는 0.3.0에서 데스크톱 빌드 `GARAK_RUST=ON` + `GARAK_RUST_EFFECTS=all`(완료). 웹은 [3단계(웹)](#3단계웹-rust-wasm이-웹-기본-경로)에서 Rust WASM이 기본이 되고(`pnpm build`가 WASM 포함), EQ·필터·컴프·드라이브·리버브도 Rust 워크릿으로 옮겼습니다(완료). 웹 쪽 "두 벌 유지"는 0.3.3에서 끝났습니다(`kernels.ts`, 웹 내장 노드 대체 경로, `garak-dsp.wasm` 삭제). 남은 것: `sigimsae_effects.inc`와 EQ·컴프·드라이브·리버브의 C++ 구현.
 4. **상태 많은 처리.** 기타 랙(완료, [2단계](#2단계-기타-랙): C++ 비트 동일, 엔진·웹 포함), 그 다음 트랙 믹스 루프(ChannelStrip)와 그래프(렌더 엔진, [RUST_ENGINE.md](RUST_ENGINE.md)).
-5. **정리.** `GARAK_RUST`를 기본 ON, 플래그 제거, release 워크플로에 Rust 빌드 추가.
+5. **정리 (완료, 0.3.3).** Rust 필수, 플래그(`GARAK_RUST`, `GARAK_RUST_EFFECTS`, `GARAK_RUST_ENGINE`) 제거, C++ 트랙 경로·이펙트 DSP 삭제, 패리티는 골든 레퍼런스로.
 
 ## 문제 해결
 

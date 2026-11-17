@@ -1,6 +1,6 @@
 {
   "name": "garak-ieum",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "가락이음 — 로컬 음악 작업실",
   "author": "songchez",
   "main": "dist-desktop/main.js",
@@ -33,9 +33,6 @@
     "release:test": "node --test scripts/release-tests.mjs",
     "test": "vitest run",
     "wavetable:schema": "node src/devices/wavetable-synth/generate-schema.mjs --check",
-    "wavetable:fixtures": "node src/devices/wavetable-synth/generate-fixtures.mjs",
-    "wavetable:build": "cmake -S native/devices/wavetable-synth -B build/native/wavetable-synth -DCMAKE_BUILD_TYPE=Release && cmake --build build/native/wavetable-synth --config Release",
-    "wavetable:test": "ctest --test-dir build/native/wavetable-synth -C Release --output-on-failure",
     "wavetable:smoke": "node scripts/wavetable-smoke.mjs",
     "meter:smoke": "node scripts/meter-smoke.mjs",
     "vintage:smoke": "node scripts/vintage-web-smoke.mjs",
@@ -43,7 +40,8 @@
     "rust:build": "node scripts/rust.mjs build",
     "rust:wasm": "node scripts/rust.mjs wasm",
     "rust:check": "node scripts/rust.mjs check",
-    "rust:engine-smoke": "node scripts/rust-engine-smoke.mjs"
+    "rust:engine-smoke": "node scripts/rust-engine-smoke.mjs",
+    "autosave:smoke": "node scripts/autosave-reload-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",

@@ -1,5 +1,6 @@
-// Browser project/editor workflow. The desktop's WAVE audio capability is
-// verified by native-smoke; a browser must continue to gate native-only playback.
+// Browser project/editor workflow. Since 0.3.3 IEUM WAVE renders only in the Rust engine, and the browser
+// plays it through garak-engine.wasm (run `pnpm rust:wasm` first): the editor applies its patch to the engine
+// and enables its keyboard. The desktop's WAVE capability is verified by native-smoke.
 import assert from 'node:assert/strict'
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
@@ -35,9 +36,11 @@ try {
   await open.click()
   const editor = page.getByRole('dialog', { name: 'IEUM WAVE', exact: true })
   await editor.waitFor()
-  assert.match(await editor.locator('.iw-engine-status').innerText(), /네이티브.*연결/)
-  assert.equal(await editor.locator('.iw-keyboard button:not(:disabled)').count(), 0)
-  assert.equal(await page.evaluate(() => window.__waveAudioRequests), 0)
+  // The patch reaches the browser engine (opening the editor starts audio so the keyboard can audition).
+  await editor.locator('.iw-engine-status.is-ready').waitFor({ timeout: 20000 })
+  assert.match(await editor.locator('.iw-engine-status').innerText(), /최신 음색 적용 완료/)
+  assert((await editor.locator('.iw-keyboard button:not(:disabled)').count()) > 0, 'the WAVE keyboard must be enabled on the browser engine')
+  assert((await page.evaluate(() => window.__waveAudioRequests)) >= 1)
 
   const position = editor.getByRole('slider', { name: 'OSC 1 · 프레임', exact: true })
   const initial = Number(await position.getAttribute('aria-valuenow'))
@@ -99,9 +102,8 @@ try {
   assert.equal(await editor.locator('.iw-frame-strip button').count(), 9)
   await editor.getByRole('tab', { name: /변조/ }).click()
   assert.equal(await editor.getByRole('combobox', { name: '1번 보조 변조 소스', exact: true }).inputValue(), 'macro1')
-  assert.equal(await page.evaluate(() => window.__waveAudioRequests), 0)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ editor: 'IEUM WAVE', projectRoundTrip: true, undo: true, customFrames: 9, modulationAux: true, nativePreviewGated: true, pageErrors: errors }, null, 2))
+  console.log(JSON.stringify({ editor: 'IEUM WAVE', projectRoundTrip: true, undo: true, customFrames: 9, modulationAux: true, enginePreview: true, pageErrors: errors }, null, 2))
 } finally {
   await browser?.close()
   await server.close()

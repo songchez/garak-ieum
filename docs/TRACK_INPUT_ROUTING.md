@@ -8,10 +8,10 @@
 - 순수 로직: `src/core/trackRouting.ts` (되먹임 검사, 마스터 피드 제외, 처리 순서, 삭제/복제 처리, 라벨)
 - 통합 Rust 엔진(데스크톱·웹 공통, 0.3.2 기본): `rust/garak-engine/src/routes.rs`(`prepareRoutes` 포팅: 처리 레벨, 루프 끊기,
   마스터 피드, pre/post-FX·post-fader 탭). 녹음은 데스크톱 `garak_rs_engine_route_input`, 웹 `tap_output`. [RUST_ENGINE](RUST_ENGINE.md)
-- 웹 Web Audio 대체 경로: `src/audio/graph.ts` (`connectRoutes`, `setRouteMonitoring`), `src/audio/RouteRecording.ts`,
-  `src/audio/routeRecorder.worklet.ts`, `src/audio/WebAudioEngine.ts`
-- 네이티브 셸과 이전 C++ 경로(`GARAK_RUST_ENGINE=0`): `native/include/garak/engine.hpp` (`TrackRoute`, `RecordingTake::routed`),
-  `native/src/engine.cpp` (`prepareRoutes`, 레벨별 처리, 탭 버퍼), `native/src/protocol.hpp` (`route` 필드),
+- 웹 호스트: `src/audio/WebAudioEngine.ts`(엔진 탭 출력 → 라우트 녹음), `src/audio/RouteRecording.ts`,
+  `src/audio/routeRecorder.worklet.ts` (이전 Web Audio 대체 경로 `src/audio/graph.ts`는 0.3.3에서 삭제)
+- 네이티브 셸: `native/include/garak/engine.hpp` (`TrackRoute`, `RecordingTake::routed`),
+  `native/src/engine.cpp` (`routingTracks`, 라우트 테이크 캡처는 `garak_rs_engine_route_input`; 라우트 렌더는 Rust 엔진 `routes.rs`), `native/src/protocol.hpp` (`route` 필드),
   `native/src/host.cpp` (테이크별 보정값), `src/audio/native/timeline.ts`
 - UI: `src/components/InputSelect.tsx` (입력 목록 + `TapSelect`), `TrackInspector.tsx`, `TrackHeader.tsx`
 
@@ -80,7 +80,10 @@
 내부 경로에는 AD/DA 변환기가 없으므로 **하드웨어 지연 보정(녹음 위치 보정, 드라이버 지연)을 적용하지 않습니다.**
 녹음된 샘플은 원본이 같은 타임라인 위치에서 재생하는 샘플과 정렬됩니다.
 
-### 웹 엔진 (Web Audio)
+### 웹 엔진 (Web Audio, 0.3.3에서 삭제)
+
+0.3.3부터 웹도 라우트 처리·모니터 게이트·마스터 피드를 통합 Rust 엔진(데스크톱과 같은 `routes.rs`)이 하고, 엔진 워크릿의 탭 출력(최대 8, 16채널)이 분배기를 거쳐 `RouteRecordings`(`garak-route-recorder` 워클릿)로 갑니다([RUST_ENGINE 5.7](RUST_ENGINE.md#57-웹-호스트-2차-엔진-안에서-끝나는-일)). 아래 그래프 설명은 삭제된 Web Audio 경로의 기록입니다.
+
 - 그래프: 트랙마다 `input`(시김새 전) → 시김새 체인 → `postFx`(시김새 후, 새 단위 게인) → 팬 → `fader`(페이더 후).
   받는 트랙마다 `RouteGraph { input, monitor }`를 만들고, 원본 탭 노드를 `input`에 연결합니다.
   `input → monitor(게인 0/1) → 트랙 input` 이므로 모니터 게이트는 열고 닫기만 하고, 녹음은 게이트와 상관없이
@@ -130,8 +133,9 @@
   워커 2개로 녹음해 **샘플 단위로** 비교 (시김새 전은 정확히 노트 프레임, 나머지는 정확히 7프레임 뒤 = 보고한
   보정값). 리샘플링 트랙을 모니터해도 자기 소리가 입력에 섞이지 않음, post-FX 모니터링, A↔B 루프·자기 자신·
   삭제된 원본이 무음이 되고 멈추지 않음, 콜백 무할당.
-- `src/core/trackRouting.test.ts`, `src/audio/graph.test.ts`(라우팅 배선·모니터 게이트·마스터 피드·루프),
-  `src/audio/native/timeline.test.ts`, `src/audio/native/NativeRecording.test.ts`.
+- `src/core/trackRouting.test.ts`, `src/audio/native/timeline.test.ts`, `src/audio/native/NativeRecording.test.ts`,
+  `rust/garak-engine/tests/web.rs`·`src/audio/rust/webHost.test.ts`(웹 엔진의 라우트·모니터·탭), `pnpm rust:engine-smoke`(브라우저 라우트 녹음).
+  (Web Audio 배선을 보던 `src/audio/graph.test.ts`는 0.3.3에서 삭제)
 - 실제 브라우저(Chrome, 개발 서버): 악기 트랙 MIDI 3음 → 라우팅 오디오 트랙 녹음. 저장된 리전의 WAV에서
   첫 비영 샘플이 노트 위치와 **+2 프레임**(신스 어택 램프가 16비트 첫 단위를 넘는 지점) 이내로, 모든 탭이 같음.
 

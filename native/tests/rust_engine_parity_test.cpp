@@ -1,20 +1,18 @@
-// Render-engine parity (docs/RUST_ENGINE.md, stage 4): the same project through the C++
-// RenderEngine and the Rust engine (rust/garak-engine via garak-ffi, garak_engine.h).
+// The Rust render engine (docs/RUST_ENGINE.md, stage 4: rust/garak-engine via garak-ffi, garak_engine.h) against
+// golden references of the C++ RenderEngine track path it replaced (native/tests/golden.hpp).
 //
-// The project is rust/garak-engine/src/testkit.rs (timeline JSON + PCM, fetched through the C ABI):
-// audio clips with gain, fades of every shape and crossfades, mono/stereo/44.1 kHz PCM, every
-// built-in effect but the guitar rig (drive adds plug-in delay), pre/post sends into two returns,
-// volume/pan/mute/send/insert automation and a tempo ramp. The C++ side parses the JSON with the
-// host's own protocol.hpp; the Rust side receives the JSON text. Both render it like the host's
-// WAV export (renderStopped: offline engine, length + tail, plug-in delay trimmed), at engine
-// blocks of 4096 and 128 frames, with the C++ effects and with the Rust effects behind the C++
-// engine, at 48 and 44.1 kHz; then a live engine applies mid-play diffs (mix, send, insert
-// parameter, master, a track rebuild) on both. The same runs with a guitar rig insert (withGuitarRig):
-// offline exports and a live knob diff + rack reorder. Gate: residual <= -90 dBFS, equal latency/length.
-#include "cpp_reference_engine.hpp"
-#include "garak/dsp.hpp"
+// The project is rust/garak-engine/src/testkit.rs (timeline JSON + PCM, fetched through the C ABI): audio clips
+// with gain, fades of every shape and crossfades, mono/stereo/44.1 kHz PCM, every built-in effect but the guitar
+// rig (drive adds plug-in delay), pre/post sends into two returns, volume/pan/mute/send/insert automation and a
+// tempo ramp. The engine renders it like the host's WAV export (renderStopped: offline engine, length + tail,
+// plug-in delay trimmed) at engine blocks of 4096 and 128 frames, at 48 and 44.1 kHz; then a live engine applies
+// mid-play diffs (mix, send, insert parameter, master, a track rebuild). The same runs with a guitar rig insert
+// (withGuitarRig): offline exports and a live knob diff + rack reorder. Until 0.3.2 the C++ engine rendered every
+// case beside it; its renders (C++ effects) are the golden references now: bit-identical on Windows x64 (as the
+// comparison always found), residual <= -90 dBFS elsewhere, equal latency and length.
 #include "garak/engine.hpp"
 #include "garak_engine.h"
+#include "golden.hpp"
 #include "protocol.hpp"
 
 #include <algorithm>
@@ -27,6 +25,7 @@
 #include <vector>
 
 namespace {
+golden::Suite goldens("rust-engine-parity");
 int failures = 0;
 void check(bool ok, const std::string& what, double detail = 0) {
   if (!ok) { ++failures; std::fprintf(stderr, "FAIL %s (%.6g)\n", what.c_str(), detail); }
@@ -62,28 +61,6 @@ Project testProject(std::uint32_t tracks, double seconds, std::uint32_t rate) {
 garak::ProjectTimeline parse(const std::string& json) { return garak::protocol::timeline(garak::protocol::Json::parse(json)); }
 
 struct Render { std::vector<float> samples; std::uint32_t latency = 0; std::uint64_t frames = 0; double seconds = 0; };
-
-// native/src/host.cpp renderStopped, minus the int16 conversion.
-Render renderCpp(const Project& project, std::uint32_t block) {
-  auto timeline = parse(project.json); timeline.cycle.reset();
-  garak::RenderEngine engine(timeline.sampleRate, block); engine.setOffline(true);
-  auto prepared = engine.prepare(timeline, project.assets);
-  const double tail = std::min(30.0, prepared->tailSeconds());
-  Render r; r.latency = prepared->latencyFrames();
-  r.frames = std::uint64_t(timeline.lengthFrames) + std::uint64_t(std::ceil(tail * timeline.sampleRate));
-  engine.submit(std::move(prepared)); (void)engine.play();
-  std::vector<float> chunk(std::size_t(block) * 2);
-  r.samples.reserve(r.frames * 2);
-  for (std::uint64_t done = 0; done < r.frames + r.latency;) {
-    const auto frames = std::uint32_t(std::min<std::uint64_t>(block, r.frames + r.latency - done));
-    engine.render(chunk.data(), nullptr, frames, 0);
-    const auto skip = std::uint32_t(std::min<std::uint64_t>(frames, done < r.latency ? r.latency - done : 0));
-    r.samples.insert(r.samples.end(), chunk.begin() + skip * 2, chunk.begin() + frames * 2);
-    done += frames;
-  }
-  engine.collectRetired();
-  return r;
-}
 
 GarakRsEngine* rustEngine(const Project& project, std::uint32_t rate, std::uint32_t block, bool offline) {
   auto* e = garak_rs_engine_create(rate, block, offline ? 1 : 0);
@@ -126,12 +103,6 @@ Render renderRust(const Project& project, std::uint32_t rate, std::uint32_t bloc
   return r;
 }
 
-double residual(const std::vector<float>& a, const std::vector<float>& b) {
-  if (a.size() != b.size()) return 1e9;
-  double m = 0;
-  for (std::size_t i = 0; i < a.size(); ++i) m = std::max(m, double(std::abs(a[i] - b[i])));
-  return m;
-}
 double peak(const std::vector<float>& a) {
   double m = 0;
   for (const auto x : a) m = std::max(m, double(std::abs(x)));
@@ -141,20 +112,15 @@ double peak(const std::vector<float>& a) {
 std::string edit(std::string text, const std::string& from, const std::string& to);
 std::string withGuitarRig(std::string json);
 
-void offlineCase(const char* name, std::uint32_t tracks, double seconds, std::uint32_t rate, std::uint32_t block, bool rustEffects, bool rig = false) {
-  garak::dsp::setEffectBackend("all", rustEffects ? garak::dsp::EffectBackend::Rust : garak::dsp::EffectBackend::Cpp);
+void offlineCase(const char* name, std::uint32_t tracks, double seconds, std::uint32_t rate, std::uint32_t block, bool rig = false) {
   auto project = testProject(tracks, seconds, rate);
   if (rig) project.json = withGuitarRig(project.json);
-  const auto cpp = renderCpp(project, block);
   const auto rust = renderRust(project, rate, block);
-  const double diff = residual(cpp.samples, rust.samples);
-  const bool exact = diff == 0;
-  std::printf("| %s | %u | %.1f s | %u Hz | %u | %s | %u / %u | %.2f | %s |\n", name, tracks, seconds, rate, block,
-              rustEffects ? "Rust" : "C++", cpp.latency, rust.latency, dbfs(peak(cpp.samples)), exact ? "bit-identical" : (std::to_string(dbfs(diff)).substr(0, 7) + " dBFS").c_str());
-  check(cpp.latency == rust.latency, std::string(name) + ": latency", double(rust.latency));
-  check(cpp.frames == rust.frames, std::string(name) + ": length", double(rust.frames));
-  check(peak(cpp.samples) > .05, std::string(name) + ": silent render", peak(cpp.samples));
-  check(dbfs(diff) <= -90, std::string(name) + ": residual", dbfs(diff));
+  const auto key = std::string(name) + " " + std::to_string(tracks) + "/" + std::to_string(seconds) + "/" + std::to_string(rate) + "/" + std::to_string(block);
+  const auto r = goldens.check(key, rust.samples, {double(rust.latency), double(rust.frames)});
+  std::printf("| %s | %u | %.1f s | %u Hz | %u | %u | %.2f | %s |\n", name, tracks, seconds, rate, block, rust.latency, dbfs(peak(rust.samples)), r.verdict().c_str());
+  check(peak(rust.samples) > .05, std::string(name) + ": silent render", peak(rust.samples));
+  check(r.ok, r.message, r.residual);
 }
 
 // Replace the first occurrence of `from` (must exist) in a JSON text.
@@ -177,8 +143,7 @@ std::string withGuitarRig(std::string json) {
 
 // A live engine with the rig: a live knob (Diff, set in place) then a rack reorder (structural: that
 // track is rebuilt and the new rig adopts the old one's state by module).
-void liveRigCase(bool rustEffects) {
-  garak::dsp::setEffectBackend("all", rustEffects ? garak::dsp::EffectBackend::Rust : garak::dsp::EffectBackend::Cpp);
+void liveRigCase() {
   constexpr std::uint32_t rate = 48000, block = 128, call = 256;
   auto project = testProject(4, 3, rate);
   project.json = withGuitarRig(project.json);
@@ -186,43 +151,36 @@ void liveRigCase(bool rustEffects) {
   diff = edit(diff, R"("ampGain":18)", R"("ampGain":30)");
   auto rebuild = edit(diff, R"("revision":2)", R"("revision":3)");
   rebuild = edit(rebuild, R"("rackSlot5":5,"rackSlot6":6)", R"("rackSlot5":6,"rackSlot6":5)");
-  garak::RenderEngine cpp(rate, block);
   auto* rust = rustEngine(project, rate, block, false);
-  check(cpp.update(parse(project.json), project.assets).kind == garak::UpdateResult::Kind::Full, "live rig: c++ initial graph");
   check(garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(project.json.data()), project.json.size(), nullptr, 0) == GARAK_RS_APPLIED_FULL, "live rig: rust initial graph " + rustError(rust));
-  (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
+  garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
   const std::uint32_t total = rate * 3;
-  std::vector<float> a(std::size_t(total) * 2), b(std::size_t(total) * 2);
+  std::vector<float> b(std::size_t(total) * 2);
   int stage = 0;
   for (std::uint32_t done = 0; done < total; done += call) {
     if (stage == 0 && done >= rate / 2) {
-      const auto kind = cpp.update(parse(diff), project.assets).kind;
       const auto applied = garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(diff.data()), diff.size(), nullptr, 0);
-      check(kind == garak::UpdateResult::Kind::Diff && applied == GARAK_RS_APPLIED_DIFF, "live rig: knob is a diff", applied);
+      check(applied == GARAK_RS_APPLIED_DIFF, "live rig: knob is a diff", applied);
       ++stage;
     } else if (stage == 1 && done >= rate * 3 / 2) {
-      const auto kind = cpp.update(parse(rebuild), project.assets).kind;
       const auto applied = garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(rebuild.data()), rebuild.size(), nullptr, 0);
-      check(kind == garak::UpdateResult::Kind::Tracks && applied == GARAK_RS_APPLIED_TRACKS, "live rig: reorder rebuilds the track", applied);
+      check(applied == GARAK_RS_APPLIED_TRACKS, "live rig: reorder rebuilds the track", applied);
       ++stage;
     }
     const auto frames = std::min(call, total - done);
-    cpp.render(a.data() + std::size_t(done) * 2, nullptr, frames, 0);
     garak_rs_engine_render(rust, b.data() + std::size_t(done) * 2, frames);
-    cpp.collectRetired(); garak_rs_engine_collect(rust);
+    garak_rs_engine_collect(rust);
   }
   garak_rs_engine_destroy(rust);
-  const double d = residual(a, b);
-  std::printf("| live guitar rig (knob diff, rack reorder) | 4 | 3.0 s | %u Hz | %u | %s | — | %.2f | %s |\n", rate, block,
-              rustEffects ? "Rust" : "C++", dbfs(peak(a)), d == 0 ? "bit-identical" : (std::to_string(dbfs(d)).substr(0, 7) + " dBFS").c_str());
-  check(peak(a) > .05, "live rig: silent", peak(a));
-  check(dbfs(d) <= -90, std::string("live rig: residual (") + (rustEffects ? "Rust" : "C++") + " effects)", dbfs(d));
+  const auto r = goldens.check("live guitar rig", b);
+  std::printf("| live guitar rig (knob diff, rack reorder) | 4 | 3.0 s | %u Hz | %u | — | %.2f | %s |\n", rate, block, dbfs(peak(b)), r.verdict().c_str());
+  check(peak(b) > .05, "live rig: silent", peak(b));
+  check(r.ok, r.message, r.residual);
 }
 
 // Live engines (transport, no offline tail): the project is set and played, then mid-play edits
 // go through RenderEngine::update and garak_rs_engine_set (both classify them as diffs/rebuilds).
-void liveCase(bool rustEffects) {
-  garak::dsp::setEffectBackend("all", rustEffects ? garak::dsp::EffectBackend::Rust : garak::dsp::EffectBackend::Cpp);
+void liveCase() {
   constexpr std::uint32_t rate = 48000, block = 128, call = 256;
   const auto project = testProject(8, 3, rate);
   // Mix + send + live insert parameter + master gain, then a track rebuild (a window removed).
@@ -233,62 +191,52 @@ void liveCase(bool rustEffects) {
   diff = edit(diff, R"("ratio":5)", R"("ratio":9)");
   auto rebuild = edit(diff, R"("revision":2)", R"("revision":3)");
   rebuild = edit(rebuild, R"("gain":1.3)", R"("gain":0.4)");  // track 0's third window
-  garak::RenderEngine cpp(rate, block);
   auto* rust = rustEngine(project, rate, block, false);
-  check(cpp.update(parse(project.json), project.assets).kind == garak::UpdateResult::Kind::Full, "live: c++ initial graph");
   check(garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(project.json.data()), project.json.size(), nullptr, 0) == GARAK_RS_APPLIED_FULL, "live: rust initial graph " + rustError(rust));
-  (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
+  garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
   const std::uint32_t total = rate * 3;
-  std::vector<float> a(std::size_t(total) * 2), b(std::size_t(total) * 2);
+  std::vector<float> b(std::size_t(total) * 2);
   int stage = 0;
   for (std::uint32_t done = 0; done < total; done += call) {
     if (stage == 0 && done >= rate / 2) {
-      const auto kind = cpp.update(parse(diff), project.assets).kind;
       const auto applied = garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(diff.data()), diff.size(), nullptr, 0);
-      check(kind == garak::UpdateResult::Kind::Diff && applied == GARAK_RS_APPLIED_DIFF, "live: diff classification", applied);
+      check(applied == GARAK_RS_APPLIED_DIFF, "live: diff classification", applied);
       ++stage;
     } else if (stage == 1 && done >= rate * 3 / 2) {
-      // The rebuilt track's window gain changes: both engines replace that one track.
-      auto next = parse(rebuild);
-      const auto kind = cpp.update(next, project.assets).kind;
+      // The rebuilt track's window gain changes: the engine replaces that one track.
       const auto applied = garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(rebuild.data()), rebuild.size(), nullptr, 0);
-      check(kind == garak::UpdateResult::Kind::Tracks && applied == GARAK_RS_APPLIED_TRACKS, "live: track rebuild classification", applied);
+      check(applied == GARAK_RS_APPLIED_TRACKS && garak_rs_engine_replaced_tracks(rust) == 1, "live: track rebuild classification", applied);
       ++stage;
     }
     const auto frames = std::min(call, total - done);
-    cpp.render(a.data() + std::size_t(done) * 2, nullptr, frames, 0);
     garak_rs_engine_render(rust, b.data() + std::size_t(done) * 2, frames);
-    cpp.collectRetired(); garak_rs_engine_collect(rust);
+    garak_rs_engine_collect(rust);
   }
   garak_rs_engine_destroy(rust);
-  const double d = residual(a, b);
-  std::printf("| live diffs (mix, send, param, master, rebuild) | 8 | 3.0 s | %u Hz | %u | %s | — | %.2f | %s |\n", rate, block,
-              rustEffects ? "Rust" : "C++", dbfs(peak(a)), d == 0 ? "bit-identical" : (std::to_string(dbfs(d)).substr(0, 7) + " dBFS").c_str());
-  check(peak(a) > .05, "live: silent", peak(a));
-  check(dbfs(d) <= -90, std::string("live diffs: residual (") + (rustEffects ? "Rust" : "C++") + " effects)", dbfs(d));
+  const auto r = goldens.check("live diffs", b);
+  std::printf("| live diffs (mix, send, param, master, rebuild) | 8 | 3.0 s | %u Hz | %u | — | %.2f | %s |\n", rate, block, dbfs(peak(b)), r.verdict().c_str());
+  check(peak(b) > .05, "live: silent", peak(b));
+  check(r.ok, r.message, r.residual);
 }
 } // namespace
 
 int main() {
-  pinCppReferenceEngine();
-  std::printf("| Case | Tracks | Length | Rate | Block | Effects in C++ engine | Latency C++ / Rust | Peak dBFS | Residual |\n");
-  std::printf("|---|---|---|---|---|---|---|---|---|\n");
+  std::printf("| Case | Tracks | Length | Rate | Block | Latency | Peak dBFS | vs golden (C++ engine) |\n");
+  std::printf("|---|---|---|---|---|---|---|---|\n");
   try {
-    for (const bool rustEffects : {false, true}) {
-      offlineCase("offline export", 8, 4, 48000, 4096, rustEffects);
-      offlineCase("offline export", 8, 4, 48000, 128, rustEffects);
-      offlineCase("offline export", 6, 3, 44100, 4096, rustEffects);
-      offlineCase("offline export", 1, 1, 48000, 512, rustEffects);
-      liveCase(rustEffects);
-      offlineCase("offline export + guitar rig", 8, 4, 48000, 4096, rustEffects, true);
-      offlineCase("offline export + guitar rig", 6, 3, 44100, 128, rustEffects, true);
-      liveRigCase(rustEffects);
-    }
+    check(goldens.size() > 0, "no golden references (native/tests/golden/rust-engine-parity.golden)");
+    offlineCase("offline export", 8, 4, 48000, 4096);
+    offlineCase("offline export", 8, 4, 48000, 128);
+    offlineCase("offline export", 6, 3, 44100, 4096);
+    offlineCase("offline export", 1, 1, 48000, 512);
+    liveCase();
+    offlineCase("offline export + guitar rig", 8, 4, 48000, 4096, true);
+    offlineCase("offline export + guitar rig", 6, 3, 44100, 128, true);
+    liveRigCase();
   } catch (const std::exception& error) {
     check(false, std::string("exception: ") + error.what());
   }
-  garak::dsp::setEffectBackend("all", garak::dsp::EffectBackend::Cpp);
   if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
-  std::printf("\nRender-engine parity: all cases within -90 dBFS.\n");
+  std::printf("\nRender-engine parity: every case matches its golden reference.\n");
   return 0;
 }

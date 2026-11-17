@@ -2,24 +2,27 @@ import { instrumentDef } from '../core/instruments'
 import { audibleTrackIds, clipOccurrences, playbackNotes } from '../core/playback'
 import type { AudioEngine, InstrumentId, Project, Track, VintageBridge } from '../core/types'
 
-export const WAVETABLE_HOST_REQUIRED = 'IEUM WAVE의 소리를 들으려면 네이티브 오디오 엔진 연결이 필요합니다. 음색 편집과 프로젝트 저장은 사용할 수 있습니다.'
+/** IEUM WAVE renders only in the Rust engine (docs/IEUM_WAVE.md): the desktop host's, or garak-engine.wasm in the browser. */
+export const WAVETABLE_HOST_REQUIRED = 'IEUM WAVE의 소리를 들으려면 Rust 오디오 엔진(데스크톱 네이티브 엔진 또는 브라우저의 WASM 엔진)이 필요합니다. 음색 편집과 프로젝트 저장은 사용할 수 있습니다.'
 
 export const VINTAGE_ENGINE_REQUIRED = '빈티지 악기(옥구슬 EP · 한밤 106)는 Rust 오디오 코어가 있어야 소리가 납니다. 음색 편집과 프로젝트 저장은 사용할 수 있습니다.'
 
 /** Why `instrument` cannot play on `engine` (for tooltips); empty when it can. */
 export function instrumentUnavailableReason(engine: AudioEngine, instrument: InstrumentId): string {
   if (canPlayInstrument(engine, instrument)) return ''
-  return instrumentDef(instrument).kind === 'vintage' ? engine.vintage?.reason() || VINTAGE_ENGINE_REQUIRED : WAVETABLE_HOST_REQUIRED
+  return instrumentDef(instrument).kind === 'vintage' ? engine.vintage?.reason() || VINTAGE_ENGINE_REQUIRED : engine.wavetable?.getStatus().reason || WAVETABLE_HOST_REQUIRED
 }
 
-/** Native availability is an explicit host capability, never inferred from Electron alone. */
+/**
+ * IEUM WAVE availability is an explicit engine capability (the desktop host's handshake, or the browser engine's
+ * garak-engine.wasm), never inferred from Electron or a browser alone.
+ */
 export function canPlayInstrument(engine: AudioEngine, instrument: InstrumentId): boolean {
   const kind = instrumentDef(instrument).kind
   // Vintage instruments exist only in the Rust core: the engine says whether it has it.
   if (kind === 'vintage') return engine.vintage?.available() === true
   if (kind !== 'native') return true
-  return instrument === 'wavetable' && engine.kind === 'native'
-    && engine.wavetable?.protocolVersion === 1 && engine.wavetable.getStatus().available === true
+  return instrument === 'wavetable' && engine.wavetable?.protocolVersion === 1 && engine.wavetable.getStatus().available === true
 }
 
 function hasPlayableNotes(track: Track, projectEnd: number): boolean {
@@ -62,8 +65,11 @@ export function assertNativeInstrumentsSupported(project: Project, sourceAvailab
   throw new Error(`${reason} 대상 트랙: ${tracks.slice(0, 4).join(', ')}${tracks.length > 4 ? '…' : ''}`)
 }
 
-/** `vintage`: the browser engine's Rust/WASM availability (the vintage instruments have no TS fallback). */
-const webSource = (vintage?: VintageBridge) => (track: Track) => instrumentDef(track.instrument).kind === 'vintage' && vintage?.available() === true
+/**
+ * `vintage`: the browser engine's availability (garak-engine.wasm). The vintage instruments and IEUM WAVE exist only
+ * in that module.
+ */
+const webSource = (vintage?: VintageBridge) => (track: Track) => (instrumentDef(track.instrument).kind === 'vintage' || track.instrument === 'wavetable') && vintage?.available() === true
 
 export function unsupportedWebAudioInstruments(project: Project, vintage?: VintageBridge): string[] {
   return unsupportedNativeInstruments(project, webSource(vintage))

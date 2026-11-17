@@ -1,10 +1,10 @@
 /**
  * Display math for the space / modulation / drive 시김새 editors. Everything here mirrors the DSP in
- * src/devices/effects (kernels.ts, reverb.ts, drive.ts) so the pictures tell the truth about the
- * sound. Pure functions, no DOM: unit-tested in math.test.ts.
+ * engine (rust/garak-dsp; the parameter catalogs in src/devices/effects) so the pictures tell the truth
+ * about the sound. Pure functions, no DOM: unit-tested in math.test.ts.
  */
 import { DELAY_TIME_OPTIONS, LFO_SYNC_OPTIONS } from '../../../devices/effects/sigimsaeDefs'
-import { DELAY_MAX_SECONDS } from '../../../devices/effects/kernels'
+import { DELAY_MAX_SECONDS } from '../../../devices/effects/sigimsae'
 import { REVERB_SPACES } from '../../../devices/effects/reverb'
 
 export type Read = (id: string) => number
@@ -14,7 +14,7 @@ const TAU = Math.PI * 2
 
 /* ------------------------------------------------------------------ delay */
 
-/** Seconds between repeats; identical to kernels.ts delaySeconds(). */
+/** Seconds between repeats; identical to sigimsae.ts delaySeconds(). */
 export function delayTime(p: Read, bpm: number): number {
   return Math.min(DELAY_MAX_SECONDS, p('sync') >= 0.5 ? p('time') * 60 / bpm : p('ms') * 0.001)
 }

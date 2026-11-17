@@ -1,5 +1,5 @@
-//! Delay lines over caller-provided storage (no allocation): `Ring` (sigimsae_effects.inc `Ring`,
-//! kernels.ts `Ring`) and `DelayLine` (dsp.cpp `DelayLine`, stereo with O(1) reset).
+//! Delay lines over caller-provided storage (no allocation): `Ring` (the former C++ 시김새 effects (0.3.2) `Ring`,
+//! the former TS kernels (0.3.2) `Ring`) and `DelayLine` (the former C++ DSP (0.3.2) `DelayLine`, stereo with O(1) reset).
 
 use crate::{math, std_clamp};
 
@@ -122,7 +122,7 @@ impl<'a> Ring<'a> {
 const STAMP_LIMIT: u32 = 1 << 24;
 
 /// Interleaved stereo delay line with fractional reads. `reset` is O(1): frames written before it
-/// read as silence (generation stamps), exactly as dsp.cpp `DelayLine`.
+/// read as silence (generation stamps), exactly as the former C++ DSP (0.3.2) `DelayLine`.
 #[derive(Debug)]
 pub struct DelayLine<'a> {
     data: &'a mut [f32],

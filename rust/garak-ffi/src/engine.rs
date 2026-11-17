@@ -3,8 +3,8 @@
 //!
 //! Threads: `garak_rs_engine_render` is the audio half (no allocation, no locks); every other
 //! `garak_rs_engine_*` function is the control half and must be called from one control thread at
-//! a time. The two halves may run concurrently on different threads. Nothing here is used by the
-//! app yet: the C++ `RenderEngine` stays the default (stage 4 builds parity first).
+//! a time. The two halves may run concurrently on different threads. The desktop host's C++
+//! `RenderEngine` (native/src/engine.cpp) is the shell around this engine (docs/RUST_ENGINE.md 10).
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -12,7 +12,9 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
 use garak_engine::testkit::{TestProject, project};
-use garak_engine::{Ahead, Applied, Controller, EngineConfig, PcmAsset, Renderer, engine};
+use garak_engine::{
+    Ahead, AnalysisTap, Applied, Controller, EngineConfig, MAX_ANALYSIS, PcmAsset, Renderer, engine,
+};
 
 pub const GARAK_RS_ENGINE_ERROR: i32 = -1;
 
@@ -256,6 +258,63 @@ pub unsafe extern "C" fn garak_rs_engine_graph_info(
     }
 }
 
+/// Control: the last submitted graph's plug-in delay (frames), its senders' delay (frames, without the return
+/// tracks' extra delay), its tail (seconds, with the render floor) and its longest non-return track tail (seconds).
+///
+/// # Safety
+/// `e` is null or live; the outputs are null or valid for one write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_graph_details(
+    e: *mut GarakRsEngine,
+    latency: *mut u32,
+    sender_latency: *mut u32,
+    tail: *mut f64,
+    track_tail: *mut f64,
+) {
+    // SAFETY: caller contract.
+    let Some((c, _)) = (unsafe { control(e) }) else { return };
+    let (l, s, t) = c.graph_info().unwrap_or((0, 0, 0.0));
+    let tt = c.track_tail();
+    // SAFETY: caller contract.
+    unsafe {
+        if let Some(out) = latency.as_mut() {
+            *out = l;
+        }
+        if let Some(out) = sender_latency.as_mut() {
+            *out = s;
+        }
+        if let Some(out) = tail.as_mut() {
+            *out = t;
+        }
+        if let Some(out) = track_tail.as_mut() {
+            *out = tt;
+        }
+    }
+}
+
+/// Audio thread: the running graph's plug-in delay and its senders' delay (frames; 0 without a graph).
+///
+/// # Safety
+/// As `garak_rs_engine_render`; the outputs are null or valid for one write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_active_latency(
+    e: *mut GarakRsEngine,
+    latency: *mut u32,
+    sender_latency: *mut u32,
+) {
+    // SAFETY: caller contract: the render half is only touched by the audio thread.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &*h.render.get() }) else { return };
+    // SAFETY: caller contract.
+    unsafe {
+        if let Some(out) = latency.as_mut() {
+            *out = r.latency();
+        }
+        if let Some(out) = sender_latency.as_mut() {
+            *out = r.sender_latency();
+        }
+    }
+}
+
 /// Last applied command ticket and transport frame, as published by the renderer.
 ///
 /// # Safety
@@ -352,6 +411,18 @@ pub unsafe extern "C" fn garak_rs_engine_render_block(
     r.render_block(out, position, playing != 0, allowed, peaks, parallel.as_ref());
 }
 
+/// Audio thread (host shell): 1 when the next graph of the same project could swap in now (nothing
+/// deferred, no IEUM WAVE table crossfade running), else 0. Call after consuming the allowed commands.
+///
+/// # Safety
+/// As `garak_rs_engine_render`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_settled(e: *mut GarakRsEngine) -> i32 {
+    // SAFETY: caller contract: the render half is only touched by the audio thread.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return 1 };
+    i32::from(r.host_settled())
+}
+
 /// The shell's block (garak_engine.h `GarakRsBlock`).
 #[repr(C)]
 #[derive(Debug)]
@@ -359,8 +430,8 @@ pub struct GarakRsBlock {
     pub position: i64,
     pub playing: i32,
     pub allowed: u64,
-    pub master_gain: f32,
-    pub target_master_gain: f32,
+    /// Nonzero: apply the master bus (gain + processor; skipped offline with the master bypass).
+    pub master: i32,
     pub monitor: [u64; 4],
     /// Null: host nodes render silence (sources) or pass through (inserts).
     pub nodes: *const garak_engine::HostCallbacks,
@@ -370,8 +441,7 @@ pub struct GarakRsBlock {
     pub ahead_count: u32,
 }
 
-/// Audio thread: `garak_rs_engine_render_block` with the shell's master gain (master-resampling routes),
-/// monitored tracks (device input through `nodes->input`, route inputs) and the host's VST3 / IEUM WAVE
+/// Audio thread: `garak_rs_engine_render_block` with the master bus (`block->master`), monitored tracks (device input through `nodes->input`, route inputs) and the host's VST3 / IEUM WAVE
 /// callbacks (docs/RUST_ENGINE.md 4).
 ///
 /// # Safety
@@ -414,8 +484,7 @@ pub unsafe extern "C" fn garak_rs_engine_render_host(
         position: b.position,
         playing: b.playing != 0,
         allowed: b.allowed,
-        master_gain: b.master_gain,
-        target_master_gain: b.target_master_gain,
+        master: b.master != 0,
         monitor: b.monitor,
         host: nodes,
         ahead,
@@ -424,10 +493,11 @@ pub unsafe extern "C" fn garak_rs_engine_render_host(
     r.render_host(out, &info, peaks, parallel.as_ref());
 }
 
-/// Audio thread, at a block boundary: a live event for track `track` that the shell applies itself (its live
-/// MIDI ring and live commands). `kind`: 0 note on (`a` = note id), 1 note off (`a` = note id), 2 all notes off,
-/// 3 controller (`pitch` = controller number, `a` = value), 4 preview (`a` = frames). Returns 1 when a built-in
-/// instrument played it, 0 when no track did, -1 for an invalid event.
+/// Audio thread, between blocks: a live event for track `track` that the shell applies itself (its live MIDI
+/// ring and live commands) at the start of the track's next block. `kind`: 0 note on (`a` = note id), 1 note off
+/// (`a` = note id), 2 all notes off, 3 controller (`pitch` = controller number, `a` = value), 4 preview (`a` =
+/// frames). Returns 1 when a track takes it (a built-in instrument, or a host node through `nodes->live`), 0 when
+/// none does, -1 for an invalid event.
 ///
 /// # Safety
 /// As `garak_rs_engine_render`; the track is not rendering ahead.
@@ -440,21 +510,33 @@ pub unsafe extern "C" fn garak_rs_engine_live(
     a: i32,
     velocity: f32,
 ) -> i32 {
-    use garak_engine::LiveEvent;
+    // SAFETY: caller contract.
+    unsafe { garak_rs_engine_live_at(e, track, kind, pitch, a, velocity, 0) }
+}
+
+/// [`garak_rs_engine_live`] `offset` frames into the track's next block (the device MIDI's sample offset; an
+/// offset past that block lands in a later one, at the same distance from this block's start; at most
+/// `GARAK_RS_MAX_LIVE_OFFSET`). Built-in instruments start the event on that exact sample; host nodes get it with
+/// that offset through `nodes->live` (VST3 `sampleOffset`).
+///
+/// # Safety
+/// As `garak_rs_engine_render`; the track is not rendering ahead.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_live_at(
+    e: *mut GarakRsEngine,
+    track: u32,
+    kind: u32,
+    pitch: i32,
+    a: i32,
+    velocity: f32,
+    offset: u32,
+) -> i32 {
     let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return -1 };
-    let note = u8::try_from(pitch).unwrap_or(u8::MAX);
-    let event = match kind {
-        0 => LiveEvent::NoteOn { pitch: note, velocity, id: a },
-        1 => LiveEvent::NoteOff { pitch: note, id: a },
-        2 => LiveEvent::AllNotesOff,
-        3 => LiveEvent::Control { controller: u16::try_from(pitch).unwrap_or(u16::MAX), value: a },
-        4 => LiveEvent::Preview { pitch: note, velocity, frames: u32::try_from(a).unwrap_or(0) },
-        _ => return -1,
-    };
-    if !event.is_valid() {
+    let Some(event) = garak_engine::LiveEvent::decode(kind, pitch, a, velocity) else { return -1 };
+    if !event.is_valid() || offset > garak_engine::MAX_LIVE_OFFSET {
         return -1;
     }
-    i32::from(r.host_live(track as usize, event))
+    i32::from(r.host_live(track as usize, event, offset))
 }
 
 /// Audio thread, after `garak_rs_engine_render_host`: the last block's input of routed track `track`
@@ -565,6 +647,161 @@ pub unsafe extern "C" fn garak_rs_engine_take_dynamics(
     // SAFETY: caller contract.
     let out = unsafe { core::slice::from_raw_parts_mut(out, capacity as usize) };
     r.take_dynamics(out) as u32
+}
+
+/// Control: the master gain the master bus glides to (C++ `setMasterGain`). Returns the ticket or -1.
+///
+/// # Safety
+/// `e` is null or live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_set_master_gain(e: *mut GarakRsEngine, gain: f32) -> i64 {
+    // SAFETY: caller contract.
+    let Some((c, error)) = (unsafe { control(e) }) else { return i64::from(GARAK_RS_ENGINE_ERROR) };
+    ticket(c.set_master_gain(gain), error)
+}
+
+/// Control: offline renders skip the master bus (C++ `setMasterBypass`: stems, freeze). Returns the ticket or -1.
+///
+/// # Safety
+/// `e` is null or live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_set_master_bypass(e: *mut GarakRsEngine, bypass: i32) -> i64 {
+    // SAFETY: caller contract.
+    let Some((c, error)) = (unsafe { control(e) }) else { return i64::from(GARAK_RS_ENGINE_ERROR) };
+    ticket(c.set_master_bypass(bypass != 0), error)
+}
+
+/// Control: the analysis taps (the editors' spectrum, stereo scope and guitar-rig tuner; at most
+/// `GARAK_RS_MAX_ANALYSIS`): `taps` holds `count` triples (graph track, insert plan index, tuner 0/1). Their
+/// signals are copied out every block (`garak_rs_engine_analysis_output`); `count == 0` turns them off.
+/// Returns the ticket or -1.
+///
+/// # Safety
+/// `e` is null or live; `taps` is valid for `3 * count` values (or null with `count == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_set_analysis(
+    e: *mut GarakRsEngine,
+    taps: *const i32,
+    count: u32,
+) -> i64 {
+    // SAFETY: caller contract.
+    let Some((c, error)) = (unsafe { control(e) }) else { return i64::from(GARAK_RS_ENGINE_ERROR) };
+    let n = count as usize;
+    if n > MAX_ANALYSIS || (n > 0 && taps.is_null()) {
+        error.clear();
+        error.push_str("Too many analysis taps");
+        return i64::from(GARAK_RS_ENGINE_ERROR);
+    }
+    let mut list = [AnalysisTap::OFF; MAX_ANALYSIS];
+    if n > 0 {
+        // SAFETY: caller contract.
+        let raw = unsafe { core::slice::from_raw_parts(taps, n * 3) };
+        for (slot, &[track, insert, tuner]) in list.iter_mut().zip(raw.as_chunks::<3>().0) {
+            *slot = AnalysisTap { track, insert, tuner: tuner != 0 };
+        }
+    }
+    ticket(c.set_analysis(list.get(..n).unwrap_or(&[])), error)
+}
+
+/// Audio thread, after `garak_rs_engine_render_host`: the analysis taps of that call, `GARAK_RS_MAX_ANALYSIS`
+/// slots of `max_block` interleaved stereo frames (the frames the call rendered, from the slot start; silence
+/// for a tap that found no track). Null for a null engine.
+///
+/// # Safety
+/// As `garak_rs_engine_render`. The pointer is valid until the engine is destroyed; its contents change with
+/// the next render.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_analysis_output(e: *mut GarakRsEngine) -> *const f32 {
+    // SAFETY: caller contract.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &*h.render.get() }) else {
+        return core::ptr::null();
+    };
+    r.analysis_output().as_ptr()
+}
+
+/// Control: the metronome (C++ `setMetronome`). `strokes`: 0 keeps the current strokes, 1 replaces them with
+/// `levels` (3 mono strokes of `lengths` samples at `sample_rate`, which must be the engine rate), 2 drops
+/// them (silence). Returns the ticket or -1.
+///
+/// # Safety
+/// `e` is null or live; with `strokes == 1`, `levels` and `lengths` hold 3 entries and each level is valid for
+/// its length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_set_metronome(
+    e: *mut GarakRsEngine,
+    strokes: u32,
+    sample_rate: u32,
+    levels: *const *const f32,
+    lengths: *const usize,
+    on: i32,
+    gain: f32,
+) -> i64 {
+    // SAFETY: caller contract.
+    let Some((c, error)) = (unsafe { control(e) }) else { return i64::from(GARAK_RS_ENGINE_ERROR) };
+    let result = match strokes {
+        0 => c.set_metronome(None, on != 0, gain),
+        1 if !levels.is_null() && !lengths.is_null() => {
+            let mut set = garak_engine::metronome::Clicks { sample_rate, levels: Default::default() };
+            for (i, level) in set.levels.iter_mut().enumerate() {
+                // SAFETY: caller contract (3 entries, each valid for its length).
+                let (p, n) = unsafe { (*levels.add(i), *lengths.add(i)) };
+                level.extend_from_slice(unsafe { bytes_of(p, n) });
+            }
+            c.set_metronome(Some(set), on != 0, gain)
+        }
+        2 => c.clear_metronome(on != 0, gain),
+        _ => Err(garak_engine::Error::new("Invalid metronome strokes")),
+    };
+    ticket(result, error)
+}
+
+/// # Safety
+/// `p` is null or valid for `n` reads.
+unsafe fn bytes_of<'a>(p: *const f32, n: usize) -> &'a [f32] {
+    if p.is_null() || n == 0 {
+        &[]
+    } else {
+        // SAFETY: forwarded caller contract.
+        unsafe { core::slice::from_raw_parts(p, n) }
+    }
+}
+
+/// Control: tracks the last `garak_rs_engine_set` rebuilt and swapped in (C++ `UpdateResult::replacedTracks`).
+///
+/// # Safety
+/// `e` is null or live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_replaced_tracks(e: *mut GarakRsEngine) -> u32 {
+    // SAFETY: caller contract.
+    unsafe { control(e) }.map_or(0, |(c, _)| c.replaced_tracks())
+}
+
+/// Audio thread, after `garak_rs_engine_render_host` and the shell's meters and recording: the metronome and
+/// count-in clicks of the block, added to `out` (`frames` stereo frames; monitor only, nothing offline).
+/// `position` / `playing`: the shell's transport for the block; `counting_in`: a count-in of `length` frames
+/// with `elapsed` frames already clicked.
+///
+/// # Safety
+/// As `garak_rs_engine_render`; `out` holds `2 * frames` floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_clicks(
+    e: *mut GarakRsEngine,
+    out: *mut f32,
+    frames: u32,
+    position: i64,
+    playing: i32,
+    counting_in: i32,
+    elapsed: i64,
+    length: i64,
+) {
+    // SAFETY: caller contract: the render half is only touched by the audio thread.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return };
+    if out.is_null() || frames == 0 {
+        return;
+    }
+    // SAFETY: caller contract.
+    let out = unsafe { core::slice::from_raw_parts_mut(out, frames as usize * 2) };
+    r.host_clicks(out, frames, position, playing != 0, counting_in != 0, elapsed, length);
 }
 
 /// Audio thread: the host shell's transport reset (`effects != 0` also clears tails).

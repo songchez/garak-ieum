@@ -122,7 +122,7 @@ pub extern "C" fn garak_rs_rig_reverb_scratch_len(sample_rate: f64) -> usize {
     if valid_rate(sample_rate) { guitar::reverb_ir_scratch_len(sample_rate) } else { 0 }
 }
 
-/// The plate's impulse for `decay` (dsp.cpp `RigReverb`: the hall impulse blended by Decay).
+/// The plate's impulse for `decay` (the former C++ DSP (0.3.2) `RigReverb`: the hall impulse blended by Decay).
 /// Returns 1 on success, 0 when an argument or buffer is invalid.
 ///
 /// # Safety

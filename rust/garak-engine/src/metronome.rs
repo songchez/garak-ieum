@@ -1,4 +1,4 @@
-//! Metronome and count-in (line-by-line port of native/src/metronome.hpp and native/include/garak/meter.hpp;
+//! Metronome and count-in (line-by-line port of the former C++ metronome (0.3.2) and native/include/garak/meter.hpp;
 //! docs/METRONOME.md, docs/METER_MAP.md). Monitor-only clicks: one mono stroke per level (0 bar downbeat,
 //! 1 compound group start, 2 other pulses), synthesized by the UI (gugak or classic sounds) and handed over as
 //! PCM; this module only schedules and mixes them. The grid follows the tempo map and, across time-signature

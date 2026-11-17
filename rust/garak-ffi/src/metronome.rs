@@ -1,5 +1,5 @@
 //! C ABI of the metronome port (`garak_engine::metronome`), for the parity harness against
-//! native/src/metronome.hpp (native/tests/rust_engine_host_test.cpp). Header: include/garak_engine.h.
+//! the former C++ metronome (0.3.2) (native/tests/rust_engine_host_test.cpp). Header: include/garak_engine.h.
 
 use alloc::vec::Vec;
 

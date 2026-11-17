@@ -1,4 +1,4 @@
-/// <reference path="../../devices/guitar-rig/worklet-assets.d.ts" />
-// Loaded only when the Rust engine flag is on and an audio context is prepared.
+/// <reference path="../worklet-assets.d.ts" />
+// Loaded once per audio context, when the engine worklet node is created.
 import processorUrl from './engine.worklet.ts?worker&url'
 export default processorUrl

@@ -1,4 +1,4 @@
-//! IEUM WAVE wavetables (native/devices/wavetable-synth/src/wavetable.cpp): band-limited mip
+//! IEUM WAVE wavetables (the former C++ IEUM WAVE host (0.3.2)): band-limited mip
 //! levels made once on the control thread with the original radix-2 FFT (same operation order as
 //! `std::complex<double>`), mip selection, and the cubic table reader of the audio thread.
 
@@ -20,7 +20,7 @@ pub struct MipSelection {
     pub blend: f32,
 }
 
-/// wavetable.cpp `selectMip`.
+/// the former C++ IEUM WAVE host (0.3.2) `selectMip`.
 pub fn select_mip(frequency: f64, sample_rate: f64) -> MipSelection {
     let f = frequency.abs() / sample_rate;
     let limit = |l: u32| f64::from(HARMONIC_LIMITS.get(l as usize).copied().unwrap_or(1));
@@ -105,7 +105,7 @@ pub struct FrameView {
     pub mix: f32,
 }
 
-/// One bank: frames x mip levels of 4096 + 3 guard samples (wavetable.hpp `PreparedWavetable`).
+/// One bank: frames x mip levels of 4096 + 3 guard samples (the former C++ IEUM WAVE host (0.3.2) `PreparedWavetable`).
 #[derive(Clone, Debug, Default)]
 pub struct PreparedWavetable {
     frames: usize,
@@ -117,7 +117,7 @@ impl PreparedWavetable {
         self.frames == 0
     }
 
-    /// wavetable.cpp `PreparedWavetable::prepare`: DC removal, one peak gain for the bank, then
+    /// the former C++ IEUM WAVE host (0.3.2) `PreparedWavetable::prepare`: DC removal, one peak gain for the bank, then
     /// band-limited mips by zero-padded inverse FFT.
     pub fn prepare(frames: &[f32], frame_count: usize) -> Result<Self, Error> {
         const SIZE: usize = g::WAVETABLE_SIZE;
@@ -254,7 +254,7 @@ pub struct PreparedWavetableSet {
 }
 
 impl PreparedWavetableSet {
-    /// The factory banks from their harmonic tables, and the sine / triangle sub (wavetable.cpp).
+    /// The factory banks from their harmonic tables, and the sine / triangle sub (the former C++ IEUM WAVE host (0.3.2)).
     #[inline(never)]
     pub fn new() -> Result<Self, Error> {
         let mut banks: [PreparedWavetable; 8] = Default::default();

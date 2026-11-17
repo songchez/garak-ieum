@@ -9,9 +9,9 @@
 
 | 내용 | 파일 |
 | --- | --- |
-| 모듈 파라미터(웹) | `src/devices/effects/*.ts`, `src/devices/effects/sigimsaeDefs.ts` |
-| 샘플 처리 커널 (데스크톱·웹 공통) | `rust/garak-dsp/src/fx/` (`no_std`). 데스크톱은 Rust 엔진이 `garak-ffi`로, 웹은 AudioWorklet의 `garak-engine.wasm`(Web Audio 대체 경로에서는 `garak-dsp.wasm` 워클릿)으로 씁니다. [RUST](RUST.md) |
-| 이전 커널 (0.3.2의 숨은 대체 경로, 다음 패치에서 삭제 예정) | 웹 `src/devices/effects/kernels.ts`·`sigimsae.worklet.ts`(`garak.rustDsp=0`), 네이티브 `native/src/dsp.cpp`·`native/src/sigimsae_effects.inc`(`GARAK_RUST_ENGINE=0` + `GARAK_RUST_EFFECTS=none`). Rust 커널과 클래스 단위로 맞춤 |
+| 모듈 파라미터(웹) | `src/devices/effects/*.ts`(카탈로그 정의와 내보내기 꼬리 추정만), `src/devices/effects/sigimsaeDefs.ts` |
+| 샘플 처리 커널 (데스크톱·웹 공통) | `rust/garak-dsp/src/fx/` (`no_std`). 데스크톱은 Rust 엔진이 `garak-ffi`로, 웹은 AudioWorklet의 `garak-engine.wasm`으로 씁니다. [RUST](RUST.md) |
+| 이전 커널 | 웹 `src/devices/effects/kernels.ts`·`sigimsae.worklet.ts`와 네이티브 C++ 커널(`dsp.cpp`·`sigimsae_effects.inc`)은 0.3.3에서 삭제했습니다. C++ 커널의 출력은 `native/tests/golden/rust-kernels.golden`의 골든 레퍼런스로 남아 Rust 커널을 검사합니다 |
 | 라이브러리 변형 | `src/core/sigimsaeVariants.ts` |
 
 이름 규칙: 한국적인 이름과 장난스러운 서양식 오마주 이름을 섞되 실제 상표·모델명은 쓰지 않습니다.
@@ -40,9 +40,9 @@
 공통 동작
 
 - 바이패스(전원 끔)는 엔진이 그 시김새를 아예 건너뛰므로 비트 단위로 원음과 같습니다(네이티브 테스트로 확인).
-- 노브를 돌리면 값이 약 12 ms에 걸쳐 부드럽게 바뀝니다(웹 워클릿과 네이티브 동일).
+- 노브를 돌리면 값이 약 12 ms에 걸쳐 부드럽게 바뀝니다(웹과 네이티브 동일).
 - 딜레이·리버브·플랜저·게이트·리미터는 내보내기 꼬리 길이를 계산해 잔향이 잘리지 않게 합니다.
-- 웹 엔진에서 딜레이와 새 모듈 9종은 하나의 오디오 워클릿(`garak-sigimsae-v1`)으로 처리하고, 처음 만들 때 저장된 값을 함께 넘겨 오프라인 내보내기도 첫 샘플부터 같은 설정으로 시작합니다.
+- 웹 엔진에서는 모든 시김새가 통합 엔진 워크릿(`garak-engine.wasm`) 안에서 돌고, 오프라인 내보내기도 Worker의 같은 엔진이 첫 샘플부터 저장된 설정으로 렌더합니다(0.3.3에서 이전 워클릿 `garak-sigimsae-v1` 삭제).
 - 저장 형식: 새 모듈 id와 기기 이름(`name`, 선택)은 추가 필드라 스키마 버전을 올리지 않았습니다. 예전 프로젝트의 딜레이·리버브는 새 파라미터가 기본값으로 채워져 그대로 열립니다. 새 모듈이나 새 딜레이 박자(셋잇단·1/16. 등)가 들어간 파일을 이전 버전 앱에서 열면 "unknown effect type"/옵션 오류로 열기를 거부합니다(소리가 조용히 바뀌지 않음). 이전 앱은 모르는 파라미터(로우컷·테이프·공간 등)와 이름은 무시하고 엽니다.
 
 ## 라이브러리 변형
@@ -155,6 +155,6 @@
 
 ## 테스트
 
-- Rust 커널: `pnpm rust:test`(단위 테스트), `native/tests/rust_parity_test.cpp`(C++ 커널 ↔ Rust, `ctest -R native-rust-parity`), `src/audio/rust/parity.test.ts`·`effectsParity.test.ts`(WASM ↔ TS)
-- 웹 커널: `src/devices/effects/kernels.test.ts` (리미터 실링, 게이트 무음, 유틸리티 모노·위상, 극단값 안정성, 핑퐁·템포, 리버브 IR, 변형 유효성·검색)
+- Rust 커널: `pnpm rust:test`(단위 테스트), `native/tests/rust_parity_test.cpp`(C++ 커널 ↔ Rust, `ctest -R native-rust-parity`), `src/audio/rust/effects.test.ts`(내장 이펙트 전부·카탈로그 전체를 `garak-engine.wasm`으로 128/4096 블록 렌더: 유한·가청). WASM ↔ TS 패리티(`parity.test.ts`·`effectsParity.test.ts`)는 TS 커널과 함께 0.3.3에서 삭제
+- 웹 카탈로그: `src/devices/effects/registry.test.ts` (카탈로그, `renderTail.ts` 꼬리 추정). TS 커널 테스트 `kernels.test.ts`는 0.3.3에서 삭제(커널 동작은 cargo 테스트가 지킴)
 - 네이티브: `native/tests/engine_test.cpp`의 `sigimsae effects` (위 항목 + 콜백 중 할당 없음, 상태 이전, 프리딜레이, 엔진 바이패스 비트 일치)

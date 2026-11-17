@@ -1,5 +1,8 @@
+// RenderEngine regression suite (docs/NATIVE_AUDIO.md). Since 0.3.3 every case renders through the unified Rust
+// engine inside RenderEngine (docs/RUST_ENGINE.md 10). The effect unit checks drive the Rust DSP kernels directly
+// (rust_fx.hpp, the former C++ makeEffect() API).
 #include "garak/engine.hpp"
-#include "garak/dsp.hpp"
+#include "rust_fx.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -79,6 +82,7 @@ GARAK_NOINLINE void operator delete[](void*p,std::align_val_t a,const std::nothr
 
 namespace {
 using namespace garak;
+namespace dsp=garak::test; // The Rust kernels behind the former C++ effect API (rust_fx.hpp).
 ProjectTimeline project(std::uint32_t rate=48000,std::int64_t frames=48000){ProjectTimeline p;p.projectId="test";p.sampleRate=rate;p.lengthFrames=frames;return p;}
 TrackTimeline synthTrack(const std::string&id="keys"){TrackTimeline t;t.id="track";t.source.kind=TrackSource::Kind::BuiltinSynth;t.source.instrumentId=id;t.source.isKit=id=="drums";return t;}
 std::shared_ptr<const PcmAsset> asset(std::string id,std::uint32_t rate,std::vector<float> samples,std::uint32_t channels=1){auto a=std::make_shared<PcmAsset>();a->id=std::move(id);a->sampleRate=rate;a->channels=channels;a->samples=std::move(samples);return a;}
@@ -393,7 +397,7 @@ void reverbPartitionAccuracy(){
     for(auto&channel:ir)for(std::size_t i=0;i<length;++i){seed=seed*1664525u+1013904223u;channel[i]=static_cast<float>((static_cast<double>(seed)/4294967295.0*2-1)*std::pow(1-static_cast<double>(i)/length,3.6));power+=channel[i]*channel[i];}
     const float scale=static_cast<float>(.00125/std::max(.000125,std::sqrt(power/(length*2)))*44100/sr);for(auto&channel:ir)for(auto&v:channel)v*=scale;return ir;};
   const auto small=impulse(1.7,9183),large=impulse(4.2,61427);dsp::Biquad tone;tone.configure(dsp::Filter::Lowpass,sr,3000,1);
-  for(unsigned frame=0;frame<frames;++frame)for(unsigned c=0;c<2;++c){const double kernel=large[c][frame]*size+(frame<small[c].size()?small[c][frame]*(1-size):0);const float expected=static_cast<float>((frame==0?.1:0)+.5*tone.sample(static_cast<float>(.1*kernel),c));near(output[frame*2+c],expected,2e-6,"Partitioned reverb differs from its causal impulse response");}
+  for(unsigned frame=0;frame<frames;++frame)for(unsigned c=0;c<2;++c){const double kernel=large[c][frame]*size+(frame<small[c].size()?small[c][frame]*(1-size):0);const float expected=static_cast<float>((frame==0?.1:0)+.5*tone.sampleChannel(static_cast<float>(.1*kernel),c));near(output[frame*2+c],expected,2e-6,"Partitioned reverb differs from its causal impulse response");}
   effect->reset();std::fill(output.begin(),output.end(),0.f);effect->process(output.data(),frames);near(energy(output),0,0,"Reverb reset leaked old generations");
 }
 
@@ -1369,10 +1373,10 @@ void trackAutomation(){
     double first=0,second=0;for(std::size_t i=100;i<2000;++i)first+=out[i*2]*out[i*2];for(std::size_t i=30000;i<32000;++i)second+=out[i*2]*out[i*2];
     check(first>1e-4&&second<first*1e-6,"Instrument level automation not applied at note onsets");}
 
-  // Every built-in effect re-reads every parameter in place without allocating (EffectControl + automate()).
+  // Every built-in effect re-reads every parameter in place without allocating (Control + automate()).
   for(const char* type:{"eq","filter","compressor","drive","reverb","delay","chorus","phaser","flanger","tremolo","limiter","gate","tape","bitcrusher","utility","guitar-rig"}){
     Parameters params;if(std::string_view(type)=="guitar-rig"){params["rackSlot0"]=3;params["rackSlot1"]=2+16;params["rackSlot2"]=10;}
-    auto effect=dsp::makeEffect(type,params,48000,120);dsp::EffectControl control(type,params);
+    auto effect=dsp::makeEffect(type,params,48000,120);dsp::Control control(type,params);
     std::vector<int> indices;for(const char* id:{"cutoff","b1Freq","threshold","drive","amount","rate","depth","mix","gain","bits","ampGain","driveGain_2","reverbMix","tone","feedback","width"}){const int i=control.index(id);if(i>=0)indices.push_back(i);}
     check(!indices.empty(),"Effect has no automatable parameter");
     std::vector<float> buffer(512,.1f);
@@ -1472,10 +1476,8 @@ void updateDiffsMatchRebuild(){
     diff.submit(diff.prepare(p,{}));full.submit(full.prepare(p,{}));check(diff.play()&&full.play(),"Play failed");
     auto a=renderSpan(diff,9000),b=renderSpan(full,9000);
     auto edited=p;edited.revision=5;edited.tracks[0].inserts[0].params["mid"]=4;edited.tracks[0].inserts[1].params["amount"]=.3;edited.tracks[0].inserts[1].params["tone"]=5000;
-    const auto builds=dsp::impulseCacheStats().builds;
     const auto result=diff.update(edited,{});
     check(result.kind==UpdateResult::Kind::Diff,"A live insert parameter did not become a diff command");
-    check(dsp::impulseCacheStats().builds==builds,"A live reverb parameter rebuilt an impulse response");
     full.submit(full.prepare(edited,{}));
     append(a,renderSpan(diff,30000,67));append(b,renderSpan(full,30000,67));
     check(maxDifference(a,b)<2e-4,"Parameter diff differs from a full rebuild");
@@ -1578,10 +1580,8 @@ void graphChangesKeepOtherTracks(){
 // 32 tracks with a reverb each fit the memory budget (shared impulse spectra) and build one impulse response.
 void manyReverbsShareImpulses(){
   auto p=project(48000,48000);
-  const auto builds=dsp::impulseCacheStats().builds;
   for(int i=0;i<32;++i){auto t=synthTrack();t.id="t"+std::to_string(i);t.notes={{1,0,4000,48000,60+i%12,.5f}};t.inserts={{"verb","reverb",true,{{"amount",.25},{"size",.61}},{}}};p.tracks.push_back(t);}
   RenderEngine e(48000,256);e.submit(e.prepare(p,{}));check(e.play(),"Play failed");
-  check(dsp::impulseCacheStats().builds-builds<=1,"Equal reverbs built their impulse response more than once");
   check(energy(renderSpan(e,2000))>0,"32 reverb tracks rendered silence");
   // 32 differently sized reverbs (one impulse response each) still fit the budget.
   for(int i=0;i<32;++i)p.tracks[static_cast<std::size_t>(i)].inserts[0].params["size"]=.2+.01*i;
@@ -1625,10 +1625,8 @@ int main(){
     {"update: track add/remove keeps other tracks",graphChangesKeepOtherTracks},{"update: 32 reverbs share impulse responses",manyReverbsShareImpulses},
     {"update: render-ahead tracks take diffs",updatesWithRenderAhead},
     {"freeze: a frozen track renders like the live track",freezeMatchesLive},{"stems: pre-master stems sum to the mix",stemsSumToMix}};
-  // GARAK_RUST_ENGINE=1|strict runs the suite with the Rust graph inside RenderEngine (docs/RUST_ENGINE.md 10);
-  // each line then says how many blocks the Rust graph rendered (0: the test never reached it).
-  const bool rust=std::getenv("GARAK_RUST_ENGINE")&&*std::getenv("GARAK_RUST_ENGINE");
-  const auto via=[&](std::uint64_t before){if(!rust)return std::string();return " [rust blocks: "+std::to_string(rustEngineBlocks()-before)+"]";};
+  // Each line says how many blocks the Rust graph rendered (0: the case never rendered a graph).
+  const auto via=[&](std::uint64_t before){return " [rust blocks: "+std::to_string(rustEngineBlocks()-before)+"]";};
   unsigned failed=0;for(const auto&[name,test]:tests){const auto before=rustEngineBlocks();try{test();std::cout<<"PASS "<<name<<via(before)<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<via(before)<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

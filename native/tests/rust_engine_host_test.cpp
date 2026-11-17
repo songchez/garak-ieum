@@ -1,28 +1,28 @@
-// GARAK_RUST_ENGINE host path (docs/RUST_ENGINE.md 10): RenderEngine as the shell around the Rust graph.
+// RenderEngine, the desktop host's shell around the unified Rust render engine (docs/RUST_ENGINE.md 10).
 //
-// The project is rust/garak-engine/src/testkit.rs (audio clips, fades, every built-in effect but the guitar
-// rig, pre/post sends into returns, automation, a tempo ramp). Cases:
-//   1. offline export (host renderStopped loop): the C++ engine vs the same RenderEngine with setRustEngine(2);
-//   2. live playback with mid-play diffs (mix, send, live insert parameter, master, a track rebuild), a seek and
-//      a cycle: C++ vs Rust shell, through RenderEngine::update (the Rust graph's commands are gated by ticket);
-//   3. multi-core: the Rust shell with 0 and N worker threads must be bit-identical;
-//   4. fallback: a project the Rust engine refuses renders in C++ in mode 1 (counted in EngineSnapshot::rustRefusals)
-//      and throws in strict mode. The Rust engine renders every project now, so the shell's test diagnostic
-//      GARAK_RUST_ENGINE_REFUSE_INSERT names the refused insert (a guitar rig);
-//   5. metronome: the garak-engine port vs native/src/metronome.hpp (grids, compound meters, tempo and meter
-//      maps, count-in), driven the way RenderEngine::renderClicks drives it;
-//   6. host nodes (docs/RUST_ENGINE.md 4): VST3 instrument and inserts (a stand-in plug-in) with events, sustain,
+// The project is rust/garak-engine/src/testkit.rs (audio clips, fades, every built-in effect but the guitar rig,
+// pre/post sends into returns, automation, a tempo ramp). Until 0.3.2 every case also ran through the C++ track path
+// of RenderEngine and the two were compared; since 0.3.3 that path is gone and its renders are golden references
+// (native/tests/golden.hpp: bit-identical on Windows x64, residual <= -90 dBFS elsewhere). Cases:
+//   1. offline export (host renderStopped loop), master bypass, pre-fader and return stems;
+//   2. live playback with mid-play diffs (mix, send, live insert parameter, master, a track rebuild), a seek, a
+//      cycle, pause/play and setMasterGain, through RenderEngine::update (the Rust graph's commands are gated by
+//      ticket);
+//   3. multi-core: 0 and N worker threads must be bit-identical;
+//   4. metronome: the garak-engine port (garak_rs_metronome_render: grids, compound meters, tempo and meter maps,
+//      count-in) and the shell's metronome and count-in through RenderEngine (clicked by the Rust engine after its
+//      master bus), against the former C++ metronome.hpp / shell renders;
+//   5. host nodes (docs/RUST_ENGINE.md 4): VST3 instrument and inserts (a stand-in plug-in) with events, sustain,
 //      parameter automation and PDC, a latent return, track-input routes and a master resampler, monitored device
 //      input and routed/physical recording takes, live MIDI, seek, cycle, edits; frozen windows with tails; the
-//      shell's render-ahead rings: C++ engine vs Rust shell bit-identical, 0 vs N workers bit-identical;
-//   7. CPU: blocks per second of the C++ engine, the Rust shell and the Rust shell on N workers (table).
-// Gate: residual <= -90 dBFS (bit-identical expected), equal latency; the multi-core output bit-identical.
-#include "cpp_reference_engine.hpp"
-#include "garak/dsp.hpp"
+//      shell's render-ahead rings (the same tracks at the same blocks as before, bit-identical to callback rendering);
+//   6. live MIDI at sample offsets (queueLiveMidi) on a VST3 instrument and a built-in synth: the shell's offsets
+//      (garak_rs_engine_live_at, sampleOffset) vs the same events at the start of split render calls, same onset;
+//   7. CPU (`--bench`): blocks per second on one thread and on N workers (table).
 #include "garak/engine.hpp"
 #include "garak_engine.h"
+#include "golden.hpp"
 #include "protocol.hpp"
-#include "metronome.hpp"
 
 #include <algorithm>
 #include <array>
@@ -40,6 +40,7 @@
 #include <vector>
 
 namespace {
+golden::Suite goldens("rust-engine-host");
 int failures = 0;
 void check(bool ok, const std::string& what, double detail = 0) {
   if (!ok) { ++failures; std::fprintf(stderr, "FAIL %s (%.6g)\n", what.c_str(), detail); }
@@ -75,6 +76,12 @@ std::string edit(std::string text, const std::string& from, const std::string& t
   if (at == std::string::npos) throw std::runtime_error("edit target missing: " + from);
   return text.replace(at, from.size(), to);
 }
+// `key`'s golden reference: checked, reported and returned as a verdict.
+std::string golden(const std::string& key, const std::vector<float>& got, const std::vector<double>& aux = {}) {
+  const auto r = goldens.check(key, got, aux);
+  check(r.ok, r.message, r.residual);
+  return r.verdict();
+}
 double residual(const std::vector<float>& a, const std::vector<float>& b) {
   if (a.size() != b.size()) return 1e9;
   double m = 0;
@@ -84,14 +91,14 @@ double residual(const std::vector<float>& a, const std::vector<float>& b) {
 double peak(const std::vector<float>& a) { double m = 0; for (const auto x : a) m = std::max(m, double(std::abs(x))); return m; }
 std::string verdict(double d) { return d == 0 ? "bit-identical" : std::to_string(dbfs(d)).substr(0, 7) + " dBFS"; }
 
-struct Render { std::vector<float> samples; std::uint32_t latency = 0; bool rust = false; std::uint64_t refusals = 0; };
+struct Render { std::vector<float> samples; std::uint32_t latency = 0; bool rust = false; };
 
-// native/src/host.cpp renderStopped through RenderEngine in `mode` (0 C++, 1 Rust + fallback, 2 strict).
-Render offline(const Project& project, std::uint32_t block, int mode, std::uint32_t threads = 0, bool bypass = false,
+// native/src/host.cpp renderStopped through RenderEngine.
+Render offline(const Project& project, std::uint32_t block, std::uint32_t threads = 0, bool bypass = false,
                const std::function<void(garak::ProjectTimeline&)>& shape = {}) {
   auto timeline = parse(project.json); timeline.cycle.reset();
   if (shape) shape(timeline);
-  garak::RenderEngine engine(timeline.sampleRate, block); engine.setRustEngine(mode); engine.setOffline(true); engine.setMasterBypass(bypass);
+  garak::RenderEngine engine(timeline.sampleRate, block); engine.setOffline(true); engine.setMasterBypass(bypass);
   if (threads) { garak::ProcessingOptions options; options.threads = threads; engine.setProcessing(options); }
   auto prepared = engine.prepare(timeline, project.assets);
   const double tail = std::min(30.0, prepared->tailSeconds());
@@ -107,16 +114,15 @@ Render offline(const Project& project, std::uint32_t block, int mode, std::uint3
     r.samples.insert(r.samples.end(), chunk.begin() + skip * 2, chunk.begin() + n * 2);
     done += n;
   }
-  r.refusals = engine.snapshot().rustRefusals;
   engine.collectRetired();
   return r;
 }
 
 // Live playback with edits at fixed callbacks; `calls` device buffers of `call` frames.
-Render live(const Project& project, int mode, std::uint32_t threads, const std::vector<std::pair<std::uint32_t, std::function<void(garak::RenderEngine&)>>>& script,
+Render live(const Project& project, std::uint32_t threads, const std::vector<std::pair<std::uint32_t, std::function<void(garak::RenderEngine&)>>>& script,
             std::uint32_t calls, std::uint32_t call = 256, std::uint32_t block = 128) {
   const auto timeline = parse(project.json);
-  garak::RenderEngine engine(timeline.sampleRate, block); engine.setRustEngine(mode);
+  garak::RenderEngine engine(timeline.sampleRate, block);
   if (threads) { garak::ProcessingOptions options; options.threads = threads; engine.setProcessing(options); }
   (void)engine.update(timeline, project.assets);
   (void)engine.play();
@@ -128,27 +134,22 @@ Render live(const Project& project, int mode, std::uint32_t threads, const std::
     r.rust = r.rust || engine.snapshot().rustEngine;
     if (k % 16 == 0) engine.collectRetired();
   }
-  r.refusals = engine.snapshot().rustRefusals;
   return r;
 }
 
 void offlineCases() {
   for (const auto& [tracks, seconds, rate, block] : {std::tuple{8u, 4.0, 48000u, 4096u}, std::tuple{8u, 4.0, 48000u, 128u}, std::tuple{6u, 3.0, 44100u, 4096u}}) {
     const auto project = testProject(tracks, seconds, rate);
-    const auto cpp = offline(project, block, 0), rust = offline(project, block, 2);
-    const double d = residual(cpp.samples, rust.samples);
-    std::printf("| offline export | %u+2 | %.0f s | %u Hz | %u | %u / %u | %s |\n", tracks, seconds, rate, block, cpp.latency, rust.latency, verdict(d).c_str());
-    check(rust.rust && !cpp.rust, "offline: the Rust shell rendered through Rust");
-    check(cpp.latency == rust.latency, "offline: latency", rust.latency);
-    check(peak(cpp.samples) > .05, "offline: silent", peak(cpp.samples));
-    check(dbfs(d) <= -90, "offline: residual", dbfs(d));
+    const auto rust = offline(project, block);
+    const auto verdict = golden("offline export " + std::to_string(tracks) + "/" + std::to_string(seconds) + "/" + std::to_string(rate) + "/" + std::to_string(block), rust.samples, {double(rust.latency)});
+    std::printf("| offline export | %u+2 | %.0f s | %u Hz | %u | %u | %s |\n", tracks, seconds, rate, block, rust.latency, verdict.c_str());
+    check(rust.rust, "offline: rendered through the Rust graph");
+    check(peak(rust.samples) > .05, "offline: silent", peak(rust.samples));
   }
-  // Master bypass (stems/freeze renders): the shell skips master gain and processor for both engines.
+  // Master bypass (stems/freeze renders): the master gain and processor are skipped.
   const auto project = testProject(4, 2, 48000);
-  const auto cpp = offline(project, 512, 0, 0, true), rust = offline(project, 512, 2, 0, true);
-  const double d = residual(cpp.samples, rust.samples);
-  std::printf("| offline, master bypass | 4+2 | 2 s | 48000 Hz | 512 | %u / %u | %s |\n", cpp.latency, rust.latency, verdict(d).c_str());
-  check(dbfs(d) <= -90, "master bypass: residual", dbfs(d));
+  const auto bypassed = offline(project, 512, 0, true);
+  std::printf("| offline, master bypass | 4+2 | 2 s | 48000 Hz | 512 | %u | %s |\n", bypassed.latency, golden("offline master bypass", bypassed.samples, {double(bypassed.latency)}).c_str());
   // Stem and freeze/bounce taps (docs/BOUNCE_FREEZE_STEMS.md): one track pre-fader (its own output only), and a
   // return stem (every sender out of the master sum, their sends still feeding the returns).
   const std::function<void(garak::ProjectTimeline&)> preFader = [](garak::ProjectTimeline& t) {
@@ -158,11 +159,9 @@ void offlineCases() {
     for (auto& track : t.tracks) track.directOut = track.isReturn;
   };
   for (const auto& [name, shape] : {std::pair{"pre-fader track (freeze/bounce)", preFader}, std::pair{"return stem (direct-out off)", returnStem}}) {
-    const auto c = offline(project, 512, 0, 0, true, shape), r = offline(project, 512, 2, 0, true, shape);
-    const double x = residual(c.samples, r.samples);
-    std::printf("| offline, %s | 4+2 | 2 s | 48000 Hz | 512 | %u / %u | %s |\n", name, c.latency, r.latency, verdict(x).c_str());
-    check(r.rust && peak(c.samples) > 1e-3, std::string(name) + ": rendered through Rust", peak(c.samples));
-    check(dbfs(x) <= -90, std::string(name) + ": residual", dbfs(x));
+    const auto r = offline(project, 512, 0, true, shape);
+    std::printf("| offline, %s | 4+2 | 2 s | 48000 Hz | 512 | %u | %s |\n", name, r.latency, golden(std::string("offline ") + name, r.samples, {double(r.latency)}).c_str());
+    check(r.rust && peak(r.samples) > 1e-3, std::string(name) + ": rendered through Rust", peak(r.samples));
   }
 }
 
@@ -186,70 +185,21 @@ void liveCases() {
       {580, [&](garak::RenderEngine& e) { (void)e.play(); }},
       {640, [&](garak::RenderEngine& e) { (void)e.setMasterGain(.3f); }},
   };
-  const auto cpp = live(project, 0, 0, script, 750), rust = live(project, 2, 0, script, 750);
-  const double d = residual(cpp.samples, rust.samples);
-  std::printf("| live: diffs, rebuild, seek, cycle, pause/play, master | 8+2 | 4 s | 48000 Hz | 128 (256 calls) | — | %s |\n", verdict(d).c_str());
-  check(rust.rust && peak(cpp.samples) > .05, "live: rendered through Rust");
-  check(dbfs(d) <= -90, "live: residual", dbfs(d));
+  const auto rust = live(project, 0, script, 750);
+  std::printf("| live: diffs, rebuild, seek, cycle, pause/play, master | 8+2 | 4 s | 48000 Hz | 128 (256 calls) | — | %s |\n", golden("live script", rust.samples).c_str());
+  check(rust.rust && peak(rust.samples) > .05, "live: rendered through Rust");
 
-  // Multi-core: the Rust shell on worker threads is bit-identical to one thread (and to the C++ engine).
+  // Multi-core: worker threads are bit-identical to one thread.
   const auto workers = std::max(2u, std::min(4u, std::thread::hardware_concurrency()));
-  const auto parallel = live(project, 2, workers, script, 750);
+  const auto parallel = live(project, workers, script, 750);
   const double m = residual(rust.samples, parallel.samples);
   std::printf("| multi-core: Rust shell, 0 vs %u workers | 8+2 | 4 s | 48000 Hz | 128 (256 calls) | — | %s |\n", workers, verdict(m).c_str());
   check(m == 0, "multi-core: Rust output differs from one thread", dbfs(m));
   const auto many = testProject(24, 2, 48000);
-  const auto one = offline(many, 512, 2, 0), more = offline(many, 512, 2, workers);
+  const auto one = offline(many, 512, 0), more = offline(many, 512, workers);
   const double m2 = residual(one.samples, more.samples);
   std::printf("| multi-core: offline export, 0 vs %u workers | 24+2 | 2 s | 48000 Hz | 512 | %u / %u | %s |\n", workers, one.latency, more.latency, verdict(m2).c_str());
   check(m2 == 0, "multi-core offline: Rust output differs from one thread", dbfs(m2));
-}
-
-// Sets (or with null, clears) an environment variable for the engines constructed next.
-void setEnvironment(const char* name, const char* value) {
-#ifdef _WIN32
-  (void)_putenv_s(name, value ? value : "");
-#else
-  if (value) (void)setenv(name, value, 1); else (void)unsetenv(name);
-#endif
-}
-
-void fallbackCases() {
-  setEnvironment("GARAK_RUST_ENGINE_REFUSE_INSERT", "guitar-rig");
-  struct Restore { ~Restore() { setEnvironment("GARAK_RUST_ENGINE_REFUSE_INSERT", nullptr); } } restore;
-  const auto project = testProject(2, 1, 48000);
-  auto plan = parse(project.json);
-  garak::BuiltinInsert rig; rig.id = "rig"; rig.type = "guitar-rig";
-  plan.tracks[0].inserts.push_back(rig);
-  const auto timeline = parse(project.json);
-  // Mode 1: the refused update renders in C++ from then on (equal to the C++ engine after a seek).
-  garak::RenderEngine fallback(48000, 256); fallback.setRustEngine(1);
-  garak::RenderEngine reference(48000, 256);
-  (void)fallback.update(timeline, project.assets); (void)reference.update(timeline, project.assets);
-  (void)fallback.play(); (void)reference.play();
-  std::vector<float> a(512), b(512);
-  bool rustBefore = false, rustAfter = true;
-  double d = 0;
-  for (int k = 0; k < 120; ++k) {
-    if (k == 40) { (void)fallback.update(plan, project.assets); (void)reference.update(plan, project.assets); }
-    // Switching engines mid-play restarts the C++ tracks' state (they were idle); a seek resets both alike.
-    if (k == 60) { (void)fallback.seek(0); (void)reference.seek(0); }
-    fallback.render(a.data(), nullptr, 256, 0); reference.render(b.data(), nullptr, 256, 0);
-    if (k == 30) rustBefore = fallback.snapshot().rustEngine;
-    if (k == 119) rustAfter = fallback.snapshot().rustEngine;
-    if (k > 60) d = std::max(d, residual(a, b));
-  }
-  std::printf("| fallback: a refused update renders in C++ | 2+2 | — | 48000 Hz | 256 | — | %s (refusals %llu: %s) |\n", verdict(d).c_str(),
-              static_cast<unsigned long long>(fallback.snapshot().rustRefusals), fallback.lastRustRefusal().c_str());
-  check(rustBefore && !rustAfter, "fallback: render path did not switch to C++");
-  check(fallback.snapshot().rustRefusals == 1 && !fallback.lastRustRefusal().empty(), "fallback: refusal not reported");
-  check(dbfs(d) <= -90, "fallback: C++ render after refusal differs", dbfs(d));
-  // Strict mode refuses the same plan, leaving the running graph unchanged.
-  garak::RenderEngine strict(48000, 256); strict.setRustEngine(2);
-  bool threw = false;
-  try { (void)strict.update(plan, project.assets); } catch (const std::exception&) { threw = true; }
-  check(threw, "strict: a refused project did not throw");
-  check(garak::rustEngineAvailable(), "rustEngineAvailable");
 }
 
 struct MetronomeCase {
@@ -257,35 +207,6 @@ struct MetronomeCase {
   std::vector<garak::TempoPoint> tempo; std::vector<garak::MeterEvent> meters;
   std::int64_t start, countIn; std::uint32_t block;
 };
-// native/src/engine.cpp renderClicks (count-in, one meter, meter map) over metronome.hpp.
-std::vector<float> clicksCpp(const MetronomeCase& c, const garak::MetronomeClicks& set, std::uint32_t total) {
-  constexpr double rate = 48000;
-  const garak::TempoMap tempo(c.bpm, c.tempo);
-  const garak::MeterMap meters(c.numerator, c.denominator, c.meters);
-  const bool mapped = c.tempo.size() >= 2, metered = c.meters.size() >= 2;
-  garak::metronome::Player player;
-  std::vector<float> out(std::size_t(total) * 2);
-  std::int64_t position = c.start, elapsed = 0;
-  for (std::uint32_t done = 0; done < total;) {
-    const auto frames = std::min(c.block, total - done);
-    float* chunk = out.data() + std::size_t(done) * 2;
-    player.mix(chunk, frames, .7f);
-    if (c.countIn > 0) {
-      const double startBeat = mapped ? tempo.beatAtFrame(double(position), rate) : double(position) * c.bpm / (60.0 * rate);
-      const auto meter = metered ? meters.at(startBeat) : garak::MeterEvent{0, c.numerator, c.denominator, 0};
-      garak::metronome::clicks(garak::metronome::grid(rate, mapped ? tempo.bpmAt(startBeat) : c.bpm, meter.numerator, meter.denominator), set, player, chunk, elapsed, frames, .7f, c.countIn);
-      elapsed += frames;
-    } else if (!metered) {
-      garak::metronome::clicks(garak::metronome::grid(rate, c.bpm, c.numerator, c.denominator, mapped ? &tempo : nullptr), set, player, chunk, position, frames, .7f);
-      position += frames;
-    } else {
-      garak::metronome::meterClicks(meters, rate, c.bpm, mapped ? &tempo : nullptr, set, player, chunk, position, frames, .7f);
-      position += frames;
-    }
-    done += frames;
-  }
-  return out;
-}
 std::vector<float> clicksRust(const MetronomeCase& c, const garak::MetronomeClicks& set, std::uint32_t total) {
   std::vector<double> beats, bpms; std::vector<std::uint8_t> ramps;
   for (const auto& p : c.tempo) { beats.push_back(p.beat); bpms.push_back(p.bpm); ramps.push_back(p.ramp ? 1 : 0); }
@@ -320,11 +241,9 @@ void metronomeCases() {
   };
   for (const auto& c : cases) {
     const std::uint32_t total = 48000 * 12;
-    const auto a = clicksCpp(c, set, total), b = clicksRust(c, set, total);
-    const double d = residual(a, b);
-    std::printf("| metronome: %s | — | 12 s | 48000 Hz | %u | — | %s |\n", c.name, c.block, verdict(d).c_str());
-    check(peak(a) > .1, std::string(c.name) + ": no clicks", peak(a));
-    check(dbfs(d) <= -90, std::string(c.name) + ": metronome residual", dbfs(d));
+    const auto b = clicksRust(c, set, total);
+    std::printf("| metronome: %s | — | 12 s | 48000 Hz | %u | — | %s |\n", c.name, c.block, golden(std::string("metronome ") + c.name, b).c_str());
+    check(peak(b) > .1, std::string(c.name) + ": no clicks", peak(b));
   }
 }
 
@@ -438,8 +357,8 @@ struct HostRun { std::vector<float> out, takes; bool rust = false; std::uint32_t
 // `transportOnly`: play, a seek and cycle wraps only. Live commands on a track that renders ahead wait until its ring
 // drains, and a pause keeps a ring's tail only when the workers had not got ahead yet: both depend on worker timing
 // (in the C++ engine alike), so render-ahead runs compare without them.
-HostRun hostLive(const HostProject& h, int mode, std::uint32_t threads, garak::RenderAhead renderAhead = garak::RenderAhead::Off, bool transportOnly = false) {
-  garak::RenderEngine e(48000, 128, 48000); e.setRustEngine(mode);
+HostRun hostLive(const HostProject& h, std::uint32_t threads, garak::RenderAhead renderAhead = garak::RenderAhead::Off, bool transportOnly = false) {
+  garak::RenderEngine e(48000, 128, 48000);
   if (threads || renderAhead != garak::RenderAhead::Off) { garak::ProcessingOptions o; o.threads = threads; o.renderAhead = renderAhead; o.deviceBlockFrames = 256; e.setProcessing(o); }
   const auto plugins = standIns();
   auto start = h.timeline; if (transportOnly) start.cycle = std::array<std::int64_t, 2>{30000, 70000};
@@ -479,8 +398,8 @@ HostRun hostLive(const HostProject& h, int mode, std::uint32_t threads, garak::R
   }
   return r;
 }
-std::vector<float> hostOffline(const garak::ProjectTimeline& timeline, const garak::AssetStore& assets, int mode, std::uint32_t block) {
-  garak::RenderEngine e(48000, block); e.setRustEngine(mode); e.setOffline(true);
+std::vector<float> hostOffline(const garak::ProjectTimeline& timeline, const garak::AssetStore& assets, std::uint32_t block) {
+  garak::RenderEngine e(48000, block); e.setOffline(true);
   auto prepared = e.prepare(timeline, assets, {}, standIns());
   const auto latency = prepared->latencyFrames();
   const auto frames = std::uint64_t(timeline.lengthFrames) + std::uint64_t(std::ceil(std::min(30.0, prepared->tailSeconds()) * 48000)) + latency;
@@ -491,23 +410,18 @@ std::vector<float> hostOffline(const garak::ProjectTimeline& timeline, const gar
 }
 void hostNodeCases() {
   const auto h = hostProject();
-  const auto cpp = hostLive(h, 0, 0), rust = hostLive(h, 2, 0);
-  const double d = residual(cpp.out, rust.out), t = residual(cpp.takes, rust.takes);
-  std::printf("| host nodes: VST3 instrument/inserts/return, routes, monitoring, live MIDI, seek, cycle, edits | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | — | %s (takes %s) |\n", verdict(d).c_str(), verdict(t).c_str());
-  check(rust.rust && !cpp.rust && peak(cpp.out) > .05 && peak(cpp.takes) > .01, "host nodes: rendered through Rust", peak(cpp.out));
-  check(cpp.takes.size() == rust.takes.size() && !cpp.takes.empty(), "host nodes: capture lengths", double(rust.takes.size()));
-  check(dbfs(d) <= -90, "host nodes: output differs from the C++ engine", dbfs(d));
-  check(dbfs(t) <= -90, "host nodes: routed/physical takes differ from the C++ engine", dbfs(t));
+  const auto rust = hostLive(h, 0);
+  std::printf("| host nodes: VST3 instrument/inserts/return, routes, monitoring, live MIDI, seek, cycle, edits | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | — | %s (takes %s) |\n",
+              golden("host nodes live", rust.out).c_str(), golden("host nodes takes", rust.takes).c_str());
+  check(rust.rust && peak(rust.out) > .05 && peak(rust.takes) > .01, "host nodes: rendered through Rust", peak(rust.out));
   const auto workers = std::max(2u, std::min(4u, std::thread::hardware_concurrency()));
-  const auto parallel = hostLive(h, 2, workers);
+  const auto parallel = hostLive(h, workers);
   const double m = std::max(residual(rust.out, parallel.out), residual(rust.takes, parallel.takes));
-  std::printf("| host nodes: Rust shell, 0 vs %u workers | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | — | %s |\n", workers, verdict(m).c_str());
-  check(m == 0, "host nodes: worker threads changed the Rust mix", dbfs(m));
-  auto offlinePlan = h.timeline;
-  const auto a = hostOffline(offlinePlan, h.assets, 0, 256), b = hostOffline(offlinePlan, h.assets, 2, 256);
-  const double o = residual(a, b);
-  std::printf("| host nodes: offline export | 7+1 | 2 s | 48000 Hz | 256 | — | %s |\n", verdict(o).c_str());
-  check(dbfs(o) <= -90 && peak(a) > .05, "host nodes: offline export differs from the C++ engine", dbfs(o));
+  std::printf("| host nodes: 0 vs %u workers | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | — | %s |\n", workers, verdict(m).c_str());
+  check(m == 0, "host nodes: worker threads changed the mix", dbfs(m));
+  const auto b = hostOffline(h.timeline, h.assets, 256);
+  std::printf("| host nodes: offline export | 7+1 | 2 s | 48000 Hz | 256 | — | %s |\n", golden("host nodes offline", b).c_str());
+  check(peak(b) > .05, "host nodes: offline export is silent", peak(b));
   // Frozen windows (docs/BOUNCE_FREEZE_STEMS.md): no click guard, the window runs past the project end and its
   // tail sets the export length; a delay after it keeps ringing.
   garak::ProjectTimeline frozen; frozen.projectId = "frozen"; frozen.sampleRate = 48000; frozen.lengthFrames = 48000;
@@ -516,39 +430,80 @@ void hostNodeCases() {
   garak::AudioWindow w; w.id = 1; w.assetId = "render"; w.startFrame = 0; w.endFrame = 60000; w.clipLengthFrames = 60000; w.freeze = true; w.tailSeconds = .4; f.audio = {w};
   garak::BuiltinInsert delay; delay.id = "d"; delay.type = "delay"; delay.params = {{"amount", .5}, {"time", .2}, {"feedback", .4}}; f.inserts = {delay};
   frozen.tracks = {f};
-  const auto x = hostOffline(frozen, frozenAssets, 0, 512), y = hostOffline(frozen, frozenAssets, 2, 512);
-  double after = 0; for (std::size_t i = 48000 * 2; i < x.size(); ++i) after = std::max(after, double(std::abs(x[i])));
-  const double z = residual(x, y);
-  std::printf("| frozen window with tail (offline) | 1 | 1 s + tail | 48000 Hz | 512 | — | %s |\n", verdict(z).c_str());
-  check(dbfs(z) <= -90 && after > .01, "frozen window: differs from the C++ engine or lost its tail", dbfs(z));
-  // Render-ahead (Normal and High, 2 workers): the Rust shell keeps eligible tracks in the shell's rings, the same
-  // tracks at the same blocks as the C++ engine. The return's plug-in delay is taken out: the dry tracks'
-  // return-alignment delay is not cleared by a seek (C++ TrackRuntime::reset), so after one its first frames depend
-  // on how far a ring had rendered.
+  const auto y = hostOffline(frozen, frozenAssets, 512);
+  double after = 0; for (std::size_t i = 48000 * 2; i < y.size(); ++i) after = std::max(after, double(std::abs(y[i])));
+  std::printf("| frozen window with tail (offline) | 1 | 1 s + tail | 48000 Hz | 512 | — | %s |\n", golden("frozen window", y).c_str());
+  check(after > .01, "frozen window: lost its tail", after);
+  // Render-ahead (Normal and High, 2 workers): eligible tracks go into the shell's rings, the same tracks at the same
+  // blocks as the C++ engine did (the golden aux value). The return's plug-in delay is taken out: the dry tracks'
+  // return-alignment delay is not cleared by a seek, so after one its first frames depend on how far a ring had
+  // rendered.
   auto aheadProject = h; aheadProject.timeline.tracks[3].inserts.erase(aheadProject.timeline.tracks[3].inserts.begin());
+  const auto plain = hostLive(aheadProject, 0, garak::RenderAhead::Off, true);
   for (const auto mode : {garak::RenderAhead::Normal, garak::RenderAhead::High}) {
-    const auto aheadCpp = hostLive(aheadProject, 0, 2, mode, true), aheadRust = hostLive(aheadProject, 2, 2, mode, true);
-    const auto plain = hostLive(aheadProject, 2, 0, garak::RenderAhead::Off, true);
-    const double r = std::max(residual(aheadCpp.out, aheadRust.out), residual(plain.out, aheadRust.out));
-    std::printf("| render-ahead (%s, 2 workers): C++ vs Rust shell vs callback rendering, seek and cycle wraps | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | - | %s (ahead tracks %u / %u) |\n",
-                mode == garak::RenderAhead::High ? "High" : "Normal", verdict(r).c_str(), aheadCpp.ahead, aheadRust.ahead);
-    check(aheadRust.ahead >= 2 && aheadRust.rust && aheadRust.ahead == aheadCpp.ahead, "render-ahead: the Rust shell rendered fewer tracks ahead", aheadRust.ahead);
-    check(dbfs(residual(aheadCpp.out, aheadRust.out)) <= -90, "render-ahead: output differs from the C++ engine", dbfs(r));
-    check(residual(plain.out, aheadRust.out) == 0, "render-ahead: Rust shell output differs from callback rendering", dbfs(r));
+    const auto ahead = hostLive(aheadProject, 2, mode, true);
+    const auto name = std::string("render-ahead ") + (mode == garak::RenderAhead::High ? "High" : "Normal");
+    const double r = residual(plain.out, ahead.out);
+    std::printf("| render-ahead (%s, 2 workers): vs callback rendering, seek and cycle wraps | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | - | %s, vs golden %s (ahead tracks %u) |\n",
+                mode == garak::RenderAhead::High ? "High" : "Normal", verdict(r).c_str(), golden(name, ahead.out, {double(ahead.ahead)}).c_str(), ahead.ahead);
+    check(ahead.ahead >= 2 && ahead.rust, "render-ahead: too few tracks rendered ahead", ahead.ahead);
+    check(r == 0, "render-ahead: output differs from callback rendering", dbfs(r));
   }
+}
+
+// The shell's metronome and count-in through RenderEngine (since 0.3.3 rendered by the Rust engine after its master
+// bus): a project with a tempo ramp and meter changes, three overlapping strokes, a count-in at a mapped position,
+// a seek, a pause, a mid-song count-in in 3/4 and a stroke set swap. Golden: the 0.3.2 C++ shell.
+std::vector<float> shellMetronome(const Project& project) {
+  auto timeline = parse(project.json);
+  timeline.bpm = 96; timeline.tempoMap = {{0, 96, true}, {8, 150, false}, {20, 70, false}};
+  timeline.timeSigNumerator = 4; timeline.timeSigDenominator = 4; timeline.meterMap = {{0, 4, 4, 0}, {2, 7, 8, 8}, {5, 6, 8, 18.5}, {7, 3, 4, 24.5}};
+  auto set = std::make_shared<garak::MetronomeClicks>(); set->sampleRate = 48000;
+  auto gugak = std::make_shared<garak::MetronomeClicks>(); gugak->sampleRate = 48000;
+  for (int level = 0; level < 3; ++level) {
+    const int length = 2400 + 1700 * level;
+    for (int i = 0; i < length; ++i) set->levels[std::size_t(level)].push_back(float(std::sin(i * (.05 + .03 * level)) * std::exp(-i / (300.0 + 200 * level))));
+    for (int i = 0; i < 3000 + 900 * level; ++i) gugak->levels[std::size_t(level)].push_back(float(.8 * std::sin(i * (.021 + .013 * level) + .002 * i * i / (40.0 + level)) * std::exp(-i / (500.0 + 150 * level))));
+  }
+  garak::RenderEngine engine(48000, 128);
+  (void)engine.update(timeline, project.assets);
+  (void)engine.setMetronome(set, true, .7f);
+  std::vector<float> out, chunk(512);
+  for (std::uint32_t k = 0; k < 900; ++k) {
+    switch (k) {
+      case 0: (void)engine.seek(30000); (void)engine.play(96000); break;
+      case 400: (void)engine.seek(150000); break;
+      case 520: (void)engine.pause(); break;
+      case 540: (void)engine.setMetronome(gugak, true, .9f); break;
+      case 560: (void)engine.play(41143); break;
+      case 760: (void)engine.setMetronome(gugak, false, .9f); break;
+      default: break;
+    }
+    engine.render(chunk.data(), nullptr, 256, 0);
+    out.insert(out.end(), chunk.begin(), chunk.end());
+    if (k % 16 == 0) engine.collectRetired();
+  }
+  return out;
+}
+
+void shellMetronomeCase() {
+  const auto project = testProject(8, 4, 48000);
+  const auto a = shellMetronome(project);
+  std::printf("| shell metronome + count-in (RenderEngine) | 8+2 | 4.8 s | 48000 Hz | 128 (256 calls) | — | %s |\n", golden("shell metronome", a).c_str());
+  check(peak(a) > .1, "shell metronome: silent", peak(a));
 }
 
 void bench() {
   using Clock = std::chrono::steady_clock;
   const auto workers = std::max(2u, std::min(8u, std::thread::hardware_concurrency() > 1 ? std::thread::hardware_concurrency() - 1 : 1u));
-  std::printf("\n| Tracks (+2 returns) | C++ engine | Rust shell, 1 thread | Rust shell, %u workers | Speed-up (workers vs 1 thread) |\n|---|---|---|---|---|\n", workers);
+  std::printf("\n| Tracks (+2 returns) | 1 thread | %u workers | Speed-up |\n|---|---|---|---|\n", workers);
   for (const std::uint32_t tracks : {16u, 32u}) {
     const auto project = testProject(tracks, 10, 48000);
     const auto timeline = parse(project.json);
-    const auto measure = [&](int mode, std::uint32_t threads) {
+    const auto measure = [&](std::uint32_t threads) {
       double best = 1e9;
       for (int round = 0; round < 2; ++round) {
-        garak::RenderEngine engine(48000, 128); engine.setRustEngine(mode);
+        garak::RenderEngine engine(48000, 128);
         if (threads) { garak::ProcessingOptions options; options.threads = threads; engine.setProcessing(options); }
         (void)engine.update(timeline, project.assets); (void)engine.play();
         std::vector<float> out(256);
@@ -558,21 +513,109 @@ void bench() {
       }
       return 10.0 / best; // x real time
     };
-    const double cpp = measure(0, 0), one = measure(2, 0), many = measure(2, workers);
-    std::printf("| %u | %.1fx | %.1fx | %.1fx | %.2fx |\n", tracks, cpp, one, many, many / one);
+    const double one = measure(0), many = measure(workers);
+    std::printf("| %u | %.1fx | %.1fx | %.2fx |\n", tracks, one, many, many / one);
   }
+}
+// Analysis taps (docs/RUST_ENGINE.md 5.7): RenderEngine::setAnalysis on track 0's first insert, read back as the
+// latest analysisFrames stereo frames; a tap that names no track stays silent; turning taps off stops publishing.
+void analysisCase() {
+  const auto project = testProject(4, 2, 48000);
+  garak::RenderEngine e(48000, 128, 48000);
+  (void)e.update(parse(project.json), project.assets);
+  (void)e.play();
+  std::vector<float> out(512), slot(std::size_t(garak::analysisFrames) * 2);
+  const std::array<garak::AnalysisTap, 2> taps{garak::AnalysisTap{0, 0, false}, garak::AnalysisTap{-1, -1, false}};
+  (void)e.setAnalysis(taps);
+  for (int k = 0; k < 80; ++k) { e.render(out.data(), nullptr, 256, 0); if (k % 16 == 0) e.collectRetired(); }
+  const auto version = e.readAnalysis(0, slot);
+  double energy = 0; for (const auto x : slot) energy += double(x) * x;
+  double silent = 0; check(e.readAnalysis(1, slot) > 0, "analysis: second slot published");
+  for (const auto x : slot) silent += double(x) * x;
+  std::printf("| analysis taps: insert output, silent slot | 4+2 | 0.4 s | 48000 Hz | 128 (256 calls) | — | %s |\n", energy > 1e-6 && silent == 0 ? "streamed" : "missing");
+  check(version > 0 && energy > 1e-6, "analysis: the insert output reaches its tap", energy);
+  check(silent == 0, "analysis: a tap without a track is silent", silent);
+  (void)e.setAnalysis({});
+  for (int k = 0; k < 4; ++k) e.render(out.data(), nullptr, 256, 0);
+  const auto off = e.readAnalysis(0, slot);
+  for (int k = 0; k < 4; ++k) e.render(out.data(), nullptr, 256, 0);
+  check(e.readAnalysis(0, slot) == off, "analysis: turned off, nothing more is published");
+}
+// Sample-accurate device MIDI (docs/RUST_ENGINE.md 5.8): queueLiveMidi offsets on a VST3 instrument (a stand-in
+// plug-in) and a built-in synth. The shell passes the offsets through (garak_rs_engine_live_at: the built-in voices
+// split their own render, the VST3 node gets sampleOffset). Reference: the same events, each queued at offset 0 of a
+// render call that starts on its sample (the host splitting its calls, as the former C++ engine split its blocks).
+// Both must start every event on the same sample.
+void liveOffsetCases() {
+  garak::ProjectTimeline p; p.projectId = "live-offsets"; p.sampleRate = 48000; p.lengthFrames = 96000; p.bpm = 120;
+  garak::TrackTimeline vst; vst.id = "vst"; vst.gain = .8f;
+  vst.source.kind = garak::TrackSource::Kind::Vst3; vst.source.plugin.instanceId = "synth"; vst.source.plugin.isInstrument = true;
+  garak::TrackTimeline keys; keys.id = "keys"; keys.gain = .7f; keys.source.kind = garak::TrackSource::Kind::BuiltinSynth; keys.source.instrumentId = "keys";
+  p.tracks = {vst, keys};
+  constexpr std::uint32_t call = 256, calls = 120;
+  // Events by render call (offsets inside that call).
+  std::vector<std::pair<std::uint32_t, garak::LiveMidiEvent>> events{
+    {3, {37, 0, 0x90, 60, 100, 11}}, {4, {10, 0, 0x80, 60, 0, 11}}, {5, {201, 1, 0x90, 64, 100, 12}},
+    {9, {3, 0, 0x90, 67, 90, 13}}, {9, {5, 0, 0xE0, 0, 80, -1}}, {9, {60, 1, 0xD0, 100, 0, -1}}, {9, {70, 1, 0xE0, 0, 100, -1}},
+    {9, {80, 0, 0xD0, 50, 0, -1}}, {9, {90, 1, 0xB0, 64, 127, -1}}, {9, {100, 0, 0xB0, 64, 127, -1}}, {9, {130, 0, 0x80, 67, 0, 13}},
+    {9, {131, 1, 0x80, 64, 0, 12}}, {9, {250, 1, 0xB0, 64, 0, -1}}, {11, {77, 0, 0xB0, 64, 0, -1}}};
+  const auto onsetOf = [](const std::vector<float>& all, std::size_t from) {
+    for (std::size_t i = from * 2; i < all.size() && i < (from + call) * 2; ++i) if (all[i] != 0) return i / 2 - from;
+    return std::size_t(call);
+  };
+  // `split`: render up to each event's sample, then queue it at offset 0 of the next call.
+  const auto run = [&](bool split) {
+    garak::RenderEngine e(48000, 128, 48000);
+    (void)e.update(p, {}, {}, standIns());
+    (void)e.play();
+    std::vector<float> all, out(call * 2);
+    std::size_t next = 0;
+    for (std::uint32_t k = 0; k < calls; ++k) {
+      if (!split) {
+        std::vector<garak::LiveMidiEvent> now;
+        while (next < events.size() && events[next].first == k) now.push_back(events[next++].second);
+        if (!now.empty()) (void)e.queueLiveMidi(now);
+        e.render(out.data(), nullptr, call, 0);
+        all.insert(all.end(), out.begin(), out.end());
+      } else {
+        std::uint32_t at = 0;
+        while (at < call) {
+          while (next < events.size() && events[next].first == k && events[next].second.offset == at) {
+            auto ev = events[next++].second; ev.offset = 0;
+            (void)e.queueLiveMidi(std::span<const garak::LiveMidiEvent>(&ev, 1));
+          }
+          const std::uint32_t end = next < events.size() && events[next].first == k ? events[next].second.offset : call;
+          e.render(out.data(), nullptr, end - at, 0);
+          all.insert(all.end(), out.begin(), out.begin() + std::ptrdiff_t(end - at) * 2);
+          at = end;
+        }
+      }
+      if (k % 16 == 0) e.collectRetired();
+    }
+    return all;
+  };
+  const auto offsets = run(false), split = run(true);
+  const double d = residual(offsets, split);
+  std::printf("| live MIDI at sample offsets: VST3 instrument + built-in synth | 2 | 0.6 s | 48000 Hz | 128 (256 calls) | — | %s (vs split calls) |\n", verdict(d).c_str());
+  check(peak(offsets) > .05, "live offsets: silent", peak(offsets));
+  check(dbfs(d) <= -90, "live offsets: offsets differ from split render calls", dbfs(d));
+  // The stand-in sounds on its note-on sample; the built-in envelope starts from zero there (first sound one later).
+  const auto a = onsetOf(offsets, 3 * call), b = onsetOf(offsets, 5 * call);
+  check(a == 37 && b == 202 && onsetOf(split, 3 * call) == a && onsetOf(split, 5 * call) == b, "live offsets: onset sample", double(a));
 }
 } // namespace
 
 int main(int argc, char** argv) {
-  pinCppReferenceEngine();
-  std::printf("| Case | Tracks | Length | Rate | Block | Latency C++ / Rust | Residual |\n|---|---|---|---|---|---|---|\n");
+  std::printf("| Case | Tracks | Length | Rate | Block | Latency | vs golden (C++ engine) |\n|---|---|---|---|---|---|---|\n");
   try {
+    check(goldens.size() > 0, "no golden references (native/tests/golden/rust-engine-host.golden)");
     offlineCases();
     liveCases();
-    fallbackCases();
     hostNodeCases();
+    liveOffsetCases();
+    analysisCase();
     metronomeCases();
+    shellMetronomeCase();
     if (argc > 1 && std::string(argv[1]) == "--bench") bench();
   } catch (const std::exception& error) {
     check(false, std::string("exception: ") + error.what());

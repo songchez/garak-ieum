@@ -46,12 +46,13 @@ mod track;
 pub(crate) mod wave;
 
 pub use engine::{
-    Ahead, Applied, BlockInfo, Controller, DynamicsReading, EngineConfig, HostTask, MAX_TAPS, Parallel,
-    Renderer, Snapshot, engine,
+    Ahead, AnalysisTap, Applied, BlockInfo, Controller, DynamicsReading, EngineConfig, HostTask,
+    MAX_ANALYSIS, MAX_TAPS, Parallel, Renderer, Snapshot, engine,
 };
 pub use error::Error;
-pub use external::HostCallbacks;
+pub use external::{HostCallbacks, LiveFn};
 pub use instrument::UNLIMITED_FRAME;
 pub use offline::{OfflineRender, render_offline};
 pub use plan::{PcmAsset, Plan, SampleSet, SampleZone};
-pub use track::LiveEvent;
+pub use track::{LIVE_QUEUE, LiveEvent, MAX_LIVE_OFFSET, TimedLiveEvent};
+pub use wave::host as wave_host;

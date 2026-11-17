@@ -187,7 +187,7 @@ describe('IEUM WAVE saved patch', () => {
     const sourceRoot = fileURLToPath(new URL('../../../', import.meta.url))
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'ieum-wave-schema-'))
     const generator = 'src/devices/wavetable-synth/generate-schema.mjs'
-    const outputs = ['src/devices/wavetable-synth/schema.generated.ts', 'native/devices/wavetable-synth/generated/patch_schema.hpp']
+    const outputs = ['src/devices/wavetable-synth/schema.generated.ts', 'rust/garak-engine/src/wave/schema.rs']
     const lf = (value: string) => value.replace(/\r\n/g, '\n')
     const crlf = (value: string) => lf(value).replace(/\n/g, '\r\n')
     const expected = new Map(outputs.map(path => [path, lf(readFileSync(resolve(sourceRoot, path), 'utf8'))]))
@@ -212,7 +212,7 @@ describe('IEUM WAVE saved patch', () => {
       const stale = run('--check')
       expect(stale.status).toBe(1)
       expect(stale.stderr).toContain('schema.generated.ts')
-      expect(stale.stderr).toContain('patch_schema.hpp')
+      expect(stale.stderr).toContain('schema.rs')
 
       // CRLF in schema.json must not change either generated content or its hash.
       const regenerated = run()

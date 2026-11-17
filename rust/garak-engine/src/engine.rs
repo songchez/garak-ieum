@@ -25,10 +25,25 @@ use crate::protocol;
 use crate::queue::{Consumer, Producer, channel};
 use crate::routes::{self, Levels};
 use crate::tempo::TempoMap;
-use crate::track::{Feed, LiveEvent, Track, TrackInfo};
+use crate::track::{Feed, LiveEvent, MAX_LIVE_OFFSET, PROBES, Probe, Track, TrackInfo};
 
 /// Route recording taps the renderer copies out per block (docs/RUST_ENGINE.md 5.7).
 pub const MAX_TAPS: usize = 8;
+/// Analysis taps (editor spectrum / stereo scope / rig tuner) the renderer copies out per block.
+pub const MAX_ANALYSIS: usize = 4;
+
+/// One analysis tap: the signal after the insert at plan index `insert` of graph track `track`, or with
+/// `tuner` a guitar rig's tuner input there (mono on both channels). `track < 0`: off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnalysisTap {
+    pub track: i32,
+    pub insert: i32,
+    pub tuner: bool,
+}
+
+impl AnalysisTap {
+    pub const OFF: AnalysisTap = AnalysisTap { track: -1, insert: -1, tuner: false };
+}
 /// Longest metronome stroke (C++ `setMetronome`: 4 s at the engine rate).
 const MAX_STROKE_SECONDS: usize = 4;
 
@@ -161,14 +176,18 @@ enum Command {
     MasterBypass(bool),
     Metronome {
         clicks: Option<Arc<Clicks>>,
+        /// Drop the current strokes (silence; `clicks` is None).
+        clear: bool,
         on: bool,
         gain: f32,
     },
     Monitor([u64; 4]),
     Taps([i32; MAX_TAPS]),
+    Analysis([AnalysisTap; MAX_ANALYSIS]),
     Live {
         track: u32,
         event: LiveEvent,
+        offset: u32,
     },
 }
 
@@ -212,6 +231,8 @@ pub struct Controller {
     staged: Option<Staged>,
     /// Tracks of the staged plan built by `step`, by plan index (consumed by the commit).
     prebuilt: Vec<Option<(Track, TrackInfo)>>,
+    /// Tracks the last update rebuilt and swapped in (C++ `UpdateResult::replacedTracks`).
+    replaced: u32,
 }
 
 impl core::fmt::Debug for Controller {
@@ -250,6 +271,11 @@ pub struct Renderer {
     /// `MAX_TAPS` interleaved stereo slots of `max_block` frames.
     taps: [i32; MAX_TAPS],
     tap_out: Vec<f32>,
+    /// Analysis taps and their signals of the last render call, `MAX_ANALYSIS` interleaved stereo slots of
+    /// `max_block` frames. `probed`: tracks may still carry probes from the previous block.
+    analysis: [AnalysisTap; MAX_ANALYSIS],
+    analysis_out: Vec<f32>,
+    probed: bool,
     live_played: u64,
     live_ignored: u64,
     /// The master feed of the current block for master-resampling routes.
@@ -292,6 +318,7 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             ticket: 0,
             staged: None,
             prebuilt: Vec::new(),
+            replaced: 0,
         },
         Renderer {
             config,
@@ -316,6 +343,9 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             monitor: [0; 4],
             taps: [-1; MAX_TAPS],
             tap_out: vec![0.0; config.max_block as usize * 2 * MAX_TAPS],
+            analysis: [AnalysisTap::OFF; MAX_ANALYSIS],
+            analysis_out: vec![0.0; config.max_block as usize * 2 * MAX_ANALYSIS],
+            probed: false,
             live_played: 0,
             live_ignored: 0,
             master_feed: vec![0.0; config.max_block as usize * 2],
@@ -514,6 +544,19 @@ impl Controller {
         self.recipe.as_ref().map(|r| (r.sender_latency + r.return_latency, r.sender_latency, r.tail))
     }
 
+    /// The longest own tail of a non-return track of the last submitted graph (instrument release plus insert
+    /// tails, without the render floor; C++ `PreparedProject::trackTailSeconds`, used for freeze renders).
+    pub fn track_tail(&self) -> f64 {
+        self.recipe.as_ref().map_or(0.0, |r| {
+            r.plan
+                .tracks
+                .iter()
+                .zip(&r.tracks)
+                .filter(|(t, _)| !t.is_return)
+                .fold(0.0, |tail, (_, info)| math::std_max(tail, info.tail))
+        })
+    }
+
     /// The host's current project (after the last accepted set/patch).
     pub fn current(&self) -> Option<&Plan> {
         self.current.as_ref()
@@ -595,7 +638,26 @@ impl Controller {
             }
         }
         self.collect();
-        self.enqueue(Command::Metronome { clicks: strokes.map(Arc::new), on, gain })
+        self.enqueue(Command::Metronome { clicks: strokes.map(Arc::new), clear: false, on, gain })
+    }
+
+    /// The metronome without strokes (C++ `setMetronome` with no or unusable strokes): silence until a later
+    /// `set_metronome` brings strokes; ringing strokes stop.
+    pub fn clear_metronome(&mut self, on: bool, gain: f32) -> Result<u64, Error> {
+        require(gain.is_finite() && (0.0..=4.0).contains(&gain), "Invalid metronome gain")?;
+        self.collect();
+        self.enqueue(Command::Metronome { clicks: None, clear: true, on, gain })
+    }
+
+    /// The master gain (C++ `setMasterGain`; the output glides to it like a project `masterGain` change).
+    pub fn set_master_gain(&mut self, gain: f32) -> Result<u64, Error> {
+        checked(f64::from(gain), 0.0, 2.0, "Invalid master gain")?;
+        self.enqueue(Command::Master(gain))
+    }
+
+    /// Tracks the last `update` / `set_json` rebuilt and swapped into the running graph (0 for a new graph).
+    pub fn replaced_tracks(&self) -> u32 {
+        self.replaced
     }
 
     /// Monitored tracks by graph index (C++ `setMonitoring`): their live input (routed tracks: their route
@@ -621,12 +683,35 @@ impl Controller {
         self.enqueue(Command::Taps(taps))
     }
 
-    /// A live note / controller event for the track at graph index `track` (applied at the next block):
-    /// what live MIDI, the computer keyboard and note previews send. Built-in instruments play it
-    /// (`Track::live_event`); other tracks count it as ignored.
+    /// Analysis taps (at most `MAX_ANALYSIS`; the editors that are open ask for them): their signals are
+    /// copied out every block (`Renderer::analysis_output`). An empty list turns them off.
+    pub fn set_analysis(&mut self, taps: &[AnalysisTap]) -> Result<u64, Error> {
+        require(taps.len() <= MAX_ANALYSIS, "Too many analysis taps")?;
+        require(
+            taps.iter()
+                .all(|t| (-1..256).contains(&t.track) && (-1..=i32::from(u16::MAX)).contains(&t.insert)),
+            "Invalid analysis tap",
+        )?;
+        let mut list = [AnalysisTap::OFF; MAX_ANALYSIS];
+        for (slot, &t) in list.iter_mut().zip(taps) {
+            *slot = t;
+        }
+        self.enqueue(Command::Analysis(list))
+    }
+
+    /// A live note / controller event for the track at graph index `track`, at the start of the next render
+    /// call: what live MIDI, the computer keyboard and note previews send. Built-in instruments and host nodes
+    /// play it (`Track::queue_live`); other tracks count it as ignored.
     pub fn live(&mut self, track: u32, event: LiveEvent) -> Result<u64, Error> {
-        require(track < 256 && event.is_valid(), "Invalid live MIDI event")?;
-        self.enqueue(Command::Live { track, event })
+        self.live_at(track, event, 0)
+    }
+
+    /// [`live`](Self::live) `offset` frames into the next render call (up to [`MAX_LIVE_OFFSET`]; past that
+    /// call's frames it lands in a later one, at the same distance from the first call's start): the event
+    /// sounds on that exact sample (docs/RUST_ENGINE.md 5.8).
+    pub fn live_at(&mut self, track: u32, event: LiveEvent, offset: u32) -> Result<u64, Error> {
+        require(track < 256 && event.is_valid() && offset <= MAX_LIVE_OFFSET, "Invalid live MIDI event")?;
+        self.enqueue(Command::Live { track, event, offset })
     }
 
     pub fn pause(&mut self) -> Result<u64, Error> {
@@ -1001,6 +1086,7 @@ impl Controller {
     /// Brings the running graph to `p` with the least work (engine.cpp `update`, audio tracks).
     pub fn update(&mut self, p: Plan) -> Result<Applied, Error> {
         self.collect();
+        self.replaced = 0;
         let result = match self.classify(&p) {
             Ok(None) => self.full(p),
             Ok(Some(edits)) => self.apply_edits(p, edits),
@@ -1257,6 +1343,7 @@ impl Controller {
             recipe.plan.revision = p.revision;
         }
         self.current = Some(p);
+        self.replaced = replaced as u32;
         Ok(if replaced > 0 {
             Applied::Tracks
         } else if count > 1 {
@@ -1442,13 +1529,18 @@ impl Renderer {
                 }
                 Command::Master(gain) => self.target_master_gain = gain,
                 Command::MasterBypass(on) => self.master_bypass = on,
-                Command::Metronome { clicks, on, gain } => {
+                Command::Metronome { clicks, clear, on, gain } => {
                     self.metronome_on = on;
                     self.metronome_gain = gain;
                     if let Some(next) = clicks {
                         // Ringing strokes index the old set: they stop with it.
                         self.metronome.player.clear();
                         if let Some(old) = self.metronome.clicks.replace(next) {
+                            self.retire(Retired::Clicks(old));
+                        }
+                    } else if clear {
+                        self.metronome.player.clear();
+                        if let Some(old) = self.metronome.clicks.take() {
                             self.retire(Retired::Clicks(old));
                         }
                     }
@@ -1458,12 +1550,16 @@ impl Renderer {
                     self.taps = taps;
                     self.tap_out.fill(0.0);
                 }
-                Command::Live { track, event } => {
+                Command::Analysis(taps) => {
+                    self.analysis = taps;
+                    self.analysis_out.fill(0.0);
+                }
+                Command::Live { track, event, offset } => {
                     let played = self
                         .active
                         .as_mut()
                         .and_then(|g| g.tracks.get_mut(track as usize))
-                        .is_some_and(|t| t.live_event(event));
+                        .is_some_and(|t| t.queue_live(event, offset));
                     if played {
                         self.live_played += 1;
                     } else {
@@ -1693,6 +1789,7 @@ impl Renderer {
                     ..Io::default()
                 };
                 let gain = (self.master_gain, self.target_master_gain);
+                let placed = Self::place_probes(g, &self.analysis, &mut self.probed);
                 Self::render_tracks(
                     g,
                     block,
@@ -1720,6 +1817,7 @@ impl Renderer {
                     g.master.process(block);
                 }
                 Self::copy_taps(g, &self.taps, &mut self.tap_out, self.config.max_block, cursor, count);
+                Self::copy_analysis(g, &placed, &mut self.analysis_out, self.config.max_block, cursor, count);
             }
             for x in block.iter_mut() {
                 if !x.is_finite() {
@@ -1787,6 +1885,63 @@ impl Renderer {
                 None => dst.fill(0.0),
             }
         }
+    }
+
+    /// Puts this block's analysis probes on their tracks; returns (graph track, probe) per tap (-1: none).
+    fn place_probes(
+        g: &mut Graph,
+        taps: &[AnalysisTap; MAX_ANALYSIS],
+        probed: &mut bool,
+    ) -> [(i32, usize); MAX_ANALYSIS] {
+        let mut placed = [(-1i32, 0usize); MAX_ANALYSIS];
+        let any = taps.iter().any(|t| t.track >= 0);
+        if *probed || any {
+            for t in &mut g.tracks {
+                t.probes = [Probe::OFF; PROBES];
+            }
+        }
+        *probed = any;
+        for (k, tap) in taps.iter().enumerate() {
+            let Some(t) = usize::try_from(tap.track).ok().and_then(|i| g.tracks.get_mut(i)) else { continue };
+            if let Some((p, probe)) = t.probes.iter_mut().enumerate().find(|(_, p)| p.insert < 0)
+                && let Some(out) = placed.get_mut(k)
+            {
+                *probe = Probe { insert: tap.insert, tuner: tap.tuner };
+                *out = (tap.track, p);
+            }
+        }
+        placed
+    }
+
+    /// The probed signals for frames `[cursor, cursor + count)` of this call (silence for a tap that found
+    /// no track).
+    fn copy_analysis(
+        g: &Graph,
+        placed: &[(i32, usize); MAX_ANALYSIS],
+        out: &mut [f32],
+        max_block: u32,
+        cursor: u32,
+        count: u32,
+    ) {
+        let slot = max_block as usize * 2;
+        let n = count as usize * 2;
+        for (k, &(track, probe)) in placed.iter().enumerate() {
+            let from = k * slot + cursor as usize * 2;
+            let Some(dst) = out.get_mut(from..from + n) else { continue };
+            let src = usize::try_from(track).ok().and_then(|t| g.tracks.get(t)).and_then(|t| {
+                let size = t.probe_out.len() / PROBES;
+                t.probe_out.get(probe * size..probe * size + n)
+            });
+            match src {
+                Some(src) => dst.copy_from_slice(src),
+                None => dst.fill(0.0),
+            }
+        }
+    }
+
+    /// The analysis taps of the last render call (`MAX_ANALYSIS` stereo slots of `max_block` frames).
+    pub fn analysis_output(&self) -> &[f32] {
+        &self.analysis_out
     }
 
     /// The transport reached the project end (no cycle): plug-in style instruments release their

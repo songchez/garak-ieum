@@ -72,11 +72,11 @@ Windows 설치 파일은 `.garak`를 **가락이음 음악 프로젝트**로 등
 
 앱의 **오디오 설정**에서 WASAPI 또는 설치된 ASIO 드라이버, 입력·출력 장치, 레이트·버퍼와 입력 채널을 선택합니다. ASIO 입력과 출력은 같은 드라이버를 사용합니다. 선택한 장치를 열 수 없으면 오류를 보여 주며 다른 장치나 Web Audio로 자동 대체하지 않습니다. 보고된 입력·출력 지연과 실제 블록은 물리 루프백으로 측정한 왕복 지연과 구분합니다.
 
-내장 악기·오디오 리전·기타 앰프·이펙트·VST3와 모니터링은 같은 네이티브 callback에서 처리합니다. 트랙은 Rust 엔진이 렌더하고, VST3와 IEUM WAVE는 C++ 셸의 프로세서를 Rust 그래프가 콜백으로 부릅니다. 녹음은 네이티브 입력 PCM, WAV 출력은 같은 셸·Rust 그래프의 오프라인 렌더를 사용합니다. Windows x64 VST3는 사용자가 선택한 플러그인을 별도 프로세스에서 탐색하고 악기/인서트에 연결합니다. 파라미터, 자체 창, component/controller 상태 저장을 지원하며 설치물에 타사 플러그인을 재배포하지 않습니다.
+내장 악기·오디오 리전·기타 앰프·이펙트·VST3와 모니터링은 같은 네이티브 callback에서 처리합니다. 트랙은 Rust 엔진이 렌더하고(IEUM WAVE 포함), VST3는 C++ 셸의 프로세서를 Rust 그래프가 콜백으로 부릅니다. 녹음은 네이티브 입력 PCM, WAV 출력은 같은 셸·Rust 그래프의 오프라인 렌더를 사용합니다. Windows x64 VST3는 사용자가 선택한 플러그인을 별도 프로세스에서 탐색하고 악기/인서트에 연결합니다. 파라미터, 자체 창, component/controller 상태 저장을 지원하며 설치물에 타사 플러그인을 재배포하지 않습니다.
 
 [네이티브 오디오 안내](NATIVE_AUDIO.md)에 처리 구조·한도·고정 SDK와 검증 결과를 정리했습니다. ASIO SDK 2.3.4의 GPLv3 경로와 앱 코드의 GPL-3.0-only를 유지합니다. Linux에서 실제 SDK/테스트 플러그인 회귀를 통과했으며, 새 Windows MSVC CI와 실제 ASIO 인터페이스의 청감·왕복 지연·장치 복구는 별도 확인 대상입니다. 데스크톱에서 Web Audio는 일회성 압축 파일 디코딩·비실시간 피치 작업에만 남습니다.
 
-0.3.2에 한해 이전 C++ 렌더 경로를 숨은 스위치로 남깁니다. 앱을 `GARAK_RUST_ENGINE=0`(트랙을 C++ 엔진으로) 환경 변수로 실행하고, 그 C++ 경로의 이펙트까지 C++ 커널로 돌리려면 `GARAK_RUST_EFFECTS=none`도 줍니다. 이 경로는 다음 패치에서 삭제할 예정입니다. [Rust 렌더 엔진](RUST_ENGINE.md#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계)
+0.3.3에서 이전 C++ 렌더 경로와 그 스위치(`GARAK_RUST_ENGINE`, `GARAK_RUST_EFFECTS`)를 삭제했습니다. 데스크톱은 항상 Rust 엔진으로 렌더하며, 마스터 버스와 메트로놈도 Rust 엔진 안에 있습니다. [Rust 렌더 엔진](RUST_ENGINE.md#10-데스크톱-호스트-경로-셸--rust-그래프)
 
 외부 MIDI 입력은 네이티브 호스트가 WinMM(Windows)·CoreMIDI(macOS)로 직접 엽니다([MIDI_RECORDING.md](MIDI_RECORDING.md)). VST2/AU/CLAP 호스트는 현재 패키징에서 추가하지 않습니다. 전체 지원 범위는 [구현 상태](IMPLEMENTATION_STATUS.md)를 따릅니다.
 
@@ -90,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-rust.ps1   # 한 번만
 pnpm desktop:dev
 ```
 
-`desktop:dev`는 Rust 엔진·C++ 호스트·웹앱(WASM 모듈 포함)·MCP·Electron 코드를 빌드한 뒤 Electron 창을 엽니다. Rust 없이 C++ 전용 호스트를 빌드하려면 `GARAK_RUST=0`을 줍니다([Rust 오디오 코어](RUST.md#빌드와-rust-없는-개발)). 실행 파일로 사용할 코드를 확인하는 흐름이며, 소스를 수정한 후 다시 실행해 반영합니다.
+`desktop:dev`는 Rust 엔진·C++ 호스트·웹앱(WASM 모듈 포함)·MCP·Electron 코드를 빌드한 뒤 Electron 창을 엽니다. 네이티브 호스트는 Rust 없이 빌드할 수 없습니다([Rust 오디오 코어](RUST.md#빌드와-rust-없는-개발)). 실행 파일로 사용할 코드를 확인하는 흐름이며, 소스를 수정한 후 다시 실행해 반영합니다.
 
 Windows 설치물은 **Visual Studio 2022 또는 Build Tools 2022의 C++ 데스크톱 개발 도구와 Windows SDK**를 준비한 Windows에서 빌드합니다. **CMake 3.25 이상**도 필요합니다. 네이티브 오디오와 MCP 실행 파일을 컴파일하고 ASIO·VST3·miniaudio·JSON 소스는 [고정 manifest](../native/dependencies.lock.json)의 SHA-256을 검사합니다. 대응 소스 ZIP의 `native/dependency-sources/` archive를 우선 사용합니다. 설치 파일을 받아 사용하는 사람에게는 이 개발 도구가 필요하지 않습니다.
 

@@ -20,9 +20,50 @@ export const AUTOSAVE_MIN_DELAY_MS = 650
 export const AUTOSAVE_MAX_DELAY_MS = 4000
 export const FULL_VALIDATION_INTERVAL_MS = 30_000
 
+/** A pending autosave is never pushed back further than this by later edits (see AutosaveScheduler). */
+export const AUTOSAVE_MAX_PENDING_MS = 5000
+
 export function autosaveDelay(lastSaveMs: number): number {
   if (!Number.isFinite(lastSaveMs) || lastSaveMs <= 0) return AUTOSAVE_MIN_DELAY_MS
   return Math.round(Math.min(AUTOSAVE_MAX_DELAY_MS, AUTOSAVE_MIN_DELAY_MS + lastSaveMs * 10))
+}
+
+/**
+ * The autosave timer. A plain trailing debounce lost work: every change re-armed it, including live arm/monitor flags
+ * and each tick of a held control, so a burst of edits (pick a preset, move the mic, stomp a pedal, toggle monitoring)
+ * kept the write waiting, and a reload or tab close inside that window reopened the project from before the burst.
+ *
+ * - `schedule` (re)arms the quiet period, but never past AUTOSAVE_MAX_PENDING_MS after the first unsaved change.
+ * - `flush` runs the pending save now: the editor calls it when the page is hidden or unloaded (and on Ctrl+S), so the
+ *   IndexedDB write starts before the document goes away instead of after a timer that will never fire.
+ */
+export class AutosaveScheduler {
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private job: (() => void) | null = null
+  private since: number | null = null
+  constructor(private readonly maxPendingMs = AUTOSAVE_MAX_PENDING_MS, private readonly now: () => number = () => performance.now()) {}
+
+  /** Runs `job` after `delay` ms without another schedule call, or at the pending ceiling, whichever comes first. */
+  schedule(job: () => void, delay: number): void {
+    const now = this.now()
+    this.since ??= now
+    this.job = job
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = setTimeout(() => { this.flush() }, Math.max(0, Math.min(delay, this.since + this.maxPendingMs - now)))
+  }
+  /** Runs the pending job immediately. False when nothing was pending. */
+  flush(): boolean {
+    const job = this.job
+    this.cancel()
+    if (!job) return false
+    job()
+    return true
+  }
+  cancel(): void {
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null; this.job = null; this.since = null
+  }
+  get pending(): boolean { return this.job !== null }
 }
 
 const fail = (reason: string): never => { throw new Error(`자동 저장할 프로젝트 상태가 올바르지 않습니다: ${reason}`) }

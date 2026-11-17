@@ -160,7 +160,7 @@ pub extern "C" fn garak_rs_reverb_scratch_len(sample_rate: f64, type_param: f64)
     }
 }
 
-/// Synthesises the impulse response (dsp.cpp `impulse` + the size cross-fade). Returns 1 on
+/// Synthesises the impulse response (the former C++ DSP (0.3.2) `impulse` + the size cross-fade). Returns 1 on
 /// success, 0 when an argument or buffer is invalid.
 ///
 /// # Safety

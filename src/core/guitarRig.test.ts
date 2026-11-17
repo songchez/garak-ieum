@@ -35,7 +35,7 @@ describe('built-in guitar rig project integration', () => {
     const bytes = new Uint8Array([82, 73, 70, 70, 0, 1, 17, 255])
     const source: AudioAsset = {
       id: 'dry-source', name: 'original-di.wav', blob: new Blob([bytes], { type: 'audio/wav' }),
-      buffer: {} as AudioBuffer, peaks: [],
+      sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [],
     }
     const imported = await importProjectBundle(await exportProjectBundle(project, new Map([[source.id, source]])))
     expect(imported.project).toEqual(project)

@@ -1,5 +1,5 @@
 //! Chorus, flanger, phaser and tremolo / auto-pan: `ChorusFx`, `FlangerFx`, `PhaserFx`,
-//! `TremoloFx` in native/src/sigimsae_effects.inc (= kernels.ts `*Kernel`).
+//! `TremoloFx` in the former C++ 시김새 effects (0.3.2) (= the former TS kernels (0.3.2) `*Kernel`).
 
 use super::{
     Kernel, SettledFrame, TAU, feedback_repeats, process_interleaved_settled, process_planar_settled,

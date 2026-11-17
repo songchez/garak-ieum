@@ -1,20 +1,5 @@
-import type { EffectDef, RealtimeEffectModule } from '../contracts.js'
-import { clamp } from '../../audio/math.js'
-import { parameterReader, setParameter, dbToGain, noTail } from './shared.js'
-import { createWorkletGraph, prepareRustEffect, rustEffectsReady } from './sigimsae.js'
-
-let driveCurve: Float32Array<ArrayBuffer> | null = null
-
-function shaperCurve(): Float32Array<ArrayBuffer> {
-  if (driveCurve) return driveCurve
-  const points = 2048
-  driveCurve = new Float32Array(points)
-  for (let point = 0; point < points; point += 1) {
-    const x = point / (points - 1) * 2 - 1
-    driveCurve[point] = Math.tanh(2.5 * x) / Math.tanh(2.5)
-  }
-  return driveCurve
-}
+import type { EffectDef, EffectModule } from '../contracts.js'
+import { noTail } from './shared.js'
 
 const definition: EffectDef = {
   name: 'Hot Tube', short: '드라이브', label: '드라이브',
@@ -26,41 +11,4 @@ const definition: EffectDef = {
   ],
 }
 
-export const driveEffect: RealtimeEffectModule = {
-  id: 'drive', kind: 'realtime-effect', stateVersion: 1, definition,
-  prepare: prepareRustEffect,
-  create(context, remember) {
-    // Rust kernel (the desktop engine's, docs/RUST.md) whenever the module loaded; the Web Audio graph below is the fallback.
-    // Its 2x oversampler delays the output by 8 frames (the desktop compensates; the web graph has no PDC).
-    if (rustEffectsReady(context)) return createWorkletGraph(context, remember, 'drive')
-    const input = remember(context.createGain())
-    const dry = remember(context.createGain())
-    const pre = remember(context.createGain())
-    const shaper = remember(context.createWaveShaper())
-    const tone = remember(context.createBiquadFilter())
-    const post = remember(context.createGain())
-    const wet = remember(context.createGain())
-    const output = remember(context.createGain())
-    shaper.curve = shaperCurve()
-    shaper.oversample = '2x'
-    tone.type = 'lowpass'
-    input.connect(dry).connect(output)
-    input.connect(pre).connect(shaper).connect(tone).connect(post).connect(wet).connect(output)
-    return {
-      input,
-      output,
-      update(params, _bpm, now, smooth) {
-        const p = parameterReader(definition.params, params)
-        const mix = clamp(p('mix'), 0, 1)
-        const outputGain = dbToGain(clamp(p('output'), -60, 24))
-        const preGain = dbToGain(clamp(p('drive'), -24, 48))
-        setParameter(dry.gain, (1 - mix) * outputGain, now, smooth)
-        setParameter(pre.gain, preGain, now, smooth)
-        setParameter(tone.frequency, clamp(p('tone'), 10, context.sampleRate * 0.45), now, smooth)
-        setParameter(post.gain, outputGain / Math.sqrt(preGain * 2.53), now, smooth)
-        setParameter(wet.gain, mix, now, smooth)
-      },
-    }
-  },
-  tailSeconds: noTail,
-}
+export const driveEffect: EffectModule = { id: 'drive', stateVersion: 1, definition, tailSeconds: noTail }

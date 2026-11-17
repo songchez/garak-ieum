@@ -181,10 +181,10 @@ pub(crate) struct Builtin {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 enum PluginEngine {
-    /// 옥구슬 EP / 한밤 106 (rust_instrument.hpp `RustInstrumentProcessor`).
+    /// 옥구슬 EP / 한밤 106 (the former C++ instrument adapter (0.3.2) `RustInstrumentProcessor`).
     Vintage { instrument: Box<Instrument>, converted: Vec<InstrumentEvent>, left: Vec<f32>, right: Vec<f32> },
-    /// IEUM WAVE (native/src/wavetable.cpp `WavetableProcessor`). None until a rebuilt track takes
-    /// its predecessor's processor (engine.cpp `reuseInstrument`: the same patch is not rebuilt).
+    /// IEUM WAVE (wave::Processor, the former the former C++ IEUM WAVE host (0.3.2)). None until a rebuilt track takes
+    /// its predecessor's processor (the same patch is not rebuilt).
     Wave { processor: Option<Box<Processor>>, host: Vec<HostEvent> },
 }
 
@@ -392,7 +392,7 @@ fn resolve_set(set: &SampleSet, assets: &BTreeMap<String, Arc<PcmAsset>>) -> Res
     Ok(r)
 }
 
-/// Whether a `builtin-synth` instrument id is a vintage (Rust) instrument (rust_instrument.hpp).
+/// Whether a `builtin-synth` instrument id is a vintage (Rust) instrument (the former C++ instrument adapter (0.3.2)).
 pub fn vintage_kind(t: &TrackPlan) -> Option<InstrumentKind> {
     if t.source.kind == SourceKind::BuiltinSynth {
         InstrumentKind::from_id(t.source.instrument_id.as_bytes())
@@ -770,8 +770,8 @@ impl Vintage {
     }
 
     /// One block: pending + timeline + live auto-off events, sorted, through the instrument
-    /// (rust_instrument.hpp `RustInstrumentProcessor::process`, wavetable.cpp
-    /// `WavetableProcessor::process`). Overwrites `buf`. `context`: tempo, transport playing.
+    /// (the former C++ instrument adapter (0.3.2) `RustInstrumentProcessor::process`, IEUM WAVE:
+    /// `wave::Processor::process`). Overwrites `buf`. `context`: tempo, transport playing.
     fn render(
         &mut self,
         buf: &mut [f32],

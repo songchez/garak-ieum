@@ -23,7 +23,7 @@ jobs:
   checks:
     name: Tests and builds
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       CI: 'true'
     steps:
@@ -47,13 +47,13 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      # The web build ships the Rust DSP module (docs/RUST.md) and the render engine module behind the
-      # `garak.rustEngine` flag (docs/RUST_ENGINE.md 5), each under a size budget; with them built
-      # first, `pnpm test` also runs the WASM parity and engine A/B suites instead of skipping them.
+      # The web build ships the render engine module, the web's only renderer (docs/RUST_ENGINE.md 5),
+      # under a size budget; with it built first, `pnpm test` also runs the engine A/B, effect and web
+      # host suites instead of skipping them.
       - name: Install the pinned Rust toolchain
         run: sh scripts/setup-rust.sh --skip-verify
 
-      - name: Build the WASM DSP and engine modules
+      - name: Build the WASM engine module
         run: pnpm rust:wasm
 
       - name: Run tests
@@ -61,6 +61,16 @@ jobs:
 
       - name: Type-check and build the app
         run: pnpm build
+
+      # The guitar rig editor in Chromium and the rig rendered by the engine (about a minute): UI, presets,
+      # fake input monitoring, persistence, every preset audible and the tuner reading an engine analysis tap.
+      - name: Install Chromium for the browser smoke
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Guitar rig browser smoke
+        env:
+          GARAK_CHROMIUM_ARGS: '["--autoplay-policy=no-user-gesture-required"]'
+        run: node scripts/guitar-rig-smoke.mjs
 
       - name: Build the MCP server and desktop main process
         run: pnpm mcp:build && pnpm desktop:compile

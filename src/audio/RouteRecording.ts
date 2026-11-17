@@ -1,4 +1,4 @@
-/// <reference path="../devices/guitar-rig/worklet-assets.d.ts" />
+/// <reference path="./worklet-assets.d.ts" />
 import type { RecordingSession, TakeCallbacks, TakeResult } from '../core/recording'
 import { encodePcm16Wav } from './math'
 
@@ -16,7 +16,7 @@ export function prepareRouteRecorder(context: BaseAudioContext): Promise<void> {
   return promise
 }
 
-/** What the Web Audio engine lends a route recording: its clock and the routed inputs of the live graph. */
+/** What the browser engine lends a route recording: its clock and the routed inputs (the engine's tap output). */
 export interface RouteRecordingHost {
   readonly context: AudioContext
   /** Connects a recorder to the track's route input now and after every graph replacement; returns the detach. */

@@ -1,9 +1,9 @@
-//! `garak-engine` for the browser AudioWorklet (docs/RUST_ENGINE.md 5): the web host behind the
-//! `garak.rustEngine` flag (src/audio/rust/RustWebAudioEngine.ts) and its offline export worker.
+//! `garak-engine` for the browser AudioWorklet (docs/RUST_ENGINE.md 5): the web's only renderer
+//! (src/audio/WebAudioEngine.ts hosts it) and its offline export worker.
 //!
-//! Like `garak-wasm`: raw `extern "C"` exports, no wasm-bindgen glue, one engine per module
-//! instance (one worklet node, or one export worker). Unlike it, the engine owns unbounded project
-//! data, so this module has a general allocator:
+//! Raw `extern "C"` exports, no wasm-bindgen glue, one engine per module instance (one worklet
+//! node, or one export worker). The engine owns unbounded project data, so this module has a
+//! general allocator:
 //! - std's allocator (dlmalloc on wasm32-unknown-unknown). A `no_std` build with dlmalloc as an
 //!   explicit global allocator measured 3.7 KiB *larger* (std's copy is better tuned), so std stays.
 //! - Control exports (`*_alloc*`, `put_asset*`, `set`, `patch`, `transport`, `collect`) may
@@ -25,7 +25,8 @@ use core::cell::UnsafeCell;
 
 use garak_engine::metronome::Clicks;
 use garak_engine::{
-    Applied, Controller, DynamicsReading, EngineConfig, LiveEvent, MAX_TAPS, PcmAsset, Renderer, engine,
+    AnalysisTap, Applied, Controller, DynamicsReading, EngineConfig, LiveEvent, MAX_ANALYSIS, MAX_TAPS,
+    PcmAsset, Renderer, engine,
 };
 
 /// Input channels a render call can carry (the worklet's live input: a MediaStream).
@@ -74,7 +75,8 @@ fn state() -> &'static mut State {
     unsafe { &mut *STATE.0.get() }
 }
 
-pub const ABI_VERSION: u32 = 4;
+/// 5: `garak_engine_live_at` (live events at a sample offset, docs/RUST_ENGINE.md 5.8).
+pub const ABI_VERSION: u32 = 5;
 const ERROR_CODE: i32 = -1;
 const NO_ENGINE: &str = "No engine; call garak_engine_create";
 
@@ -574,11 +576,63 @@ pub extern "C" fn garak_engine_max_taps() -> u32 {
     MAX_TAPS as u32
 }
 
+/// Analysis taps (the editors' spectrum / stereo scope / rig tuner): `count` triples of i32 at `taps` —
+/// graph track, plan insert index, kind (0 the insert's output, 1 a guitar rig's tuner input). Up to
+/// `MAX_ANALYSIS`; 0 turns them off. Returns 0 or -1.
+///
+/// # Safety
+/// `taps` is null or valid for `3 * count` i32 reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_engine_analysis(taps: *const i32, count: usize) -> i32 {
+    // SAFETY: caller contract.
+    let raw = if taps.is_null() || count == 0 {
+        &[][..]
+    } else {
+        unsafe { core::slice::from_raw_parts(taps, count.saturating_mul(3)) }
+    };
+    let mut list = [AnalysisTap::OFF; MAX_ANALYSIS];
+    let mut n = 0;
+    for (slot, &[track, insert, kind]) in list.iter_mut().zip(raw.as_chunks::<3>().0) {
+        *slot = AnalysisTap { track, insert, tuner: kind == 1 };
+        n += 1;
+    }
+    if raw.len() / 3 > MAX_ANALYSIS {
+        return -1;
+    }
+    status(with(|i| i.control.set_analysis(list.get(..n).unwrap_or(&[])).map(|_| ())))
+}
+
+/// The analysis taps of the last render call: `MAX_ANALYSIS` slots of `max_block` interleaved stereo frames.
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_engine_analysis_ptr() -> *const f32 {
+    with(|i| i.render.analysis_output().as_ptr()).unwrap_or(core::ptr::null())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_engine_max_analysis() -> u32 {
+    MAX_ANALYSIS as u32
+}
+
 /// A live event for the track at graph index `track`: `kind` 0 note on (`pitch`, `value` = velocity
 /// 0..1, `id`), 1 note off, 2 all notes off, 3 controller (`pitch` = controller, `value` = 0..127).
 /// Returns 0 or -1 (control call; the worklet runs it between quanta).
 #[unsafe(no_mangle)]
 pub extern "C" fn garak_engine_live(track: u32, kind: u32, pitch: u32, value: f32, id: i32) -> i32 {
+    garak_engine_live_at(track, kind, pitch, value, id, 0)
+}
+
+/// `garak_engine_live` `offset` frames into the next render call (the worklet maps the main thread's target
+/// context frame to the quantum it renders; past that quantum the event lands in a later one at the same
+/// distance; at most `MAX_LIVE_OFFSET`): the event starts on that exact sample (docs/RUST_ENGINE.md 5.8).
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_engine_live_at(
+    track: u32,
+    kind: u32,
+    pitch: u32,
+    value: f32,
+    id: i32,
+    offset: u32,
+) -> i32 {
     let event = match kind {
         0 => LiveEvent::NoteOn { pitch: pitch.min(127) as u8, velocity: value.clamp(0.0, 1.0), id },
         1 => LiveEvent::NoteOff { pitch: pitch.min(127) as u8, id },
@@ -586,7 +640,8 @@ pub extern "C" fn garak_engine_live(track: u32, kind: u32, pitch: u32, value: f3
         3 => LiveEvent::Control { controller: pitch.min(u32::from(u16::MAX)) as u16, value: value as i32 },
         _ => return fail("Unknown live event"),
     };
-    status(with(|i| i.control.live(track, event).map(|_| ())))
+    let offset = offset.min(garak_engine::MAX_LIVE_OFFSET);
+    status(with(|i| i.control.live_at(track, event, offset).map(|_| ())))
 }
 
 /// The live input buffer of the next `garak_engine_render_planar_io` call (`max_block` frames of

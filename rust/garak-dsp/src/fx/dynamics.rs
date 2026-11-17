@@ -1,5 +1,5 @@
-//! Compressor (native/src/dsp.cpp `Compressor`), limiter and gate (sigimsae_effects.inc
-//! `LimiterFx`, `GateFx` = kernels.ts `LimiterKernel`, `GateKernel`), with the dynamics meter tap
+//! Compressor (the former C++ DSP (0.3.2) `Compressor`), limiter and gate (the former C++ 시김새 effects (0.3.2)
+//! `LimiterFx`, `GateFx` = the former TS kernels (0.3.2) `LimiterKernel`, `GateKernel`), with the dynamics meter tap
 //! (detector peak and lowest applied gain since the last read, both linear).
 
 use super::{Kernel, SettledFrame, process_interleaved_settled, process_planar_settled};
@@ -74,7 +74,7 @@ impl Compressor {
         s
     }
 
-    /// dsp.cpp `Compressor(rate, threshold, ratio, attack, release, makeup)` with the 6 dB knee
+    /// the former C++ DSP (0.3.2) `Compressor(rate, threshold, ratio, attack, release, makeup)` with the 6 dB knee
     /// (attack / release in seconds, makeup linear): the guitar rig's compressor pedal.
     pub(crate) fn with_settings(
         sample_rate: f64,

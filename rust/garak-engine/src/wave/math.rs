@@ -1,4 +1,4 @@
-//! ieum_wave/math.hpp in Rust, plus the float libm functions the synth calls (`std::exp2(float)`
+//! the former C++ IEUM WAVE math (0.3.2) in Rust, plus the float libm functions the synth calls (`std::exp2(float)`
 //! is `exp2f`, …): natively the platform C library like the rest of the engine
 //! (`platform-math`), the `libm` crate on wasm32.
 
@@ -82,7 +82,7 @@ pub fn random_unit(state: &mut u32) -> f32 {
     (random_bits(state) >> 8) as f32 * (1.0 / 16_777_216.0)
 }
 
-/// Linear ramp to a target over a number of samples (math.hpp `LinearSmoother`).
+/// Linear ramp to a target over a number of samples (the former C++ IEUM WAVE math (0.3.2) `LinearSmoother`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LinearSmoother {
     pub value: f32,
@@ -136,7 +136,7 @@ pub fn cubic(a: f32, b: f32, c: f32, d: f32, fraction: f32) -> f32 {
     ((c3 * fraction + c2) * fraction + c1) * fraction + b
 }
 
-/// Transparent below the knee; emergency peak safety (math.hpp `safetyCeiling`).
+/// Transparent below the knee; emergency peak safety (the former C++ IEUM WAVE math (0.3.2) `safetyCeiling`).
 #[inline(always)]
 pub fn safety_ceiling(x: f32) -> f32 {
     let x = finite_or(x, 0.0);

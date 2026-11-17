@@ -35,7 +35,7 @@ function largeProject(): { project: Project; assets: Map<string, AudioAsset> } {
     track.clips = [clip]
     tracks.push(track)
     const bytes = new Uint8Array(4 * 1024 * 1024).map((_, index) => (index * 31 + i) & 255)
-    assets.set(assetId, { id: assetId, name: `take-${i}.wav`, blob: new Blob([bytes], { type: 'audio/wav' }), buffer: {} as AudioBuffer, peaks: [] })
+    assets.set(assetId, { id: assetId, name: `take-${i}.wav`, blob: new Blob([bytes], { type: 'audio/wav' }), sampleRate: 48000, numberOfChannels: 1, length: 48000, duration: 1, peaks: [] })
   }
   return { project: { ...demo, tracks, lengthBeats: 36 * 32, loop: { enabled: false, startBeat: 0, endBeat: 32 } }, assets }
 }

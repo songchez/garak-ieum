@@ -6,12 +6,6 @@ export function paramValue(defs: readonly ParamDef[], params: Record<string, num
   return defs.find(def => def.id === id)?.default ?? 0
 }
 
-export function setParameter(parameter: AudioParam, value: number, now: number, smooth: boolean): void {
-  parameter.cancelScheduledValues(now)
-  if (smooth) parameter.setTargetAtTime(value, now, 0.012)
-  else parameter.setValueAtTime(value, now)
-}
-
 export const dbToGain = (db: number): number => Math.pow(10, db / 20)
 
 export function randomGenerator(seed: number): () => number {

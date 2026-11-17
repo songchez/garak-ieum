@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["garak-dsp", "garak-engine", "garak-engine-wasm", "garak-ffi", "garak-wasm"]
+members = ["garak-dsp", "garak-engine", "garak-engine-wasm", "garak-ffi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -61,8 +61,7 @@ panic = "abort"
 debug = false
 incremental = false
 
-# Browser AudioWorklet module (`pnpm rust:wasm`). Full LTO + strip keep it small; opt-level 3
-# because the module is far below its size budget (docs/RUST.md) and the worklet is CPU-bound.
+# Base of the browser engine module's profile below: full LTO + strip keep it small.
 [profile.wasm]
 inherits = "release"
 lto = "fat"

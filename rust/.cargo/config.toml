@@ -3,9 +3,11 @@
 # picks it automatically) and needs MinGW gcc on PATH.
 [target.wasm32-unknown-unknown]
 # Wasm features every AudioWorklet-capable browser has (Chrome 91+, Firefox 89+, Safari 16.4+).
-# The kernels need almost no stack; 64 KiB instead of the default 1 MiB keeps each worklet
-# instance's memory to a few pages.
+# 256 KiB instead of the default 1 MiB keeps each engine instance (worklet, preview, export and
+# kernel workers) small. It was 64 KiB for the old per-effect garak-dsp worklets; the engine building a
+# guitar rig insert (GuitarRig::empty is ~40 KiB, moved into its Box) overflowed 64 KiB and trapped
+# ("memory access out of bounds"), while 128 KiB measured enough. 256 KiB leaves headroom.
 rustflags = [
   "-C", "target-feature=+simd128,+bulk-memory,+nontrapping-fptoint,+sign-ext",
-  "-C", "link-arg=-zstack-size=65536",
+  "-C", "link-arg=-zstack-size=262144",
 ]

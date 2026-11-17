@@ -1,5 +1,5 @@
-//! One-pole parameter glide (~12 ms), as `Smooth` in native/src/sigimsae_effects.inc and
-//! src/devices/effects/kernels.ts.
+//! One-pole parameter glide (~12 ms), as `Smooth` in the former C++ 시김새 effects (0.3.2) and
+//! src/devices/effects/the former TS kernels (0.3.2).
 
 use crate::math;
 /// `1 - exp(-1 / (0.012 * rate))`: the per-sample step every glide in the engine uses.
