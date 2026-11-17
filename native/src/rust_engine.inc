@@ -1,5 +1,6 @@
 // Rust render engine backend of RenderEngine (docs/RUST_ENGINE.md 10). Included by engine.cpp inside
-// namespace garak. GARAK_RUST_ENGINE=1 (or "strict") at RenderEngine construction makes every graph the Rust
+// namespace garak. Since 0.3.2 the Rust engine is the default: unless GARAK_RUST_ENGINE=0 (hidden emergency
+// fallback to the C++ track path, removed in the next patch) RenderEngine construction makes every graph the Rust
 // engine accepts render its tracks through rust/garak-engine (garak_engine.h), while this C++ engine stays the
 // shell: transport, cycle, count-in, metronome, live MIDI, capture, master bus and snapshots. VST3 instruments
 // and inserts and IEUM WAVE stay C++ processors the Rust graph calls back at their place in the chain (host
@@ -18,7 +19,7 @@ namespace {
 int rustEngineModeFromEnvironment() noexcept {
 #if GARAK_RUST
   const char* value = std::getenv("GARAK_RUST_ENGINE");
-  if (!value || !*value) return 0;
+  if (!value || !*value) return 1;  // default since 0.3.2
   const std::string_view v(value);
   if (v == "strict") return 2;
   if (v == "0" || v == "off" || v == "false") return 0;

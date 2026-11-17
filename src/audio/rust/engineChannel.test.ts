@@ -74,22 +74,22 @@ describe('Rust engine flag', () => {
   afterEach(() => { vi.unstubAllGlobals() })
   const storage = (value: string | null) => vi.stubGlobal('localStorage', { getItem: (key: string) => key === RUST_ENGINE_STORAGE_KEY ? value : null })
 
-  it('is off by default and follows localStorage', () => {
+  it('is on by default (0.3.2) and follows localStorage', () => {
     storage(null)
-    expect(rustEngineRequested()).toBe(false)
+    expect(rustEngineRequested()).toBe(true)
     storage('1')
     expect(rustEngineRequested()).toBe(true)
     storage('0')
     expect(rustEngineRequested()).toBe(false)
   })
 
-  it('selects the Rust engine host only when requested; it stays a WebAudioEngine', () => {
+  it('selects the Rust engine host unless opted out; it stays a WebAudioEngine', () => {
     vi.stubGlobal('window', {})
-    storage(null)
+    storage('0')
     const plain = createAudioEngine(DEFAULT_AUDIO_SETTINGS)
     expect(plain).not.toBeInstanceOf(RustWebAudioEngine)
     plain.dispose()
-    storage('1')
+    storage(null)
     const rust = createAudioEngine(DEFAULT_AUDIO_SETTINGS)
     expect(rust).toBeInstanceOf(RustWebAudioEngine)
     expect(rust).toBeInstanceOf(WebAudioEngine)

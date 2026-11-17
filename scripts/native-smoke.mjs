@@ -24,6 +24,11 @@ const service = new NativeAudioService({
 let checks = 0
 async function checked(name, operation) { await operation(); checks++; console.log('PASS ' + name) }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+// The Rust render engine is on by default since 0.3.2; GARAK_RUST_ENGINE=0 is the hidden C++ fallback.
+const rustEngineEnv = process.env.GARAK_RUST_ENGINE ?? ''
+const rustEngineOff = () => ['0', 'off', 'false'].includes(rustEngineEnv)
+let hostCapabilities
+const rustEngineExpected = (caps = hostCapabilities) => !rustEngineOff() && (rustEngineEnv !== '' || caps?.rustEngine?.available === true)
 async function within(promise, description, timeout = 5000) {
   let timer
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(description + ' timed out')), timeout) })]) }
@@ -123,13 +128,16 @@ try {
   const wave = await waveFixtures()
   await checked('WAVE capability handshake does not open an audio device', async () => {
     const capabilities = await service.request('engine.capabilities')
+    hostCapabilities = capabilities
     assert.equal(capabilities.protocol, 1)
     assert.equal(capabilities.wavetable.protocolVersion, 1)
     assert.equal(capabilities.wavetable.schemaFingerprint, wave.fingerprint)
     assert.equal(capabilities.wavetable.minimumSampleRate, 22050)
     assert.equal(capabilities.wavetable.maximumSampleRate, 192000)
-    // GARAK_RUST_ENGINE=1|strict (docs/RUST_ENGINE.md 10): the host must actually run the Rust engine.
-    if (process.env.GARAK_RUST_ENGINE) assert.deepEqual(capabilities.rustEngine, { available: true, requested: true })
+    // The Rust engine is the default since 0.3.2 (docs/RUST_ENGINE.md 10): a Rust build must request it unless
+    // GARAK_RUST_ENGINE=0 (the hidden C++ fallback); an explicit 1|strict also requires a Rust build.
+    if (rustEngineExpected(capabilities)) assert.deepEqual(capabilities.rustEngine, { available: true, requested: true })
+    else if (rustEngineOff()) assert.equal(capabilities.rustEngine?.requested, false)
     assert.equal((await service.request('engine.snapshot')).ready, false)
   })
   await checked('native output opens only the explicitly requested test clock', async () => {
@@ -241,7 +249,8 @@ try {
     const rendered = await service.request('render.wav', { timeline: p })
     const output = wav(rendered.data)
     // An audio-only project renders through the Rust graph when the flag is on.
-    if (process.env.GARAK_RUST_ENGINE) assert.equal(rendered.rustEngine, true, rendered.rustRefusal)
+    if (rustEngineExpected()) assert.equal(rendered.rustEngine, true, rendered.rustRefusal)
+    else if (rustEngineOff()) assert.equal(rendered.rustEngine, false)
     assert.ok(rms(output.samples.subarray(0, 12000 * 2)) > .05)
     assert.ok(output.samples.slice(0, 100).some(sample => sample !== 0))
     const malformed = new Float32Array([0, Number.NaN])

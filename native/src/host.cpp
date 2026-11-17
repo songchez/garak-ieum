@@ -213,8 +213,14 @@ class Host {
       {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}},
       // 옥구슬 EP / 한밤 106 (native/src/rust_instrument.hpp) need the Rust DSP core (GARAK_RUST=ON).
       {"vintage",{{"protocolVersion",1},{"available",garak::dsp::rustEffectsAvailable()},{"instruments",Json::array({"okgu-ep","hanbam-106"})}}},
-      // The unified Rust render engine behind GARAK_RUST_ENGINE=1|strict (off by default; docs/RUST_ENGINE.md 10).
-      {"rustEngine",{{"available",garak::rustEngineAvailable()},{"requested",engine_?engine_->rustEngineRequested():std::getenv("GARAK_RUST_ENGINE")!=nullptr}}}};
+      // The unified Rust render engine: on by default since 0.3.2, GARAK_RUST_ENGINE=0 is the hidden C++ fallback
+      // (docs/RUST_ENGINE.md 10).
+      {"rustEngine",{{"available",garak::rustEngineAvailable()},{"requested",engine_?engine_->rustEngineRequested():garak::rustEngineAvailable()&&[]{
+        const char* v=std::getenv("GARAK_RUST_ENGINE");
+        if(!v||!*v) return true;
+        const std::string_view s(v);
+        return !(s=="0"||s=="off"||s=="false");
+      }()}}}};
     if (method=="engine.snapshot") { auto result=snapshot(); drainMidi(result); return result; }
     if (method.rfind("midi.",0)==0) return midiRequest(method,a);
     if (method=="devices.list") {

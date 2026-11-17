@@ -16,7 +16,7 @@ export function createAudioEngine(settings: AudioSettings, desktop = getDesktopB
   // Electron still must fail closed; its user agent is only a runtime detector,
   // never an authority for IPC or filesystem access.
   if (typeof navigator !== 'undefined' && /\bElectron\//i.test(navigator.userAgent)) return new NativeAudioEngine(undefined, 'unavailable', undefined, settings)
-  // The unified Rust engine in an AudioWorklet (docs/RUST_ENGINE.md 5): off unless `garak.rustEngine` / VITE_GARAK_RUST_ENGINE opts in.
+  // The unified Rust engine in an AudioWorklet (docs/RUST_ENGINE.md 5): on by default since 0.3.2; `garak.rustEngine=0` / VITE_GARAK_RUST_ENGINE=0 falls back to Web Audio.
   if (rustEngineRequested()) return new RustWebAudioEngine(undefined, settings)
   return new WebAudioEngine(undefined, settings)
 }
