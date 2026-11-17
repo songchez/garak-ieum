@@ -16,11 +16,17 @@ use crate::insert::{KernelCache, live_parameter, validated_values};
 use crate::json::Json;
 use crate::master::Master;
 use crate::math;
-use crate::plan::{LaneTarget, PcmAsset, Plan, TrackPlan};
+use crate::metronome::{Clicks, MeterEvent, MeterMap, Metronome, clicks, grid, meter_clicks};
+use crate::plan::{LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, SourceKind, TrackPlan};
 use crate::protocol;
 use crate::queue::{Consumer, Producer, channel};
 use crate::tempo::TempoMap;
-use crate::track::{Feed, Track, TrackInfo};
+use crate::track::{Feed, LiveEvent, Track, TrackInfo, TrackInput};
+
+/// Route recording taps the renderer copies out per block (docs/RUST_ENGINE.md 5.7).
+pub const MAX_TAPS: usize = 8;
+/// Longest metronome stroke (C++ `setMetronome`: 4 s at the engine rate).
+const MAX_STROKE_SECONDS: usize = 4;
 
 const MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 const COMMAND_CAPACITY: usize = 1024;
@@ -65,6 +71,11 @@ pub struct Snapshot {
     pub ready: bool,
     pub master_peak: f32,
     pub leaked: u64,
+    /// A count-in is running (the transport starts when it ends).
+    pub counting_in: bool,
+    /// Live events a track played, and events no track could play (audio tracks, unknown index).
+    pub live_played: u64,
+    pub live_ignored: u64,
 }
 
 #[derive(Debug, Default)]
@@ -76,6 +87,9 @@ struct Published {
     ready: AtomicBool,
     peak: AtomicU32,
     leaked: AtomicU64,
+    counting_in: AtomicBool,
+    live_played: AtomicU64,
+    live_ignored: AtomicU64,
 }
 
 /// A prepared graph (C++ `PreparedProject::Impl`).
@@ -90,8 +104,19 @@ pub(crate) struct Graph {
     /// Boxed: a track replacement is a pointer swap and a retired track never moves.
     #[allow(clippy::vec_box)]
     tracks: Vec<Box<Track>>,
-    /// Render order: senders first, then returns (the C++ processing levels without routes).
+    /// Render order by processing level (engine.cpp `levelOrder`): every route source and send renders in
+    /// an earlier level than the tracks that read it. Without routes: senders, then returns.
     order: Vec<usize>,
+    /// Start of each level in `order`, plus the end.
+    level_start: Vec<usize>,
+    /// The first level holding a master-resampling track (it needs the master feed first).
+    master_level: Option<usize>,
+    /// Metronome grid inputs (C++ `PreparedProject::Impl::meters` + timeline header).
+    meters: MeterMap,
+    meter_mapped: bool,
+    bpm: f64,
+    meter: (i32, i32),
+    low_latency: bool,
     master: Master,
     latency: u32,
     sender_latency: u32,
@@ -102,21 +127,54 @@ pub(crate) struct Graph {
 
 enum Command {
     Graph(Box<Graph>),
-    Play,
+    /// Play after a count-in of this many frames (0: now).
+    Play(i64),
     Pause,
     Stop,
     Seek(i64),
-    Mix { track: u32, gain: f32, pan: f32, audible: bool, unmuted_audible: bool },
-    Send { ret: u32, sender: u32, pre: bool, gain: f32 },
-    Param { track: u32, insert: u32, index: u32, value: f64 },
-    Replace { track: u32, runtime: Box<Track> },
+    Mix {
+        track: u32,
+        gain: f32,
+        pan: f32,
+        audible: bool,
+        unmuted_audible: bool,
+    },
+    Send {
+        ret: u32,
+        sender: u32,
+        pre: bool,
+        gain: f32,
+    },
+    Param {
+        track: u32,
+        insert: u32,
+        index: u32,
+        value: f64,
+    },
+    Replace {
+        track: u32,
+        runtime: Box<Track>,
+    },
     Master(f32),
     Revision(u64),
+    MasterBypass(bool),
+    Metronome {
+        clicks: Option<Arc<Clicks>>,
+        on: bool,
+        gain: f32,
+    },
+    Monitor([u64; 4]),
+    Taps([i32; MAX_TAPS]),
+    Live {
+        track: u32,
+        event: LiveEvent,
+    },
 }
 
 enum Retired {
     Graph(#[allow(dead_code)] Box<Graph>),
     Track(#[allow(dead_code)] Box<Track>),
+    Clicks(#[allow(dead_code)] Arc<Clicks>),
 }
 
 struct Ticketed {
@@ -146,6 +204,9 @@ pub struct Controller {
     retired: Consumer<Retired>,
     published: Arc<Published>,
     ticket: u64,
+    staged: Option<Staged>,
+    /// Tracks of the staged plan built by `step`, by plan index (consumed by the commit).
+    prebuilt: Vec<Option<(Track, TrackInfo)>>,
 }
 
 impl core::fmt::Debug for Controller {
@@ -167,6 +228,25 @@ pub struct Renderer {
     target_master_gain: f32,
     last_ticket: u64,
     leaked: u64,
+    /// Offline stems/freeze (C++ `setMasterBypass`): no master gain, no master processor.
+    master_bypass: bool,
+    metronome: Metronome,
+    metronome_on: bool,
+    metronome_gain: f32,
+    count_in_remaining: i64,
+    count_in_elapsed: i64,
+    count_in_length: i64,
+    /// Monitored tracks by graph index (C++ `monitor`).
+    monitor: [u64; 4],
+    /// Per block: a monitored track's routed input channels, and the master feed (both `max_block * 2`).
+    input_scratch: Vec<f32>,
+    master_feed: Vec<f32>,
+    /// Route recording taps: graph indices (-1 none) and their route inputs of the last render call,
+    /// `MAX_TAPS` interleaved stereo slots of `max_block` frames.
+    taps: [i32; MAX_TAPS],
+    tap_out: Vec<f32>,
+    live_played: u64,
+    live_ignored: u64,
 }
 
 impl core::fmt::Debug for Renderer {
@@ -199,6 +279,8 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             retired: rc,
             published: published.clone(),
             ticket: 0,
+            staged: None,
+            prebuilt: Vec::new(),
         },
         Renderer {
             config,
@@ -212,8 +294,202 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             target_master_gain: 1.0,
             last_ticket: 0,
             leaked: 0,
+            master_bypass: false,
+            metronome: Metronome::default(),
+            metronome_on: false,
+            metronome_gain: 0.0,
+            count_in_remaining: 0,
+            count_in_elapsed: 0,
+            count_in_length: 0,
+            monitor: [0; 4],
+            input_scratch: vec![0.0; config.max_block as usize * 2],
+            master_feed: vec![0.0; config.max_block as usize * 2],
+            taps: [-1; MAX_TAPS],
+            tap_out: vec![0.0; config.max_block as usize * 2 * MAX_TAPS],
+            live_played: 0,
+            live_ignored: 0,
         },
     ))
+}
+
+/// engine.cpp `routeInput` for the browser host: track input channels index the input block's channels
+/// directly; no input = channels 0 and 1 (mono when the block has one). None when a channel is missing.
+fn input_channels(input: Option<[i16; 2]>, channels: usize) -> Option<(usize, Option<usize>)> {
+    let open = |c: i16| (c >= 0 && (c as usize) < channels).then_some(c as usize);
+    match input {
+        None => open(0).map(|l| (l, open(1))),
+        Some([l, r]) => {
+            let left = open(l)?;
+            if r < 0 { Some((left, None)) } else { open(r).map(|r| (left, Some(r))) }
+        }
+    }
+}
+
+/// engine.cpp `prepareRoutes` (route part; sends are wired by `prepare`): resolves each route to a graph
+/// index, turns loops and missing sources into silence, marks the master feed, allocates the tap and
+/// route buffers, and orders tracks by level. Returns (order, level starts, master level).
+#[allow(clippy::vec_box)]
+fn prepare_routes(tracks: &mut [Box<Track>], block: usize) -> (Vec<usize>, Vec<usize>, Option<usize>) {
+    let count = tracks.len();
+    let mut source: Vec<Option<usize>> = vec![None; count];
+    for i in 0..count {
+        let Some(t) = tracks.get(i) else { continue };
+        let Some(route) = t.plan.route.clone() else { continue };
+        if t.plan.source.kind != SourceKind::Audio || t.is_return {
+            continue;
+        }
+        // Return tracks are never route sources (docs/SENDS_RETURNS.md): a route naming one records silence.
+        let found = if route.kind == RouteKind::Track {
+            tracks.iter().enumerate().position(|(j, s)| j != i && !s.is_return && s.plan.id == route.track_id)
+        } else {
+            None
+        };
+        if let Some(t) = tracks.get_mut(i) {
+            t.routed = true;
+            t.route_kind =
+                if route.kind == RouteKind::Track && found.is_none() { RouteKind::None } else { route.kind };
+            t.route_tap = route.tap;
+        }
+        if let Some(slot) = source.get_mut(i) {
+            *slot = found;
+        }
+    }
+    // Each track has one input: a loop is a chain that returns to its start. Break it at that track.
+    for i in 0..count {
+        let mut at = source.get(i).copied().flatten();
+        let mut steps = 0;
+        while let Some(a) = at {
+            if steps > count {
+                break;
+            }
+            if a == i {
+                if let Some(slot) = source.get_mut(i) {
+                    *slot = None;
+                }
+                if let Some(t) = tracks.get_mut(i) {
+                    t.route_kind = RouteKind::None;
+                }
+                break;
+            }
+            at = source.get(a).copied().flatten();
+            steps += 1;
+        }
+    }
+    for i in 0..count {
+        let kind = tracks.get(i).map_or(RouteKind::None, |t| t.route_kind);
+        if kind != RouteKind::Track
+            && let Some(slot) = source.get_mut(i)
+        {
+            *slot = None;
+        }
+        if let Some(t) = tracks.get_mut(i) {
+            t.route_source = source.get(i).copied().flatten();
+        }
+    }
+    // Master-resampling tracks and everything downstream of them stay out of the master feed.
+    let resamplers: Vec<bool> = tracks.iter().map(|t| t.route_kind == RouteKind::Master).collect();
+    let master = |i: usize| resamplers.get(i).copied().unwrap_or(false);
+    let mut feed = vec![true; count];
+    for (i, f) in feed.iter_mut().enumerate() {
+        let mut excluded = master(i);
+        let mut at = source.get(i).copied().flatten();
+        let mut steps = 0;
+        while !excluded && steps <= count {
+            let Some(a) = at else { break };
+            excluded = master(a);
+            at = source.get(a).copied().flatten();
+            steps += 1;
+        }
+        *f = !excluded;
+    }
+    // A return fed by a track outside the master feed carries the resampled signal too.
+    for (i, t) in tracks.iter().enumerate() {
+        if t.is_return
+            && t.feeds.iter().any(|f| !feed.get(f.sender).copied().unwrap_or(true))
+            && let Some(slot) = feed.get_mut(i)
+        {
+            *slot = false;
+        }
+    }
+    for (t, f) in tracks.iter_mut().zip(&feed) {
+        t.in_master_feed = *f;
+    }
+    // Levels: feed tracks by their chain depth, master resamplers above every feed track, then theirs.
+    fn depth(
+        i: usize,
+        guard: usize,
+        tracks: &[Box<Track>],
+        source: &[Option<usize>],
+        level: &mut [Option<usize>],
+    ) -> usize {
+        if let Some(Some(l)) = level.get(i) {
+            return *l;
+        }
+        let count = tracks.len();
+        if guard > count {
+            return 0;
+        }
+        let Some(t) = tracks.get(i) else { return 0 };
+        let mut value = 0;
+        if let Some(Some(s)) = source.get(i) {
+            value = depth(*s, guard + 1, tracks, source, level) + 1;
+        } else if t.route_kind == RouteKind::Master {
+            for j in 0..count {
+                if tracks.get(j).is_some_and(|x| x.in_master_feed) {
+                    value = value.max(depth(j, guard + 1, tracks, source, level) + 1);
+                }
+            }
+        } else if t.is_return {
+            for f in &t.feeds {
+                value = value.max(depth(f.sender, guard + 1, tracks, source, level) + 1);
+            }
+        }
+        if let Some(slot) = level.get_mut(i) {
+            *slot = Some(value);
+        }
+        value
+    }
+    let mut level: Vec<Option<usize>> = vec![None; count];
+    let mut top = 0;
+    for i in 0..count {
+        top = top.max(depth(i, 0, tracks, &source, &mut level));
+    }
+    let (mut order, mut starts, mut master_level) = (Vec::with_capacity(count), Vec::new(), None);
+    for l in 0..=top {
+        starts.push(order.len());
+        for i in 0..count {
+            if level.get(i).copied().flatten() == Some(l) {
+                order.push(i);
+                if master(i) && master_level.is_none() {
+                    master_level = Some(l);
+                }
+            }
+        }
+    }
+    starts.push(order.len());
+    for i in 0..count {
+        let (routed, tap) = match tracks.get(i) {
+            Some(t) => (t.routed, t.route_tap),
+            None => continue,
+        };
+        if routed && let Some(t) = tracks.get_mut(i) {
+            t.route_input = vec![0.0; block];
+        }
+        if let Some(Some(s)) = source.get(i)
+            && let Some(src) = tracks.get_mut(*s)
+        {
+            match tap {
+                RouteTap::PreFx if src.pre_tap.is_empty() => src.pre_tap = vec![0.0; block],
+                RouteTap::PostFx if src.post_tap.is_empty() => src.post_tap = vec![0.0; block],
+                // The post-fader tap is the output before the return-latency delay.
+                RouteTap::PostFader if src.fader_tap.is_empty() && src.output_delay.frames() > 0 => {
+                    src.fader_tap = vec![0.0; block];
+                }
+                _ => {}
+            }
+        }
+    }
+    (order, starts, master_level)
 }
 
 fn checked(value: f64, minimum: f64, maximum: f64, message: &str) -> Result<(), Error> {
@@ -261,6 +537,38 @@ fn insert_origins(old: &TrackPlan, next: &TrackPlan) -> Vec<Option<usize>> {
         .collect()
 }
 
+/// One track's classified edit (engine.cpp `update`).
+#[derive(Default)]
+struct Edit {
+    replace: bool,
+    mix: bool,
+    sends: Vec<usize>,
+    params: Vec<(u32, u32, f64)>,
+}
+
+/// A staged update (`Controller::stage_json`): the parsed plan and the tracks it will build.
+struct Staged {
+    plan: Plan,
+    todo: Vec<usize>,
+    next: usize,
+}
+
+/// Track `i` of `p`: the one `Controller::step` built for this plan, else built now.
+fn take_built(
+    prebuilt: &mut [Option<(Track, TrackInfo)>],
+    i: usize,
+    p: &Plan,
+    t: &TrackPlan,
+    assets: &BTreeMap<String, Arc<PcmAsset>>,
+    max_block: u32,
+    cache: &mut KernelCache,
+) -> Result<(Track, TrackInfo), Error> {
+    match prebuilt.get_mut(i).and_then(Option::take) {
+        Some(built) => Ok(built),
+        None => Track::build(p, t, assets, max_block, cache),
+    }
+}
+
 impl Controller {
     pub fn config(&self) -> EngineConfig {
         self.config
@@ -305,6 +613,9 @@ impl Controller {
             ready: p.ready.load(Ordering::Relaxed),
             master_peak: f32::from_bits(p.peak.load(Ordering::Relaxed)),
             leaked: p.leaked.load(Ordering::Relaxed),
+            counting_in: p.counting_in.load(Ordering::Relaxed),
+            live_played: p.live_played.load(Ordering::Relaxed),
+            live_ignored: p.live_ignored.load(Ordering::Relaxed),
         }
     }
 
@@ -331,7 +642,72 @@ impl Controller {
     }
 
     pub fn play(&mut self) -> Result<u64, Error> {
-        self.enqueue(Command::Play)
+        self.enqueue(Command::Play(0))
+    }
+
+    /// Plays after a count-in of `frames` (C++ `RenderEngine::play(countIn)`): the metronome clicks it at the
+    /// tempo and meter where the transport starts, then the transport starts on the next frame. Offline
+    /// engines start at once.
+    pub fn play_count_in(&mut self, frames: i64) -> Result<u64, Error> {
+        require(
+            frames >= 0 && frames <= i64::from(self.config.sample_rate) * 120,
+            "Invalid count-in length",
+        )?;
+        self.enqueue(Command::Play(frames))
+    }
+
+    /// Offline stems/freeze render pre-master (C++ `setMasterBypass`; realtime engines ignore it).
+    pub fn set_master_bypass(&mut self, on: bool) -> Result<u64, Error> {
+        self.enqueue(Command::MasterBypass(on))
+    }
+
+    /// The metronome (C++ `setMetronome`): click strokes per level (bar downbeat, group start, pulse) at the
+    /// engine rate, synthesized by the host (docs/METRONOME.md); `None` keeps the current strokes.
+    pub fn set_metronome(&mut self, strokes: Option<Clicks>, on: bool, gain: f32) -> Result<u64, Error> {
+        require(gain.is_finite() && (0.0..=4.0).contains(&gain), "Invalid metronome gain")?;
+        if let Some(c) = &strokes {
+            require(c.sample_rate == self.config.sample_rate, "Metronome strokes must use the engine rate")?;
+            for level in &c.levels {
+                require(
+                    level.len() <= self.config.sample_rate as usize * MAX_STROKE_SECONDS,
+                    "Metronome stroke is too long",
+                )?;
+                require(
+                    level.iter().all(|v| v.is_finite() && v.abs() <= 4.0),
+                    "Invalid metronome stroke sample",
+                )?;
+            }
+        }
+        self.collect();
+        self.enqueue(Command::Metronome { clicks: strokes.map(Arc::new), on, gain })
+    }
+
+    /// Monitored tracks by graph index (C++ `setMonitoring`): their live input (routed tracks: their route
+    /// input) plays through their chain.
+    pub fn set_monitoring(&mut self, tracks: &[u32]) -> Result<u64, Error> {
+        let mut mask = [0u64; 4];
+        for &t in tracks {
+            require(t < 256, "Invalid monitor track index")?;
+            if let Some(word) = mask.get_mut(t as usize / 64) {
+                *word |= 1u64 << (t % 64);
+            }
+        }
+        self.enqueue(Command::Monitor(mask))
+    }
+
+    /// Route recording taps: the route input of these graph indices is copied out every block.
+    pub fn set_taps(&mut self, tracks: &[i32]) -> Result<u64, Error> {
+        require(tracks.len() <= MAX_TAPS, "Too many route taps")?;
+        let mut taps = [-1i32; MAX_TAPS];
+        for (slot, &t) in taps.iter_mut().zip(tracks) {
+            *slot = t;
+        }
+        self.enqueue(Command::Taps(taps))
+    }
+
+    /// A live note / controller event for the track at graph index `track` (applied at the next block).
+    pub fn live(&mut self, track: u32, event: LiveEvent) -> Result<u64, Error> {
+        self.enqueue(Command::Live { track, event })
     }
 
     pub fn pause(&mut self) -> Result<u64, Error> {
@@ -358,6 +734,104 @@ impl Controller {
             self.current.as_ref().ok_or_else(|| Error::new("No project to patch; send project.set"))?;
         let plan = protocol::parse_patch(current, &Json::parse(text)?, blob)?;
         self.update(plan)
+    }
+
+    /// The first part of a `project.set` (`patch` false) or `project.patch` spread over several control
+    /// calls (docs/RUST_ENGINE.md 5.7: the worklet does one per render quantum, so a large project never
+    /// stalls the audio thread): parses and classifies it and returns how many tracks `step` will build.
+    /// Nothing changes until `commit`; a new stage replaces an unfinished one.
+    pub fn stage_json(&mut self, patch: bool, text: &[u8], blob: &[u8]) -> Result<usize, Error> {
+        self.staged = None;
+        self.prebuilt.clear();
+        self.collect();
+        let json = Json::parse(text)?;
+        let plan = if patch {
+            let current =
+                self.current.as_ref().ok_or_else(|| Error::new("No project to patch; send project.set"))?;
+            protocol::parse_patch(current, &json, blob)?
+        } else {
+            protocol::parse_timeline(&json, blob)?
+        };
+        let todo: Vec<usize> = match self.classify(&plan)? {
+            None => (0..plan.tracks.len()).collect(),
+            Some(edits) => edits.iter().enumerate().filter(|(_, e)| e.replace).map(|(i, _)| i).collect(),
+        };
+        let count = todo.len();
+        self.prebuilt = (0..plan.tracks.len()).map(|_| None).collect();
+        self.staged = Some(Staged { plan, todo, next: 0 });
+        Ok(count)
+    }
+
+    /// Builds the next track of the staged update. `Ok(true)` once every track is built (or nothing is
+    /// staged); an error drops the stage (the update is refused, as `update` would refuse it).
+    pub fn step(&mut self) -> Result<bool, Error> {
+        let Some(st) = &mut self.staged else { return Ok(true) };
+        let Some(&i) = st.todo.get(st.next) else { return Ok(true) };
+        st.next += 1;
+        let done = st.next >= st.todo.len();
+        let Some(t) = st.plan.tracks.get(i) else { return Ok(done) };
+        match Track::build(&st.plan, t, &self.assets, self.config.max_block, &mut self.cache) {
+            Ok(built) => {
+                if let Some(slot) = self.prebuilt.get_mut(i) {
+                    *slot = Some(built);
+                }
+                Ok(done)
+            }
+            Err(e) => {
+                self.staged = None;
+                self.prebuilt.clear();
+                Err(e)
+            }
+        }
+    }
+
+    /// Applies the staged update (tracks `step` did not build are built now).
+    pub fn commit(&mut self) -> Result<Applied, Error> {
+        let st = self.staged.take().ok_or_else(|| Error::new("No staged update"))?;
+        let result = self.update(st.plan);
+        self.prebuilt.clear();
+        result
+    }
+
+    /// A reverb kernel (FFT partitions of the generated impulse) for the insert parameters `type` and
+    /// `size`, from the cache or generated now: what a helper worker computes so the worklet never
+    /// generates one (`import_reverb_kernel`). Returns the kernel data and the impulse length.
+    pub fn reverb_kernel(&mut self, type_param: f64, size: f64) -> Result<(Arc<[f32]>, usize), Error> {
+        self.cache.reverb(f64::from(self.config.sample_rate), type_param, size)
+    }
+
+    /// `reverb_kernel` for a reverb insert's parameter map as the timeline carries it (`{"type":..,
+    /// "size":..}`, defaults filled in and validated like the insert): returns the `type` and `size` the
+    /// kernel was made for, and the kernel.
+    pub fn reverb_kernel_for(&mut self, params_json: &[u8]) -> Result<(f64, f64, Arc<[f32]>), Error> {
+        let json = Json::parse(params_json)?;
+        let members = json.as_object().ok_or_else(|| Error::new("Invalid parameter map"))?;
+        let mut params = Vec::with_capacity(members.len());
+        for (k, v) in members {
+            params.push((k.clone(), v.as_f64().ok_or_else(|| Error::new("Invalid parameter"))?));
+        }
+        let plan = crate::plan::InsertPlan {
+            id: String::from("kernel"),
+            kind: String::from("reverb"),
+            enabled: true,
+            params,
+            plugin_instance: String::new(),
+        };
+        let kind = garak_dsp::EffectKind::Reverb;
+        let values = validated_values(kind, &plan)?;
+        let value = |id: &str| {
+            let index = kind.params().iter().position(|d| d.id == id).unwrap_or(0);
+            values.get(index).copied().unwrap_or(0.0)
+        };
+        let (type_param, size) = (value("type"), value("size"));
+        let (kernel, _) = self.reverb_kernel(type_param, size)?;
+        Ok((type_param, size, kernel))
+    }
+
+    /// Adds a kernel computed elsewhere (`reverb_kernel` of another instance at this rate). It is kept
+    /// through the next update, then while an insert uses it.
+    pub fn import_reverb_kernel(&mut self, type_param: f64, size: f64, data: Vec<f32>) -> Result<(), Error> {
+        self.cache.import(f64::from(self.config.sample_rate), type_param, size, data)
     }
 
     /// engine.cpp `prepare`: validates `p` and builds a graph (control thread).
@@ -404,8 +878,16 @@ impl Controller {
         )?;
         let mut tracks = Vec::with_capacity(p.tracks.len());
         let mut infos = Vec::with_capacity(p.tracks.len());
-        for t in &p.tracks {
-            let (track, info) = Track::build(p, t, &self.assets, self.config.max_block, &mut self.cache)?;
+        for (i, t) in p.tracks.iter().enumerate() {
+            let (track, info) = take_built(
+                &mut self.prebuilt,
+                i,
+                p,
+                t,
+                &self.assets,
+                self.config.max_block,
+                &mut self.cache,
+            )?;
             tracks.push(Box::new(track));
             infos.push(info);
         }
@@ -486,9 +968,7 @@ impl Controller {
                 t.return_input = vec![0.0; block];
             }
         }
-        let mut order: Vec<usize> =
-            (0..tracks.len()).filter(|&i| !p.tracks.get(i).is_some_and(|t| t.is_return)).collect();
-        order.extend((0..tracks.len()).filter(|&i| p.tracks.get(i).is_some_and(|t| t.is_return)));
+        let (order, level_start, master_level) = prepare_routes(&mut tracks, block);
         let graph = Graph {
             project_id: p.project_id.clone(),
             revision: p.revision,
@@ -498,6 +978,13 @@ impl Controller {
             tempo: if p.tempo_map.is_empty() { None } else { Some(TempoMap::new(p.bpm, &p.tempo_map)) },
             tracks,
             order,
+            level_start,
+            master_level,
+            meters: MeterMap::new(p.time_sig_numerator, p.time_sig_denominator, &p.meter_map),
+            meter_mapped: !p.meter_map.is_empty(),
+            bpm: p.bpm,
+            meter: (p.time_sig_numerator, p.time_sig_denominator),
+            low_latency: p.low_latency_monitoring,
             master: Master::new(sr),
             latency: sender_latency + return_latency,
             sender_latency,
@@ -540,7 +1027,20 @@ impl Controller {
     /// Brings the running graph to `p` with the least work (engine.cpp `update`, audio tracks).
     pub fn update(&mut self, p: Plan) -> Result<Applied, Error> {
         self.collect();
-        let Some(last) = &self.recipe else { return self.full(p) };
+        let result = match self.classify(&p) {
+            Ok(None) => self.full(p),
+            Ok(Some(edits)) => self.apply_edits(p, edits),
+            Err(e) => Err(e),
+        };
+        // Imported kernels were kept for this update; from now on live inserts hold the ones in use.
+        self.cache.unpin();
+        result
+    }
+
+    /// The update's classification (engine.cpp `update`): `None` for a new graph, else each track's edit.
+    /// Builds nothing; validation errors refuse the update like `update` does.
+    fn classify(&self, p: &Plan) -> Result<Option<Vec<Edit>>, Error> {
+        let Some(last) = &self.recipe else { return Ok(None) };
         if p.project_id != last.plan.project_id
             || p.sample_rate != last.plan.sample_rate
             || !p.same_timing(&last.plan)
@@ -548,29 +1048,22 @@ impl Controller {
             || p.tracks.len() != last.plan.tracks.len()
             || p.tracks.iter().zip(&last.plan.tracks).any(|(a, b)| a.id != b.id)
         {
-            return self.full(p);
+            return Ok(None);
         }
         checked(f64::from(p.master_gain), 0.0, 2.0, "Invalid native master gain")?;
-        #[derive(Default)]
-        struct Edit {
-            replace: bool,
-            mix: bool,
-            sends: Vec<usize>,
-            params: Vec<(u32, u32, f64)>,
-        }
         let mut edits: Vec<Edit> = Vec::with_capacity(p.tracks.len());
         for (neu, (old, info)) in p.tracks.iter().zip(last.plan.tracks.iter().zip(&last.tracks)) {
             let mut e = Edit::default();
             if neu.is_return != old.is_return || neu.route != old.route || neu.sends.len() != old.sends.len()
             {
-                return self.full(p);
+                return Ok(None);
             }
             for (s, (a, b)) in neu.sends.iter().zip(&old.sends).enumerate() {
                 if a.return_id != b.return_id
                     || a.pre != b.pre
                     || send_lane(neu, &a.return_id) != send_lane(old, &b.return_id)
                 {
-                    return self.full(p);
+                    return Ok(None);
                 }
                 if a.gain != b.gain {
                     checked(f64::from(a.gain), 0.0, 4.0, "Invalid native send gain")?;
@@ -651,6 +1144,12 @@ impl Controller {
             }
             edits.push(e);
         }
+        Ok(Some(edits))
+    }
+
+    /// Applies classified edits: replacements, then diff commands (engine.cpp `update`, second half).
+    fn apply_edits(&mut self, p: Plan, edits: Vec<Edit>) -> Result<Applied, Error> {
+        let Some(last) = &self.recipe else { return self.full(p) };
         // Replacements (control thread); a latency change falls back to a full graph.
         let (sender_latency, return_latency) = (last.sender_latency, last.return_latency);
         let mut replacements: Vec<(usize, Box<Track>, TrackInfo)> = Vec::new();
@@ -663,8 +1162,15 @@ impl Controller {
             else {
                 continue;
             };
-            let (mut t, new_info) =
-                Track::build(&p, neu, &self.assets, self.config.max_block, &mut self.cache)?;
+            let (mut t, new_info) = take_built(
+                &mut self.prebuilt,
+                i,
+                &p,
+                neu,
+                &self.assets,
+                self.config.max_block,
+                &mut self.cache,
+            )?;
             if new_info.latency != info.latency {
                 return self.full(p);
             }
@@ -830,6 +1336,8 @@ impl Renderer {
                     if project_changed {
                         self.position = 0;
                         self.playing = false;
+                        self.monitor = [0; 4];
+                        self.count_in_remaining = 0;
                     }
                     self.normalize(false);
                     if !preserve {
@@ -839,18 +1347,26 @@ impl Renderer {
                         self.retire(Retired::Graph(prev));
                     }
                 }
-                Command::Play => {
-                    if !self.playing {
+                Command::Play(count_in) => {
+                    if !self.playing && self.count_in_remaining == 0 {
                         self.normalize(true);
-                        self.playing = self.active.is_some();
-                        self.reset(false);
+                        if count_in > 0 && self.active.is_some() && !self.config.offline {
+                            self.count_in_remaining = count_in;
+                            self.count_in_length = count_in;
+                            self.count_in_elapsed = 0;
+                        } else {
+                            self.playing = self.active.is_some();
+                            self.reset(false);
+                        }
                     }
                 }
                 Command::Pause => {
+                    self.count_in_remaining = 0;
                     self.playing = false;
                     self.reset(false);
                 }
                 Command::Stop => {
+                    self.count_in_remaining = 0;
                     self.playing = false;
                     self.position = 0;
                     self.reset(true);
@@ -899,6 +1415,35 @@ impl Renderer {
                     }
                 }
                 Command::Master(gain) => self.target_master_gain = gain,
+                Command::MasterBypass(on) => self.master_bypass = on,
+                Command::Metronome { clicks, on, gain } => {
+                    self.metronome_on = on;
+                    self.metronome_gain = gain;
+                    if let Some(next) = clicks {
+                        // Ringing strokes index the old set: they stop with it.
+                        self.metronome.player.clear();
+                        if let Some(old) = self.metronome.clicks.replace(next) {
+                            self.retire(Retired::Clicks(old));
+                        }
+                    }
+                }
+                Command::Monitor(mask) => self.monitor = mask,
+                Command::Taps(taps) => {
+                    self.taps = taps;
+                    self.tap_out.fill(0.0);
+                }
+                Command::Live { track, event } => {
+                    let played = self
+                        .active
+                        .as_mut()
+                        .and_then(|g| g.tracks.get_mut(track as usize))
+                        .is_some_and(|t| t.live_event(event));
+                    if played {
+                        self.live_played += 1;
+                    } else {
+                        self.live_ignored += 1;
+                    }
+                }
                 Command::Revision(revision) => {
                     if let Some(g) = &mut self.active {
                         g.revision = revision;
@@ -961,9 +1506,9 @@ impl Renderer {
         }
     }
 
-    /// Every track of one block in render order, summed into `block` in track order (the master
-    /// is applied by the caller). With `parallel`, independent tracks render on the host's workers
-    /// (`host.rs`); the sum is the same either way.
+    /// Every track of one block by level, summed into `block` in track order (the master is applied by the
+    /// caller). With `parallel`, the first level renders on the host's workers (`host.rs`); the sum is the
+    /// same either way. `live`: the monitoring context (input block, monitored tracks, scratch buffers).
     fn render_tracks(
         g: &mut Graph,
         block: &mut [f32],
@@ -972,19 +1517,29 @@ impl Renderer {
         playing: bool,
         rate: f64,
         parallel: Option<&host::Parallel>,
+        mut live: Option<&mut Live<'_>>,
     ) {
         let tempo = g.tempo.as_ref().map(|t| t.bpm_at(t.beat_at_frame(position as f64, rate)));
         let smoothing = math::smoothing(rate, 0.012);
-        let senders = parallel.map_or(0, |p| host::render_parallel(g, p, position, count, playing, tempo));
-        {
-            for k in senders..g.order.len() {
+        let monitoring = live.as_ref().is_some_and(|l| l.monitor != [0; 4]);
+        let first = if monitoring {
+            0
+        } else {
+            parallel.map_or(0, |p| host::render_parallel(g, p, position, count, playing, tempo))
+        };
+        let levels = g.level_start.len().saturating_sub(1);
+        for level in 0..levels {
+            if g.master_level == Some(level)
+                && let Some(l) = live.as_deref_mut()
+            {
+                Self::fill_master_feed(g, l, count, rate);
+            }
+            let (Some(&begin), Some(&end)) = (g.level_start.get(level), g.level_start.get(level + 1)) else {
+                continue;
+            };
+            for k in begin.max(first)..end {
                 let Some(&index) = g.order.get(k) else { continue };
-                if g.tracks.get(index).is_some_and(|t| t.is_return) {
-                    Self::fill_return_input(g, index, position, count, smoothing);
-                }
-                if let Some(t) = g.tracks.get_mut(index) {
-                    t.render(position, count, playing, tempo);
-                }
+                Self::render_track(g, index, position, count, playing, tempo, smoothing, live.as_deref_mut());
             }
         }
         for t in g.tracks.iter().filter(|t| t.direct_out()) {
@@ -994,16 +1549,143 @@ impl Renderer {
         }
     }
 
+    /// engine.cpp `renderTrack`: a return's send mix, a routed track's route input, or a monitored track's
+    /// live input, then the track.
+    fn render_track(
+        g: &mut Graph,
+        index: usize,
+        position: i64,
+        count: u32,
+        playing: bool,
+        tempo: Option<f64>,
+        smoothing: f64,
+        live: Option<&mut Live<'_>>,
+    ) {
+        let n = count as usize * 2;
+        let Some((is_return, routed)) = g.tracks.get(index).map(|t| (t.is_return, t.routed)) else { return };
+        let low_latency = g.low_latency && playing && live.as_ref().is_some_and(|l| !l.offline);
+        if is_return {
+            Self::fill_return_input(g, index, position, count, smoothing);
+            if let Some(t) = g.tracks.get_mut(index) {
+                t.render(
+                    position,
+                    count,
+                    playing,
+                    tempo,
+                    TrackInput { data: None, monitor: true, stereo: true, low_latency },
+                );
+            }
+            return;
+        }
+        let monitored = live
+            .as_ref()
+            .is_some_and(|l| l.monitor.get(index / 64).is_some_and(|w| w & (1u64 << (index % 64)) != 0));
+        if routed {
+            // Filled even when not monitored: a recording of this track reads it after the block.
+            let mut input = Self::route_input(g, index, count, live.as_ref().map(|l| &l.master_feed[..]));
+            if let Some(t) = g.tracks.get_mut(index) {
+                let data = if monitored { input.get(..n) } else { None };
+                t.render(
+                    position,
+                    count,
+                    playing,
+                    tempo,
+                    TrackInput { data, monitor: monitored, stereo: true, low_latency },
+                );
+                core::mem::swap(&mut t.route_input, &mut input);
+            }
+            return;
+        }
+        let mut input = TrackInput { data: None, monitor: monitored, stereo: false, low_latency };
+        if monitored && let Some(l) = live {
+            let plan = g.tracks.get(index).and_then(|t| t.plan.input);
+            if let (Some((left, right)), Some(scratch)) =
+                (input_channels(plan, l.channels), l.scratch.get_mut(..n))
+            {
+                let sample = |frame: usize, c: usize| {
+                    let v = l.input.get((l.cursor + frame) * l.channels + c).copied().unwrap_or(0.0);
+                    if v.is_finite() { v } else { 0.0 }
+                };
+                for (i, pair) in scratch.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    let a = sample(i, left);
+                    *pair = [a, right.map_or(a, |r| sample(i, r))];
+                }
+                input.data = Some(scratch);
+                input.stereo = right.is_some();
+            }
+        }
+        if let Some(t) = g.tracks.get_mut(index) {
+            t.render(position, count, playing, tempo, input);
+        }
+    }
+
+    /// engine.cpp `fillRouteInput`: this block's route input of track `r` (taken out of the track; the
+    /// caller puts it back), from its source's tap (an earlier level) or the master feed.
+    fn route_input(g: &mut Graph, r: usize, count: u32, master_feed: Option<&[f32]>) -> Vec<f32> {
+        let n = count as usize * 2;
+        let Some(t) = g.tracks.get_mut(r) else { return Vec::new() };
+        let mut input = core::mem::take(&mut t.route_input);
+        let (kind, tap, source) = (t.route_kind, t.route_tap, t.route_source);
+        let Some(out) = input.get_mut(..n) else { return input };
+        let from: Option<&[f32]> = match (kind, source.and_then(|s| g.tracks.get(s))) {
+            (RouteKind::Track, Some(s)) => match tap {
+                RouteTap::PreFx => s.pre_tap.get(..n),
+                RouteTap::PostFx => s.post_tap.get(..n),
+                RouteTap::PostFader => s.post_fader(count).get(..n),
+            },
+            (RouteKind::Master, _) => master_feed.and_then(|m| m.get(..n)),
+            _ => None,
+        };
+        match from {
+            Some(x) => out.copy_from_slice(x),
+            None => out.fill(0.0),
+        }
+        input
+    }
+
+    /// engine.cpp `fillMasterFeed`: the master gain over the tracks in the master feed (before the master
+    /// processor), with the smoothing the output mix applies to this block.
+    fn fill_master_feed(g: &Graph, live: &mut Live<'_>, count: u32, rate: f64) {
+        let n = count as usize * 2;
+        let Some(feed) = live.master_feed.get_mut(..n) else { return };
+        feed.fill(0.0);
+        for t in g.tracks.iter().filter(|t| t.in_master_feed) {
+            for (o, x) in feed.iter_mut().zip(t.mix(count)) {
+                *o += *x;
+            }
+        }
+        let s = math::smoothing(rate, 0.012) as f32;
+        let mut gain = live.master_gain.0;
+        for pair in feed.as_chunks_mut::<2>().0 {
+            gain = math::mul_add_f32(live.master_gain.1 - gain, s, gain);
+            for x in pair {
+                *x *= gain;
+            }
+        }
+    }
+
     /// Renders `out.len() / 2` stereo frames (interleaved). Real-time safe.
     pub fn render(&mut self, out: &mut [f32]) {
+        self.render_io(out, &[], 0);
+    }
+
+    /// Like `render`, with the live input block (`channels` interleaved, `out.len() / 2` frames) that
+    /// monitored tracks hear (engine.cpp `render(output, input, frames, channels)`). Real-time safe.
+    pub fn render_io(&mut self, out: &mut [f32], input: &[f32], channels: usize) {
         self.consume();
         let frames = (out.len() / 2) as u32;
         let rate = f64::from(self.config.sample_rate);
         let offline = self.config.offline;
         let mut cursor = 0u32;
         let mut master_peak = 0.0f32;
+        let mut input_scratch = core::mem::take(&mut self.input_scratch);
+        let mut master_feed = core::mem::take(&mut self.master_feed);
         while cursor < frames {
             let mut count = self.config.max_block.min(frames - cursor);
+            let counting_in = self.count_in_remaining > 0;
+            if counting_in {
+                count = count.min(self.count_in_remaining.min(i64::from(u32::MAX)) as u32);
+            }
             if let Some(g) = &self.active
                 && self.playing
             {
@@ -1027,18 +1709,35 @@ impl Renderer {
             let Some(block) = out.get_mut(cursor as usize * 2..(cursor + count) as usize * 2) else { break };
             block.fill(0.0);
             let position = self.position;
+            let bypass = offline && self.master_bypass;
             if let Some(g) = &mut self.active {
                 let playing = self.playing && position < g.length_frames;
-                Self::render_tracks(g, block, position, count, playing, rate, None);
-                let s = math::smoothing(rate, 0.012) as f32;
-                for pair in block.as_chunks_mut::<2>().0 {
-                    self.master_gain =
-                        math::mul_add_f32(self.target_master_gain - self.master_gain, s, self.master_gain);
-                    for x in pair {
-                        *x *= self.master_gain;
+                let mut live = Live {
+                    input,
+                    channels,
+                    cursor: cursor as usize,
+                    monitor: self.monitor,
+                    offline,
+                    scratch: &mut input_scratch,
+                    master_feed: &mut master_feed,
+                    master_gain: (self.master_gain, self.target_master_gain),
+                };
+                Self::render_tracks(g, block, position, count, playing, rate, None, Some(&mut live));
+                if !bypass {
+                    let s = math::smoothing(rate, 0.012) as f32;
+                    for pair in block.as_chunks_mut::<2>().0 {
+                        self.master_gain = math::mul_add_f32(
+                            self.target_master_gain - self.master_gain,
+                            s,
+                            self.master_gain,
+                        );
+                        for x in pair {
+                            *x *= self.master_gain;
+                        }
                     }
+                    g.master.process(block);
                 }
-                g.master.process(block);
+                Self::copy_taps(g, &self.taps, &mut self.tap_out, self.config.max_block, cursor, count);
             }
             for x in block.iter_mut() {
                 if !x.is_finite() {
@@ -1048,11 +1747,23 @@ impl Renderer {
                     master_peak = x.abs();
                 }
             }
+            self.render_clicks(block, count, counting_in);
             if self.playing {
                 self.position += i64::from(count);
             }
+            if counting_in {
+                self.count_in_remaining -= i64::from(count);
+                if self.count_in_remaining <= 0 {
+                    // The transport starts on the frame right after the count-in.
+                    self.count_in_remaining = 0;
+                    self.playing = self.active.is_some();
+                    self.reset(false);
+                }
+            }
             cursor += count;
         }
+        self.input_scratch = input_scratch;
+        self.master_feed = master_feed;
         if let Some(g) = &self.active
             && self.playing
             && !offline
@@ -1069,6 +1780,111 @@ impl Renderer {
         self.publish(master_peak);
     }
 
+    /// The route inputs of the tapped tracks for frames `[cursor, cursor + count)` of this call.
+    fn copy_taps(
+        g: &Graph,
+        taps: &[i32; MAX_TAPS],
+        out: &mut [f32],
+        max_block: u32,
+        cursor: u32,
+        count: u32,
+    ) {
+        let slot = max_block as usize * 2;
+        for (k, &t) in taps.iter().enumerate() {
+            if t < 0 {
+                continue;
+            }
+            let from = k * slot + cursor as usize * 2;
+            let Some(dst) = out.get_mut(from..from + count as usize * 2) else { continue };
+            match g
+                .tracks
+                .get(t as usize)
+                .filter(|x| x.routed)
+                .and_then(|x| x.route_input.get(..count as usize * 2))
+            {
+                Some(src) => dst.copy_from_slice(src),
+                None => dst.fill(0.0),
+            }
+        }
+    }
+
+    /// engine.cpp `renderClicks`: clicks after the master bus and meters, monitor only (offline engines
+    /// never click). The count-in clicks evenly at the tempo and in the meter where the transport starts;
+    /// the transport follows the tempo map and accents each bar's first pulse across meter changes.
+    fn render_clicks(&mut self, out: &mut [f32], count: u32, counting_in: bool) {
+        if self.config.offline {
+            return;
+        }
+        let rate = f64::from(self.config.sample_rate);
+        let Renderer { metronome, active, .. } = self;
+        let gain = match &metronome.clicks {
+            Some(c) if c.sample_rate == self.config.sample_rate => self.metronome_gain,
+            _ => 0.0,
+        };
+        if gain <= 0.0 {
+            if counting_in {
+                self.count_in_elapsed += i64::from(count);
+            }
+            return;
+        }
+        let Metronome { clicks: Some(set), player } = metronome else { return };
+        player.mix(set, out, count, gain);
+        if let Some(g) = active {
+            let position = self.position;
+            if counting_in {
+                let start = match &g.tempo {
+                    Some(t) => t.beat_at_frame(position as f64, rate),
+                    None => position as f64 * g.bpm / (60.0 * rate),
+                };
+                let meter = if g.meter_mapped {
+                    g.meters.at(start)
+                } else {
+                    MeterEvent { bar: 0, numerator: g.meter.0, denominator: g.meter.1, beat: 0.0 }
+                };
+                let bpm = g.tempo.as_ref().map_or(g.bpm, |t| t.bpm_at(start));
+                let pulses = grid(rate, bpm, meter.numerator, meter.denominator, None);
+                clicks(&pulses, set, player, out, self.count_in_elapsed, count, gain, self.count_in_length);
+            } else if self.metronome_on && self.playing && position < g.length_frames {
+                if g.meter_mapped {
+                    meter_clicks(
+                        &g.meters,
+                        rate,
+                        g.bpm,
+                        g.tempo.as_ref(),
+                        set,
+                        player,
+                        out,
+                        position,
+                        count,
+                        gain,
+                    );
+                } else {
+                    let pulses = grid(rate, g.bpm, g.meter.0, g.meter.1, g.tempo.as_ref());
+                    clicks(&pulses, set, player, out, position, count, gain, -1);
+                }
+            }
+        }
+        if counting_in {
+            self.count_in_elapsed += i64::from(count);
+        }
+    }
+
+    /// Each track's peak of the last block (graph order); returns how many it wrote.
+    pub fn track_peaks(&self, out: &mut [f32]) -> usize {
+        let Some(g) = &self.active else { return 0 };
+        let mut n = 0;
+        for (o, t) in out.iter_mut().zip(&g.tracks) {
+            *o = t.peak;
+            n += 1;
+        }
+        n
+    }
+
+    /// The route recording taps of the last render call (`MAX_TAPS` stereo slots of `max_block` frames).
+    pub fn tap_output(&self) -> &[f32] {
+        &self.tap_out
+    }
+
     fn publish(&self, peak: f32) {
         let p = &self.published;
         p.frame.store(self.position, Ordering::Relaxed);
@@ -1077,6 +1893,9 @@ impl Renderer {
         p.revision.store(self.active.as_ref().map_or(0, |g| g.revision), Ordering::Relaxed);
         p.peak.store(peak.to_bits(), Ordering::Relaxed);
         p.leaked.store(self.leaked, Ordering::Relaxed);
+        p.counting_in.store(self.count_in_remaining > 0, Ordering::Relaxed);
+        p.live_played.store(self.live_played, Ordering::Relaxed);
+        p.live_ignored.store(self.live_ignored, Ordering::Relaxed);
         p.ticket.store(self.last_ticket, Ordering::Release);
     }
 
@@ -1100,6 +1919,20 @@ impl Renderer {
     pub fn position(&self) -> i64 {
         self.position
     }
+}
+
+/// The monitoring context of one block (engine.cpp `BlockContext` fields the tracks read).
+struct Live<'a> {
+    /// The host's input block for the whole render call (`channels` interleaved) and this block's offset.
+    input: &'a [f32],
+    channels: usize,
+    cursor: usize,
+    monitor: [u64; 4],
+    offline: bool,
+    scratch: &'a mut [f32],
+    master_feed: &'a mut [f32],
+    /// (current, target) master gain: the master feed applies the same smoothing as the output.
+    master_gain: (f32, f32),
 }
 
 mod host;

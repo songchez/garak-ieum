@@ -15,7 +15,32 @@ use crate::delay::CompensationDelay;
 use crate::error::{Error, require};
 use crate::insert::{Insert, KernelCache, estimate_memory, widens};
 use crate::math;
-use crate::plan::{AutomationLane, LaneTarget, PcmAsset, Plan, SourceKind, TrackPlan};
+use crate::plan::{AutomationLane, LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, SourceKind, TrackPlan};
+
+/// A track's live input for one block (engine.cpp `renderTrack` -> `TrackRuntime::render` arguments).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TrackInput<'a> {
+    /// Interleaved stereo input (`count * 2`), added before the inserts while monitored.
+    pub data: Option<&'a [f32]>,
+    /// The track is monitored (returns: always, their input is the send mix).
+    pub monitor: bool,
+    /// The input is stereo (a mono input pans with the mono law).
+    pub stereo: bool,
+    /// Playing, realtime and the project's low-latency monitoring: a monitored track skips plug-in delay
+    /// compensation (C++ `lowLatencyMonitor`).
+    pub low_latency: bool,
+}
+
+/// Live note and controller events for a track (docs/RUST_ENGINE.md 5.7): what live MIDI, the computer
+/// keyboard and note previews send while the engine plays. Instrument tracks consume them; audio tracks
+/// ignore them (`Track::live_event` returns false).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LiveEvent {
+    NoteOn { pitch: u8, velocity: f32, id: i32 },
+    NoteOff { pitch: u8, id: i32 },
+    AllNotesOff,
+    Control { controller: u16, value: i32 },
+}
 
 /// Built-in insert parameters follow automation every 32 frames, then glide (engine.cpp).
 pub(crate) const AUTOMATION_CHUNK: u32 = 32;
@@ -68,6 +93,16 @@ pub(crate) struct Track {
     pub post_tap: Vec<f32>,
     pub fader_tap: Vec<f32>,
     pub return_input: Vec<f32>,
+    /// Track-input routes (docs/TRACK_INPUT_ROUTING.md, engine.cpp `prepareRoutes`): the source's pre-FX tap,
+    /// this track's route input, and where it comes from. Filled by the graph's preparation.
+    pub pre_tap: Vec<f32>,
+    pub route_input: Vec<f32>,
+    pub routed: bool,
+    pub route_kind: RouteKind,
+    pub route_tap: RouteTap,
+    pub route_source: Option<usize>,
+    /// Heard by master-resampling tracks (false for them and everything downstream).
+    pub in_master_feed: bool,
     pub feeds: Vec<Feed>,
     pub fader: f64,
     pub pan_value: f64,
@@ -158,6 +193,13 @@ impl Track {
             post_tap: Vec::new(),
             fader_tap: Vec::new(),
             return_input: Vec::new(),
+            pre_tap: Vec::new(),
+            route_input: Vec::new(),
+            routed: false,
+            route_kind: RouteKind::None,
+            route_tap: RouteTap::PostFx,
+            route_source: None,
+            in_master_feed: true,
             feeds: Vec::new(),
             fader: if t.audible { f64::from(t.gain) } else { 0.0 },
             pan_value: f64::from(t.pan),
@@ -320,6 +362,13 @@ impl Track {
         self.output_delay.take_state_from(&mut previous.output_delay);
         if routing {
             self.is_return = previous.is_return;
+            self.routed = previous.routed;
+            self.route_kind = previous.route_kind;
+            self.route_tap = previous.route_tap;
+            self.route_source = previous.route_source;
+            self.in_master_feed = previous.in_master_feed;
+            core::mem::swap(&mut self.pre_tap, &mut previous.pre_tap);
+            core::mem::swap(&mut self.route_input, &mut previous.route_input);
             core::mem::swap(&mut self.post_tap, &mut previous.post_tap);
             core::mem::swap(&mut self.fader_tap, &mut previous.fader_tap);
             core::mem::swap(&mut self.return_input, &mut previous.return_input);
@@ -336,7 +385,14 @@ impl Track {
     /// One block of `count` frames at project frame `frame` (engine.cpp `TrackRuntime::render`,
     /// offline/not-monitored path). `return_input` must be filled first on returns. `tempo`: the
     /// tempo at the block start when the project has a tempo map (synced effects follow it).
-    pub fn render(&mut self, frame: i64, count: u32, playing: bool, tempo: Option<f64>) {
+    pub fn render(
+        &mut self,
+        frame: i64,
+        count: u32,
+        playing: bool,
+        tempo: Option<f64>,
+        input: TrackInput<'_>,
+    ) {
         let n = count as usize * 2;
         let Track {
             plan,
@@ -344,6 +400,7 @@ impl Track {
             inserts,
             lanes,
             buffer,
+            pre_tap,
             post_tap,
             fader_tap,
             return_input,
@@ -355,7 +412,7 @@ impl Track {
         buf.fill(0.0);
         if !plan.enabled {
             self.peak = 0.0;
-            for tap in [post_tap, fader_tap] {
+            for tap in [pre_tap, post_tap, fader_tap] {
                 if let Some(t) = tap.get_mut(..n) {
                     t.fill(0.0);
                 }
@@ -379,6 +436,15 @@ impl Track {
             for (b, x) in buf.iter_mut().zip(return_input.iter()) {
                 *b += *x;
             }
+        } else if input.monitor
+            && let Some(live) = input.data
+        {
+            for (b, x) in buf.iter_mut().zip(live.iter()) {
+                *b += *x;
+            }
+        }
+        if let Some(t) = pre_tap.get_mut(..n) {
+            t.copy_from_slice(buf);
         }
         for (index, insert) in inserts.iter_mut().enumerate() {
             if let Some(bpm) = tempo {
@@ -407,7 +473,12 @@ impl Track {
                 offset += chunk;
             }
         }
-        compensation.process(buf);
+        // A reduced-latency monitor deliberately avoids waiting for unrelated tracks; a return always stays
+        // compensated.
+        let low_latency = input.monitor && input.low_latency && !self.is_return;
+        if !low_latency {
+            compensation.process(buf);
+        }
         if let Some(t) = post_tap.get_mut(..n) {
             t.copy_from_slice(buf);
         }
@@ -416,7 +487,9 @@ impl Track {
             if let Some(t) = fader_tap.get_mut(..n) {
                 t.copy_from_slice(buf);
             }
-            output_delay.process(buf);
+            if !low_latency {
+                output_delay.process(buf);
+            }
             return;
         }
         let target_pan = f64::from(plan.pan);
@@ -424,9 +497,12 @@ impl Track {
         let smoothing = math::smoothing(self.sample_rate, 0.012);
         let automated = self.volume_lane.is_some() || self.pan_lane.is_some() || self.mute_lane.is_some();
         let mute_smoothing = math::smoothing(self.sample_rate, 0.003);
-        let mono = !(self.stereo_source || self.stereo_effects || self.is_return);
+        let mono =
+            !(self.stereo_source || self.stereo_effects || self.is_return || (input.monitor && input.stereo));
         let mut peak = 0.0f32;
         let (mut fader, mut pan_value, mut mute_gain) = (self.fader, self.pan_value, self.mute_gain);
+        // (pan bits, sin, cos) of the last pan law evaluated; NaN bits never match a pan.
+        let mut law = (f64::NAN.to_bits() | 1, 0.0, 0.0);
         for (i, [lo, ro]) in buf.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let (gain, pan) = if !automated {
                 fader = math::mul_add(target_gain - fader, smoothing, fader);
@@ -464,19 +540,29 @@ impl Track {
                 (fader * mute_gain, pan_value)
             };
             let (mut l, mut r) = (f64::from(*lo), f64::from(*ro));
+            // The pan law's sin/cos only change with the (smoothed) pan: once it settles they are
+            // reused (same values, two transcendentals per sample fewer).
+            if pan.to_bits() != law.0 {
+                let angle = if mono {
+                    (pan + 1.0) * garak_dsp::PI / 4.0
+                } else if pan < 0.0 {
+                    (pan + 1.0) * garak_dsp::PI / 2.0
+                } else {
+                    pan * garak_dsp::PI / 2.0
+                };
+                law = (pan.to_bits(), math::sin(angle), math::cos(angle));
+            }
+            let (_, sin, cos) = law;
             // Equal-power mono panning; stereo sources and widened chains pan as a balance.
             if mono {
-                let angle = (pan + 1.0) * garak_dsp::PI / 4.0;
-                r = l * math::sin(angle);
-                l *= math::cos(angle);
+                r = l * sin;
+                l *= cos;
             } else if pan < 0.0 {
-                let angle = (pan + 1.0) * garak_dsp::PI / 2.0;
-                l = math::mul_add(r, math::cos(angle), l);
-                r *= math::sin(angle);
+                l = math::mul_add(r, cos, l);
+                r *= sin;
             } else if pan > 0.0 {
-                let angle = pan * garak_dsp::PI / 2.0;
-                r = math::mul_add(l, math::sin(angle), r);
-                l *= math::cos(angle);
+                r = math::mul_add(l, sin, r);
+                l *= cos;
             }
             l *= gain;
             r *= gain;
@@ -500,7 +586,25 @@ impl Track {
         if let Some(t) = fader_tap.get_mut(..n) {
             t.copy_from_slice(buf);
         }
-        output_delay.process(buf);
+        if !low_latency {
+            output_delay.process(buf);
+        }
+    }
+
+    /// A live event for this track (audio thread). Audio tracks have no instrument: false (ignored).
+    /// The instrument port (docs/RUST_ENGINE.md 6) plays them through the track's voices.
+    pub fn live_event(&mut self, event: LiveEvent) -> bool {
+        let _ = event;
+        false
+    }
+
+    /// The post-fader signal (before the return-latency delay), what a post-fader route records.
+    pub fn post_fader(&self, count: u32) -> &[f32] {
+        let n = count as usize * 2;
+        match self.fader_tap.get(..n) {
+            Some(t) => t,
+            None => self.mix(count),
+        }
     }
 
     /// Whether this track joins the master sum (C++ `TrackTimeline::directOut`).

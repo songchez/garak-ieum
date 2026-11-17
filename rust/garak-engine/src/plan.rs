@@ -237,6 +237,9 @@ pub struct Plan {
     pub tempo_map: Vec<TempoPoint>,
     pub time_sig_numerator: i32,
     pub time_sig_denominator: i32,
+    /// Time-signature changes (docs/METER_MAP.md), compiled from bars; empty = the constant meter. Only the
+    /// metronome reads it (accents restart on each meter's first bar line).
+    pub meter_map: Vec<crate::metronome::MeterEvent>,
     pub length_frames: i64,
     pub cycle: Option<(i64, i64)>,
     pub master_gain: f32,
@@ -255,6 +258,7 @@ impl Default for Plan {
             tempo_map: Vec::new(),
             time_sig_numerator: 4,
             time_sig_denominator: 4,
+            meter_map: Vec::new(),
             length_frames: 1,
             cycle: None,
             master_gain: 1.0,
@@ -274,6 +278,7 @@ impl Plan {
             && self.length_frames == other.length_frames
             && self.cycle == other.cycle
             && self.tempo_map == other.tempo_map
+            && self.meter_map == other.meter_map
     }
 }
 

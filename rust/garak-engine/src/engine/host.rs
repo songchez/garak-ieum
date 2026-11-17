@@ -56,14 +56,28 @@ unsafe extern "C" fn render_sender(job: *mut c_void, index: u32) {
         let tracks = &raw mut (*g).tracks;
         if track < (*tracks).len() {
             let t: *mut alloc::boxed::Box<crate::track::Track> = (*tracks).as_mut_ptr().add(track);
-            (**t).render(job.position, job.count, job.playing, job.tempo);
+            let n = job.count as usize * 2;
+            // First-level tracks read no other track: a return here has no feeds and a routed track no
+            // source (silence); a live input is never forked (`render_tracks` renders monitored blocks inline).
+            for buffer in [&mut (*t).return_input, &mut (*t).route_input] {
+                if let Some(b) = buffer.get_mut(..n) {
+                    b.fill(0.0);
+                }
+            }
+            let input = crate::track::TrackInput {
+                data: None,
+                monitor: (*t).is_return,
+                stereo: true,
+                low_latency: false,
+            };
+            (**t).render(job.position, job.count, job.playing, job.tempo, input);
         }
     }
 }
 
-/// Renders the leading senders of `g.order` on the host's workers and returns how many it rendered
-/// (0 when fewer than two: the caller renders everything). Returns read the senders' taps, so they
-/// stay on the calling thread afterwards.
+/// Renders the first processing level of `g.order` (tracks that read no other track) on the host's workers
+/// and returns how many it rendered (0 when fewer than two: the caller renders everything). Later levels
+/// read their taps, so they stay on the calling thread afterwards.
 pub(super) fn render_parallel(
     g: &mut Graph,
     p: &Parallel,
@@ -72,7 +86,7 @@ pub(super) fn render_parallel(
     playing: bool,
     tempo: Option<f64>,
 ) -> usize {
-    let senders = g.order.iter().take_while(|&&i| g.tracks.get(i).is_some_and(|t| !t.is_return)).count();
+    let senders = g.level_start.get(1).copied().unwrap_or(0);
     if senders < 2 {
         return 0;
     }
@@ -107,7 +121,7 @@ impl Renderer {
             let count = (block.len() / 2) as u32;
             if let Some(g) = &mut self.active {
                 let audible = playing && at < g.length_frames;
-                Self::render_tracks(g, block, at, count, audible, rate, parallel);
+                Self::render_tracks(g, block, at, count, audible, rate, parallel, None);
             }
             for x in block.iter_mut() {
                 if !x.is_finite() {

@@ -42,8 +42,10 @@ pub mod testkit;
 mod track;
 
 pub use engine::{
-    Applied, Controller, DynamicsReading, EngineConfig, HostTask, Parallel, Renderer, Snapshot, engine,
+    Applied, Controller, DynamicsReading, EngineConfig, HostTask, MAX_TAPS, Parallel, Renderer, Snapshot,
+    engine,
 };
 pub use error::Error;
 pub use offline::{OfflineRender, render_offline};
 pub use plan::{PcmAsset, Plan};
+pub use track::LiveEvent;

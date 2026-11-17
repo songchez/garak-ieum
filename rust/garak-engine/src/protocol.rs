@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 use crate::error::Error;
 use crate::json::Json;
+use crate::metronome::{MeterEvent, MeterMap};
 use crate::plan::{
     AudioWindow, AutomationLane, AutomationPoint, ControlEvent, InsertPlan, LaneTarget, Note, Plan,
     RouteKind, RoutePlan, RouteTap, SendPlan, Source, SourceKind, TempoPoint, TrackPlan,
@@ -267,6 +268,41 @@ pub fn parse_header(value: &Json) -> Result<Plan, Error> {
     p.time_sig_denominator = integer(signature, "denominator", 2, 16, 4)? as i32;
     if ![2, 4, 8, 16].contains(&p.time_sig_denominator) {
         return Err(err("Invalid meter denominator"));
+    }
+    if let Some(events) = value.get("meterMap").filter(|v| !v.is_null()) {
+        // protocol.hpp: bars decide every downbeat; beats that disagree with the bar walk are rejected.
+        let events = events.as_array().filter(|e| e.len() <= 1024).ok_or_else(|| err("Invalid meter map"))?;
+        let mut parsed: Vec<MeterEvent> = Vec::with_capacity(events.len());
+        for item in events {
+            let e = MeterEvent {
+                bar: integer(item, "bar", 0, 1_000_000, 0)?,
+                numerator: integer(item, "numerator", 1, 32, 4)? as i32,
+                denominator: integer(item, "denominator", 2, 16, 4)? as i32,
+                beat: number(item, "beat", 0.0, 1e9, 0.0)?,
+            };
+            if ![2, 4, 8, 16].contains(&e.denominator) {
+                return Err(err("Invalid meter denominator"));
+            }
+            let bad = match parsed.last() {
+                None => {
+                    e.bar != 0
+                        || e.numerator != p.time_sig_numerator
+                        || e.denominator != p.time_sig_denominator
+                }
+                Some(last) => e.bar <= last.bar,
+            };
+            if bad {
+                return Err(err("Invalid meter map order"));
+            }
+            parsed.push(e);
+        }
+        let compiled = MeterMap::new(p.time_sig_numerator, p.time_sig_denominator, &parsed);
+        if compiled.events().iter().zip(&parsed).any(|(c, e)| (c.beat - e.beat).abs() > 1e-6) {
+            return Err(err("Meter map beats disagree with its bars"));
+        }
+        if compiled.events().len() > 1 {
+            p.meter_map = compiled.events().to_vec();
+        }
     }
     if let Some(cycle) = value.get("cycle").filter(|v| !v.is_null()) {
         let start = integer(cycle, "startFrame", 0, p.length_frames - 1, 0)?;
