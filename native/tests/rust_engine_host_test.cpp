@@ -10,7 +10,11 @@
 //      EngineSnapshot::rustRefusals) and throws in strict mode;
 //   5. metronome: the garak-engine port vs native/src/metronome.hpp (grids, compound meters, tempo and meter
 //      maps, count-in), driven the way RenderEngine::renderClicks drives it;
-//   6. CPU: blocks per second of the C++ engine, the Rust shell and the Rust shell on N workers (table).
+//   6. host nodes (docs/RUST_ENGINE.md 4): VST3 instrument and inserts (a stand-in plug-in) with events, sustain,
+//      parameter automation and PDC, a latent return, track-input routes and a master resampler, monitored device
+//      input and routed/physical recording takes, live MIDI, seek, cycle, edits; frozen windows with tails; the
+//      shell's render-ahead rings: C++ engine vs Rust shell bit-identical, 0 vs N workers bit-identical;
+//   7. CPU: blocks per second of the C++ engine, the Rust shell and the Rust shell on N workers (table).
 // Gate: residual <= -90 dBFS (bit-identical expected), equal latency; the multi-core output bit-identical.
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
@@ -19,12 +23,15 @@
 #include "metronome.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -307,6 +314,216 @@ void metronomeCases() {
   }
 }
 
+// ---- Host nodes, routes, monitoring, capture, frozen windows, render-ahead (docs/RUST_ENGINE.md 4, 10) ----
+// A stateful stand-in plug-in, so event timing, PDC, parameter points and resets all show in the output. As an
+// instrument: a saw per held note (sustain pedal CC64 defers note-offs), level from parameter 3 and CC1. As an
+// effect: a one-pole smoother times parameter 7, delayed by `latency` frames.
+class StandIn final : public garak::PluginProcessor {
+ public:
+  StandIn(bool instrument, std::uint32_t latency) : instrument_(instrument), latency_(latency), ring_((latency + 1) * 2) {}
+  void process(float* stereo, std::uint32_t frames, std::span<const garak::PluginEvent> events, const garak::ProcessContext& context) noexcept override {
+    if (reset_) { reset_ = false; notes_.fill({}); pedal_ = false; smooth_ = {0, 0}; }
+    std::size_t next = 0;
+    for (std::uint32_t i = 0; i < frames; ++i) {
+      for (; next < events.size() && events[next].offset <= i; ++next) apply(events[next]);
+      for (int c = 0; c < 2; ++c) {
+        float x = 0;
+        if (instrument_) {
+          for (auto& n : notes_) if (n.on || n.held) { x += static_cast<float>(n.velocity * (n.phase * 2 - 1)) * level_; }
+        } else {
+          smooth_[c] += (stereo[2 * i + c] - smooth_[c]) * .3f;
+          x = smooth_[c] * gain_;
+        }
+        if (latency_) { const auto at = (write_ + 1) % (latency_ + 1); const float y = ring_[at * 2 + c]; ring_[write_ * 2 + c] = x; x = y; }
+        stereo[2 * i + c] = x;
+      }
+      if (latency_) write_ = (write_ + 1) % (latency_ + 1);
+      if (instrument_) for (auto& n : notes_) if (n.on || n.held) { n.phase += n.step * (1 + context.bpm / 1e4); n.phase -= std::floor(n.phase); }
+    }
+  }
+  [[nodiscard]] std::uint32_t latencyFrames() const noexcept override { return latency_; }
+  [[nodiscard]] double tailSeconds() const noexcept override { return instrument_ ? 0 : .01; }
+  void requestReset() noexcept override { reset_ = true; }
+
+ private:
+  struct Note { bool on = false, held = false; int pitch = 0; double velocity = 0, phase = 0, step = 0; std::int32_t id = -1; };
+  void apply(const garak::PluginEvent& e) noexcept {
+    using T = garak::PluginEvent::Type;
+    if (e.type == T::Parameter) { if (e.parameterId == 3) level_ = .05f + e.value * .2f; if (e.parameterId == 7) gain_ = .2f + e.value; return; }
+    if (e.type == T::Controller) {
+      if (e.parameterId == 64) { pedal_ = e.value >= .5f; if (!pedal_) for (auto& n : notes_) n.held = false; }
+      if (e.parameterId == 1) level_ = .1f + e.value * .1f;
+      return;
+    }
+    if (e.type == T::AllNotesOff) { for (auto& n : notes_) n = {}; return; }
+    if (e.type == T::NoteOn) {
+      for (auto& n : notes_) if (!n.on && !n.held) { n = {true, false, e.pitch, e.value, 0, 110.0 * std::pow(2.0, (e.pitch - 45) / 12.0) / 48000, e.noteId}; return; }
+      return;
+    }
+    for (auto& n : notes_) if (n.on && (e.noteId >= 0 ? n.id == e.noteId : n.pitch == e.pitch)) { n.on = false; n.held = pedal_; }
+  }
+  bool instrument_; std::uint32_t latency_, write_ = 0; std::vector<float> ring_;
+  std::array<Note, 16> notes_{}; bool pedal_ = false, reset_ = false; float level_ = .1f, gain_ = 1;
+  std::array<float, 2> smooth_{};
+};
+// One resolver per engine: instances are cached by id (a re-prepared graph keeps them, like the desktop host).
+garak::PluginResolver standIns() {
+  auto cache = std::make_shared<std::map<std::string, std::shared_ptr<garak::PluginProcessor>>>();
+  return [cache](const garak::PluginSpec& spec, double, std::uint32_t) -> std::shared_ptr<garak::PluginProcessor> {
+    auto& slot = (*cache)[spec.instanceId];
+    if (!slot) slot = std::make_shared<StandIn>(spec.isInstrument, spec.instanceId == "fxA" ? 11u : spec.instanceId == "fxB" ? 5u : spec.instanceId == "fxR" ? 7u : 0u);
+    return slot;
+  };
+}
+std::shared_ptr<const garak::PcmAsset> tone(const char* id, std::uint32_t channels, double frequency, std::uint32_t frames) {
+  auto a = std::make_shared<garak::PcmAsset>(); a->id = id; a->sampleRate = 48000; a->channels = channels;
+  a->samples.resize(std::size_t(frames) * channels);
+  for (std::uint32_t i = 0; i < frames; ++i) for (std::uint32_t c = 0; c < channels; ++c) a->samples[std::size_t(i) * channels + c] = float(.3 * std::sin(frequency * (i + 1) * (c + 1) / 48000.0 * 6.283185307179586));
+  return a;
+}
+garak::AutomationLane lane(garak::AutomationLane::Target target, const char* insert, const char* param, std::vector<garak::AutomationPoint> points) {
+  garak::AutomationLane l; l.target = target; l.insertId = insert; l.param = param; l.points = std::move(points); return l;
+}
+// VST3 instrument (notes, sustain pedal, mod wheel, instrument-parameter automation) into a latent VST3 insert with
+// automation and a built-in EQ; an audio track through another VST3 insert; a return with a latent VST3 insert; a
+// post-fader route of the instrument, a master resampler and a monitored mono input track.
+struct HostProject { garak::ProjectTimeline timeline; garak::AssetStore assets; };
+HostProject hostProject() {
+  HostProject h;
+  auto& p = h.timeline; p.projectId = "host-nodes"; p.sampleRate = 48000; p.lengthFrames = 96000; p.bpm = 100;
+  h.assets["tone"] = tone("tone", 2, 220, 96000); h.assets["mono"] = tone("mono", 1, 330, 96000);
+  garak::TrackTimeline inst; inst.id = "inst"; inst.gain = .8f; inst.pan = -.2f;
+  inst.source.kind = garak::TrackSource::Kind::Vst3; inst.source.plugin.instanceId = "synth"; inst.source.plugin.isInstrument = true;
+  inst.notes = {{1, 100, 9000, 96000, 57, .8f}, {2, 4000, 30000, 96000, 64, .6f}, {3, 31000, 33000, 96000, 60, .9f}, {4, 50000, 90000, 96000, 52, .7f}};
+  inst.controls = {{20000, 64, 127}, {32000, 1, 90}, {36000, 64, 0}, {60000, 1, 10}};
+  inst.automation = {lane(garak::AutomationLane::Target::Instrument, "", "3", {{0, .2, 0}, {48000, .9, .4}, {90000, .1, 0}}),
+                     lane(garak::AutomationLane::Target::Insert, "fxA", "7", {{0, .5, 0}, {30000, 1, -.5}, {70000, .2, 0}})};
+  garak::BuiltinInsert eq; eq.id = "eq"; eq.type = "eq"; eq.params = {{"mid", -3}};
+  garak::BuiltinInsert fxA; fxA.id = "fxA"; fxA.type = "vst3"; fxA.plugin.instanceId = "fxA";
+  inst.inserts = {fxA, eq}; inst.sends = {{"ret", .3f, false}};
+  garak::TrackTimeline audio; audio.id = "audio"; audio.gain = .6f; audio.pan = .3f;
+  audio.audio = {{1, "tone", 2000, 80000, 0, 48000, 0, 78000, .9f, 400, 600}};
+  garak::BuiltinInsert fxB; fxB.id = "fxB"; fxB.type = "vst3"; fxB.plugin.instanceId = "fxB"; audio.inserts = {fxB};
+  audio.sends = {{"ret", .5f, true}};
+  garak::TrackTimeline ret; ret.id = "ret"; ret.isReturn = true; ret.gain = .7f;
+  garak::BuiltinInsert fxR; fxR.id = "fxR"; fxR.type = "vst3"; fxR.plugin.instanceId = "fxR";
+  garak::BuiltinInsert echo; echo.id = "echo"; echo.type = "delay"; echo.params = {{"amount", .6}, {"time", .25}, {"feedback", .3}};
+  ret.inserts = {fxR, echo};
+  garak::TrackTimeline rec; rec.id = "rec"; garak::TrackRoute fromInst; fromInst.kind = garak::TrackRoute::Kind::Track; fromInst.trackId = "inst"; fromInst.tap = garak::TrackRoute::Tap::PostFader; rec.route = fromInst; rec.gain = .5f;
+  garak::TrackTimeline resample; resample.id = "resample"; garak::TrackRoute master; master.kind = garak::TrackRoute::Kind::Master; resample.route = master; resample.audible = false;
+  garak::TrackTimeline mono; mono.id = "mono"; mono.input = garak::TrackInput{{1, -1}}; mono.audio = {{1, "mono", 10000, 60000, 0, 48000, 0, 50000, 1, 0, 0}};
+  // Plain audio tracks (no sends, routes or plug-ins): the ones render-ahead takes.
+  garak::TrackTimeline plain = audio; plain.id = "plain"; plain.sends.clear(); plain.pan = -.5f;
+  garak::BuiltinInsert comp; comp.id = "comp"; comp.type = "compressor"; plain.inserts = {comp};
+  garak::TrackTimeline roomy = mono; roomy.id = "roomy"; roomy.input.reset(); roomy.gain = .4f;
+  garak::BuiltinInsert verb; verb.id = "verb"; verb.type = "reverb"; roomy.inserts = {verb};
+  p.tracks = {rec, inst, audio, ret, resample, mono, plain, roomy};
+  return h;
+}
+struct HostRun { std::vector<float> out, takes; bool rust = false; std::uint32_t ahead = 0; };
+// `transportOnly`: play, a seek and cycle wraps only. Live commands on a track that renders ahead wait until its ring
+// drains, and a pause keeps a ring's tail only when the workers had not got ahead yet: both depend on worker timing
+// (in the C++ engine alike), so render-ahead runs compare without them.
+HostRun hostLive(const HostProject& h, int mode, std::uint32_t threads, garak::RenderAhead renderAhead = garak::RenderAhead::Off, bool transportOnly = false) {
+  garak::RenderEngine e(48000, 128, 48000); e.setRustEngine(mode);
+  if (threads || renderAhead != garak::RenderAhead::Off) { garak::ProcessingOptions o; o.threads = threads; o.renderAhead = renderAhead; o.deviceBlockFrames = 256; e.setProcessing(o); }
+  const auto plugins = standIns();
+  auto start = h.timeline; if (transportOnly) start.cycle = std::array<std::int64_t, 2>{30000, 70000};
+  (void)e.update(start, h.assets, {}, plugins);
+  HostRun r; std::vector<float> in(512), out(512), drained(48000 * 6);
+  auto cycled = h.timeline; cycled.revision = 2; cycled.cycle = std::array<std::int64_t, 2>{30000, 70000};
+  auto edited = cycled; edited.revision = 3; edited.tracks[1].gain = .5f; edited.tracks[2].inserts[0].plugin.parameters[7] = .4;
+  for (std::uint32_t k = 0; k < 520; ++k) {
+    if (transportOnly) switch (k) {
+      case 0: (void)e.play(); break;
+      case 100: (void)e.seek(20000); break;
+      default: break;
+    } else switch (k) {
+      case 0: (void)e.play(); break;
+      case 10: { const std::array<std::uint32_t, 3> takes{0, 4, 5}; (void)e.startRecording(e.planRecording(takes)); break; }
+      case 40: { const std::array<std::uint32_t, 2> monitored{0, 5}; (void)e.setMonitoring(monitored); break; }
+      case 60: (void)e.noteOn(1, 69, .9f, 900); break;
+      case 70: (void)e.controlChange(1, 64, 127); break;
+      case 80: (void)e.noteOff(1, 69, 900); break;
+      case 95: (void)e.controlChange(1, 64, 0); break;
+      case 100: (void)e.seek(20000); break;
+      case 140: (void)e.update(cycled, h.assets, {}, plugins); break;
+      case 170: (void)e.pause(); break;
+      case 175: (void)e.play(); break;
+      case 200: (void)e.update(edited, h.assets, {}, plugins); break;
+      case 260: (void)e.setMonitoring({}); break;
+      case 300: (void)e.stopRecording(); break;
+      default: break;
+    }
+    for (std::size_t i = 0; i < 256; ++i) { in[2 * i] = float(.2 * std::sin((k * 256 + i) * .031)); in[2 * i + 1] = float(.1 * std::cos((k * 256 + i) * .017)); }
+    e.render(out.data(), in.data(), 256, 2);
+    r.out.insert(r.out.end(), out.begin(), out.end());
+    const auto s = e.snapshot(); r.rust = r.rust || s.rustEngine; r.ahead = std::max(r.ahead, s.renderAheadTracks);
+    const auto got = e.drainRecording(drained.data(), 48000);
+    r.takes.insert(r.takes.end(), drained.begin(), drained.begin() + std::ptrdiff_t(got) * e.recordingChannels());
+    if (k % 16 == 0) e.collectRetired();
+  }
+  return r;
+}
+std::vector<float> hostOffline(const garak::ProjectTimeline& timeline, const garak::AssetStore& assets, int mode, std::uint32_t block) {
+  garak::RenderEngine e(48000, block); e.setRustEngine(mode); e.setOffline(true);
+  auto prepared = e.prepare(timeline, assets, {}, standIns());
+  const auto latency = prepared->latencyFrames();
+  const auto frames = std::uint64_t(timeline.lengthFrames) + std::uint64_t(std::ceil(std::min(30.0, prepared->tailSeconds()) * 48000)) + latency;
+  e.submit(std::move(prepared)); (void)e.play();
+  std::vector<float> out(frames * 2);
+  for (std::uint64_t done = 0; done < frames; done += block) e.render(out.data() + done * 2, nullptr, std::uint32_t(std::min<std::uint64_t>(block, frames - done)), 0);
+  return out;
+}
+void hostNodeCases() {
+  const auto h = hostProject();
+  const auto cpp = hostLive(h, 0, 0), rust = hostLive(h, 2, 0);
+  const double d = residual(cpp.out, rust.out), t = residual(cpp.takes, rust.takes);
+  std::printf("| host nodes: VST3 instrument/inserts/return, routes, monitoring, live MIDI, seek, cycle, edits | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | — | %s (takes %s) |\n", verdict(d).c_str(), verdict(t).c_str());
+  check(rust.rust && !cpp.rust && peak(cpp.out) > .05 && peak(cpp.takes) > .01, "host nodes: rendered through Rust", peak(cpp.out));
+  check(cpp.takes.size() == rust.takes.size() && !cpp.takes.empty(), "host nodes: capture lengths", double(rust.takes.size()));
+  check(dbfs(d) <= -90, "host nodes: output differs from the C++ engine", dbfs(d));
+  check(dbfs(t) <= -90, "host nodes: routed/physical takes differ from the C++ engine", dbfs(t));
+  const auto workers = std::max(2u, std::min(4u, std::thread::hardware_concurrency()));
+  const auto parallel = hostLive(h, 2, workers);
+  const double m = std::max(residual(rust.out, parallel.out), residual(rust.takes, parallel.takes));
+  std::printf("| host nodes: Rust shell, 0 vs %u workers | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | — | %s |\n", workers, verdict(m).c_str());
+  check(m == 0, "host nodes: worker threads changed the Rust mix", dbfs(m));
+  auto offlinePlan = h.timeline;
+  const auto a = hostOffline(offlinePlan, h.assets, 0, 256), b = hostOffline(offlinePlan, h.assets, 2, 256);
+  const double o = residual(a, b);
+  std::printf("| host nodes: offline export | 7+1 | 2 s | 48000 Hz | 256 | — | %s |\n", verdict(o).c_str());
+  check(dbfs(o) <= -90 && peak(a) > .05, "host nodes: offline export differs from the C++ engine", dbfs(o));
+  // Frozen windows (docs/BOUNCE_FREEZE_STEMS.md): no click guard, the window runs past the project end and its
+  // tail sets the export length; a delay after it keeps ringing.
+  garak::ProjectTimeline frozen; frozen.projectId = "frozen"; frozen.sampleRate = 48000; frozen.lengthFrames = 48000;
+  garak::AssetStore frozenAssets{{"render", tone("render", 2, 180, 60000)}};
+  garak::TrackTimeline f; f.id = "frozen"; f.gain = .7f; f.pan = .4f;
+  garak::AudioWindow w; w.id = 1; w.assetId = "render"; w.startFrame = 0; w.endFrame = 60000; w.clipLengthFrames = 60000; w.freeze = true; w.tailSeconds = .4; f.audio = {w};
+  garak::BuiltinInsert delay; delay.id = "d"; delay.type = "delay"; delay.params = {{"amount", .5}, {"time", .2}, {"feedback", .4}}; f.inserts = {delay};
+  frozen.tracks = {f};
+  const auto x = hostOffline(frozen, frozenAssets, 0, 512), y = hostOffline(frozen, frozenAssets, 2, 512);
+  double after = 0; for (std::size_t i = 48000 * 2; i < x.size(); ++i) after = std::max(after, double(std::abs(x[i])));
+  const double z = residual(x, y);
+  std::printf("| frozen window with tail (offline) | 1 | 1 s + tail | 48000 Hz | 512 | — | %s |\n", verdict(z).c_str());
+  check(dbfs(z) <= -90 && after > .01, "frozen window: differs from the C++ engine or lost its tail", dbfs(z));
+  // Render-ahead (Normal and High, 2 workers): the Rust shell keeps eligible tracks in the shell's rings, the same
+  // tracks at the same blocks as the C++ engine. The return's plug-in delay is taken out: the dry tracks'
+  // return-alignment delay is not cleared by a seek (C++ TrackRuntime::reset), so after one its first frames depend
+  // on how far a ring had rendered.
+  auto aheadProject = h; aheadProject.timeline.tracks[3].inserts.erase(aheadProject.timeline.tracks[3].inserts.begin());
+  for (const auto mode : {garak::RenderAhead::Normal, garak::RenderAhead::High}) {
+    const auto aheadCpp = hostLive(aheadProject, 0, 2, mode, true), aheadRust = hostLive(aheadProject, 2, 2, mode, true);
+    const auto plain = hostLive(aheadProject, 2, 0, garak::RenderAhead::Off, true);
+    const double r = std::max(residual(aheadCpp.out, aheadRust.out), residual(plain.out, aheadRust.out));
+    std::printf("| render-ahead (%s, 2 workers): C++ vs Rust shell vs callback rendering, seek and cycle wraps | 7+1 | 2 s | 48000 Hz | 128 (256 calls) | - | %s (ahead tracks %u / %u) |\n",
+                mode == garak::RenderAhead::High ? "High" : "Normal", verdict(r).c_str(), aheadCpp.ahead, aheadRust.ahead);
+    check(aheadRust.ahead >= 2 && aheadRust.rust && aheadRust.ahead == aheadCpp.ahead, "render-ahead: the Rust shell rendered fewer tracks ahead", aheadRust.ahead);
+    check(dbfs(residual(aheadCpp.out, aheadRust.out)) <= -90, "render-ahead: output differs from the C++ engine", dbfs(r));
+    check(residual(plain.out, aheadRust.out) == 0, "render-ahead: Rust shell output differs from callback rendering", dbfs(r));
+  }
+}
+
 void bench() {
   using Clock = std::chrono::steady_clock;
   const auto workers = std::max(2u, std::min(8u, std::thread::hardware_concurrency() > 1 ? std::thread::hardware_concurrency() - 1 : 1u));
@@ -339,6 +556,7 @@ int main(int argc, char** argv) {
     offlineCases();
     liveCases();
     fallbackCases();
+    hostNodeCases();
     metronomeCases();
     if (argc > 1 && std::string(argv[1]) == "--bench") bench();
   } catch (const std::exception& error) {

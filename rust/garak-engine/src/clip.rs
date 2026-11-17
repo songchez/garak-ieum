@@ -67,7 +67,12 @@ impl Window {
         if start >= end {
             return;
         }
-        let click = math::std_min(sample_rate * 0.004, (w.end_frame - w.start_frame) as f64 / 4.0);
+        // A frozen render already carries its own edges: no click guard.
+        let click = if w.freeze {
+            0.0
+        } else {
+            math::std_min(sample_rate * 0.004, (w.end_frame - w.start_frame) as f64 / 4.0)
+        };
         let gain0 = f64::from(w.gain);
         let frames = self.asset.frames();
         let first = (start - frame) as usize;
@@ -133,6 +138,8 @@ mod tests {
                 fade_out_frames: fade_out,
                 fade_in_curve: curve,
                 fade_out_curve: curve,
+                freeze: false,
+                tail_seconds: 0.0,
             },
             asset: Arc::new(PcmAsset { sample_rate: 48_000, channels: 1, samples: vec![0.5; 2000] }),
         }

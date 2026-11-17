@@ -19,10 +19,6 @@ impl CompensationDelay {
         Self { frames, samples: vec![0.0; slots * 2], generations: vec![0; slots], write: 0, generation: 1 }
     }
 
-    pub fn frames(&self) -> u32 {
-        self.frames
-    }
-
     pub fn process(&mut self, s: &mut [f32]) {
         if self.frames == 0 {
             return;

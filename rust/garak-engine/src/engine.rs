@@ -8,20 +8,22 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::delay::CompensationDelay;
 use crate::error::{Error, require};
+use crate::external::{DeviceInput, Io, Stage};
 use crate::insert::{KernelCache, live_parameter, validated_values};
 use crate::json::Json;
 use crate::master::Master;
 use crate::math;
 use crate::metronome::{Clicks, MeterEvent, MeterMap, Metronome, clicks, grid, meter_clicks};
-use crate::plan::{LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, SourceKind, TrackPlan};
+use crate::plan::{LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, TrackPlan};
 use crate::protocol;
 use crate::queue::{Consumer, Producer, channel};
+use crate::routes::{self, Levels};
 use crate::tempo::TempoMap;
-use crate::track::{Feed, LiveEvent, Track, TrackInfo, TrackInput};
+use crate::track::{Feed, LiveEvent, Track, TrackInfo};
 
 /// Route recording taps the renderer copies out per block (docs/RUST_ENGINE.md 5.7).
 pub const MAX_TAPS: usize = 8;
@@ -104,19 +106,14 @@ pub(crate) struct Graph {
     /// Boxed: a track replacement is a pointer swap and a retired track never moves.
     #[allow(clippy::vec_box)]
     tracks: Vec<Box<Track>>,
-    /// Render order by processing level (engine.cpp `levelOrder`): every route source and send renders in
-    /// an earlier level than the tracks that read it. Without routes: senders, then returns.
-    order: Vec<usize>,
-    /// Start of each level in `order`, plus the end.
-    level_start: Vec<usize>,
-    /// The first level holding a master-resampling track (it needs the master feed first).
-    master_level: Option<usize>,
     /// Metronome grid inputs (C++ `PreparedProject::Impl::meters` + timeline header).
     meters: MeterMap,
     meter_mapped: bool,
     bpm: f64,
     meter: (i32, i32),
-    low_latency: bool,
+    /// Processing levels: route sources and senders before the tracks that read them (engine.cpp
+    /// `levelOrder`/`levelStart`/`masterLevel`).
+    levels: Levels,
     master: Master,
     latency: u32,
     sender_latency: u32,
@@ -238,15 +235,16 @@ pub struct Renderer {
     count_in_length: i64,
     /// Monitored tracks by graph index (C++ `monitor`).
     monitor: [u64; 4],
-    /// Per block: a monitored track's routed input channels, and the master feed (both `max_block * 2`).
-    input_scratch: Vec<f32>,
-    master_feed: Vec<f32>,
     /// Route recording taps: graph indices (-1 none) and their route inputs of the last render call,
     /// `MAX_TAPS` interleaved stereo slots of `max_block` frames.
     taps: [i32; MAX_TAPS],
     tap_out: Vec<f32>,
     live_played: u64,
     live_ignored: u64,
+    /// The master feed of the current block for master-resampling routes.
+    master_feed: Vec<f32>,
+    /// The active graph for render-ahead producers on the host's workers (`ahead.rs`).
+    shared: Arc<AtomicPtr<Graph>>,
 }
 
 impl core::fmt::Debug for Renderer {
@@ -302,194 +300,14 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             count_in_elapsed: 0,
             count_in_length: 0,
             monitor: [0; 4],
-            input_scratch: vec![0.0; config.max_block as usize * 2],
-            master_feed: vec![0.0; config.max_block as usize * 2],
             taps: [-1; MAX_TAPS],
             tap_out: vec![0.0; config.max_block as usize * 2 * MAX_TAPS],
             live_played: 0,
             live_ignored: 0,
+            master_feed: vec![0.0; config.max_block as usize * 2],
+            shared: Arc::new(AtomicPtr::new(core::ptr::null_mut())),
         },
     ))
-}
-
-/// engine.cpp `routeInput` for the browser host: track input channels index the input block's channels
-/// directly; no input = channels 0 and 1 (mono when the block has one). None when a channel is missing.
-fn input_channels(input: Option<[i16; 2]>, channels: usize) -> Option<(usize, Option<usize>)> {
-    let open = |c: i16| (c >= 0 && (c as usize) < channels).then_some(c as usize);
-    match input {
-        None => open(0).map(|l| (l, open(1))),
-        Some([l, r]) => {
-            let left = open(l)?;
-            if r < 0 { Some((left, None)) } else { open(r).map(|r| (left, Some(r))) }
-        }
-    }
-}
-
-/// engine.cpp `prepareRoutes` (route part; sends are wired by `prepare`): resolves each route to a graph
-/// index, turns loops and missing sources into silence, marks the master feed, allocates the tap and
-/// route buffers, and orders tracks by level. Returns (order, level starts, master level).
-#[allow(clippy::vec_box)]
-fn prepare_routes(tracks: &mut [Box<Track>], block: usize) -> (Vec<usize>, Vec<usize>, Option<usize>) {
-    let count = tracks.len();
-    let mut source: Vec<Option<usize>> = vec![None; count];
-    for i in 0..count {
-        let Some(t) = tracks.get(i) else { continue };
-        let Some(route) = t.plan.route.clone() else { continue };
-        if t.plan.source.kind != SourceKind::Audio || t.is_return {
-            continue;
-        }
-        // Return tracks are never route sources (docs/SENDS_RETURNS.md): a route naming one records silence.
-        let found = if route.kind == RouteKind::Track {
-            tracks.iter().enumerate().position(|(j, s)| j != i && !s.is_return && s.plan.id == route.track_id)
-        } else {
-            None
-        };
-        if let Some(t) = tracks.get_mut(i) {
-            t.routed = true;
-            t.route_kind =
-                if route.kind == RouteKind::Track && found.is_none() { RouteKind::None } else { route.kind };
-            t.route_tap = route.tap;
-        }
-        if let Some(slot) = source.get_mut(i) {
-            *slot = found;
-        }
-    }
-    // Each track has one input: a loop is a chain that returns to its start. Break it at that track.
-    for i in 0..count {
-        let mut at = source.get(i).copied().flatten();
-        let mut steps = 0;
-        while let Some(a) = at {
-            if steps > count {
-                break;
-            }
-            if a == i {
-                if let Some(slot) = source.get_mut(i) {
-                    *slot = None;
-                }
-                if let Some(t) = tracks.get_mut(i) {
-                    t.route_kind = RouteKind::None;
-                }
-                break;
-            }
-            at = source.get(a).copied().flatten();
-            steps += 1;
-        }
-    }
-    for i in 0..count {
-        let kind = tracks.get(i).map_or(RouteKind::None, |t| t.route_kind);
-        if kind != RouteKind::Track
-            && let Some(slot) = source.get_mut(i)
-        {
-            *slot = None;
-        }
-        if let Some(t) = tracks.get_mut(i) {
-            t.route_source = source.get(i).copied().flatten();
-        }
-    }
-    // Master-resampling tracks and everything downstream of them stay out of the master feed.
-    let resamplers: Vec<bool> = tracks.iter().map(|t| t.route_kind == RouteKind::Master).collect();
-    let master = |i: usize| resamplers.get(i).copied().unwrap_or(false);
-    let mut feed = vec![true; count];
-    for (i, f) in feed.iter_mut().enumerate() {
-        let mut excluded = master(i);
-        let mut at = source.get(i).copied().flatten();
-        let mut steps = 0;
-        while !excluded && steps <= count {
-            let Some(a) = at else { break };
-            excluded = master(a);
-            at = source.get(a).copied().flatten();
-            steps += 1;
-        }
-        *f = !excluded;
-    }
-    // A return fed by a track outside the master feed carries the resampled signal too.
-    for (i, t) in tracks.iter().enumerate() {
-        if t.is_return
-            && t.feeds.iter().any(|f| !feed.get(f.sender).copied().unwrap_or(true))
-            && let Some(slot) = feed.get_mut(i)
-        {
-            *slot = false;
-        }
-    }
-    for (t, f) in tracks.iter_mut().zip(&feed) {
-        t.in_master_feed = *f;
-    }
-    // Levels: feed tracks by their chain depth, master resamplers above every feed track, then theirs.
-    fn depth(
-        i: usize,
-        guard: usize,
-        tracks: &[Box<Track>],
-        source: &[Option<usize>],
-        level: &mut [Option<usize>],
-    ) -> usize {
-        if let Some(Some(l)) = level.get(i) {
-            return *l;
-        }
-        let count = tracks.len();
-        if guard > count {
-            return 0;
-        }
-        let Some(t) = tracks.get(i) else { return 0 };
-        let mut value = 0;
-        if let Some(Some(s)) = source.get(i) {
-            value = depth(*s, guard + 1, tracks, source, level) + 1;
-        } else if t.route_kind == RouteKind::Master {
-            for j in 0..count {
-                if tracks.get(j).is_some_and(|x| x.in_master_feed) {
-                    value = value.max(depth(j, guard + 1, tracks, source, level) + 1);
-                }
-            }
-        } else if t.is_return {
-            for f in &t.feeds {
-                value = value.max(depth(f.sender, guard + 1, tracks, source, level) + 1);
-            }
-        }
-        if let Some(slot) = level.get_mut(i) {
-            *slot = Some(value);
-        }
-        value
-    }
-    let mut level: Vec<Option<usize>> = vec![None; count];
-    let mut top = 0;
-    for i in 0..count {
-        top = top.max(depth(i, 0, tracks, &source, &mut level));
-    }
-    let (mut order, mut starts, mut master_level) = (Vec::with_capacity(count), Vec::new(), None);
-    for l in 0..=top {
-        starts.push(order.len());
-        for i in 0..count {
-            if level.get(i).copied().flatten() == Some(l) {
-                order.push(i);
-                if master(i) && master_level.is_none() {
-                    master_level = Some(l);
-                }
-            }
-        }
-    }
-    starts.push(order.len());
-    for i in 0..count {
-        let (routed, tap) = match tracks.get(i) {
-            Some(t) => (t.routed, t.route_tap),
-            None => continue,
-        };
-        if routed && let Some(t) = tracks.get_mut(i) {
-            t.route_input = vec![0.0; block];
-        }
-        if let Some(Some(s)) = source.get(i)
-            && let Some(src) = tracks.get_mut(*s)
-        {
-            match tap {
-                RouteTap::PreFx if src.pre_tap.is_empty() => src.pre_tap = vec![0.0; block],
-                RouteTap::PostFx if src.post_tap.is_empty() => src.post_tap = vec![0.0; block],
-                // The post-fader tap is the output before the return-latency delay.
-                RouteTap::PostFader if src.fader_tap.is_empty() && src.output_delay.frames() > 0 => {
-                    src.fader_tap = vec![0.0; block];
-                }
-                _ => {}
-            }
-        }
-    }
-    (order, starts, master_level)
 }
 
 fn checked(value: f64, minimum: f64, maximum: f64, message: &str) -> Result<(), Error> {
@@ -816,6 +634,7 @@ impl Controller {
             enabled: true,
             params,
             plugin_instance: String::new(),
+            host: None,
         };
         let kind = garak_dsp::EffectKind::Reverb;
         let values = validated_values(kind, &plan)?;
@@ -920,12 +739,14 @@ impl Controller {
         }
         estimated += (sender_latency + return_latency) as usize * p.tracks.len() * 16;
         require(estimated <= MEMORY_LIMIT, "Plugin compensation exceeds native memory budget")?;
-        for t in &mut tracks {
+        for (i, t) in tracks.iter_mut().enumerate() {
+            t.index = i;
             if t.is_return {
                 t.compensation = CompensationDelay::new(return_latency.saturating_sub(t.latency));
             } else {
                 t.compensation = CompensationDelay::new(sender_latency - t.latency);
                 t.output_delay = CompensationDelay::new(return_latency);
+                t.output_delay_frames = return_latency;
             }
         }
         // Sends: each feeds an existing return (never itself; returns never send).
@@ -968,7 +789,7 @@ impl Controller {
                 t.return_input = vec![0.0; block];
             }
         }
-        let (order, level_start, master_level) = prepare_routes(&mut tracks, block);
+        let levels = routes::prepare(&mut tracks, self.config.max_block);
         let graph = Graph {
             project_id: p.project_id.clone(),
             revision: p.revision,
@@ -977,14 +798,11 @@ impl Controller {
             master_gain: p.master_gain,
             tempo: if p.tempo_map.is_empty() { None } else { Some(TempoMap::new(p.bpm, &p.tempo_map)) },
             tracks,
-            order,
-            level_start,
-            master_level,
             meters: MeterMap::new(p.time_sig_numerator, p.time_sig_denominator, &p.meter_map),
             meter_mapped: !p.meter_map.is_empty(),
             bpm: p.bpm,
             meter: (p.time_sig_numerator, p.time_sig_denominator),
-            low_latency: p.low_latency_monitoring,
+            levels,
             master: Master::new(sr),
             latency: sender_latency + return_latency,
             sender_latency,
@@ -1098,6 +916,7 @@ impl Controller {
                     || a.kind != b.kind
                     || a.enabled != b.enabled
                     || a.plugin_instance != b.plugin_instance
+                    || a.host != b.host
                 {
                     replace = true;
                     break;
@@ -1175,6 +994,7 @@ impl Controller {
                 return self.full(p);
             }
             t.predecessor = Some(i);
+            t.index = i;
             t.insert_origin = insert_origins(old, neu);
             if old.is_return {
                 t.compensation = CompensationDelay::new(return_latency.saturating_sub(t.latency));
@@ -1398,6 +1218,7 @@ impl Renderer {
                         .as_mut()
                         .and_then(|g| g.tracks.get_mut(track as usize))
                         .and_then(|t| t.inserts.get_mut(insert as usize))
+                        .and_then(Stage::fx_mut)
                     {
                         i.set_param(index as usize, value);
                         i.commit();
@@ -1452,6 +1273,8 @@ impl Renderer {
             }
             self.last_ticket = ticket;
         }
+        let active = self.active.as_deref_mut().map_or(core::ptr::null_mut(), |g| g as *mut Graph);
+        self.shared.store(active, Ordering::Release);
     }
 
     /// A return's input for this block: every feeding send's tap times its gain, smoothed like
@@ -1506,9 +1329,63 @@ impl Renderer {
         }
     }
 
-    /// Every track of one block by level, summed into `block` in track order (the master is applied by the
-    /// caller). With `parallel`, the first level renders on the host's workers (`host.rs`); the sum is the
-    /// same either way. `live`: the monitoring context (input block, monitored tracks, scratch buffers).
+    /// A routed track's input for this block (engine.cpp `fillRouteInput`): its source's tap (rendered in an
+    /// earlier level) or the master feed. Same frames as the source: an internal route adds no latency.
+    fn fill_route_input(g: &mut Graph, i: usize, count: u32, feed: &[f32], io: &Io) {
+        let n = count as usize * 2;
+        let Some(t) = g.tracks.get_mut(i) else { return };
+        let mut input = core::mem::take(&mut t.route_input);
+        let (kind, tap, src) = (t.route_kind, t.route_tap, t.route_source);
+        if let Some(dst) = input.get_mut(..n) {
+            let from: Option<&[f32]> = match kind {
+                RouteKind::Track => {
+                    src.and_then(|x| g.tracks.get(x).map(|s| (x, s))).map(|(x, s)| match tap {
+                        RouteTap::PreFx => s.pre_tap.as_slice(),
+                        RouteTap::PostFx => s.post_tap.as_slice(),
+                        // Without a return delay the output is the tap (a track rendering ahead: its ring's).
+                        RouteTap::PostFader if s.fader_tap.is_empty() => {
+                            io.ahead_mix(x, count).unwrap_or(&s.buffer)
+                        }
+                        RouteTap::PostFader => s.fader_tap.as_slice(),
+                    })
+                }
+                RouteKind::Master => Some(feed),
+                RouteKind::None => None,
+            };
+            match from.and_then(|f| f.get(..n)) {
+                Some(f) => dst.copy_from_slice(f),
+                None => dst.fill(0.0),
+            }
+        }
+        if let Some(t) = g.tracks.get_mut(i) {
+            t.route_input = input;
+        }
+    }
+
+    /// The master feed before the master-resampling level (engine.cpp `fillMasterFeed`): the master gain over
+    /// the tracks in the feed (before the master processor), smoothed exactly as the output mix of this block.
+    fn fill_master_feed(g: &Graph, feed: &mut [f32], count: u32, rate: f64, gain: (f32, f32), io: &Io) {
+        let Some(feed) = feed.get_mut(..count as usize * 2) else { return };
+        feed.fill(0.0);
+        for (i, t) in g.tracks.iter().enumerate().filter(|(_, t)| t.in_master_feed) {
+            for (f, x) in feed.iter_mut().zip(io.ahead_mix(i, count).unwrap_or(t.mix(count))) {
+                *f += *x;
+            }
+        }
+        let s = math::smoothing(rate, 0.012) as f32;
+        let (mut current, target) = gain;
+        for pair in feed.as_chunks_mut::<2>().0 {
+            current = math::mul_add_f32(target - current, s, current);
+            for x in pair {
+                *x *= current;
+            }
+        }
+    }
+
+    /// Every track of one block level by level, summed into `block` in track order (the master is applied by
+    /// the caller). With `parallel`, the tracks of a level render on the host's workers (`host.rs`); the sum
+    /// is the same either way. `gain`: the shell's master gain (current, target) for the master feed.
+    #[allow(clippy::too_many_arguments)]
     fn render_tracks(
         g: &mut Graph,
         block: &mut [f32],
@@ -1517,149 +1394,42 @@ impl Renderer {
         playing: bool,
         rate: f64,
         parallel: Option<&host::Parallel>,
-        mut live: Option<&mut Live<'_>>,
+        io: &Io,
+        feed: &mut [f32],
+        gain: (f32, f32),
     ) {
         let tempo = g.tempo.as_ref().map(|t| t.bpm_at(t.beat_at_frame(position as f64, rate)));
         let smoothing = math::smoothing(rate, 0.012);
-        let monitoring = live.as_ref().is_some_and(|l| l.monitor != [0; 4]);
-        let first = if monitoring {
-            0
-        } else {
-            parallel.map_or(0, |p| host::render_parallel(g, p, position, count, playing, tempo))
-        };
-        let levels = g.level_start.len().saturating_sub(1);
-        for level in 0..levels {
-            if g.master_level == Some(level)
-                && let Some(l) = live.as_deref_mut()
-            {
-                Self::fill_master_feed(g, l, count, rate);
+        for level in 0..g.levels.count() {
+            if g.levels.master == Some(level) {
+                Self::fill_master_feed(g, feed, count, rate, gain, io);
             }
-            let (Some(&begin), Some(&end)) = (g.level_start.get(level), g.level_start.get(level + 1)) else {
-                continue;
-            };
-            for k in begin.max(first)..end {
-                let Some(&index) = g.order.get(k) else { continue };
-                Self::render_track(g, index, position, count, playing, tempo, smoothing, live.as_deref_mut());
-            }
-        }
-        for t in g.tracks.iter().filter(|t| t.direct_out()) {
-            for (o, x) in block.iter_mut().zip(t.mix(count)) {
-                *o += *x;
-            }
-        }
-    }
-
-    /// engine.cpp `renderTrack`: a return's send mix, a routed track's route input, or a monitored track's
-    /// live input, then the track.
-    fn render_track(
-        g: &mut Graph,
-        index: usize,
-        position: i64,
-        count: u32,
-        playing: bool,
-        tempo: Option<f64>,
-        smoothing: f64,
-        live: Option<&mut Live<'_>>,
-    ) {
-        let n = count as usize * 2;
-        let Some((is_return, routed)) = g.tracks.get(index).map(|t| (t.is_return, t.routed)) else { return };
-        let low_latency = g.low_latency && playing && live.as_ref().is_some_and(|l| !l.offline);
-        if is_return {
-            Self::fill_return_input(g, index, position, count, smoothing);
-            if let Some(t) = g.tracks.get_mut(index) {
-                t.render(
-                    position,
-                    count,
-                    playing,
-                    tempo,
-                    TrackInput { data: None, monitor: true, stereo: true, low_latency },
-                );
-            }
-            return;
-        }
-        let monitored = live
-            .as_ref()
-            .is_some_and(|l| l.monitor.get(index / 64).is_some_and(|w| w & (1u64 << (index % 64)) != 0));
-        if routed {
-            // Filled even when not monitored: a recording of this track reads it after the block.
-            let mut input = Self::route_input(g, index, count, live.as_ref().map(|l| &l.master_feed[..]));
-            if let Some(t) = g.tracks.get_mut(index) {
-                let data = if monitored { input.get(..n) } else { None };
-                t.render(
-                    position,
-                    count,
-                    playing,
-                    tempo,
-                    TrackInput { data, monitor: monitored, stereo: true, low_latency },
-                );
-                core::mem::swap(&mut t.route_input, &mut input);
-            }
-            return;
-        }
-        let mut input = TrackInput { data: None, monitor: monitored, stereo: false, low_latency };
-        if monitored && let Some(l) = live {
-            let plan = g.tracks.get(index).and_then(|t| t.plan.input);
-            if let (Some((left, right)), Some(scratch)) =
-                (input_channels(plan, l.channels), l.scratch.get_mut(..n))
-            {
-                let sample = |frame: usize, c: usize| {
-                    let v = l.input.get((l.cursor + frame) * l.channels + c).copied().unwrap_or(0.0);
-                    if v.is_finite() { v } else { 0.0 }
-                };
-                for (i, pair) in scratch.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                    let a = sample(i, left);
-                    *pair = [a, right.map_or(a, |r| sample(i, r))];
+            let size = g.levels.level(level).len();
+            for k in 0..size {
+                let Some(&index) = g.levels.level(level).get(k) else { continue };
+                match g.tracks.get(index) {
+                    Some(t) if t.is_return => Self::fill_return_input(g, index, position, count, smoothing),
+                    Some(t) if t.routed => Self::fill_route_input(g, index, count, feed, io),
+                    _ => {}
                 }
-                input.data = Some(scratch);
-                input.stereo = right.is_some();
+            }
+            if parallel.is_some_and(|p| host::render_level(g, p, level, position, count, playing, tempo, io))
+            {
+                continue;
+            }
+            for k in 0..size {
+                let Some(&index) = g.levels.level(level).get(k) else { continue };
+                if io.ahead_mix(index, count).is_some() {
+                    continue; // The host renders it ahead.
+                }
+                if let Some(t) = g.tracks.get_mut(index) {
+                    t.render(position, count, playing, tempo, io);
+                }
             }
         }
-        if let Some(t) = g.tracks.get_mut(index) {
-            t.render(position, count, playing, tempo, input);
-        }
-    }
-
-    /// engine.cpp `fillRouteInput`: this block's route input of track `r` (taken out of the track; the
-    /// caller puts it back), from its source's tap (an earlier level) or the master feed.
-    fn route_input(g: &mut Graph, r: usize, count: u32, master_feed: Option<&[f32]>) -> Vec<f32> {
-        let n = count as usize * 2;
-        let Some(t) = g.tracks.get_mut(r) else { return Vec::new() };
-        let mut input = core::mem::take(&mut t.route_input);
-        let (kind, tap, source) = (t.route_kind, t.route_tap, t.route_source);
-        let Some(out) = input.get_mut(..n) else { return input };
-        let from: Option<&[f32]> = match (kind, source.and_then(|s| g.tracks.get(s))) {
-            (RouteKind::Track, Some(s)) => match tap {
-                RouteTap::PreFx => s.pre_tap.get(..n),
-                RouteTap::PostFx => s.post_tap.get(..n),
-                RouteTap::PostFader => s.post_fader(count).get(..n),
-            },
-            (RouteKind::Master, _) => master_feed.and_then(|m| m.get(..n)),
-            _ => None,
-        };
-        match from {
-            Some(x) => out.copy_from_slice(x),
-            None => out.fill(0.0),
-        }
-        input
-    }
-
-    /// engine.cpp `fillMasterFeed`: the master gain over the tracks in the master feed (before the master
-    /// processor), with the smoothing the output mix applies to this block.
-    fn fill_master_feed(g: &Graph, live: &mut Live<'_>, count: u32, rate: f64) {
-        let n = count as usize * 2;
-        let Some(feed) = live.master_feed.get_mut(..n) else { return };
-        feed.fill(0.0);
-        for t in g.tracks.iter().filter(|t| t.in_master_feed) {
-            for (o, x) in feed.iter_mut().zip(t.mix(count)) {
+        for (i, t) in g.tracks.iter().enumerate().filter(|(_, t)| t.direct_out()) {
+            for (o, x) in block.iter_mut().zip(io.ahead_mix(i, count).unwrap_or(t.mix(count))) {
                 *o += *x;
-            }
-        }
-        let s = math::smoothing(rate, 0.012) as f32;
-        let mut gain = live.master_gain.0;
-        for pair in feed.as_chunks_mut::<2>().0 {
-            gain = math::mul_add_f32(live.master_gain.1 - gain, s, gain);
-            for x in pair {
-                *x *= gain;
             }
         }
     }
@@ -1678,7 +1448,6 @@ impl Renderer {
         let offline = self.config.offline;
         let mut cursor = 0u32;
         let mut master_peak = 0.0f32;
-        let mut input_scratch = core::mem::take(&mut self.input_scratch);
         let mut master_feed = core::mem::take(&mut self.master_feed);
         while cursor < frames {
             let mut count = self.config.max_block.min(frames - cursor);
@@ -1712,17 +1481,25 @@ impl Renderer {
             let bypass = offline && self.master_bypass;
             if let Some(g) = &mut self.active {
                 let playing = self.playing && position < g.length_frames;
-                let mut live = Live {
-                    input,
-                    channels,
-                    cursor: cursor as usize,
+                let io = Io {
                     monitor: self.monitor,
                     offline,
-                    scratch: &mut input_scratch,
-                    master_feed: &mut master_feed,
-                    master_gain: (self.master_gain, self.target_master_gain),
+                    input: Some(DeviceInput { data: input, channels, cursor: cursor as usize }),
+                    ..Io::default()
                 };
-                Self::render_tracks(g, block, position, count, playing, rate, None, Some(&mut live));
+                let gain = (self.master_gain, self.target_master_gain);
+                Self::render_tracks(
+                    g,
+                    block,
+                    position,
+                    count,
+                    playing,
+                    rate,
+                    None,
+                    &io,
+                    &mut master_feed,
+                    gain,
+                );
                 if !bypass {
                     let s = math::smoothing(rate, 0.012) as f32;
                     for pair in block.as_chunks_mut::<2>().0 {
@@ -1762,7 +1539,6 @@ impl Renderer {
             }
             cursor += count;
         }
-        self.input_scratch = input_scratch;
         self.master_feed = master_feed;
         if let Some(g) = &self.active
             && self.playing
@@ -1921,19 +1697,7 @@ impl Renderer {
     }
 }
 
-/// The monitoring context of one block (engine.cpp `BlockContext` fields the tracks read).
-struct Live<'a> {
-    /// The host's input block for the whole render call (`channels` interleaved) and this block's offset.
-    input: &'a [f32],
-    channels: usize,
-    cursor: usize,
-    monitor: [u64; 4],
-    offline: bool,
-    scratch: &'a mut [f32],
-    master_feed: &'a mut [f32],
-    /// (current, target) master gain: the master feed applies the same smoothing as the output.
-    master_gain: (f32, f32),
-}
-
+mod ahead;
 mod host;
-pub use host::{DynamicsReading, HostTask, Parallel};
+pub use ahead::Ahead;
+pub use host::{BlockInfo, DynamicsReading, HostTask, Parallel};

@@ -40,6 +40,8 @@ fn window(asset: &str, start: i64, end: i64) -> AudioWindow {
         fade_out_frames: 0,
         fade_in_curve: 0,
         fade_out_curve: 0,
+        freeze: false,
+        tail_seconds: 0.0,
     }
 }
 

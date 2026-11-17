@@ -23,8 +23,21 @@ pub enum SourceKind {
     NativeWavetable,
 }
 
-/// The track's sound source. Only `Audio` renders in this milestone (instruments: later stages,
-/// docs/RUST_ENGINE.md 6); the other fields are kept so diffs can compare identities.
+/// A node the desktop host processes itself (docs/RUST_ENGINE.md 4): a VST3 instrument or insert, an IEUM WAVE
+/// instrument, or (diagnostics) a C++ built-in instrument. The engine calls the host back at that point of the
+/// chain; the host prepared the processor and reports its plug-in delay and tail here (`"host"` in the timeline,
+/// written only by the C++ shell).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostNode {
+    pub latency: u32,
+    pub tail: f64,
+    /// Sources: the host renders stereo (VST3, IEUM WAVE; a mono built-in synth is false), so the fader pans
+    /// it as a balance instead of with the mono law.
+    pub stereo: bool,
+}
+
+/// The track's sound source. Audio renders in the engine; a source with `host` set is rendered by the
+/// desktop host through the external-source callback; other instrument sources are refused (docs/RUST_ENGINE.md 6).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source {
     pub kind: SourceKind,
@@ -36,6 +49,8 @@ pub struct Source {
     pub plugin_instance: String,
     /// Raw IEUM WAVE patch (base64 text as received).
     pub patch: String,
+    /// Rendered by the host (external source node).
+    pub host: Option<HostNode>,
 }
 
 impl Default for Source {
@@ -48,6 +63,7 @@ impl Default for Source {
             params: Vec::new(),
             plugin_instance: String::new(),
             patch: String::new(),
+            host: None,
         }
     }
 }
@@ -61,6 +77,8 @@ pub struct InsertPlan {
     /// Parameter map in the order received (keys are unique per protocol.hpp's std::map).
     pub params: Vec<(String, f64)>,
     pub plugin_instance: String,
+    /// A VST3 insert the host processes (external insert node).
+    pub host: Option<HostNode>,
 }
 
 impl InsertPlan {
@@ -91,8 +109,8 @@ pub enum RouteTap {
     PostFader,
 }
 
-/// Internal recording/monitoring input (docs/TRACK_INPUT_ROUTING.md). Parsed and compared; it is
-/// only audible while monitoring, which the offline slice never does.
+/// Internal recording/monitoring input (docs/TRACK_INPUT_ROUTING.md): another track's tap or the master feed,
+/// heard while the track is monitored and recorded by the host from the renderer's route input.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoutePlan {
     pub kind: RouteKind,
@@ -134,6 +152,11 @@ pub struct AudioWindow {
     /// 0 linear, 1 equal power, 2 S-curve, 3 exponential, 4 logarithmic (clipEnvelope.ts).
     pub fade_in_curve: i32,
     pub fade_out_curve: i32,
+    /// A frozen track's cached render (docs/BOUNCE_FREEZE_STEMS.md): no click guard, may end after the project
+    /// (its tail), and offline engines keep reading it after the project end.
+    pub freeze: bool,
+    /// Frozen windows: the frozen track's own tail (seconds).
+    pub tail_seconds: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

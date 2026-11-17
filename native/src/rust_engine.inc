@@ -1,9 +1,13 @@
 // Rust render engine backend of RenderEngine (docs/RUST_ENGINE.md 10). Included by engine.cpp inside
 // namespace garak. GARAK_RUST_ENGINE=1 (or "strict") at RenderEngine construction makes every graph the Rust
 // engine accepts render its tracks through rust/garak-engine (garak_engine.h), while this C++ engine stays the
-// shell: transport, cycle, count-in, metronome, live MIDI, monitoring, capture, master bus and snapshots. A
-// graph the Rust engine refuses (instruments, VST3, guitar rig, routes, freeze/stem taps ...) renders in C++ as
-// before ("1"), or is refused ("strict", for the regression suite).
+// shell: transport, cycle, count-in, metronome, live MIDI, capture, master bus and snapshots. VST3 instruments
+// and inserts and IEUM WAVE stay C++ processors the Rust graph calls back at their place in the chain (host
+// nodes, docs/RUST_ENGINE.md 4), and so does monitored device input; routes, taps, sends, frozen windows and
+// plug-in delay compensation are the Rust graph's. A graph the Rust engine refuses (built-in instruments until
+// they are ported, guitar rig ...) renders in C++ as before ("1"), or is refused ("strict", for the regression
+// suite). GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1 (diagnostics) renders the C++ built-in instruments as host
+// nodes too, so every graph runs through the Rust graph.
 //
 // The plan travels as the same timeline JSON the host receives (docs/RENDER_DIFF_PROTOCOL.md), written
 // from the ProjectTimeline with round-trip exact numbers, so the Rust parser reads exactly these values.
@@ -21,6 +25,15 @@ int rustEngineModeFromEnvironment() noexcept {
   return 1;
 #else
   return 0;
+#endif
+}
+
+bool rustHostInstrumentsFromEnvironment() noexcept {
+#if GARAK_RUST
+  const char* value = std::getenv("GARAK_RUST_ENGINE_HOST_INSTRUMENTS");
+  return value && *value && std::string_view(value) != "0";
+#else
+  return false;
 #endif
 }
 
@@ -48,19 +61,26 @@ class JsonWriter {
 
 #if GARAK_RUST
 // The reason a timeline cannot render in the Rust engine yet, or empty. The Rust parser and graph builder
-// refuse the rest themselves (their error is the reason then).
-std::string rustIneligibility(const ProjectTimeline& p) {
+// refuse the rest themselves (their error is the reason then). VST3 and IEUM WAVE are host nodes; built-in
+// instruments are host nodes only with `hostInstruments`.
+// Checked before the C++ graph changes, so a strict refusal leaves the running graph alone (RenderEngine::update).
+std::string rustIneligibility(const ProjectTimeline& p, bool hostInstruments) {
   for (const auto& t : p.tracks) {
     if (!t.enabled) continue;
-    if (t.source.kind == TrackSource::Kind::Vst3) return "VST3 instrument on track " + t.id;
-    if (t.source.kind == TrackSource::Kind::NativeWavetable) return "IEUM WAVE instrument on track " + t.id;
-    if (t.source.kind == TrackSource::Kind::BuiltinSampled) return "sampled instrument on track " + t.id;
-    if (t.source.kind != TrackSource::Kind::Audio) return "instrument source on track " + t.id;
-    for (const auto& e : t.inserts) if (e.enabled && e.type == "vst3") return "VST3 insert on track " + t.id;
-    if (t.route) return "track-input route on track " + t.id;
-    for (const auto& w : t.audio) if (w.freeze) return "frozen window on track " + t.id;
+    if (!hostInstruments && t.source.kind == TrackSource::Kind::BuiltinSampled) return "sampled instrument on track " + t.id;
+    if (!hostInstruments && t.source.kind == TrackSource::Kind::BuiltinSynth) return "instrument source on track " + t.id;
+    // Not ported to garak-dsp yet (the Rust graph refuses it too; this names it before anything changes).
+    for (const auto& e : t.inserts) if (e.enabled && e.type == "guitar-rig") return "guitar rig insert on track " + t.id;
   }
   return {};
+}
+
+// An identity for an IEUM WAVE patch (the Rust graph only compares it): length and FNV-1a 64.
+std::string patchIdentity(const std::vector<std::uint8_t>& data) {
+  std::uint64_t hash = 1469598103934665603ULL;
+  for (const auto byte : data) { hash ^= byte; hash *= 1099511628211ULL; }
+  char buffer[48]; std::snprintf(buffer, sizeof buffer, "%zu:%016llx", data.size(), static_cast<unsigned long long>(hash));
+  return buffer;
 }
 
 void writeParams(JsonWriter& w, const Parameters& params) {
@@ -69,7 +89,14 @@ void writeParams(JsonWriter& w, const Parameters& params) {
   w.raw("}");
 }
 
-std::string rustTimelineJson(const ProjectTimeline& p) {
+// A host node (docs/RUST_ENGINE.md 4): the C++ processor's delay and tail as prepared, for the Rust graph's PDC.
+void writeHost(JsonWriter& w, std::uint32_t latency, double tail, bool stereo) {
+  w.key("host"); w.raw("{"); w.key("latencyFrames"); w.integer(latency); w.key("tailSeconds"); w.num(tail); w.key("stereo"); w.boolean(stereo); w.raw("}");
+}
+
+// `recipe` (the C++ graph prepared from the same timeline, same track order) supplies the host nodes' delays and
+// tails; without it host nodes are written without them and the Rust graph refuses them.
+std::string rustTimelineJson(const ProjectTimeline& p, const ControlRecipe* recipe, bool hostInstruments) {
   JsonWriter w;
   w.out.reserve(4096);
   w.raw("{");
@@ -95,7 +122,10 @@ std::string rustTimelineJson(const ProjectTimeline& p) {
   }
   if (p.cycle) { w.key("cycle"); w.raw("{"); w.key("startFrame"); w.integer(p.cycle->at(0)); w.key("endFrame"); w.integer(p.cycle->at(1)); w.raw("}"); }
   w.key("tracks"); w.raw("[");
-  for (const auto& t : p.tracks) {
+  for (std::size_t index = 0; index < p.tracks.size(); ++index) {
+    const auto& t = p.tracks[index];
+    const ControlTrack* info = recipe && index < recipe->tracks.size() ? &recipe->tracks[index] : nullptr;
+    const bool hosted = info && t.enabled;
     w.comma(); w.raw("{");
     w.key("id"); w.str(t.id);
     w.key("enabled"); w.boolean(t.enabled);
@@ -107,9 +137,16 @@ std::string rustTimelineJson(const ProjectTimeline& p) {
         w.key("instrumentId"); w.str(t.source.instrumentId); w.key("isKit"); w.boolean(t.source.isKit);
         w.key("params"); writeParams(w, t.source.params);
         if (t.source.kind == TrackSource::Kind::BuiltinSampled) { w.key("sampleSetId"); w.str(t.source.sampleSetId); }
+        if (hostInstruments && hosted) writeHost(w, info->sourceLatency, info->sourceTail, info->sourceStereo);
         break;
-      // Refused by rustIneligibility before a disabled track's source matters; written so the parser can skip it.
-      default: w.key("kind"); w.str("audio"); break;
+      case TrackSource::Kind::Vst3:
+        w.key("kind"); w.str("vst3"); w.key("plugin"); w.raw("{"); w.key("instanceId"); w.str(t.source.plugin.instanceId); w.raw("}");
+        if (hosted) writeHost(w, info->sourceLatency, info->sourceTail, true);
+        break;
+      case TrackSource::Kind::NativeWavetable:
+        w.key("kind"); w.str("native-wavetable"); w.key("instrumentId"); w.str("wavetable"); w.key("patchData"); w.str(patchIdentity(t.source.patchData));
+        if (hosted) writeHost(w, info->sourceLatency, info->sourceTail, true);
+        break;
     }
     w.raw("}");
     w.key("gain"); w.num(t.gain); w.key("pan"); w.num(t.pan);
@@ -120,6 +157,18 @@ std::string rustTimelineJson(const ProjectTimeline& p) {
       w.integer(t.input->channels[0]); if (t.input->channels[1] >= 0) { w.raw(","); w.integer(t.input->channels[1]); }
       w.raw("]}");
     }
+    if (t.route) {
+      w.key("route"); w.raw("{"); w.key("kind");
+      switch (t.route->kind) {
+        case TrackRoute::Kind::None: w.str("none"); break;
+        case TrackRoute::Kind::Master: w.str("master"); break;
+        case TrackRoute::Kind::Track:
+          w.str("track"); w.key("trackId"); w.str(t.route->trackId); w.key("tap");
+          w.str(t.route->tap == TrackRoute::Tap::PreFx ? "preFx" : t.route->tap == TrackRoute::Tap::PostFx ? "postFx" : "postFader");
+          break;
+      }
+      w.raw("}");
+    }
     if (t.isReturn) { w.key("return"); w.boolean(true); }
     if (!t.sends.empty()) {
       w.key("sends"); w.raw("[");
@@ -127,9 +176,14 @@ std::string rustTimelineJson(const ProjectTimeline& p) {
       w.raw("]");
     }
     w.key("inserts"); w.raw("[");
-    for (const auto& e : t.inserts) {
-      w.comma(); w.raw("{"); w.key("id"); w.str(e.id); w.key("type"); w.str(e.type == "vst3" ? "vst3-unsupported" : e.type); w.key("enabled"); w.boolean(e.enabled);
-      w.key("params"); writeParams(w, e.params); w.raw("}");
+    for (std::size_t k = 0; k < t.inserts.size(); ++k) {
+      const auto& e = t.inserts[k];
+      w.comma(); w.raw("{"); w.key("id"); w.str(e.id); w.key("type"); w.str(e.type); w.key("enabled"); w.boolean(e.enabled);
+      if (e.type == "vst3") {
+        w.key("plugin"); w.raw("{"); w.key("instanceId"); w.str(e.plugin.instanceId); w.raw("}");
+        if (hosted && e.enabled && k < info->pluginInserts.size()) writeHost(w, info->pluginInserts[k].first, info->pluginInserts[k].second, true);
+      } else { w.key("params"); writeParams(w, e.params); }
+      w.raw("}");
     }
     w.raw("]");
     w.key("notes"); w.raw("[");
@@ -202,26 +256,28 @@ class RustBackend {
   GarakRsEngine* handle;
 
   // Registers the PCM of `p`'s windows (once per asset object) and submits the plan. Returns false and the
-  // reason when the Rust engine refuses it; the running Rust graph is then unchanged.
-  bool apply(const ProjectTimeline& p, const AssetStore& assets, std::string& reason) {
-    reason = rustIneligibility(p);
+  // reason when the Rust engine refuses it; the running Rust graph is then unchanged. `recipe`: the C++ graph of
+  // the same timeline (host node delays and tails).
+  bool apply(const ProjectTimeline& p, const AssetStore& assets, const ControlRecipe* recipe, bool hostInstruments, std::string& reason) {
+    reason = rustIneligibility(p, hostInstruments);
     if (!reason.empty()) return false;
     for (const auto& t : p.tracks) for (const auto& w : t.audio) {
       const auto found = assets.find(w.assetId);
       if (found == assets.end() || !found->second) continue; // The Rust graph reports the missing asset.
       if (!put(found->second)) { reason = lastError(); return false; }
     }
-    const auto json = rustTimelineJson(p);
+    const auto json = rustTimelineJson(p, recipe, hostInstruments);
     if (garak_rs_engine_set(handle, reinterpret_cast<const std::uint8_t*>(json.data()), json.size(), nullptr, 0) < 0) {
       reason = lastError();
       return false;
     }
     return true;
   }
-  bool apply(const ProjectTimeline& p, const std::vector<std::shared_ptr<const PcmAsset>>& assets, std::string& reason) {
+  bool apply(const ProjectTimeline& p, const std::vector<std::shared_ptr<const PcmAsset>>& assets, const ControlRecipe* recipe,
+             bool hostInstruments, std::string& reason) {
     AssetStore store;
     for (const auto& a : assets) if (a) store.emplace(a->id, a);
-    return apply(p, store, reason);
+    return apply(p, store, recipe, hostInstruments, reason);
   }
   [[nodiscard]] std::uint64_t ticket() const noexcept { return garak_rs_engine_ticket(handle); }
   void collect() noexcept { garak_rs_engine_collect(handle); }

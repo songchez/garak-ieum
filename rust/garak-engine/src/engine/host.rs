@@ -4,13 +4,18 @@
 //! live MIDI, input capture, master bus and snapshot; for a graph the Rust engine accepted it asks
 //! this renderer for the track mix of each block at the shell's position. Commands are applied up
 //! to a ticket the shell names, so a Rust graph swap lands in the same block as the shell's own
-//! graph command. Senders may render on the host's worker pool ([`Parallel`]): they are
-//! independent, so each renders on one worker; returns follow on the calling thread, and the mix
-//! is summed in track order — bit-identical to the single-threaded path.
+//! graph command. The tracks of one processing level may render on the host's worker pool
+//! ([`Parallel`]): they are independent, so each renders on one worker; the next level (routed tracks,
+//! returns) follows once they all finished, and the mix is summed in track order — bit-identical to
+//! the single-threaded path.
+//!
+//! VST3 and IEUM WAVE stay host processors (docs/RUST_ENGINE.md 4): the graph calls the host back at
+//! their place in each chain ([`HostCallbacks`]), and asks it for monitored device input.
 
 use core::ffi::c_void;
 
 use super::{Graph, Renderer};
+use crate::external::{HostCallbacks, Io, Stage};
 
 /// One task of a parallel job: render item `index` of `job`.
 pub type HostTask = unsafe extern "C" fn(job: *mut c_void, index: u32);
@@ -35,65 +40,81 @@ pub struct DynamicsReading {
     pub gain: f32,
 }
 
+/// What the shell knows about one block besides its frames (`GarakRsBlock` in garak_engine.h).
+#[derive(Clone, Copy, Debug)]
+pub struct BlockInfo<'a> {
+    /// Project frame of the block start (the shell already split it at the cycle end).
+    pub position: i64,
+    pub playing: bool,
+    /// Apply queued commands up to this ticket first.
+    pub allowed: u64,
+    /// The shell's master gain at the block start and its target: master-resampling routes hear the tracks
+    /// through it (the shell applies the same smoothing to the output afterwards).
+    pub master_gain: f32,
+    pub target_master_gain: f32,
+    /// Monitored tracks (bit `i` of word `i / 64`).
+    pub monitor: [u64; 4],
+    /// VST3 / IEUM WAVE processors and device input; None renders host nodes as silence (sources) or
+    /// pass-through (inserts).
+    pub host: Option<&'a HostCallbacks>,
+    /// Per track (may be shorter than the track list): this block's output of a track the shell renders ahead
+    /// ([`Ahead`](super::Ahead)), or null. Each non-null entry must hold the block's frames and stay valid and
+    /// unchanged for the call; the graph neither renders nor resets those tracks.
+    pub ahead: &'a [*const f32],
+}
+
 struct Job {
     graph: *mut Graph,
+    level: usize,
     position: i64,
     count: u32,
     playing: bool,
     tempo: Option<f64>,
+    io: *const Io<'static>,
 }
 
-unsafe extern "C" fn render_sender(job: *mut c_void, index: u32) {
-    // SAFETY: `job` is the `Job` on `render_parallel`'s stack, alive until `run` returns. Each index
-    // names a distinct entry of `order` (a permutation of the tracks), so every call has exclusive
-    // access to one boxed track, and nothing else touches the tracks while the job runs. Only raw
-    // pointers are formed to the graph itself, so concurrent calls never alias a `&mut Graph`.
+unsafe extern "C" fn render_item(job: *mut c_void, index: u32) {
+    // SAFETY: `job` is the `Job` on `render_level`'s stack, alive until `run` returns. Each index names a
+    // distinct entry of one level (a level lists each track once), so every call has exclusive access to one
+    // boxed track, and nothing else touches the tracks while the job runs. Only raw pointers are formed to
+    // the graph itself, so concurrent calls never alias a `&mut Graph`. `io` is read-only and outlives the job.
     unsafe {
         let job = &*(job as *const Job);
         let g = job.graph;
-        let order = &(*g).order;
-        let Some(&track) = order.get(index as usize) else { return };
+        let Some(&track) = (*g).levels.level(job.level).get(index as usize) else { return };
+        if (*job.io).ahead_mix(track, job.count).is_some() {
+            return; // The host renders it ahead.
+        }
         let tracks = &raw mut (*g).tracks;
         if track < (*tracks).len() {
             let t: *mut alloc::boxed::Box<crate::track::Track> = (*tracks).as_mut_ptr().add(track);
-            let n = job.count as usize * 2;
-            // First-level tracks read no other track: a return here has no feeds and a routed track no
-            // source (silence); a live input is never forked (`render_tracks` renders monitored blocks inline).
-            for buffer in [&mut (*t).return_input, &mut (*t).route_input] {
-                if let Some(b) = buffer.get_mut(..n) {
-                    b.fill(0.0);
-                }
-            }
-            let input = crate::track::TrackInput {
-                data: None,
-                monitor: (*t).is_return,
-                stereo: true,
-                low_latency: false,
-            };
-            (**t).render(job.position, job.count, job.playing, job.tempo, input);
+            (**t).render(job.position, job.count, job.playing, job.tempo, &*job.io);
         }
     }
 }
 
-/// Renders the first processing level of `g.order` (tracks that read no other track) on the host's workers
-/// and returns how many it rendered (0 when fewer than two: the caller renders everything). Later levels
-/// read their taps, so they stay on the calling thread afterwards.
-pub(super) fn render_parallel(
+/// Renders the tracks of processing level `level` on the host's workers. Returns false (nothing rendered)
+/// when the level holds fewer than two tracks: the caller renders it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_level(
     g: &mut Graph,
     p: &Parallel,
+    level: usize,
     position: i64,
     count: u32,
     playing: bool,
     tempo: Option<f64>,
-) -> usize {
-    let senders = g.level_start.get(1).copied().unwrap_or(0);
-    if senders < 2 {
-        return 0;
+    io: &Io,
+) -> bool {
+    let size = g.levels.level(level).len();
+    if size < 2 {
+        return false;
     }
-    let mut job = Job { graph: g as *mut Graph, position, count, playing, tempo };
-    // SAFETY: the host contract above; `job` outlives the call.
-    unsafe { (p.run)(p.host, senders as u32, render_sender, (&raw mut job).cast()) };
-    senders
+    let io: *const Io<'static> = (io as *const Io).cast();
+    let mut job = Job { graph: g as *mut Graph, level, position, count, playing, tempo, io };
+    // SAFETY: the host contract above; `job` (and the `Io` it points to) outlive the call.
+    unsafe { (p.run)(p.host, size as u32, render_item, (&raw mut job).cast()) };
+    true
 }
 
 impl Renderer {
@@ -111,17 +132,58 @@ impl Renderer {
         peaks: &mut [f32],
         parallel: Option<&Parallel>,
     ) {
-        self.consume_until(allowed);
+        let info = BlockInfo {
+            position,
+            playing,
+            allowed,
+            master_gain: self.master_gain,
+            target_master_gain: self.target_master_gain,
+            monitor: [0; 4],
+            host: None,
+            ahead: &[],
+        };
+        self.render_host(out, &info, peaks, parallel);
+    }
+
+    /// [`render_block`](Self::render_block) with the shell's master gain, monitoring and host callbacks.
+    pub fn render_host(
+        &mut self,
+        out: &mut [f32],
+        info: &BlockInfo,
+        peaks: &mut [f32],
+        parallel: Option<&Parallel>,
+    ) {
+        self.consume_until(info.allowed);
         let rate = f64::from(self.config.sample_rate);
         let step = (self.config.max_block as usize * 2).max(2);
-        let mut at = position;
+        let io = Io {
+            host: info.host,
+            monitor: info.monitor,
+            offline: self.config.offline,
+            ahead: info.ahead,
+            input: None,
+        };
+        let playing = info.playing;
+        let mut at = info.position;
         let mut peak = 0.0f32;
         for block in out.chunks_mut(step) {
             block.fill(0.0);
             let count = (block.len() / 2) as u32;
             if let Some(g) = &mut self.active {
                 let audible = playing && at < g.length_frames;
-                Self::render_tracks(g, block, at, count, audible, rate, parallel, None);
+                let gain = (info.master_gain, info.target_master_gain);
+                Self::render_tracks(
+                    g,
+                    block,
+                    at,
+                    count,
+                    audible,
+                    rate,
+                    parallel,
+                    &io,
+                    &mut self.master_feed,
+                    gain,
+                );
             }
             for x in block.iter_mut() {
                 if !x.is_finite() {
@@ -145,6 +207,13 @@ impl Renderer {
         self.publish(peak);
     }
 
+    /// A routed track's input of the last block (audio thread, after `render_host`): what a recording of
+    /// that track captures. None when the track has no internal route.
+    pub fn route_input(&self, track: usize) -> Option<&[f32]> {
+        let t = self.active.as_ref()?.tracks.get(track)?;
+        (t.routed && !t.route_input.is_empty()).then_some(t.route_input.as_slice())
+    }
+
     /// The shell's transport reset (audio thread): automation cursors and fader state, and with
     /// `effects` also effect tails, delay lines and the master state (C++ `Impl::reset`).
     pub fn host_reset(&mut self, effects: bool) {
@@ -158,7 +227,7 @@ impl Renderer {
         let Some(g) = &mut self.active else { return 0 };
         let mut n = 0;
         for (index, t) in g.tracks.iter_mut().enumerate().take(65_535) {
-            for insert in &mut t.inserts {
+            for insert in t.inserts.iter_mut().filter_map(Stage::fx_mut) {
                 let Some((peak, gain)) = insert.take_meter() else { continue };
                 let Some(slot) = out.get_mut(n) else { return n };
                 *slot = DynamicsReading { track: index as u16, insert: insert.source, input: peak, gain };
