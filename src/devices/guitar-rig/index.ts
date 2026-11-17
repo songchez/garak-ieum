@@ -4,6 +4,9 @@ import { guitarRigDefinition, guitarRigOrder, parseRigSlot, rigParam, GUITAR_RIG
 import { ampVoicing, cabinetFilters, saturationCurve } from './voicing.js'
 import { REVERB_HIGHPASS_HZ, reverbImpulses, reverbTailSeconds, reverbToneHz } from './reverb.js'
 import { registerGuitarTunerTap, unregisterGuitarTunerTap, type GuitarTunerTap } from './tuner.js'
+import { rustDspRequested } from '../../audio/rust/flag.js'
+import { sharedGarakWasmModule } from '../../audio/rust/garakWasm.js'
+import { createRustRigGraph, rigMainThreadDsp } from './rustRig.js'
 
 export * from './definition.js'
 export { detectPitch, guitarTunerTap, tunerReading, TUNER_A4, type TunerReading } from './tuner.js'
@@ -20,6 +23,17 @@ export function bindGuitarRigDevice(graph: DeviceGraph, deviceId: string, contex
 const prepared = new WeakMap<BaseAudioContext, Promise<void>>()
 const ready = new WeakSet<BaseAudioContext>()
 const processorErrors = new WeakMap<BaseAudioContext, Error>()
+/** Rust core (docs/RUST.md): the compiled garak-dsp module per context when it has the rig, else absent (Web Audio rig). */
+const rustModules = new WeakMap<BaseAudioContext, WebAssembly.Module>()
+const baseUrl = () => (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'
+/** Which path the rigs took (diagnostics; also read by the browser smoke check). */
+export const guitarRigBackendStats = { rust: 0, webAudio: 0 }
+;(globalThis as { __garakGuitarRig?: typeof guitarRigBackendStats }).__garakGuitarRig = guitarRigBackendStats
+/** The page's module when the Rust rig is wanted and present; never rejects. */
+function rigModule(): Promise<WebAssembly.Module | null> {
+  if (!rustDspRequested() || typeof WebAssembly === 'undefined') return Promise.resolve(null)
+  return sharedGarakWasmModule(baseUrl()).then(module => module && rigMainThreadDsp(module) ? module : null, () => null)
+}
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 /** Fuzz Tone knob → lowpass cutoff (500 Hz – 5 kHz). Keep in sync with native/src/dsp.cpp. */
 const fuzzToneHz = (tone: number) => 500 * Math.pow(10, tone)
@@ -33,7 +47,9 @@ export function prepareGuitarRig(context: BaseAudioContext): Promise<void> {
   // Vite emits this lazily loaded module and processor as same-origin JS, never blob:.
   const promise = import('./worklet-url.js')
     .then(({ default: processorsUrl }) => context.audioWorklet.addModule(processorsUrl))
-    .then(() => { ready.add(context) }).catch(error => {
+    // Without the Rust module (not built, opted out, failed to compile) the rig stays on Web Audio nodes.
+    .then(() => rigModule())
+    .then(module => { if (module) rustModules.set(context, module); ready.add(context) }).catch(error => {
     prepared.delete(context)
     throw new Error(`기타 앰프 오디오 프로세서를 불러오지 못했습니다: ${error instanceof Error ? error.message : String(error)}`)
   })
@@ -47,8 +63,8 @@ export function assertGuitarRigHealthy(context: BaseAudioContext): void {
   if (error) throw error
 }
 
-function createProcessor(context: BaseAudioContext, name: string): AudioWorkletNode {
-  const node = new AudioWorkletNode(context, name, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' })
+function createProcessor(context: BaseAudioContext, name: string, options: AudioWorkletNodeOptions = { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' }): AudioWorkletNode {
+  const node = new AudioWorkletNode(context, name, options)
   node.onprocessorerror = () => {
     processorErrors.set(context, new Error('기타 앰프 오디오 처리 중 오류가 발생했습니다. 오디오 설정을 다시 적용해 주세요.'))
     // The engine already watches context errors and stops playback/monitoring safely.
@@ -92,7 +108,24 @@ function closeProcessors(processors: readonly AudioWorkletNode[]): void {
 
 function createRig(context: BaseAudioContext, remember: RememberNode): RigGraph {
   const processors: AudioWorkletNode[] = []
-  try { return buildRig(context, remember, processors) } catch (error) {
+  const module = rustModules.get(context)
+  const dsp = module ? rigMainThreadDsp(module) : null
+  try {
+    if (module && dsp) {
+      // The desktop's Rust rig in one worklet node; the Web Audio rig only if that worklet cannot run it.
+      if (!ready.has(context)) throw new Error('기타 앰프를 만들기 전에 prepareGuitarRig(context)를 완료해야 합니다.')
+      const graph = createRustRigGraph(context, remember, module, dsp, {
+        node: options => { const node = createProcessor(context, 'garak-guitar-rig-v1', options); processors.push(node); return remember(node) },
+        fallback: () => buildRig(context, remember, processors),
+        backend: rust => { if (rust) guitarRigBackendStats.rust += 1; else guitarRigBackendStats.webAudio += 1 },
+      })
+      const dispose = graph.dispose
+      graph.dispose = () => { unregisterGuitarTunerTap(graph.tunerTap); dispose(); closeProcessors(processors) }
+      return graph
+    }
+    guitarRigBackendStats.webAudio += 1
+    return buildRig(context, remember, processors)
+  } catch (error) {
     // The host cannot call dispose on an effect that failed before returning a DeviceGraph.
     closeProcessors(processors)
     throw error
@@ -321,8 +354,9 @@ export const guitarRigEffect: RealtimeEffectModule = {
       if (id === 'reverb' && q('reverbEnabled') >= 0.5 && q('reverbMix') > 0) tail += reverbTailSeconds(q('reverbDecay'))
       if (id === 'delay' && q('delayEnabled') >= 0.5 && q('delayMix') > 0) {
         const feedback = q('delayFeedback')
-        const repeats = feedback > 0.001 ? Math.ceil(Math.log(0.001) / Math.log(feedback)) : 1
-        tail += q('delayTime') / 1000 * (repeats + 1) + 0.2
+        // The native rig's estimate (dsp.cpp Delay, garak-dsp RigDelay): exports run as long as on desktop.
+        const repeats = feedback > 0.01 ? Math.ceil(Math.log(0.001) / Math.log(feedback)) : 1
+        tail += Math.min(30, q('delayTime') / 1000 * (repeats + 1) + 0.85)
       }
     }
     return tail

@@ -446,4 +446,164 @@ mod tests {
         }
         assert!(buf.iter().all(|x| x.is_finite()));
     }
+
+    /// The web's parity scene (src/audio/rust/guitarRig.test.ts): a full rack with the plate reverb
+    /// and a tuner, live knob changes, then a structural rebuild (rack reorder, new Decay) that adopts
+    /// the old rig's state, rendered here with the desktop's platform math. Writes the scene, its
+    /// input and this native render to `target/rig-parity/`; the TS test renders the same scene on
+    /// the WASM rig and compares.
+    #[test]
+    fn writes_the_web_parity_scene() {
+        use std::string::String;
+        use std::vec::Vec;
+        const SR: f64 = 48_000.0;
+        const BLOCK: usize = 128;
+        const BLOCKS: usize = 600;
+        type Step = (usize, &'static str, Vec<(&'static str, f64)>);
+        let full = |extra: &[(&'static str, f64)]| {
+            let mut p: Vec<(&'static str, f64)> = std::vec![
+                ("driveEnabled", 1.0),
+                ("fuzzEnabled", 1.0),
+                ("phaserEnabled", 1.0),
+                ("chorusEnabled", 1.0),
+                ("delayEnabled", 1.0),
+                ("tremoloEnabled", 1.0),
+                ("reverbEnabled", 1.0),
+                ("driveEnabled_2", 1.0),
+                ("ampEnabled_2", 1.0),
+                ("ampModel", 1.0),
+                ("ampModel_2", 3.0),
+                ("delayTime", 210.0),
+                ("fuzzLevel", -24.0),
+                ("rackSlot0", 1.0),
+                ("rackSlot1", 2.0),
+                ("rackSlot2", 7.0),
+                ("rackSlot3", 8.0),
+                ("rackSlot4", 3.0),
+                ("rackSlot5", 11.0),
+                ("rackSlot6", 4.0),
+                ("rackSlot7", 5.0),
+                ("rackSlot8", 6.0),
+                ("rackSlot9", 9.0),
+                ("rackSlot10", 10.0),
+                ("rackSlot11", 18.0),
+                ("rackSlot12", 19.0),
+            ];
+            for &(k, v) in extra {
+                match p.iter_mut().find(|(id, _)| *id == k) {
+                    Some(slot) => slot.1 = v,
+                    None => p.push((k, v)),
+                }
+            }
+            p
+        };
+        let steps: Vec<Step> = std::vec![
+            (0, "create", full(&[])),
+            (
+                200,
+                "configure",
+                full(&[
+                    ("ampGain", 25.0),
+                    ("cabinet", 3.0),
+                    ("micPosition", 0.8),
+                    ("delayTime", 90.0),
+                    ("chorusMix", 0.6)
+                ])
+            ),
+            (
+                400,
+                "rebuild",
+                full(&[
+                    ("ampGain", 25.0),
+                    ("rackSlot7", 6.0),
+                    ("rackSlot8", 5.0),
+                    ("reverbDecay", 0.8),
+                    ("rackSlot13", 22.0),
+                    ("delayEnabled_2", 1.0)
+                ])
+            ),
+        ];
+        let values = |p: &[(&str, f64)]| -> Vec<f64> {
+            PARAMS
+                .iter()
+                .map(|d| p.iter().find(|(id, _)| *id == d.id).map_or(d.default, |(_, v)| *v))
+                .collect()
+        };
+        let ir_len = guitar::reverb_ir_len(SR);
+        let kernels_for = |v: &[f64]| -> [Vec<f32>; 3] {
+            let mut out: [Vec<f32>; 3] = Default::default();
+            for (o, decay) in out.iter_mut().zip(guitar::reverb_decays(v)) {
+                let Some(decay) = decay else { continue };
+                let (mut l, mut r) = (std::vec![0.0f32; ir_len], std::vec![0.0f32; ir_len]);
+                let mut scratch = std::vec![0.0f32; guitar::reverb_ir_scratch_len(SR)];
+                assert!(guitar::generate_reverb_ir(SR, decay, &mut l, &mut r, &mut scratch));
+                *o = std::vec![0.0f32; garak_dsp::fx::reverb::kernel_len(ir_len)];
+                assert!(garak_dsp::fx::reverb::prepare_kernels(&l, &r, ir_len, o));
+            }
+            out
+        };
+        // Owned buffers outlive the rigs (leaked: a test process).
+        let build = |v: &[f64]| -> GuitarRig<'static> {
+            let kernels: &'static [Vec<f32>; 3] = std::boxed::Box::leak(std::boxed::Box::new(kernels_for(v)));
+            let storage: &'static mut [f32] = std::boxed::Box::leak(
+                std::vec![0.0f32; GuitarRig::storage_len(SR, v, ir_len)].into_boxed_slice(),
+            );
+            GuitarRig::new(SR, v, storage, [&kernels[0], &kernels[1], &kernels[2]], ir_len).unwrap()
+        };
+        let input: Vec<f32> = (0..BLOCKS * BLOCK)
+            .flat_map(|i| {
+                let t = i as f32 / SR as f32;
+                let env = if (i / 6000) % 2 == 0 { 0.6 } else { 0.15 };
+                let l = env
+                    * (0.7 * (t * 2.0 * 196.0 * core::f32::consts::PI).sin()
+                        + 0.3 * (t * 2.0 * 523.0 * core::f32::consts::PI).sin());
+                [l, l * 0.8 + if i % 7919 == 0 { 0.5 } else { 0.0 }]
+            })
+            .collect();
+        let mut rig = build(&values(&steps[0].2));
+        let (mut out, mut tap_out) = (Vec::with_capacity(input.len()), Vec::with_capacity(BLOCKS * BLOCK));
+        let (mut l, mut r, mut tap) = ([0.0f32; BLOCK], [0.0f32; BLOCK], [0.0f32; BLOCK]);
+        for b in 0..BLOCKS {
+            for (block, kind, params) in &steps[1..] {
+                if *block == b {
+                    let v = values(params);
+                    if *kind == "configure" {
+                        rig.automate(&v);
+                    } else {
+                        let mut next = build(&v);
+                        next.take_state_from(&mut rig);
+                        rig = next;
+                    }
+                }
+            }
+            for i in 0..BLOCK {
+                l[i] = input[2 * (b * BLOCK + i)];
+                r[i] = input[2 * (b * BLOCK + i) + 1];
+            }
+            rig.process_planar_tap(&mut l, &mut r, &mut tap);
+            for i in 0..BLOCK {
+                out.extend_from_slice(&[l[i], r[i]]);
+            }
+            tap_out.extend_from_slice(&tap);
+        }
+        assert!(out.iter().all(|x| x.is_finite()) && out.iter().any(|x| x.abs() > 0.05));
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/rig-parity");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut json =
+            std::format!("{{\"sampleRate\":{SR},\"block\":{BLOCK},\"blocks\":{BLOCKS},\"steps\":[");
+        for (i, (block, kind, params)) in steps.iter().enumerate() {
+            let body: Vec<String> = params.iter().map(|(k, v)| std::format!("\"{k}\":{v:?}")).collect();
+            json += &std::format!(
+                "{}{{\"block\":{block},\"kind\":\"{kind}\",\"params\":{{{}}}}}",
+                if i == 0 { "" } else { "," },
+                body.join(",")
+            );
+        }
+        json += "]}";
+        let bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+        std::fs::write(dir.join("scene.json"), json).unwrap();
+        std::fs::write(dir.join("input.f32"), bytes(&input)).unwrap();
+        std::fs::write(dir.join("native.f32"), bytes(&out)).unwrap();
+        std::fs::write(dir.join("tap.f32"), bytes(&tap_out)).unwrap();
+    }
 }

@@ -22,6 +22,8 @@ mod arena;
 pub mod fx;
 /// Built-in instruments (`garak_instrument_*`).
 pub mod instruments;
+/// The guitar rig (`garak_rig_*`).
+pub mod rig;
 
 /// Host unit tests share the static pools; they serialise through this lock.
 #[cfg(test)]

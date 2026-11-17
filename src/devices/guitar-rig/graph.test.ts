@@ -188,10 +188,10 @@ describe('guitar rig Web Audio integration', () => {
     expect(guitarRigEffect.tailSeconds(GUITAR_RIG_DEFAULTS, 120)).toBe(0)
     expect(guitarRigEffect.tailSeconds({ ...GUITAR_RIG_DEFAULTS, chorusEnabled: 1 }, 120)).toBe(0.04)
     const tail = guitarRigEffect.tailSeconds({ ...GUITAR_RIG_DEFAULTS, delayEnabled: 1, delayTime: 500, delayFeedback: 0.5 }, 120)
-    expect(tail).toBeCloseTo(5.7)
+    expect(tail).toBeCloseTo(6.35)  // the native estimate: 0.5 s x 11 + 0.85
     expect(guitarRigEffect.tailSeconds({ ...GUITAR_RIG_DEFAULTS, delayEnabled: 1, delayMix: 0 }, 120)).toBe(0)
     const longTail = guitarRigEffect.tailSeconds({ ...GUITAR_RIG_DEFAULTS, delayEnabled: 1, delayTime: 1200, delayFeedback: 0.85 }, 120)
-    expect(Math.pow(0.85, Math.floor((longTail - 0.2) / 1.2) - 1)).toBeLessThanOrEqual(0.001)
+    expect(longTail).toBe(30)  // capped like the native rig
     // Reverb rings for its long IR (matching the native engine) only when it is in the rack, on and mixed in.
     const verb = { ...GUITAR_RIG_DEFAULTS, reverbEnabled: 1, ...guitarRigOrderParams(['amp', 'cabinet', 'reverb']) }
     expect(guitarRigEffect.tailSeconds(verb, 120)).toBeCloseTo(4.45)

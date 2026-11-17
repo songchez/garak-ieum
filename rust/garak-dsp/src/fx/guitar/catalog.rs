@@ -178,9 +178,10 @@ const fn concat() -> [ParamDef; PARAM_COUNT] {
     out
 }
 
-const ALL: [ParamDef; PARAM_COUNT] = concat();
+static ALL: [ParamDef; PARAM_COUNT] = concat();
 /// The whole catalog, in `guitarRigDefs()` order.
-pub const PARAMS: &[ParamDef] = &ALL;
+// Statics, not consts: one copy in the binary however many places read them.
+pub static PARAMS: &[ParamDef] = &ALL;
 
 /// Index of the first `rackSlot` parameter.
 pub const FIRST_SLOT: usize = BASE.len() + COPIES.len();
@@ -223,7 +224,7 @@ const fn index_table() -> [[[u16; MODULE_PARAMS_MAX]; MAX_INSTANCES]; MODULE_COD
 }
 
 /// `INDEX[code][instance][k]`: the catalog index behind `RigParams(base)` for that instance.
-pub(crate) const INDEX: [[[u16; MODULE_PARAMS_MAX]; MAX_INSTANCES]; MODULE_CODES] = index_table();
+pub(crate) static INDEX: [[[u16; MODULE_PARAMS_MAX]; MAX_INSTANCES]; MODULE_CODES] = index_table();
 
 #[cfg(test)]
 mod tests {

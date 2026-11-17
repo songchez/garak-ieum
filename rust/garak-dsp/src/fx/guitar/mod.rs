@@ -59,6 +59,7 @@ pub fn generate_reverb_ir(
 
 /// `values` in catalog order: missing entries take the default, non-finite ones are ignored and
 /// the rest is clamped (EffectControl / ParamSet semantics).
+#[inline(never)]
 pub fn sanitize(values: &[f64]) -> [f64; PARAM_COUNT] {
     let mut out = [0.0; PARAM_COUNT];
     for ((o, def), v) in out.iter_mut().zip(PARAMS).zip(values.iter().chain(core::iter::repeat(&f64::NAN))) {
@@ -76,6 +77,7 @@ pub struct Layout {
 }
 
 impl Layout {
+    #[inline(never)]
     pub fn from_values(values: &[f64; PARAM_COUNT]) -> Self {
         let mut seen = [[false; MAX_INSTANCES]; MODULE_CODES];
         let mut layout = Self { modules: [(0, 0); SLOTS], len: 0 };
@@ -121,6 +123,7 @@ fn params<'v>(values: &'v [f64; PARAM_COUNT], code: usize, instance: usize) -> P
 
 /// Decay of every reverb instance the rig builds convolvers for (in the rack and switched on),
 /// indexed by instance; `None` needs no kernels.
+#[inline(never)]
 pub fn reverb_decays(values: &[f64]) -> [Option<f64>; MAX_REVERBS] {
     let v = sanitize(values);
     let layout = Layout::from_values(&v);
@@ -178,6 +181,7 @@ pub struct GuitarRig<'a> {
 impl<'a> GuitarRig<'a> {
     /// State storage floats for the rack in `values` (catalog order, sanitised like `new`) at
     /// `sample_rate`; `ir_len`: frames of the reverb kernels' impulse ([`reverb_ir_len`]).
+    #[inline(never)]
     pub fn storage_len(sample_rate: f64, values: &[f64], ir_len: usize) -> usize {
         let v = sanitize(values);
         let layout = Layout::from_values(&v);
@@ -207,6 +211,40 @@ impl<'a> GuitarRig<'a> {
         kernels: [&'a [f32]; MAX_REVERBS],
         ir_len: usize,
     ) -> Result<Self, FxError> {
+        let mut rig = Self::empty(sample_rate);
+        rig.build(values, storage, kernels, ir_len)?;
+        Ok(rig)
+    }
+
+    /// A rig with an empty rack (passes audio through) at `sample_rate`: the first half of
+    /// [`Self::new`]. With [`Self::build`] it lets a host construct the ~40 KiB rig in place (the
+    /// worklet's 64 KiB stack cannot hold the copies `new` moves around).
+    pub fn empty(sample_rate: f64) -> Self {
+        Self {
+            sample_rate,
+            values: sanitize(&[]),
+            dirty: false,
+            slots: core::array::from_fn(|_| Slot { code: 0, instance: 0, module: Module::Empty }),
+            count: 0,
+            storage_used: 0,
+        }
+    }
+
+    /// Builds the rack of `values` in place (the second half of [`Self::new`], same arguments).
+    /// On error the rig is left with an empty rack.
+    pub fn build(
+        &mut self,
+        values: &[f64],
+        storage: &'a mut [f32],
+        kernels: [&'a [f32]; MAX_REVERBS],
+        ir_len: usize,
+    ) -> Result<(), FxError> {
+        let sample_rate = self.sample_rate;
+        self.count = 0;
+        self.storage_used = 0;
+        for slot in &mut self.slots {
+            *slot = Slot { code: 0, instance: 0, module: Module::Empty };
+        }
         if !(8000.0..=192_000.0).contains(&sample_rate) {
             return Err(FxError::Rate);
         }
@@ -223,8 +261,7 @@ impl<'a> GuitarRig<'a> {
             return Err(FxError::Storage);
         }
         let sr = sample_rate;
-        let mut slots: [Slot<'a>; SLOTS] =
-            core::array::from_fn(|_| Slot { code: 0, instance: 0, module: Module::Empty });
+        let slots = &mut self.slots;
         let mut carver = Carver::new(storage);
         // Modules with storage first, in canonical order (see STORAGE_CODES), then the rest.
         let mut build = |code: usize, instance: usize, carver: &mut Carver<'a>| {
@@ -264,10 +301,16 @@ impl<'a> GuitarRig<'a> {
             }
         }
         if !carver.ok() {
+            for slot in &mut self.slots {
+                *slot = Slot { code: 0, instance: 0, module: Module::Empty };
+            }
             return Err(FxError::Storage);
         }
-        let storage_used = carver.used();
-        Ok(Self { sample_rate, values: v, dirty: false, slots, count: layout.len, storage_used })
+        self.storage_used = carver.used();
+        self.values = v;
+        self.dirty = false;
+        self.count = layout.len;
+        Ok(())
     }
 
     pub fn sample_rate(&self) -> f64 {

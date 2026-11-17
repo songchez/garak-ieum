@@ -18,8 +18,10 @@ export const wasmOutput = path.join(root, 'public', 'wasm', 'garak-dsp.wasm')
 // Budgets for the worklet module; CI fails above them (docs/RUST.md: stage 1 is ~101 KiB raw /
 // ~36 KiB gzip with every built-in effect; the architecture review allows 80 KB gzip). The raw
 // budget went from 128 to 160 KiB with the vintage instruments (~38 KiB of code; gzip ~55 KB, still
-// well inside the 80 KB transfer budget that matters for loading).
-const WASM_BUDGET_BYTES = 160 * 1024
+// well inside the 80 KB transfer budget that matters for loading), and from 160 to 208 KiB with the
+// guitar rig (~43 KiB of code: eleven module types, the rack and its hand-over; ~5 KiB of catalog;
+// ~146 -> ~196 KiB raw, gzip ~53 -> ~69 KB). The gzip budget stays at 80 KB.
+const WASM_BUDGET_BYTES = 208 * 1024
 const WASM_GZIP_BUDGET_BYTES = 80 * 1000
 
 function findCargo() {

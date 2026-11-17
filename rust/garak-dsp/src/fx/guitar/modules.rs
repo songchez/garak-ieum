@@ -64,6 +64,31 @@ pub(crate) fn run_planar<S: Stage>(stage: &mut S, left: &mut [f32], right: &mut 
     }
 }
 
+// The rig's building blocks: inlined natively (speed), out of line on wasm32, where inlining
+// ~50 biquads, eight oversampled shapers and two convolvers into every module loop cost ~60 KiB
+// of the worklet module's size budget (docs/RUST.md) for no audible gain.
+
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
+fn bq(f: &mut Biquad, x: f32, c: usize) -> f32 {
+    f.sample(x, c)
+}
+
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
+fn sat(s: &mut Saturator, x: f32, c: usize) -> f32 {
+    s.sample(x, c)
+}
+
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
+fn convolve(conv: &mut StereoConvolver<'_>, x: f32, c: usize) -> f32 {
+    conv.sample(x, c)
+}
+
+/// Control path only (construction, automation): kept out of line so the ~25 call sites share one
+/// copy of the coefficient design.
+#[inline(never)]
 fn set_filter(f: &mut Biquad, glide: bool, kind: FilterType, sr: f64, hz: f64, q: f64, gain: f64) {
     if glide { f.retarget(kind, sr, hz, q, gain) } else { f.configure(kind, sr, hz, q, gain) }
 }
@@ -152,8 +177,8 @@ impl Clipper {
             enabled: p.on(0),
         };
         s.levels(p);
-        s.input.configure(FilterType::Highpass, sr, if fuzz { 40.0 } else { 95.0 }, 0.707, 0.0);
-        s.dc.configure(FilterType::Highpass, sr, 25.0, 0.707, 0.0);
+        set_filter(&mut s.input, false, FilterType::Highpass, sr, if fuzz { 40.0 } else { 95.0 }, 0.707, 0.0);
+        set_filter(&mut s.dc, false, FilterType::Highpass, sr, 25.0, 0.707, 0.0);
         s.tone_filter(p, false);
         s
     }
@@ -197,9 +222,9 @@ impl Clipper {
 
     #[inline(always)]
     fn channel(&mut self, x: f32, c: usize) -> f32 {
-        let x = self.input.sample(x, c);
-        let x = self.shaper.sample((f64::from(x) * self.pre) as f32, c);
-        (f64::from(self.dc.sample(self.tone.sample(x, c), c)) * self.post) as f32
+        let x = bq(&mut self.input, x, c);
+        let x = sat(&mut self.shaper, (f64::from(x) * self.pre) as f32, c);
+        (f64::from(bq(&mut self.dc, bq(&mut self.tone, x, c), c)) * self.post) as f32
     }
 }
 
@@ -319,12 +344,12 @@ impl Amp {
 
     #[inline(always)]
     fn channel(&mut self, x: f32, c: usize) -> f32 {
-        let x = self.input.sample(x, c);
-        let x = self.shaper.sample((f64::from(x) * self.pre) as f32, c);
-        let x = self.power.sample((f64::from(self.inter_filter.sample(x, c)) * self.inter) as f32, c);
-        let mut x = self.dc.sample(x, c);
+        let x = bq(&mut self.input, x, c);
+        let x = sat(&mut self.shaper, (f64::from(x) * self.pre) as f32, c);
+        let x = sat(&mut self.power, (f64::from(bq(&mut self.inter_filter, x, c)) * self.inter) as f32, c);
+        let mut x = bq(&mut self.dc, x, c);
         for f in &mut self.eq {
-            x = f.sample(x, c);
+            x = bq(f, x, c);
         }
         (f64::from(x) * self.post) as f32
     }
@@ -439,8 +464,8 @@ impl Stage for Cabinet {
     #[inline(always)]
     fn frame(&mut self, mut l: f32, mut r: f32) -> (f32, f32) {
         for f in &mut self.cab {
-            l = f.sample(l, 0);
-            r = f.sample(r, 1);
+            l = bq(f, l, 0);
+            r = bq(f, r, 1);
         }
         (l, r)
     }
@@ -577,8 +602,8 @@ impl<'a> RigDelay<'a> {
             tail: if wet > 0.0 { std_min(30.0, seconds * (repeats + 1.0) + 0.85) } else { 0.0 },
             enabled: p.on(0),
         };
-        s.low.configure(FilterType::Lowpass, sr, 4400.0, 0.5, 0.0);
-        s.high.configure(FilterType::Highpass, sr, 120.0, 0.5, 0.0);
+        set_filter(&mut s.low, false, FilterType::Lowpass, sr, 4400.0, 0.5, 0.0);
+        set_filter(&mut s.high, false, FilterType::Highpass, sr, 120.0, 0.5, 0.0);
         s
     }
 
@@ -626,7 +651,7 @@ impl Stage for RigDelay<'_> {
         let mut next = [0.0f32; 2];
         for (c, (s, n)) in io.iter_mut().zip(next.iter_mut()).enumerate() {
             let delayed = self.line.read(self.frames, c);
-            let filtered = self.high.sample(self.low.sample(delayed, c), c);
+            let filtered = bq(&mut self.high, bq(&mut self.low, delayed, c), c);
             *n = (f64::from(*s) + self.feedback * f64::from(filtered)) as f32;
             *s += (self.wet * f64::from(filtered)) as f32;
         }
@@ -845,8 +870,8 @@ impl<'a> RigReverb<'a> {
             s.wet = p.get(3);
             s.tail = (if f64::from(decay) > 0.001 { 4.2 } else { 1.7 }) + 0.25;
         }
-        s.highpass.configure(FilterType::Highpass, sr, 180.0, 0.5, 0.0);
-        s.tone.configure(FilterType::Lowpass, sr, 1500.0 * math::pow(8.0, p.get(2)), 0.5, 0.0);
+        set_filter(&mut s.highpass, false, FilterType::Highpass, sr, 180.0, 0.5, 0.0);
+        set_filter(&mut s.tone, false, FilterType::Lowpass, sr, 1500.0 * math::pow(8.0, p.get(2)), 0.5, 0.0);
         s
     }
 
@@ -854,13 +879,8 @@ impl<'a> RigReverb<'a> {
         if self.convolver.is_some() {
             self.wet = if p.on(0) { p.get(3) } else { 0.0 };
         }
-        self.tone.retarget(
-            FilterType::Lowpass,
-            self.sample_rate,
-            1500.0 * math::pow(8.0, p.get(2)),
-            0.5,
-            0.0,
-        );
+        let hz = 1500.0 * math::pow(8.0, p.get(2));
+        set_filter(&mut self.tone, true, FilterType::Lowpass, self.sample_rate, hz, 0.5, 0.0);
     }
 
     pub fn reset(&mut self) {
@@ -906,7 +926,7 @@ impl Stage for RigReverb<'_> {
         let Some(conv) = &mut self.convolver else { return (l, r) };
         let mut io = [l, r];
         for (c, s) in io.iter_mut().enumerate() {
-            let wet = self.tone.sample(self.highpass.sample(conv.sample(*s, c), c), c);
+            let wet = bq(&mut self.tone, bq(&mut self.highpass, convolve(conv, *s, c), c), c);
             *s += (self.wet * f64::from(wet)) as f32;
         }
         (io[0], io[1])
