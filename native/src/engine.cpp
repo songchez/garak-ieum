@@ -1409,7 +1409,9 @@ struct RenderEngine::Impl {
   bool rustActive=false,rustRendered=false;
   std::uint64_t rustAllowed=0;
   std::array<float,256> rustPeaks{};
-  void* rustTask=nullptr;void* rustJob=nullptr; // Current parallel Rust job (callback + pool workers).
+#if GARAK_RUST
+  GarakRsTask rustTask=nullptr;void* rustJob=nullptr; // Current parallel Rust job (callback + pool workers).
+#endif
   std::atomic<bool> publishedRust{false};
   SpscQueue<Command,1024> commands;
   SpscQueue<PreparedProject*,4096>retired;
@@ -1583,10 +1585,10 @@ struct RenderEngine::Impl {
     return rust&&rustActive&&monitor[0]==0&&monitor[1]==0&&monitor[2]==0&&monitor[3]==0;
   }
   static void rustTaskAdapter(void*self,std::uint32_t index,std::uint32_t)noexcept {
-    auto*e=static_cast<Impl*>(self);reinterpret_cast<GarakRsTask>(e->rustTask)(e->rustJob,index);
+    auto*e=static_cast<Impl*>(self);e->rustTask(e->rustJob,index);
   }
   static void rustParallelRun(void*host,std::uint32_t count,GarakRsTask task,void*job) {
-    auto*e=static_cast<Impl*>(host);e->rustTask=reinterpret_cast<void*>(task);e->rustJob=job;
+    auto*e=static_cast<Impl*>(host);e->rustTask=task;e->rustJob=job;
     e->pool->run(count,&rustTaskAdapter,e);
   }
   // Callback: one Rust block. The track meters follow the Rust graph's.

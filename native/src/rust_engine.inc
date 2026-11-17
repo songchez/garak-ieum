@@ -46,6 +46,7 @@ class JsonWriter {
   void comma() { if (!out.empty() && out.back() != '{' && out.back() != '[') out.push_back(','); }
 };
 
+#if GARAK_RUST
 // The reason a timeline cannot render in the Rust engine yet, or empty. The Rust parser and graph builder
 // refuse the rest themselves (their error is the reason then).
 std::string rustIneligibility(const ProjectTimeline& p) {
@@ -183,6 +184,7 @@ std::string rustTimelineJson(const ProjectTimeline& p) {
   return std::move(w.out);
 }
 
+#endif
 } // namespace
 
 #if GARAK_RUST

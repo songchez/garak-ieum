@@ -5,6 +5,7 @@
 #include "garak/dsp.hpp"
 #include "garak/vst3.hpp"
 #include "ieum_wave/patch.hpp"
+#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <atomic>
