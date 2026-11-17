@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { assetPcmCache } from '../assetPcm'
+import { assetPcmCache, createAudioAsset } from '../assetPcm'
 import { fakePcm, testAsset } from '../testAssets'
 import { createEmptyProject, createTrack } from '../../core/project'
 import { DEFAULT_AUDIO_SETTINGS } from '../../core/audioSettings'
@@ -147,6 +147,27 @@ describe('desktop native runtime boundary', () => {
     expect(h.calls('asset.put')).toHaveLength(2)
     expect(h.engine.getSnapshot().playing).toBe(true)
     h.handlers.delete('engine.close')
+  })
+
+  it('decodes an asset the renderer does not hold for the host upload, once, and keeps no renderer copy', async () => {
+    const h = managed(audioProject()), pcm = samplePcm()
+    const stored = createAudioAsset('pcm', 'pcm', new Blob(['original']), pcm, null)
+    expect(assetPcmCache.peek(stored)).toBeUndefined()
+    const decode = vi.fn(async () => pcm), previous = assetPcmCache.decode
+    assetPcmCache.decode = decode
+    try {
+      h.engine.setAssets(new Map([[stored.id, stored]])); await h.engine.play()
+      expect(decode).toHaveBeenCalledTimes(1)
+      expect(decode.mock.calls[0]).toEqual([expect.any(ArrayBuffer), 48000])
+      expect(h.calls('asset.put')).toEqual([expect.objectContaining({ id: 'pcm', sampleRate: 48000, channels: 1, frames: 4 })])
+      // The same asset is not uploaded again; the renderer's decoded copy is only in the bounded cache.
+      const before = h.calls('project.set').length + h.calls('project.patch').length
+      h.engine.setProject({ ...audioProject(), bpm: 90 })
+      await vi.waitFor(() => expect(h.calls('project.set').length + h.calls('project.patch').length).toBeGreaterThan(before))
+      expect(h.calls('asset.put')).toHaveLength(1)
+      assetPcmCache.release(stored)
+      expect(assetPcmCache.peek(stored)).toBeUndefined()
+    } finally { assetPcmCache.decode = previous }
   })
 
   it('closes a device whose initial configure was still pending when the editor was disposed', async () => {
