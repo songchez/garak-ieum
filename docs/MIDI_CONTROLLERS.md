@@ -111,7 +111,7 @@
 - `rust/garak-engine/src/instrument.rs`, `rust/garak-dsp/src/instruments/`: 통합 Rust 엔진(0.3.2부터 데스크톱·웹 공통)의 내장 악기 벤드·비브라토·CC7/CC11 게인·chase
 - `src/audio/graph.ts`: Web Audio 대체 경로의 트랙별 컨트롤 노드(벤드 ConstantSource → 각 보이스 detune, 비브라토 LFO, CC7/CC11 게인), `src/audio/liveMidi.ts` 실시간 전달
 - `src/audio/native/timeline.ts`: 소스별 `controls` 컴파일
-- `native/src/engine.cpp`(셸: VST3/이음웨이브 호스트 노드 이벤트; 이전 C++ 경로의 내장 악기 벤드·비브라토·게인, chase), `native/src/vst3.cpp`(`IMidiMapping` 0–130), `native/src/wavetable.cpp`, `native/src/midi_routing.hpp`(0xE0·0xD0·0xC0 실시간 라우팅), `native/src/protocol.hpp`
+- `native/src/engine.cpp`(셸: VST3/이음웨이브 호스트 노드 이벤트; 이전 C++ 경로의 내장 악기 벤드·비브라토·게인, chase), `native/src/vst3.cpp`(`IMidiMapping` 0–130), `rust/garak-engine/src/wave/processor.rs`(IEUM WAVE), `native/src/midi_routing.hpp`(0xE0·0xD0·0xC0 실시간 라우팅), `native/src/protocol.hpp`
 - `src/components/ControllerLane.tsx`, `PianoRoll.tsx`: 레인 UI
 
 ```sh

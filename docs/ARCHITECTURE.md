@@ -15,7 +15,7 @@ flowchart TD
   N --> IPC["Electron 제어 브리지"]
   IPC --> C["C++ 셸 garak-audio-host<br/>장치 I/O · 전송 · 마스터 · 녹음 · render-ahead"]
   C -->|"garak-ffi C ABI"| E["Rust 엔진 garak-engine<br/>트랙 · 악기 · 시김새 · 기타 랙 · 센드/리턴 · 라우트"]
-  C -.->|"호스트 노드 콜백"| V["VST3 · IEUM WAVE (C++)"]
+  C -.->|"호스트 노드 콜백"| V["VST3 (C++)"]
   E -.-> V
   C --> D["ASIO / WASAPI / Core Audio"]
   T --> W["브라우저 RustWebAudioEngine"]
@@ -65,7 +65,7 @@ flowchart TD
 | [`rust/garak-engine/`](../rust/garak-engine/) | 통합 Rust 렌더 엔진(`no_std + alloc`): 계획·프로토콜 파서, `Controller`(제어 스레드)/`Renderer`(오디오 스레드)와 lock-free 큐, 트랙·클립·내장 악기(`instrument.rs`, `wave/`)·인서트·센드/리턴·라우트(`routes.rs`)·오토메이션·템포 맵·메트로놈·오프라인 렌더. [RUST_ENGINE](RUST_ENGINE.md) |
 | [`rust/garak-dsp/`](../rust/garak-dsp/) | 시김새·기타 랙 커널과 내장 악기 보이스(`instruments/`). `#![no_std]`, 할당 없음; 웹용 `garak-dsp.wasm`(`rust/garak-wasm`)으로도 빌드. [RUST](RUST.md) |
 | [`rust/garak-ffi/`](../rust/garak-ffi/), [`rust/garak-engine-wasm/`](../rust/garak-engine-wasm/) | 데스크톱용 C ABI 정적 라이브러리(헤더 `include/garak_engine.h`·`garak_engine_instruments.h`·`garak_rust.h`)와 AudioWorklet용 WASM 모듈 |
-| [`native/src/engine.cpp`](../native/src/engine.cpp), `native/src/rust_engine.inc` | Rust 엔진을 감싼 셸: 전송·카운트인·메트로놈, 마스터 버스, 라이브 MIDI 전달, 녹음 캡처, 워커 풀·render-ahead 링, VST3·IEUM WAVE 호스트 노드. 이전 C++ 트랙 렌더(`dsp.cpp` 포함)는 0.3.2의 숨은 대체 경로(`GARAK_RUST_ENGINE=0`)로만 남음 |
+| [`native/src/engine.cpp`](../native/src/engine.cpp), `native/src/rust_engine.inc` | Rust 엔진을 감싼 셸: 전송·카운트인·메트로놈, 마스터 버스, 라이브 MIDI 전달, 녹음 캡처, 워커 풀·render-ahead 링, VST3 호스트 노드, IEUM WAVE 패치 검증(신스는 Rust 엔진에만 있음). 이전 C++ 트랙 렌더(`dsp.cpp` 포함)는 0.3.2의 숨은 대체 경로(`GARAK_RUST_ENGINE=0`)로만 남음 |
 | [`native/src/device.cpp`](../native/src/device.cpp), [`native/src/vst3.cpp`](../native/src/vst3.cpp) | ASIO/WASAPI/Core Audio 장치와 실제 VST3 SDK 호스트·네이티브 창 |
 | [`src/audio/rust/RustWebAudioEngine.ts`](../src/audio/rust/RustWebAudioEngine.ts), [`engine.worklet.ts`](../src/audio/rust/engine.worklet.ts), [`engineHost.ts`](../src/audio/rust/engineHost.ts), [`engineChannel.ts`](../src/audio/rust/engineChannel.ts) | 브라우저 호스트: 계획 동기화, 워크릿 프로세서, SharedArrayBuffer 명령 링·상태/미터 블록, Worker 오프라인 렌더, 거부 시 Web Audio 대체 |
 | [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 브라우저의 컨텍스트·장치·디코딩·샘플·녹음·미리 듣기(`RustWebAudioEngine`의 기반 클래스)와 Web Audio 대체 재생 |
@@ -145,7 +145,7 @@ MCP 편집은 `projectId`·`expectedRevision`·`operationId`와 명시적인 명
 
 `NativeAudioEngine.configure` → Electron 검증 → native `DeviceHost`가 backend/device/rate/buffer와 물리 입력 offset을 적용합니다. Windows는 ASIO 또는 WASAPI, Mac은 arm64 Core Audio입니다. 요청한 장치가 사라지거나 초기화에 실패하면 명시적으로 오류를 표시합니다. ASIO는 정확한 요청 레이트/지원 블록을 요구하고, WASAPI/Core Audio는 실제 블록·레이트와 리샘플링 여부를 보고합니다. 장치 변경·플러그인 상태 IO·그래프 준비는 callback 밖에서 합니다.
 
-장치 callback마다 C++ 셸(`RenderEngine`)이 전송 위치를 정하고 `garak_rs_engine_render_host`로 Rust 그래프를 부릅니다. Rust 그래프는 내장 합성·샘플·빈티지 악기·오디오 리전 → 내장 시김새·기타 랙/VST3 인서트 → 팬·볼륨·미터 → 트랙별 지연 보상 → 센드/리턴·트랙 라우트까지 렌더하고, 셸이 그 합을 마스터 버스·메트로놈·녹음·출력으로 넘깁니다. VST3 악기·인서트와 IEUM WAVE는 C++ 프로세서로 남고 Rust 그래프가 체인의 그 자리에서 셸을 콜백으로 부릅니다(호스트 노드). 라이브 입력은 `input` 호스트 노드로 들어옵니다. 워커 풀이 있으면 처리 레벨(라우트 소스·센더 먼저, 그다음 라우트된 트랙·리턴)마다 트랙을 병렬로 렌더하고 트랙 순서대로 합하므로 출력이 1스레드와 비트 단위로 같습니다. render-ahead 링에 든 트랙은 워커가 Rust 그래프의 그 트랙을 미리 렌더합니다. 프로젝트 그래프는 제어 스레드에서 준비하며 소유한 버퍼·큐를 callback 전에 할당합니다. [RUST_ENGINE 10장](RUST_ENGINE.md#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계) 라이브 모니터링은 낮은 지연 정책에 따라 다른 트랙에 맞추기 위한 추가 보상을 피할 수 있습니다. 플러그인 자체 latency와 물리 장치 지연은 없어지지 않습니다.
+장치 callback마다 C++ 셸(`RenderEngine`)이 전송 위치를 정하고 `garak_rs_engine_render_host`로 Rust 그래프를 부릅니다. Rust 그래프는 내장 합성·샘플·빈티지 악기·IEUM WAVE·오디오 리전 → 내장 시김새·기타 랙/VST3 인서트 → 팬·볼륨·미터 → 트랙별 지연 보상 → 센드/리턴·트랙 라우트까지 렌더하고, 셸이 그 합을 마스터 버스·메트로놈·녹음·출력으로 넘깁니다. VST3 악기·인서트는 C++ 프로세서로 남고 Rust 그래프가 체인의 그 자리에서 셸을 콜백으로 부릅니다(호스트 노드). IEUM WAVE는 0.3.3부터 Rust 엔진에서만 렌더합니다([IEUM_WAVE.md](IEUM_WAVE.md)). 라이브 입력은 `input` 호스트 노드로 들어옵니다. 워커 풀이 있으면 처리 레벨(라우트 소스·센더 먼저, 그다음 라우트된 트랙·리턴)마다 트랙을 병렬로 렌더하고 트랙 순서대로 합하므로 출력이 1스레드와 비트 단위로 같습니다. render-ahead 링에 든 트랙은 워커가 Rust 그래프의 그 트랙을 미리 렌더합니다. 프로젝트 그래프는 제어 스레드에서 준비하며 소유한 버퍼·큐를 callback 전에 할당합니다. [RUST_ENGINE 10장](RUST_ENGINE.md#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계) 라이브 모니터링은 낮은 지연 정책에 따라 다른 트랙에 맞추기 위한 추가 보상을 피할 수 있습니다. 플러그인 자체 latency와 물리 장치 지연은 없어지지 않습니다.
 
 VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 스레드에서 수행합니다. 샘플 offset을 가진 MIDI/parameter와 BPM·박자·재생/루프 context를 processor에 전달합니다. 플러그인이 bus/latency 변경을 요구하면 callback 안에서 재생성하지 않고 정지·재로드를 요구합니다. 자체 창은 Windows HWND/macOS NSView에 attach합니다. 외부 플러그인 crash는 오디오 프로세스 전체에 영향을 줄 수 있습니다. [구현·검증 상세](NATIVE_AUDIO.md)
 

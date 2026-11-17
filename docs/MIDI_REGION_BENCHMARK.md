@@ -47,7 +47,7 @@
 | 내보내기 | `.mid` 내보내기 없음(`.garak` 번들·오디오 내보내기만) | `core/storage.ts` |
 | MIDI 입력/녹음 | **없음.** `requestMIDIAccess`·네이티브 MIDI 입력 없음, 악기 트랙 녹음 시 알림 후 중단, 입력 모니터링 I는 악기 트랙에서 상태만 | `App.tsx:1176`, `LOGIC_GAP.md` H-19 |
 | 오토메이션 | 트랙·리전 오토메이션 없음. 오디오 리전 게인/페이드 엔벨로프만 | `core/clipEnvelope.ts`, `IMPLEMENTATION_STATUS.md:467` |
-| 엔진 이벤트 | 이음웨이브 네이티브 신스: `NoteOn/NoteOff/Parameter/PitchBend/Sustain/AllNotesOff/AllSoundOff`. VST3 호스트는 MIDI 이벤트 오프셋 지원 | `native/devices/wavetable-synth/include/ieum_wave/synth.hpp`, `native/src/vst3.cpp` |
+| 엔진 이벤트 | 이음웨이브 네이티브 신스: `NoteOn/NoteOff/Parameter/PitchBend/Sustain/AllNotesOff/AllSoundOff`. VST3 호스트는 MIDI 이벤트 오프셋 지원 | `rust/garak-engine/src/wave/synth.rs`, `native/src/vst3.cpp` |
 | 자동화 외부 | MCP: MIDI 리전 추가·이동·반복·뮤트·이조, 음표 쓰기 | `core/commands.ts`, `docs/MCP.md` |
 
 ---

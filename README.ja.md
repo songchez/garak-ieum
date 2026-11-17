@@ -67,7 +67,7 @@ pnpm build                # Web ビルド (garak-dsp.wasm・garak-engine.wasm �
 flowchart TD
   UI["React エディター · MCP"] --> S["ProjectSession (src/core)"]
   S --> C["レンダラー: NativeTimelineCompiler<br/>RenderPlan → project.set / project.patch"]
-  C -->|"Electron IPC"| H["デスクトップ: garak-audio-host (C++ シェル)<br/>デバイス I/O · VST3・IEUM WAVE ホストノード<br/>トランスポート・マスター · render-ahead リング · 録音"]
+  C -->|"Electron IPC"| H["デスクトップ: garak-audio-host (C++ シェル)<br/>デバイス I/O · VST3 ホストノード<br/>トランスポート・マスター · render-ahead リング · 録音"]
   C -->|"メッセージ · SharedArrayBuffer リング"| W["Web: AudioWorklet<br/>garak-engine.wasm"]
   H -->|"C ABI (garak-ffi)"| E["Rust エンジン rust/garak-engine<br/>トラック · 内蔵音源 · ギターリグ · ミックス · センド/リターン · ルート"]
   W -->|"WASM (garak-engine-wasm)"| E
@@ -78,7 +78,7 @@ flowchart TD
 - **単一のプロジェクトモデル** — 画面(React)からの編集も AI(MCP)からの編集も、`src/core` の `ProjectSession` と検証済みコマンドを経由します。プロジェクトはシリアライズ可能なデータで、Undo/Redo の履歴を共有します。
 - **ローカル保存** — プロジェクトと元のオーディオは IndexedDB に自動保存され、`.garak` ファイルに書き出して別のマシンで作業を続けられます。アカウントやクラウドのバックエンドはありません。
 - **一つの Rust エンジン、二つのホスト** — `rust/garak-engine` がタイムラインからマスター前の合算まで、トラック・内蔵音源・ギターリグ・エフェクト(시김새)・センド/リターン・トラックルートをレンダリングします。デスクトップは C ABI(`rust/garak-ffi`、ヘッダーは `rust/garak-ffi/include`)で、ブラウザーは WASM(`rust/garak-engine-wasm`)で同じコードを使います。エフェクトと音源ボイスは `rust/garak-dsp`(`no_std`、Web 用の `garak-dsp.wasm` にもビルド)にあります。
-- **デスクトップ: 薄い C++ シェル** — `garak-audio-host` の `RenderEngine` はデバイス I/O(ASIO・WASAPI・Core Audio)、VST3・IEUM WAVE(エンジンがコールバックで呼ぶホストノード)、トランスポート・マスターバス・メトロノーム、render-ahead リング、録音を担当し、トラックのレンダリングは Rust エンジンに任せます。トラックは処理レベルごとにワーカースレッドで並列にレンダリングされ、結果は 1 スレッドとビット単位で一致します。ネイティブエンジンが使えない場合はエラーを表示し、Web Audio へ黙って切り替えることはしません。
+- **デスクトップ: 薄い C++ シェル** — `garak-audio-host` の `RenderEngine` はデバイス I/O(ASIO・WASAPI・Core Audio)、VST3(エンジンがコールバックで呼ぶホストノード)、トランスポート・マスターバス・メトロノーム、render-ahead リング、録音を担当し、トラックのレンダリングは Rust エンジンに任せます。トラックは処理レベルごとにワーカースレッドで並列にレンダリングされ、結果は 1 スレッドとビット単位で一致します。ネイティブエンジンが使えない場合はエラーを表示し、Web Audio へ黙って切り替えることはしません。
 - **Web: AudioWorklet** — `garak-engine.wasm` が AudioWorklet で動作し、メーターブロック・ライブイベントリング(SharedArrayBuffer)、入力モニタリング、録音タップを扱います。書き出しは Worker で同じエンジンを使ってオフラインレンダリングします。エンジンがプロジェクトを拒否したかモジュールがない場合のみ、自動的に Web Audio グラフを使います。
 - **レンダー差分プロトコル** — レンダラーは最初に計画全体(`project.set`)を、その後は変更されたトラックだけ(`project.patch`)を送ります。エンジンは制御スレッドの `Controller` とオーディオスレッドの `Renderer` に分かれ、ロックフリーのキューだけで通信するため、オーディオスレッドは割り当てやロックをせず、バッファーごとに JavaScript や IPC の応答を待つこともありません。
 - **オフライン処理** — ピッチ編集(Signalsmith WASM)とオーディオワープは Worker で新しい PCM アセットをレンダリングし、元のオーディオはそのまま保持します。

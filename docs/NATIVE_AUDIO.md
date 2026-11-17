@@ -2,7 +2,7 @@
 
 2026-11-17 (0.3.2) · 구현 및 검증 상태
 
-데스크톱은 별도 `garak-audio-host` 프로세스에서 오디오를 처리합니다. Windows는 **ASIO 또는 WASAPI**, Apple Silicon macOS는 **Core Audio**를 사용합니다. 0.3.2부터 트랙 렌더는 웹과 같은 **통합 Rust 엔진**(`rust/garak-engine`, C ABI `rust/garak-ffi`)이 맡고, C++20 `RenderEngine`은 그 엔진을 감싼 얇은 셸입니다. 셸은 장치 I/O, 전송·마스터 버스·메트로놈, VST3·IEUM WAVE 호스트 노드(엔진이 콜백으로 부름), 워커 풀과 render-ahead 링, 녹음을 맡고, Rust 엔진이 트랙·내장 악기·기타 랙·시김새·믹스·센드/리턴·트랙 라우트를 렌더합니다. Electron/React는 편집과 제어를 맡습니다. [셸](../native/include/garak/engine.hpp) · [Rust 엔진 C ABI](../rust/garak-ffi/include/garak_engine.h) · [장치 어댑터](../native/src/device.cpp) · [렌더러 연결](../src/audio/native/NativeAudioEngine.ts) · [Rust 렌더 엔진 10장](RUST_ENGINE.md#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계)
+데스크톱은 별도 `garak-audio-host` 프로세스에서 오디오를 처리합니다. Windows는 **ASIO 또는 WASAPI**, Apple Silicon macOS는 **Core Audio**를 사용합니다. 0.3.2부터 트랙 렌더는 웹과 같은 **통합 Rust 엔진**(`rust/garak-engine`, C ABI `rust/garak-ffi`)이 맡고, C++20 `RenderEngine`은 그 엔진을 감싼 얇은 셸입니다. 셸은 장치 I/O, 전송·마스터 버스·메트로놈, VST3 호스트 노드(엔진이 콜백으로 부름), 워커 풀과 render-ahead 링, 녹음을 맡고, Rust 엔진이 트랙·내장 악기(IEUM WAVE 포함)·기타 랙·시김새·믹스·센드/리턴·트랙 라우트를 렌더합니다. Electron/React는 편집과 제어를 맡습니다. [셸](../native/include/garak/engine.hpp) · [Rust 엔진 C ABI](../rust/garak-ffi/include/garak_engine.h) · [장치 어댑터](../native/src/device.cpp) · [렌더러 연결](../src/audio/native/NativeAudioEngine.ts) · [Rust 렌더 엔진 10장](RUST_ENGINE.md#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계)
 
 > **0.3.2에 한한 숨은 대체 경로:** 앱을 환경 변수 `GARAK_RUST_ENGINE=0`으로 띄우면 트랙을 이전 C++ `RenderEngine`이, 여기에 `GARAK_RUST_EFFECTS=none`을 더하면 그 C++ 경로의 내장 이펙트도 C++ 커널이 처리합니다(Rust 그래프는 항상 `garak-dsp`를 씀)(`garak-audio-host`는 Electron의 환경을 물려받음). 호스트 `hello`의 `rustEngine`, `engine.snapshot`의 `rustEngine`·`rustRefusals`, `render.wav` 응답의 `rustEngine`으로 어느 경로가 돌았는지 확인합니다. 이전 C++ 렌더 경로는 다음 패치에서 삭제할 예정입니다.
 
@@ -127,7 +127,7 @@ Linux의 `pnpm native:build`는 장치 없이 실제 VST3/오프라인 엔진을
 | --- | --- |
 | CMake 전체 Linux 빌드 | 실제 고정 SDK 사용, 성공 |
 | CTest `native-engine` | 프레임·믹싱·DSP·입력·지연 보상 등 코어 회귀 통과. `scripts/rust-engine-suite.mjs`(rust.yml)가 같은 스위트를 `GARAK_RUST_ENGINE=1`·`strict`로 Rust 그래프에서 실행 |
-| CTest `native-rust-*` | C++ 엔진 ↔ Rust 엔진 패리티: 이펙트(`native-rust-parity`), 오디오 프로젝트(`-engine-parity`), 악기(`-engine-instruments`, `-instruments`), 셸·호스트 노드·멀티코어·render-ahead(`-engine-host`). 상세 결과는 [RUST_ENGINE 7·10장](RUST_ENGINE.md#7-패리티-전략과-결과) |
+| CTest `native-rust-*` | C++ 엔진 ↔ Rust 엔진 패리티: 이펙트(`native-rust-parity`), 오디오 프로젝트(`-engine-parity`), 악기(`-engine-instruments`, `-instruments`), 셸·호스트 노드·멀티코어·render-ahead(`-engine-host`), IEUM WAVE 골든(`-wave-golden`: 삭제한 C++ 신스의 렌더와 비트 동일). `native-wavetable-host`는 셸을 거친 WAVE 동작입니다. 상세 결과는 [RUST_ENGINE 7·10장](RUST_ENGINE.md#7-패리티-전략과-결과) |
 | CTest `native-asio-formats` | 모든 지원 PCM endian/유효 비트·clipping·비정상 값 변환 통과 |
 | CTest `native-vst3` | 실제 모듈 탐색, effect/instrument/processor-only, 이벤트 offset, 겹친 note ID/reset, 260개 초기 parameter, 상태 왕복·크기 한도 통과 |
 | CMake install | helper 및 8개 패키지의 고지·manifest 설치 확인 |

@@ -1,5 +1,20 @@
 # IEUM WAVE 구현·검증 기록
 
+## Rust 엔진 단일화 · 0.3.3
+
+C++ 신스(`native/devices/wavetable-synth`)와 호스트 래퍼(`native/src/wavetable.cpp`)를 삭제하고, 데스크톱과 브라우저가 모두 통합 Rust 엔진의 `rust/garak-engine/src/wave/`로 렌더합니다. 삭제 전에 C++ `RenderEngine`으로 WAVE 경우 4개(오프라인 3개, 라이브 1개)를 렌더해 골든으로 보관했고, 같은 캡처에서 Rust 엔진이 C++과 비트 동일함을 확인했습니다. 이후 검사:
+
+| 대상 | 결과 (이 PC, MinGW-w64 GCC 16 Release) |
+| --- | --- |
+| `native-rust-wave-golden` | 4/4 **비트 동일**(Windows x86-64 게이트), 24비트 저장값 대비 -138.5 dBFS(양자화 바닥) |
+| `native-wavetable-host`(셸 → Rust 그래프) | 13/13 통과(아래 2026-11-04의 C++ 호스트 회귀를 Rust 그래프 기준으로 옮김) |
+| `cargo test -p garak-engine --test wave_golden` | 오프라인 3/3 ≤ -90 dBFS(-138.5) |
+| `src/audio/rust/wave.test.ts`(garak-engine.wasm) | 오프라인 3/3 -137.9 dBFS, 프리셋 변경, 20 ms 사용자 파형 크로스페이드 |
+| `scripts/native-smoke.mjs` | WAVE capability·렌더·검증·미리 듣기·재설정 통과; `GARAK_RUST_ENGINE=0`은 capability 없음·WAVE 프로젝트 거부 |
+| `pnpm rust:engine-smoke`(Chromium) | WAVE 재생·재생 중 프리셋 변경·편집기 패치 적용과 미리 듣기·내보내기가 모두 Rust 엔진 |
+
+아래는 C++ 구현 당시의 기록입니다. 그 안의 `native/devices/wavetable-synth` 경로와 `wavetable:*` 명령은 0.3.3에서 없어졌습니다.
+
 ## 공통 네이티브 호스트 통합 · 2026-11-04 UTC
 
 `NativeAudioEngine` → Electron 서비스 → 실제 `garak-audio-host` → 공통 `RenderEngine` → WAVE DSP 연결을 추가했습니다. WASAPI·ASIO·Core Audio 장치 어댑터는 이 공통 렌더러의 출력을 사용합니다.
@@ -108,4 +123,4 @@ pnpm wavetable:smoke
 
 수치 로그가 필요하면 `build/native/wavetable-synth/ieum-wave-tests`를 직접 실행합니다. sanitizer 검사는 별도 CMake 빌드 디렉터리에서 `-DIEUM_WAVE_SANITIZE=ON`으로 구성합니다. 이 환경에서는 `ASAN_OPTIONS=detect_leaks=0`을 사용했습니다.
 
-원본 API와 준비된 파형의 소유권 규칙은 [네이티브 README](../native/devices/wavetable-synth/README.md), 사용자 조작과 호스트 연결 안내는 [IEUM WAVE 사용법](IEUM_WAVE.md)에 있습니다.
+합성 세부와 엔진 구조, 사용자 조작은 [IEUM WAVE 사용법](IEUM_WAVE.md)에 있습니다(원래의 네이티브 README 내용 포함).
