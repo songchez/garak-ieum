@@ -22,6 +22,7 @@ on:
       - 'native/tests/rust_parity_test.cpp'
       - 'native/tests/rust_engine_parity_test.cpp'
       - 'native/tests/rust_engine_bench.cpp'
+      - 'native/tests/rust_engine_instrument_parity_test.cpp'
       - 'native/src/engine.cpp'
       - 'native/src/protocol.hpp'
       - 'native/include/garak/engine.hpp'
@@ -184,7 +185,7 @@ jobs:
         run: >
           cmake --build build/native-rust --config Release --parallel 4
           --target garak-rust-parity-test garak-rust-bench garak-engine-test garak-rust-instrument-test
-          garak-rust-engine-parity-test garak-rust-engine-bench
+          garak-rust-engine-parity-test garak-rust-engine-bench garak-rust-engine-instrument-parity-test
 
       # Every ported effect through C++ and Rust (param sweeps, automation, tempo, resets,
       # hand-overs, other sample rates): residual <= -90 dBFS, identical latency / tail / meters.
@@ -195,6 +196,11 @@ jobs:
       # rust/garak-engine (offline exports at several blocks/rates, live diffs): residual <= -90 dBFS.
       - name: Run the render-engine parity test (C++ vs Rust engine)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-parity --output-on-failure
+
+      # Built-in instruments (synths, drums, sample instruments, 옥구슬 EP / 한밤 106) through both
+      # engines: offline exports and a live engine with edits, seeks, cycle wraps and live MIDI.
+      - name: Run the render-engine instrument parity test (C++ vs Rust engine)
+        run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-instruments --output-on-failure
 
       # 옥구슬 EP / 한밤 106 through garak-ffi: checksum parity with the WASM build (parity.golden),
       # 8 voices < 3 % of one core at 48 kHz, and engine use (timeline, live pedal, edits).
@@ -224,6 +230,12 @@ jobs:
             echo
             echo "### Render engine CPU, 16/32 tracks (${{ matrix.name }})"
             "$dir/garak-rust-engine-bench" 10 3 128
+            echo
+            echo "### Render engine instrument parity (${{ matrix.name }})"
+            "$dir/garak-rust-engine-instrument-parity-test" | grep -E '^\||^Live edits'
+            echo
+            echo "### Render engine CPU, instrument-heavy project (${{ matrix.name }})"
+            "$dir/garak-rust-engine-instrument-parity-test" bench 10 3 128
             echo
             echo "### Vintage instruments (${{ matrix.name }})"
             "$dir/garak-rust-instrument-test" | grep '^|'

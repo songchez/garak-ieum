@@ -479,8 +479,8 @@ pub(crate) fn build(
     }
     // Notes: unique ids, sane frames and velocities; then onset order (ties by id).
     let length = p.length_frames;
-    let mut ids: Vec<i32> = t.notes.iter().map(|n| n.id).collect();
-    ids.sort_unstable();
+    let id = |i: usize| t.notes.get(i).map_or(0, |n| n.id);
+    let ids: Vec<i32> = stable_order(t.notes.len(), &|x, y| id(x) < id(y)).into_iter().map(id).collect();
     require(ids.windows(2).all(|w| w.first() != w.get(1)), "Invalid native note event")?;
     let mut events: Vec<TimedEvent> = Vec::new();
     for n in &t.notes {
@@ -507,7 +507,11 @@ pub(crate) fn build(
             });
         }
     }
-    t.notes.sort_by(|a, b| a.on_frame.cmp(&b.on_frame).then(a.id.cmp(&b.id)));
+    let order = stable_order(t.notes.len(), &|x, y| {
+        let (a, b) = (note_at(&t.notes, x), note_at(&t.notes, y));
+        (a.on_frame, a.id) < (b.on_frame, b.id)
+    });
+    t.notes = order.iter().map(|&i| note_at(&t.notes, i)).collect();
     let mut previous = i64::MIN;
     for c in &t.controls {
         require(
@@ -534,9 +538,11 @@ pub(crate) fn build(
         }
     }
     // Stable: same-frame events keep their order within a type (std::stable_sort).
-    events.sort_by(|a, b| {
-        a.frame.cmp(&b.frame).then(event_order(a.event.kind).cmp(&event_order(b.event.kind)))
+    let order = stable_order(events.len(), &|x, y| match (events.get(x), events.get(y)) {
+        (Some(a), Some(b)) => (a.frame, event_order(a.event.kind)) < (b.frame, event_order(b.event.kind)),
+        _ => false,
     });
+    let events: Vec<TimedEvent> = order.iter().filter_map(|&i| events.get(i).copied()).collect();
     let mut begin = 0usize;
     for end in 0..events.len() {
         while let (Some(e), Some(b)) = (events.get(end), events.get(begin))
@@ -1241,20 +1247,66 @@ impl Source {
     }
 }
 
-/// engine.cpp `removedNotes`: old notes absent (by value, ids included) from `next`.
+/// Stable sort order of `n` items under `less` (bottom-up merge sort over indices). One
+/// non-generic sort for the control-thread sorts here: each std sort instantiation costs several
+/// KiB of WASM.
+fn stable_order(n: usize, less: &dyn Fn(usize, usize) -> bool) -> Vec<usize> {
+    let mut a: Vec<usize> = (0..n).collect();
+    let mut b: Vec<usize> = vec![0; n];
+    let mut width = 1;
+    while width < n {
+        let mut start = 0;
+        while start < n {
+            let mid = (start + width).min(n);
+            let end = (start + 2 * width).min(n);
+            let (mut i, mut j) = (start, mid);
+            for slot in b.get_mut(start..end).unwrap_or(&mut []) {
+                let (left, right) = (a.get(i).copied().unwrap_or(0), a.get(j).copied().unwrap_or(0));
+                if j < end && (i >= mid || less(right, left)) {
+                    *slot = right;
+                    j += 1;
+                } else {
+                    *slot = left;
+                    i += 1;
+                }
+            }
+            start = end;
+        }
+        core::mem::swap(&mut a, &mut b);
+        width *= 2;
+    }
+    a
+}
+
+fn note_at(list: &[Note], i: usize) -> Note {
+    list.get(i).copied().unwrap_or(Note {
+        id: 0,
+        on_frame: 0,
+        off_frame: 0,
+        limit_frame: 0,
+        pitch: 0,
+        velocity: 0.0,
+    })
+}
+
+/// engine.cpp `removedNotes`: old notes absent (by value, ids included) from `next`. Velocities
+/// are non-negative finite floats: their bit patterns order like their values.
 pub(crate) fn removed_notes(old: &[Note], next: &[Note]) -> Vec<RemovedNote> {
     let key = |n: &Note| (n.id, n.on_frame, n.off_frame, n.limit_frame, n.pitch, n.velocity.to_bits());
-    let mut a: Vec<&Note> = old.iter().collect();
-    let mut b: Vec<&Note> = next.iter().collect();
-    a.sort_by(|x, y| cmp_key(key(x), key(y)));
-    b.sort_by(|x, y| cmp_key(key(x), key(y)));
+    let sorted = |list: &[Note]| -> Vec<Note> {
+        stable_order(list.len(), &|x, y| key(&note_at(list, x)) < key(&note_at(list, y)))
+            .into_iter()
+            .map(|i| note_at(list, i))
+            .collect()
+    };
+    let (a, b) = (sorted(old), sorted(next));
     let mut removed = Vec::new();
     let mut j = 0;
-    for n in a {
-        while b.get(j).is_some_and(|m| cmp_key(key(m), key(n)).is_lt()) {
+    for n in &a {
+        while b.get(j).is_some_and(|m| key(m) < key(n)) {
             j += 1;
         }
-        if b.get(j).is_some_and(|m| cmp_key(key(m), key(n)).is_eq()) {
+        if b.get(j).is_some_and(|m| key(m) == key(n)) {
             j += 1;
             continue;
         }
@@ -1268,31 +1320,16 @@ pub(crate) fn removed_notes(old: &[Note], next: &[Note]) -> Vec<RemovedNote> {
     removed
 }
 
-/// Orders note keys like the C++ tuple of (…, float velocity): velocities are non-negative finite
-/// floats, so their bit patterns order like their values.
-fn cmp_key<T: Ord>(a: T, b: T) -> core::cmp::Ordering {
-    a.cmp(&b)
-}
-
 /// engine.cpp `renumberNotes`: notes of `next` equal (frames, pitch, velocity) to a note of `old`
 /// take that note's id; the rest get fresh ids above every old id. Returns the old notes without
 /// a match (removed or edited).
 pub(crate) fn renumber_notes(old: &[Note], next: &mut [Note]) -> Vec<RemovedNote> {
     let key = |n: &Note| (n.on_frame, n.off_frame, n.limit_frame, n.pitch, n.velocity.to_bits());
-    let mut a: Vec<usize> = (0..old.len()).collect();
-    let mut b: Vec<usize> = (0..next.len()).collect();
-    let note = |list: &[Note], i: usize| {
-        list.get(i).copied().unwrap_or(Note {
-            id: 0,
-            on_frame: 0,
-            off_frame: 0,
-            limit_frame: 0,
-            pitch: 0,
-            velocity: 0.0,
-        })
-    };
-    a.sort_by_key(|&x| (key(&note(old, x)), note(old, x).id));
-    b.sort_by_key(|&x| (key(&note(next, x)), x));
+    let note = note_at;
+    let a = stable_order(old.len(), &|x, y| {
+        (key(&note(old, x)), note(old, x).id) < (key(&note(old, y)), note(old, y).id)
+    });
+    let b = stable_order(next.len(), &|x, y| key(&note(next, x)) < key(&note(next, y)));
     let top = old.iter().map(|n| i64::from(n.id)).max().unwrap_or(-1);
     let compact = top + next.len() as i64 + 1 > i64::from(i32::MAX / 2);
     let mut matched = vec![false; next.len()];

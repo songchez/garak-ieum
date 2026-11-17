@@ -557,6 +557,7 @@ impl Voices {
 
     /// The voice half of engine.cpp `TrackRuntime::spawn` (the caller checked velocity, durations,
     /// the enabled flag and the source kind). `sampled`: a `builtin-sampled` source.
+    #[inline(never)]
     pub fn spawn<B: SampleBank>(
         &mut self,
         ctx: &VoiceContext<'_>,
@@ -865,6 +866,7 @@ impl Voices {
     }
 
     /// engine.cpp `voicesInto`: adds `out.len() / 2` frames of every voice into `out`.
+    #[inline(never)]
     pub fn render<B: SampleBank>(
         &mut self,
         out: &mut [f32],

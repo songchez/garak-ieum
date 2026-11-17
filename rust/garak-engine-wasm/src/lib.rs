@@ -16,6 +16,8 @@ use core::cell::RefCell;
 
 use garak_engine::{Applied, Controller, EngineConfig, PcmAsset, Renderer, engine};
 
+mod instruments;
+
 struct Instance {
     control: Controller,
     render: Renderer,

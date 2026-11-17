@@ -116,7 +116,7 @@ fn phrase(seed: u32, length: i64, rate: f64, low: i32, high: i32, density: u32) 
     let mut rng = Rng(seed);
     let mut n = Notes::new();
     let beat = (rate * 0.3) as i64;
-    n.push(-beat, beat * 2, beat * 3, (low + high) / 2, 0.7);
+    n.push(-beat, (beat * 2).min(length), (beat * 3).min(length), (low + high) / 2, 0.7);
     let mut at = beat / 3;
     let span = (high - low).max(1) as u32;
     while at < length - beat {

@@ -257,6 +257,8 @@ void liveCase(bool rustEffects) {
       auto next = withRevision(current, revision, revision + 1); ++revision;
       next = edit(next, "\"bell\":0.35", "\"bell\":0.5");
       next = edit(next, "\"releaseNoise\":0.7,\"release\":0.6", "\"releaseNoise\":0.4,\"release\":0.9");
+      next = edit(next, "\"tremDepth\":0.3", "\"tremDepth\":0.6");
+      next = edit(next, "\"resonance\":0.35", "\"resonance\":0.5");
       apply(next, "instrument knobs"); ++stage;
     } else if (stage == 1 && seconds >= 1.3) {
       // Delete notes that sound right now (they release); move a later note; add a note across
@@ -302,14 +304,32 @@ void liveCase(bool rustEffects) {
       next = edit(next, "\"instrumentId\":\"bass\",\"isKit\":false,\"params\":{\"level\":0.7,\"sub\":0.5,\"tone\":-0.3}", "\"instrumentId\":\"pluck\",\"isKit\":false,\"params\":{\"level\":0.5}");
       next = edit(next, "{\"target\":{\"kind\":\"instrument\",\"param\":\"sub\"}", "{\"target\":{\"kind\":\"instrument\",\"param\":\"sweep\"}");
       apply(next, "instrument change"); ++stage;
-    } else if (stage == 6 && seconds >= 6.5) {
+    } else if (stage == 6 && seconds >= 5.2) {
+      // A tempo change: a new graph whose tracks continue (cursors re-found at the playhead).
+      auto next = withRevision(current, revision, revision + 1); ++revision;
+      next = edit(next, "\"bpm\":100", "\"bpm\":112");
+      apply(next, "tempo"); ++stage;
+    } else if (stage == 7 && seconds >= 5.9) {
+      (void)cpp.pause(); garak_rs_engine_transport(rust, GARAK_RS_PAUSE, 0);
+      ++stage;
+    } else if (stage == 8 && seconds >= 6.1) {
+      (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
+      ++stage;
+    } else if (stage == 9 && seconds >= 6.5) {
       (void)cpp.allNotesOff(0); garak_rs_engine_all_notes_off(rust, 0);
       (void)cpp.allNotesOff(10); garak_rs_engine_all_notes_off(rust, 10);
       (void)cpp.stop(); garak_rs_engine_transport(rust, GARAK_RS_STOP, 0); position = 0;
       ++stage;
-    } else if (stage == 7 && seconds >= 7.0) {
+    } else if (stage == 10 && seconds >= 7.0) {
       (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
       ++stage;
+    } else if (stage == 11 && seconds >= 7.6) {
+      // Removing a track rebuilds the graph; every other track keeps sounding.
+      auto next = withRevision(current, revision, revision + 1); ++revision;
+      const auto start = trackStart(next, "kit");
+      const auto end = next.find("{\"id\":\"okgu-ep\"", start);
+      next.erase(start, end - start);
+      apply(next, "track removed"); ++stage;
     }
     const auto frames = std::min(call, total - done);
     cpp.render(a.data() + std::size_t(done) * 2, nullptr, frames, 0);
