@@ -22,6 +22,7 @@ pub mod instruments;
 pub mod lines;
 pub mod math;
 pub mod params;
+pub mod simd;
 pub mod smooth;
 pub mod utility;
 
