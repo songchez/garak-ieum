@@ -1,0 +1,227 @@
+// Browser check of the web Rust render engine (docs/RUST_ENGINE.md 5, flag `garak.rustEngine`).
+// In Chromium, through the real AudioWorklet, Worker and Web Audio engine:
+//   1. the app boots with the flag on (no console errors) and createAudioEngine picks the Rust host;
+//   2. A/B: the same projects exported by the Web Audio engine and by the Rust engine (worker);
+//   3. realtime: the Rust worklet plays (non-silent master, advancing transport, seek/pause/stop),
+//      a project the engine refuses falls back to Web Audio, and the export runs on the engine;
+//   4. CPU: 16/32-track projects played in realtime on both engines (worklet render time per
+//      quantum; AudioContext.renderCapacity load when the browser has it) and rendered offline.
+// Runs twice: a plain page (postMessage channel) and a cross-origin isolated one (SharedArrayBuffer).
+// Run after `pnpm rust:wasm`: `node scripts/rust-engine-smoke.mjs`. Optional GARAK_CHROMIUM_EXECUTABLE.
+import assert from 'node:assert/strict'
+import { chromium } from 'playwright'
+import { createServer } from 'vite'
+
+const ISOLATION = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
+
+async function openPage(browser, url) {
+  const page = await (await browser.newContext({ viewport: { width: 1440, height: 1000 } })).newPage()
+  const errors = [], logs = []
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => { logs.push(`${message.type()}: ${message.text()}`); if (message.type() === 'error') errors.push(message.text()) })
+  // The first load of a cold Vite server pre-bundles dependencies.
+  await page.goto(url, { timeout: 180000 })
+  await page.evaluate(() => localStorage.setItem('garak.rustEngine', '1'))
+  await page.reload()
+  await page.getByRole('button', { name: '새 빈 프로젝트', exact: true }).click({ timeout: 15000 }).catch(() => undefined)
+  await page.getByRole('button', { name: '트랙 추가', exact: true }).waitFor()
+  return { page, errors, logs }
+}
+
+async function session(browser, isolated, port) {
+  const server = await createServer({ logLevel: 'error', server: { host: '127.0.0.1', port, hmr: false, headers: isolated ? ISOLATION : {} } })
+  await server.listen()
+  const url = server.resolvedUrls.local[0]
+  const errors = [], notes = []
+  // Each task in a fresh page (renderer process): the Web Audio engine instantiates garak-dsp.wasm
+  // once per effect node, and many graphs in one page exhaust the wasm memory reservations.
+  const task = async (name, arg) => {
+    const opened = await openPage(browser, url)
+    try { return await opened.page.evaluate(TASK, { name, arg }) } finally {
+      errors.push(...opened.errors); notes.push(...opened.logs.filter(line => line.includes('Rust 엔진')))
+      await opened.page.context().close()
+    }
+  }
+  try {
+    const result = await task('main')
+    result.cpu = {}
+    for (const tracks of [16, 32]) result.cpu[tracks] = { rust: await task('load', { tracks, rust: true }), web: await task('load', { tracks, rust: false }), offline: await task('offline', { tracks }) }
+    return { result, errors, notes }
+  } finally {
+    await server.close()
+  }
+}
+
+const TASK = async ({ name, arg }) => {
+      const { WebAudioEngine } = await import('/src/audio/WebAudioEngine.ts')
+      const { RustWebAudioEngine } = await import('/src/audio/rust/RustWebAudioEngine.ts')
+      const { createAudioEngine } = await import('/src/audio/engineFactory.ts')
+      const { DEFAULT_AUDIO_SETTINGS } = await import('/src/core/audioSettings.ts')
+      const fixtures = await import('/src/audio/rust/engineTestProjects.ts')
+      const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+      const factoryPicksRust = (() => { const e = createAudioEngine(DEFAULT_AUDIO_SETTINGS); const ok = e instanceof RustWebAudioEngine; e.dispose(); return ok })()
+
+      const assetsOf = test => new Map([...test.pcm].map(([id, pcm]) => {
+        const buffer = new AudioBuffer({ length: pcm.channels[0].length, numberOfChannels: pcm.channels.length, sampleRate: pcm.sampleRate })
+        pcm.channels.forEach((data, c) => buffer.copyToChannel(data, c))
+        return [id, { id, name: id, blob: new Blob(['x']), buffer, peaks: [] }]
+      }))
+      const decode = async blob => {
+        const view = new DataView(await blob.arrayBuffer())
+        let at = 12, format = 0, channels = 2, bits = 32
+        while (at + 8 <= view.byteLength) {
+          const id = String.fromCharCode(...new Uint8Array(view.buffer, at, 4)), size = view.getUint32(at + 4, true)
+          if (id === 'fmt ') { format = view.getUint16(at + 8, true); channels = view.getUint16(at + 10, true); bits = view.getUint16(at + 22, true) }
+          if (id === 'data') {
+            const frames = size / (channels * bits / 8), left = new Float32Array(frames), right = new Float32Array(frames)
+            for (let i = 0; i < frames; i += 1) { left[i] = view.getFloat32(at + 8 + i * 8, true); right[i] = view.getFloat32(at + 12 + i * 8, true) }
+            if (format !== 3 && format !== 0xfffe) throw new Error(`unexpected WAV format ${format}`)
+            return { left, right }
+          }
+          at += 8 + size + (size & 1)
+        }
+        throw new Error('no data chunk')
+      }
+      const db = x => x > 0 ? 20 * Math.log10(x) : -Infinity
+      // Peak residual, error energy relative to the signal, and the level ratio (a vs b).
+      const compare = (a, b) => {
+        let diff = 0, peak = 0, error = 0, energyA = 0, energyB = 0
+        const n = Math.min(a.left.length, b.left.length)
+        for (let i = 0; i < n; i += 1) {
+          diff = Math.max(diff, Math.abs(a.left[i] - b.left[i]), Math.abs(a.right[i] - b.right[i])); peak = Math.max(peak, Math.abs(b.left[i]), Math.abs(b.right[i]))
+          error += (a.left[i] - b.left[i]) ** 2 + (a.right[i] - b.right[i]) ** 2; energyA += a.left[i] ** 2 + a.right[i] ** 2; energyB += b.left[i] ** 2 + b.right[i] ** 2
+        }
+        return { residualDb: db(diff), errorDb: 10 * Math.log10(error / energyB), levelDb: 10 * Math.log10(energyA / energyB), peakDb: db(peak), lengths: [a.left.length, b.left.length] }
+      }
+      // The Web Audio master is a DynamicsCompressorNode (6 ms lookahead, automatic makeup gain); the
+      // engine's master is the desktop's causal processor, transparent below its knee (the A/B projects
+      // stay there). So the Web Audio side renders pre-master (masterVolume is 1 in these projects):
+      // the comparison covers the graphs, not the two master processors.
+      const exportWith = async (Engine, test, options = {}) => {
+        const engine = new Engine(test.project)
+        engine.setAssets(assetsOf(test))
+        const began = performance.now()
+        const rendered = await engine.renderAudio(test.project, { bitDepth: 32, ...options })
+        const wallMs = performance.now() - began
+        const info = engine.diagnostics?.().lastRender ?? null
+        engine.dispose()
+        return { audio: await decode(rendered.blob), wallMs, info }
+      }
+
+      const main = async () => {
+      // 2. A/B exports.
+      const ab = {}
+      for (const test of fixtures.abProjects()) {
+        const web = await exportWith(WebAudioEngine, test, { preMaster: true }), rust = await exportWith(RustWebAudioEngine, test)
+        ab[test.name] = { ...compare(rust.audio, web.audio), note: test.note, rustEngine: rust.info?.engine, webMs: Math.round(web.wallMs), rustMs: Math.round(rust.wallMs) }
+      }
+
+      // 3. Realtime on the worklet.
+      const playTest = fixtures.effectsProject()
+      const engine = new RustWebAudioEngine(playTest.project)
+      engine.setAssets(assetsOf(playTest))
+      await engine.play()
+      let master = 0
+      const beats = []
+      for (let i = 0; i < 30; i += 1) { await sleep(50); master = Math.max(master, engine.getMasterLevel()); beats.push(engine.getSnapshot().beat) }
+      const playing = engine.diagnostics()
+      engine.seek(1)
+      await sleep(150)
+      const afterSeek = engine.getSnapshot().beat
+      engine.pause()
+      const paused = engine.getSnapshot()
+      await sleep(100)
+      const pausedLater = engine.getSnapshot().beat
+      engine.stop()
+      const exported = await engine.renderAudio(playTest.project, { bitDepth: 16 })
+      const exportInfo = engine.diagnostics().lastRender
+      // A project the engine refuses: plays on Web Audio, with a console note.
+      const refused = fixtures.instrumentProject()
+      engine.setProject(refused.project)
+      engine.setAssets(new Map())
+      await engine.play()
+      await sleep(300)
+      const fallback = engine.diagnostics()
+      engine.stop()
+      // Back to a supported project: the engine takes over again on its own.
+      engine.setProject(playTest.project)
+      engine.setAssets(assetsOf(playTest))
+      await engine.play()
+      await sleep(200)
+      const resumed = engine.diagnostics().playing
+      engine.stop()
+      engine.dispose()
+      const realtime = {
+        master, beatsAdvance: beats[beats.length - 1] - beats[0], playingOn: playing.playing, sharedChannel: playing.sharedChannel, accepted: playing.accepted,
+        quanta: playing.status.quanta, afterSeek, paused: paused.playing, pausedBeat: paused.beat, pausedLater, exportEngine: exportInfo?.engine, exportBytes: exported.blob.size,
+        fallback: { playingOn: fallback.playing, accepted: fallback.accepted, reason: fallback.reason }, resumed,
+      }
+      return { ab, realtime }
+      }
+
+      // 4. CPU: realtime load on both engines, then offline render speed (separate pages, see session()).
+      const load = async (Engine, test) => {
+        const e = new Engine(test.project)
+        e.setAssets(assetsOf(test))
+        await e.play()
+        const context = e.context
+        let capacity = null
+        if (context?.renderCapacity?.start) {
+          const loads = []
+          context.renderCapacity.onupdate = event => loads.push([event.averageLoad, event.peakLoad, event.underrunRatio])
+          context.renderCapacity.start({ updateInterval: 0.5 })
+          await sleep(3000)
+          context.renderCapacity.stop()
+          if (loads.length) capacity = { average: Math.max(...loads.map(l => l[0])), peak: Math.max(...loads.map(l => l[1])), underruns: Math.max(...loads.map(l => l[2])) }
+        } else await sleep(3000)
+        const d = e.diagnostics?.()
+        e.stop(); e.dispose()
+        const status = d?.status
+        return { renderCapacity: capacity, workletUsPerQuantum: status?.quanta ? Math.round(status.renderMs * 1000 / status.quanta) : null, workletMaxUs: status ? Math.round(status.renderMaxMs * 1000) : null, budgetMisses: status?.budgetMisses ?? null, on: d?.playing ?? 'web-audio' }
+      }
+      if (name === 'load') return load(arg.rust ? RustWebAudioEngine : WebAudioEngine, fixtures.benchProject(arg.tracks, 6))
+      if (name === 'offline') {
+        const test = fixtures.benchProject(arg.tracks, 6)
+        const webExport = await exportWith(WebAudioEngine, test), rustExport = await exportWith(RustWebAudioEngine, test)
+        return { webMs: Math.round(webExport.wallMs), rustWallMs: Math.round(rustExport.wallMs), rustRenderMs: Math.round(rustExport.info?.renderMs ?? 0), renderedSeconds: +(webExport.audio.left.length / 48000).toFixed(2) }
+      }
+      return { factoryPicksRust, crossOriginIsolated: globalThis.crossOriginIsolated === true, ...(await main()) }
+}
+
+const browser = await chromium.launch({
+  headless: true,
+  ...(process.env.GARAK_CHROMIUM_EXECUTABLE ? { executablePath: process.env.GARAK_CHROMIUM_EXECUTABLE } : {}),
+  args: ['--autoplay-policy=no-user-gesture-required'],
+})
+try {
+  for (const isolated of [false, true]) {
+    const { result, errors, notes } = await session(browser, isolated, isolated ? 4176 : 4175)
+    console.log(JSON.stringify({ isolated, ...result, notes }, null, 2))
+    assert.equal(result.factoryPicksRust, true, 'the flag must select the Rust engine host')
+    assert.equal(result.crossOriginIsolated, isolated)
+    const r = result.realtime
+    assert.equal(r.playingOn, 'rust', 'a supported project must play on the Rust worklet')
+    assert.equal(r.sharedChannel, isolated, 'the SharedArrayBuffer channel is used exactly when the page is isolated')
+    assert(r.master > 0.01, `the Rust worklet must be audible (master ${r.master})`)
+    assert(r.beatsAdvance > 1, 'the transport must advance while playing')
+    assert(r.afterSeek >= 1 && r.afterSeek < 1.6, `seek must move the transport (beat ${r.afterSeek})`)
+    assert.equal(r.paused, false)
+    assert(Math.abs(r.pausedLater - r.pausedBeat) < 0.01, 'pause must hold the transport')
+    assert.equal(r.exportEngine, 'rust', 'the export must run on the Rust engine')
+    assert.equal(r.fallback.playingOn, 'web-audio', 'a refused project must fall back to Web Audio')
+    assert.equal(r.resumed, 'rust', 'a supported project must return to the Rust engine')
+    for (const [name, entry] of Object.entries(result.ab)) {
+      assert.equal(entry.rustEngine, 'rust', `${name}: exported on the Rust engine`)
+      assert(entry.peakDb > -40, `${name}: audible`)
+    }
+    const { ab } = result
+    assert(ab['dry-mix'].residualDb < -90, `dry mix: Rust vs Web Audio export ${ab['dry-mix'].residualDb.toFixed(1)} dBFS`)
+    assert(ab.fades.residualDb < -60, `fades: Rust vs Web Audio export ${ab.fades.residualDb.toFixed(1)} dBFS`)
+    assert(ab.automation.errorDb < -30, `automation: error ${ab.automation.errorDb.toFixed(1)} dB`)
+    // Effects: the kernels are the same Rust code, the graphs are not (PDC, block-wise modulation): same level, not the same samples.
+    assert(Math.abs(ab.effects.levelDb) < 0.5, `effects: level ${ab.effects.levelDb.toFixed(2)} dB`)
+    assert.deepEqual(errors, [])
+  }
+} finally {
+  await browser.close()
+}

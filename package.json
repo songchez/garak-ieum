@@ -42,7 +42,8 @@
     "rust:test": "node scripts/rust.mjs test",
     "rust:build": "node scripts/rust.mjs build",
     "rust:wasm": "node scripts/rust.mjs wasm",
-    "rust:check": "node scripts/rust.mjs check"
+    "rust:check": "node scripts/rust.mjs check",
+    "rust:engine-smoke": "node scripts/rust-engine-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",

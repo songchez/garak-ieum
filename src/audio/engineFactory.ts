@@ -3,6 +3,8 @@ import type { AudioSettings } from '../core/audioSettings'
 import { WebAudioEngine } from './WebAudioEngine'
 import { NativeAudioEngine } from './native/NativeAudioEngine'
 import type { NativeAudioBridge } from './native/contracts'
+import { rustEngineRequested } from './rust/flag'
+import { RustWebAudioEngine } from './rust/RustWebAudioEngine'
 
 /** A missing/broken native host never silently switches desktop playback to Web Audio. */
 export function createAudioEngine(settings: AudioSettings, desktop = getDesktopBridge()): WebAudioEngine | NativeAudioEngine {
@@ -14,5 +16,7 @@ export function createAudioEngine(settings: AudioSettings, desktop = getDesktopB
   // Electron still must fail closed; its user agent is only a runtime detector,
   // never an authority for IPC or filesystem access.
   if (typeof navigator !== 'undefined' && /\bElectron\//i.test(navigator.userAgent)) return new NativeAudioEngine(undefined, 'unavailable', undefined, settings)
+  // The unified Rust engine in an AudioWorklet (docs/RUST_ENGINE.md 5): off unless `garak.rustEngine` / VITE_GARAK_RUST_ENGINE opts in.
+  if (rustEngineRequested()) return new RustWebAudioEngine(undefined, settings)
   return new WebAudioEngine(undefined, settings)
 }

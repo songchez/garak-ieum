@@ -30,6 +30,8 @@ on:
       - 'native/src/rust_instrument.hpp'
       - 'src/devices/vintage/**'
       - 'src/audio/rust/**'
+      - 'src/audio/native/timeline.ts'
+      - 'src/audio/native/timelineSync.ts'
       - 'src/devices/effects/kernels.ts'
       - 'src/devices/effects/sigimsae.ts'
       - 'src/devices/effects/sigimsae.worklet.ts'
@@ -93,28 +95,19 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      - name: Build the WASM module (fails above its size budget)
-        run: |
-          node scripts/rust.mjs wasm
-          size=$(stat -c %s public/wasm/garak-dsp.wasm)
-          gzip=$(gzip -9 -c public/wasm/garak-dsp.wasm | wc -c)
-          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 160 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
+      # garak-dsp.wasm (effect/instrument worklets) and garak-engine.wasm (the render engine for the
+      # web worklet and export worker, docs/RUST_ENGINE.md 5). scripts/rust.mjs writes both size
+      # reports to the step summary and fails above either budget.
+      - name: Build the WASM modules (fail above their size budgets)
+        run: node scripts/rust.mjs wasm
 
-      # The render engine for the worklet (docs/RUST_ENGINE.md 5): not shipped yet, size reported.
-      - name: Build the engine WASM module
-        working-directory: rust
-        run: |
-          cargo build --locked -p garak-engine-wasm --target wasm32-unknown-unknown --profile wasm
-          file=target/wasm32-unknown-unknown/wasm/garak_engine_wasm.wasm
-          size=$(stat -c %s "$file")
-          gzip=$(gzip -9 -c "$file" | wc -c)
-          echo "### garak_engine_wasm.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload the WASM module
+      - name: Upload the WASM modules
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: garak-dsp-wasm
-          path: public/wasm/garak-dsp.wasm
+          path: |
+            public/wasm/garak-dsp.wasm
+            public/wasm/garak-engine.wasm
           if-no-files-found: error
           retention-days: 14
 
@@ -127,7 +120,8 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      # Kernel parity (WASM vs TS) and the render engine (WASM vs the native Rust render).
+      # Kernel parity (WASM vs TS), the render engine (WASM vs the native Rust render) and the web
+      # engine path A/B (Project -> timeline compiler -> garak-engine.wasm vs the Web Audio semantics).
       - name: TypeScript parity against the built WASM modules
         run: pnpm exec vitest run src/audio/rust
 

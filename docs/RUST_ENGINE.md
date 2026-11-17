@@ -1,6 +1,6 @@
 # Rust 렌더 엔진 (4단계)
 
-> **상태 (2026-11-16, 첫 마일스톤):** `rust/garak-engine`이 오디오 트랙(PCM 클립·게인·페이드·크로스페이드), 트랙 볼륨/팬/뮤트/솔로, 내장 이펙트 체인(garak-dsp), 센드/리턴, 마스터, 볼륨/팬/뮤트/센드/인서트 파라미터 오토메이션, 템포 맵을 C++ `RenderEngine`과 같은 의미로 렌더합니다. 같은 엔진이 **네이티브(C++ 호스트, `garak-ffi`)와 브라우저(WASM, `garak-engine-wasm`)에서 처음부터 똑같이** 돕니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW·MSVC, 오프라인 내보내기 4종 + 재생 중 diff, C++·Rust 이펙트 모두. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 ≤ -138 dBFS), WASM 대비 네이티브 Rust **-144.5 dBFS**. **앱은 아직 이 엔진을 쓰지 않습니다**(기본 동작 변화 없음). 악기·VST3·입력 모니터링·녹음은 다음 마일스톤입니다([9장](#9-이번-마일스톤의-범위와-다음-단계)).
+> **상태 (2026-11-16, 첫 마일스톤):** `rust/garak-engine`이 오디오 트랙(PCM 클립·게인·페이드·크로스페이드), 트랙 볼륨/팬/뮤트/솔로, 내장 이펙트 체인(garak-dsp), 센드/리턴, 마스터, 볼륨/팬/뮤트/센드/인서트 파라미터 오토메이션, 템포 맵을 C++ `RenderEngine`과 같은 의미로 렌더합니다. 같은 엔진이 **네이티브(C++ 호스트, `garak-ffi`)와 브라우저(WASM, `garak-engine-wasm`)에서 처음부터 똑같이** 돕니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW·MSVC, 오프라인 내보내기 4종 + 재생 중 diff, C++·Rust 이펙트 모두. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 ≤ -138 dBFS), WASM 대비 네이티브 Rust **-144.5 dBFS**. 웹 앱은 **플래그(`garak.rustEngine`, 기본 꺼짐)로 이 엔진을 AudioWorklet에서 씁니다**([5장](#5-wasm-호스트-audioworklet--5단계-웹-호스트)); 기본 동작 변화 없음. 악기·VST3·입력 모니터링·녹음은 다음 마일스톤입니다([9장](#9-이번-마일스톤의-범위와-다음-단계)).
 
 관련 문서: [RUST.md](RUST.md)(1~3단계, DSP 커널), [RENDER_DIFF_PROTOCOL.md](RENDER_DIFF_PROTOCOL.md)(엔진 입력 계약), [SENDS_RETURNS.md](SENDS_RETURNS.md), [AUTOMATION.md](AUTOMATION.md), [TEMPO_MAP.md](TEMPO_MAP.md), [REGION_GAIN_FADES.md](REGION_GAIN_FADES.md).
 
@@ -37,8 +37,12 @@ rust/garak-engine/            #![no_std] + alloc (이유: 3장). 의존성: gara
 rust/garak-ffi/src/engine.rs  C ABI(garak_rs_engine_*, garak_rs_testkit_*) + include/garak_engine.h
 rust/garak-ffi/src/heap.rs    staticlib 전역 할당기 = CRT malloc (Rust 런타임 라이브러리 불필요 유지)
 rust/garak-engine-wasm/       워크릿용 cdylib: 원시 extern "C" (wasm-bindgen 없음), 모듈 인스턴스당 엔진 1개
-src/audio/rust/garakEngineWasm.ts  워크릿·Node 공용 로더 (앱에서 아직 import하지 않음)
+src/audio/rust/garakEngineWasm.ts  워크릿·워커·Node 공용 로더
+src/audio/rust/RustWebAudioEngine.ts, engine.worklet.ts, engineHost.ts, engineChannel.ts, engineOffline.ts
+                              웹 호스트 (5장, 플래그 `garak.rustEngine`)
 src/audio/rust/engine.test.ts      WASM 렌더 ↔ 네이티브 Rust 렌더
+src/audio/rust/engineAB.test.ts    웹 경로 A/B (Project → 컴파일러 → WASM ↔ Web Audio 의미), CPU 보고
+scripts/rust-engine-smoke.mjs      Chromium: 재생·내보내기·대체·A/B·CPU (pnpm rust:engine-smoke)
 native/tests/rust_engine_parity_test.cpp  C++ RenderEngine ↔ Rust 엔진 (GARAK_RUST=ON)
 native/tests/rust_engine_bench.cpp        16/32트랙 CPU 비교
 ```
@@ -102,15 +106,106 @@ garak-audio-host (C++)
   - 멀티코어/렌더-어헤드(`setProcessing`)는 엔진 안의 트랙 병렬화로 옮깁니다(VST3 트랙은 C++처럼 콜백에 남김). 이번 마일스톤은 단일 스레드입니다.
 - 입력 모니터링·녹음 탭(`TrackRoute`, `planRecording`)은 입력 버퍼를 `render`에 함께 넘기는 형태로 옮깁니다(파서는 이미 `input`/`route`를 읽고 diff 비교에 씁니다).
 
-## 5. WASM 호스트 (AudioWorklet)
+## 5. WASM 호스트 (AudioWorklet) — 5단계 웹 호스트
 
-같은 크레이트를 `wasm32-unknown-unknown`으로 빌드합니다(`garak-engine-wasm`, `profile wasm`).
+> **상태 (2026-11-17):** 웹 앱이 플래그로 이 엔진을 씁니다. **기본값은 꺼짐**입니다(`garak.rustEngine`). 켜면 엔진이 받아들이는 프로젝트(지금은 오디오 트랙·내장 이펙트·센드/리턴·오토메이션·템포 맵)는 재생과 내보내기 모두 Rust 엔진으로, 받아들이지 않는 프로젝트(악기 트랙, 얼린 트랙, 기타 랙, pre-master 렌더 등)는 지금의 Web Audio 엔진으로 돌고 콘솔에 이유를 남깁니다. 판정은 **엔진 자신의 거부 메시지**라서, 악기 포팅(G2)이 엔진에 들어오면 그 프로젝트들은 코드 변경 없이 저절로 Rust 엔진으로 넘어갑니다.
 
-- **모듈 = 워크릿 노드 하나 = 엔진 하나.** 원시 `extern "C"` 내보내기라 `AudioWorkletGlobalScope`에서 글루 없이 돕니다(`garakEngineWasm.ts`가 Node·워크릿 공용 로더).
-- 제어 호출(`put_asset`, `set`, `patch`, `transport`)은 워크릿의 `port.onmessage`에서, `process()` 사이에 실행합니다. 이 호출은 메모리를 키울 수 있으므로 로더가 호출 뒤 뷰를 다시 만듭니다. `garak_engine_render`는 할당하지 않으므로(3.2의 테스트) `process()`마다 같은 출력 뷰를 씁니다.
-- 큰 `project.set`의 파싱·IR 생성은 워크릿 스레드에서 돌면 렌더 퀀텀을 놓칠 수 있습니다. 5단계에서는 계획 준비를 Worker의 두 번째 인스턴스에서 하고 결과를 넘기는 방식, 또는 증분 준비(트랙 단위 Replace)로 나눕니다. 이번 마일스톤은 오프라인 렌더로 동작만 확인합니다.
-- 크기: 현재 `garak_engine_wasm.wasm` 약 282 KiB(std 할당기와 포맷팅 포함, gzip 전). 앱에 넣기 전에 `no_std` + 작은 할당기, 오류 문자열 축소로 줄입니다. CI가 크기를 보고합니다.
-- 결정성: 네이티브는 플랫폼 libm(`platform-math`), WASM은 `libm` 크레이트라 비트 동일은 보장하지 않지만 패리티 테스트에서 **-144.5 dBFS**였습니다(7장).
+### 5.1 켜는 법
+
+```js
+localStorage.setItem('garak.rustEngine', '1')   // 새로 고침. '0'은 빌드 기본값을 끔
+```
+
+또는 `VITE_GARAK_RUST_ENGINE=1 pnpm dev` / `pnpm build`. `pnpm build`(`scripts/rust.mjs web-build`)는 두 모듈(`garak-dsp.wasm`, `garak-engine.wasm`)을 모두 빌드해 함께 배포합니다. 엔진 모듈은 플래그가 켜진 페이지만 내려받습니다.
+
+### 5.2 구조
+
+```
+RustWebAudioEngine (src/audio/rust/RustWebAudioEngine.ts)  ← createAudioEngine(), 플래그가 켜졌을 때
+  extends WebAudioEngine: 장치 설정, 디코딩, 샘플, 녹음, 미리 듣기, 라이브 MIDI는 그대로
+  setProject/setAssets ─▶ NativeTimelineCompiler + planNativeSync (데스크톱과 같은 렌더러 쪽 계획)
+                         └▶ RustEngineNode.update(project.set | project.patch) ─┐
+  play/pause/stop/seek ─▶ RustEngineNode.transport ──────────────────────────┤
+  renderAudio ─▶ renderInEngineWorker (Worker, garak-engine.wasm 새 인스턴스) │
+                                                                             ▼
+engine.worklet.ts (AudioWorkletProcessor 'garak-engine', 노드 1개 = 엔진 1개, 출력 스테레오)
+  port.onmessage: asset / set / patch / remove-asset / transport  (렌더 퀀텀 사이에서 실행)
+  process(): 링의 전송 명령 → garak_engine_render_planar → 출력 채널 복사 → 상태 게시
+```
+
+| 파일 | 역할 |
+|---|---|
+| `rust/garak-engine-wasm/src/lib.rs` | ABI 2: 기존 내보내기 + `alloc_f32`/`put_asset_owned`(PCM 사본 없이 넘김), `remove_asset`, `render_planar`/`planar_ptr`, `playing`, `master_peak` (새 함수만 추가) |
+| `src/audio/rust/garakEngineWasm.ts` | 로더(워크릿·워커·Node 공용). TextEncoder 없는 워크릿 대비 UTF-8 직접 처리, 출력 뷰 캐시(메모리가 커졌을 때만 다시 만듦), 엔진 거부는 `GarakEngineError` |
+| `src/audio/rust/engine.worklet.ts` | 워크릿 프로세서. 렌더 퀀텀이 엔진 블록보다 크면(`renderSizeHint`) 나눠 렌더, `collect()`는 편집 8퀀텀 뒤 |
+| `src/audio/rust/engineChannel.ts` | 명령/상태 채널: SharedArrayBuffer 링(SPSC 64칸)과 seqlock 상태 블록, 메시지 형식 |
+| `src/audio/rust/engineHost.ts` | 모듈 로드(인스턴스 없이 ABI 확인), `RustEngineNode` 브리지, 내보내기 워커 실행 |
+| `src/audio/rust/engineOffline.ts`, `engineRender.worker.ts` | 오프라인 렌더(offline.rs / host.cpp `renderStopped`와 같은 루프: 길이 + 꼬리 ≤ 30 s, PDC 앞쪽 제거, `startFrame`, `tailSeconds`) |
+| `src/audio/rust/flag.ts` | `rustEngineRequested()` |
+| `src/audio/WebAudioEngine.ts` | 하위 클래스 훅만 추가: `prepareContext`, `graphEnabled`, `refreshGraph`, `readIdleMeters`, 몇몇 필드 `protected` |
+
+### 5.3 규칙
+
+- **입력은 데스크톱과 같습니다.** `NativeTimelineCompiler`가 만든 timeline과 바이너리 프레임, `planNativeSync`의 `project.set`/`project.patch`를 그대로 보냅니다. 편집은 16 ms로 묶어 patch 한 번(페이더 드래그 = `Diff`)이 됩니다. 거부된 patch 뒤에는 다음 동기화가 `project.set`입니다.
+- **PCM 전달:** 메인 스레드는 `AudioBuffer`를 한 번 인터리브해 그 사본을 **transfer**합니다(메인 스레드에 남는 사본 없음). 워크릿은 `alloc_f32` 버퍼에 한 번 복사하고 `put_asset_owned`가 그 버퍼를 그대로 소유합니다(이전 로더는 모듈 안에서 한 번 더 `to_vec()`). 같은 `AudioBuffer`는 다시 보내지 않고(WeakRef), 더 이상 참조되지 않는 PCM은 `remove_asset`.
+- **채널:** 페이지가 cross-origin isolated면 전송 명령은 SharedArrayBuffer 링으로 다음 퀀텀에 바로 적용되고, 상태(프레임, 재생 여부, 마스터 피크, 렌더 시간 통계, 적용된 순번)는 매 퀀텀 seqlock 블록에 씁니다. 아니면 같은 명령을 postMessage로 보내고 상태는 약 37 ms마다 게시합니다. 링 명령은 "앞 메시지의 순번"을 갖고 있어 그 메시지(예: `project.set`)가 적용될 때까지 기다립니다.
+- **전송:** 재생은 `seek(frame)` + `play`. 비트 위치는 엔진이 게시한 프레임을 템포 맵으로 바꾼 값입니다(명령이 적용되기 전에는 시작 비트). 사이클은 엔진이 돌고, 사이클이 없으면 엔진이 프로젝트 끝에서 멈추고 꼬리는 울립니다. 메트로놈 클릭은 기존 `WebMetronome`을 같은 오디오 클럭에 예약합니다. 카운트인은 아직 Web Audio로 재생합니다(엔진에 예약 시작이 없음).
+- **Web Audio 그래프:** 엔진이 재생하는 동안에는 Web Audio 그래프(와 이펙트 워크릿들)를 두지 않고, 멈추면 다시 만듭니다(미리 듣기, 입력 모니터링, 대체 재생용). 입력/트랙 라우트 모니터링과 라우트 녹음은 그 그래프가 필요하므로 켜져 있는 동안 프로젝트를 Web Audio에 둡니다. 재생 중에 편집으로 엔진이 거부하게 되면 들리던 비트부터 Web Audio로 이어서 재생합니다.
+- **내보내기/바운스/프리즈/스템:** `renderAudio`는 Worker에서 엔진을 오프라인으로 렌더합니다(UI 스레드 무부담). 엔진이 거부하거나 `preMaster`(엔진에 마스터 바이패스가 아직 없음)면 Web Audio 렌더로 대체합니다.
+- **미터:** 엔진은 마스터 피크만 게시합니다. 트랙 미터는 엔진의 트랙 탭(호스트 쪽 작업)이 들어오면 `garak_engine_*` 내보내기를 하나 더해 연결합니다. 그 전까지 Rust 엔진 재생 중 트랙 미터는 0입니다.
+
+### 5.4 A/B와 CPU (이 PC, Chrome, Windows x64)
+
+**Node A/B** (`src/audio/rust/engineAB.test.ts`, `pnpm test`): Project → 타임라인 컴파일러 → `garak-engine.wasm`을, Web Audio 엔진의 믹스 의미를 그대로 옮긴 TS 기준(템포 맵 위 클립 위치, `clipEnvelope` 페이드, 리전 게인, StereoPannerNode 팬 법칙, 페이더, 뮤트/솔로)과 비교:
+
+| 프로젝트 | 결과 |
+|---|---|
+| 클립·리전 게인/오프셋·볼륨·팬(모노/스테레오)·뮤트 | **-150.5 dBFS** |
+| 페이드 5종·솔로 | **-156.5 dBFS** |
+| 이펙트 체인 + 리턴 2개, 볼륨/팬 오토메이션 + 템포 램프 | 유한·가청, 지연 8프레임(드라이브 PDC) |
+| patch(볼륨/팬) ↔ 같은 편집의 `project.set` | 스무딩 뒤 < 1e-6, 분류 `diff` |
+| 악기 트랙 | 엔진 거부(`GarakEngineError`) → 대체. 악기가 들어오면 이 테스트는 "렌더됨"을 확인하도록 이미 양쪽을 받습니다 |
+
+**브라우저 A/B** (`pnpm rust:engine-smoke`, Web Audio 엔진의 내보내기 ↔ Rust 엔진 내보내기). Web Audio의 마스터는 `DynamicsCompressorNode`(6 ms 선행 지연 = 48 kHz에서 288프레임, 자동 메이크업 게인)이고 엔진의 마스터는 데스크톱의 인과적 프로세서라서 둘은 원래 다릅니다(플래그를 켜면 웹 출력이 6 ms 빨라지고 데스크톱과 같은 마스터가 됩니다). 그래서 Web Audio 쪽은 pre-master로 렌더해 그래프만 비교합니다(이 프로젝트들은 엔진 마스터의 무릎 아래):
+
+| 프로젝트 | 최대 차이 | 오차 에너지 | 레벨 차 |
+|---|---|---|---|
+| 드라이 믹스 | **-150.5 dBFS** | -145.6 dB | 0.000 dB |
+| 페이드 | -79.1 dBFS | -74.3 dB | 0.001 dB |
+| 오토메이션 + 템포 램프 | -41.6 dBFS | -35.5 dB | 0.006 dB (Web Audio는 오토메이션을 `setTargetAtTime`으로 근사) |
+| 이펙트 체인 + 리턴 | -17.9 dBFS | -9.9 dB | 0.000 dB (커널은 같은 Rust 코드, 그래프가 다름: PDC 보정, 블록 단위 변조 위상) |
+
+**CPU**: 16/32트랙 + 리턴 2개(트랙마다 위상기/코러스, 2배 오버샘플 드라이브, 3트랙마다 딜레이; 리턴에 리버브·딜레이 — 네이티브 벤치와 같은 모양).
+
+| 측정 | 16트랙 | 32트랙 |
+|---|---|---|
+| 워크릿 `process()` 평균, 128프레임 퀀텀(예산 2667 µs) | 0.8~0.9 ms (실시간 3.0~3.4×) | 1.3~1.7 ms (1.6~2.1×) |
+| Node, 같은 엔진 오프라인 128프레임 블록 | 586 µs (4.6×) | 1484 µs (1.8×) |
+| 오프라인 내보내기 13.7 s: Web Audio 엔진 ↔ Rust 엔진(Worker) | 4.3 s ↔ 3.1 s | 11.8 s ↔ 9.3 s |
+| 참고: 네이티브 Rust 엔진(7.3) | 269 µs (9.9×) | 485 µs (5.5×) |
+
+워크릿에는 `performance.now()`가 없어 `Date.now()`(1 ms 단위)로 재므로 평균만 의미가 있습니다. Chrome에 `AudioContext.renderCapacity`가 아직 없어 Web Audio 엔진의 실시간 부하는 같은 방식으로 잴 수 없습니다(스모크는 API가 생기면 두 엔진 모두 그 값을 보고). 이 PC는 측정 중 다른 빌드가 돌아 값의 폭이 큽니다. WASM은 네이티브보다 약 2.5~3배 느립니다: 32트랙은 한 코어의 절반 이상이라 G2 이후 기본값 전환 전에 워크릿 렌더 경로 최적화(SIMD, 수학 import 호출 수)가 필요합니다.
+
+### 5.5 크기
+
+`garak-engine.wasm`: **258 KiB raw / 105 KB gzip** (예산 272 KiB / 110 KB, `scripts/rust.mjs`가 강제, `pnpm build`·`checks.yml`·`rust.yml` 모두 이 경로). 측정:
+
+| 시도 | raw | gzip | CPU |
+|---|---|---|---|
+| 기존(`wasm` 프로필, opt 3) | 282 KiB | 113 KB | 기준 |
+| `wasm-engine` 프로필: opt "s", garak-dsp만 3 (채택) | 258 KiB | 105 KB | 같음 |
+| 전부 "s" | 240 KiB | 98 KB | -20 % |
+| 전부 "z" (garak-dsp 3) | 252 KiB | 102 KB | -20 % |
+| `no_std` + dlmalloc 명시 | +3.7 KiB | | — |
+
+LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다. 포맷팅 코드는 4~5 KB뿐이고 크기의 대부분은 엔진(파서·준비·diff, 약 130 KB 코드)과 garak-dsp 이펙트(약 64 KB)입니다. `garak-dsp.wasm`과 합치는 것은 이득이 없습니다: 엔진 모듈이 이미 모든 이펙트를 담고 있고, 플래그가 켜진 페이지에서 엔진이 받아들인 프로젝트는 재생 중 이펙트 워크릿을 만들지 않습니다. 6단계에서 Web Audio 그래프를 지우면 `garak-dsp.wasm`의 이펙트 부분이 통째로 빠집니다.
+
+### 5.6 남은 일 (기본값 전환 전)
+
+- 큰 `project.set`의 파싱·그래프 준비(리버브 커널 생성 포함)가 워크릿 스레드에서 돕니다(아직 따로 재지 않음). 수백 트랙/긴 오디오에서는 렌더 퀀텀을 놓칠 수 있어, 준비를 트랙 단위로 나누거나 Worker에서 준비하는 방식이 필요합니다.
+- PCM이 메인 스레드(`AudioBuffer`, 파형·편집용)와 워크릿 모듈에 두 벌 있습니다.
+- 트랙 미터, 다이내믹스 미터(엔진 탭), 마스터 바이패스(pre-master 스템/프리즈), 카운트인 예약 시작, 입력 모니터링·녹음(G3).
+- 엔진 재생 중에는 Web Audio 그래프가 없어 미리 듣기·라이브 MIDI 노트가 소리 나지 않습니다(악기가 엔진에 들어올 때 엔진의 라이브 노트 API로 옮길 일).
 
 ## 6. 악기·보이스 계획 (인벤토리)
 
@@ -189,12 +284,8 @@ CI 러너(같은 벤치, 공유 머신이라 절대값은 들쭉날쭉):
 
 **지금 바로 (엔진 패리티를 기다리지 않음):**
 
-- **워크릿 호스트 뼈대:** `garakEngineWasm.ts` 로더 위에 `AudioWorkletProcessor` 하나(입력 없음, 스테레오 출력)와 메인 스레드 브리지를 만들고, `timelineSync.ts`가 이미 만드는 `project.set`/`project.patch` 메시지와 바이너리 프레임을 `port.postMessage`로 그대로 보내는 경로. 데스크톱 `native-audio.ts`와 같은 메시지를 쓰므로 렌더러 쪽 계획 컴파일은 공유됩니다.
-- **PCM 전달:** 웹의 디코드된 `AudioBuffer`를 `putAsset`(인터리브 f32)로 넘기는 코드, 메모리 예산·해제(`remove_asset`) 정책.
-- **기능 플래그와 대체 동작:** `rustDspRequested()`와 같은 방식의 `rustEngineRequested()`(기본 꺼짐), 모듈이 없거나 실패하면 지금의 `WebAudioEngine`.
-- **오디오 트랙만 있는 프로젝트의 A/B:** 이번 마일스톤 범위(오디오 클립·이펙트·센드·오토메이션)는 이미 패리티가 있으므로, 그런 프로젝트를 플래그로 워크릿 엔진에서 재생하고 `WebAudioEngine`과 귀로·측정으로 비교하는 작업(웹 Web Audio 그래프와 C++ 엔진 사이의 기존 차이를 찾는 일이기도 함).
-- **WASM 크기 줄이기**(5장), **워크릿 준비 비용 분리**(큰 `project.set` 파싱·IR 생성을 Worker로).
-- 계측: 워크릿 `process()` 시간, 언더런 카운터, 스냅숏(위치·피크) 게시.
+- ~~워크릿 호스트 뼈대~~, ~~PCM 전달~~, ~~기능 플래그와 대체 동작~~, ~~오디오 트랙 프로젝트의 A/B~~, ~~WASM 크기 예산~~, ~~계측(`process()` 시간, 예산 초과 퀀텀, 위치·피크 게시)~~: [5장](#5-wasm-호스트-audioworklet--5단계-웹-호스트)에서 끝남.
+- 남음: **워크릿 준비 비용 분리**(큰 `project.set` 파싱·그래프 준비를 트랙 단위 또는 Worker로), 워크릿 렌더 경로 CPU(5.4).
 
 **패리티를 기다리는 일:**
 
@@ -211,6 +302,6 @@ CI 러너(같은 벤치, 공유 머신이라 절대값은 들쭉날쭉):
 **다음 마일스톤 제안:**
 
 1. **G2 악기:** garak-dsp `voice` 모듈(내장 신스 5종 + 드럼 + 샘플 존), 엔진의 음표/컨트롤러 커서, `renumberNotes`·상태 이전, `engine_test.cpp`의 악기 항목을 Rust 하네스로 이전.
-2. **웹 워크릿 호스트(병렬):** 8장의 "지금 바로" 항목, 플래그로 오디오 트랙 프로젝트 재생.
+2. ~~**웹 워크릿 호스트(병렬):**~~ 5장(플래그, 기본 꺼짐). 남은 일은 5.6.
 3. **G3 외부 hook:** VST3·IEUM WAVE를 C++ 인스턴스로 끼우는 콜백, 입력 탭·녹음, 그리고 엔진 내부 트랙 병렬화.
 4. **G4~G5:** 회귀 테스트 전부 이전, 데스크톱 `GARAK_RUST_ENGINE` 플래그, 소크 테스트, 기본값 전환.

@@ -65,18 +65,18 @@ export class WebAudioEngine implements AudioEngine {
   readonly maxSimultaneousRecordings = 1
   /** Decoded sample sets outlive contexts and graphs; see audio/samples.ts. */
   readonly samples = new SampleLibrary()
-  private project: Project | null = null
-  private assets = new Map<string, AudioAsset>()
-  private context: AudioContext | null = null
+  protected project: Project | null = null
+  protected assets = new Map<string, AudioAsset>()
+  protected context: AudioContext | null = null
   private decodeContext: OfflineAudioContext | null = null
   private graph: EngineGraph | null = null
   private retiredGraphs = new Map<EngineGraph, ReturnType<typeof setTimeout>>()
   private scheduler: ReturnType<typeof setInterval> | null = null
-  private listeners = new Set<() => void>()
-  private levels = new Map<string, number>()
-  private masterLevel = 0
-  private playing = false
-  private position = 0
+  protected listeners = new Set<() => void>()
+  protected levels = new Map<string, number>()
+  protected masterLevel = 0
+  protected playing = false
+  protected position = 0
   private anchorBeat = 0
   private anchorTime = 0
   private cursorBeat = 0
@@ -97,7 +97,7 @@ export class WebAudioEngine implements AudioEngine {
   private routeRecorders = new Map<AudioNode, string>()
   /** Channels of the last live input stream; null until a stream has been seen. */
   private inputChannelCount: number | null = null
-  private snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: 0 }
+  protected snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: 0 }
   private settings: AudioSettings
   private desiredSampleRate: SampleRate = DEFAULT_SAMPLE_RATE
   private audioStatus: AudioState['status'] = 'idle'
@@ -110,7 +110,7 @@ export class WebAudioEngine implements AudioEngine {
   private outputFault: string | null = null
   private removeOutputListeners: (() => void) | null = null
   /** Monitor-only clicks on the audio clock; never part of the graph, recordings or export. */
-  private readonly metronome = new WebMetronome()
+  protected readonly metronome = new WebMetronome()
   /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md). */
   readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time),
     control: (trackId, key, value) => { const controls = this.graph?.tracks.get(trackId)?.controls; if (controls && this.context) applyControl(controls, key, value, this.context.currentTime) } })
@@ -187,11 +187,13 @@ export class WebAudioEngine implements AudioEngine {
         await prepareEffects(candidate)
         // The vintage instruments' worklet + Rust core (never throws; unavailable keeps them silent).
         await prepareVintage(candidate)
+        // Subclass hook (the Rust engine worklet, src/audio/rust/RustWebAudioEngine.ts); never throws.
+        await this.prepareContext(candidate)
         if (!current()) throw configurationCancelled()
         if (candidateOutputError) throw candidateOutputError
         if (candidate.state !== 'running') throw new Error('오디오 장치를 시작하지 못했습니다. 적용 버튼을 다시 눌러 주세요.')
         if (next.outputDeviceId && typeof extras.sinkId === 'string' && extras.sinkId !== next.outputDeviceId) throw new Error('브라우저의 실제 출력이 선택한 장치와 다릅니다. 출력 장치를 다시 선택해 주세요.')
-        if (this.project) {
+        if (this.project && this.graphEnabled()) {
           candidateGraph = createGraph(candidate, this.project)
           candidateGraph.gate.gain.value = 0
           this.wireRoutes(candidateGraph)
@@ -342,7 +344,7 @@ export class WebAudioEngine implements AudioEngine {
     }
   }
 
-  private publishAudioState(): void {
+  protected publishAudioState(): void {
     const next = this.readAudioState()
     if (JSON.stringify(next) === JSON.stringify(this.audioSnapshot)) return
     this.audioSnapshot = next
@@ -828,7 +830,7 @@ export class WebAudioEngine implements AudioEngine {
     return this.project
   }
 
-  private currentBeat(): number {
+  protected currentBeat(): number {
     if (!this.playing || !this.context || !this.project) return this.position
     return positionAfter(this.project, this.anchorBeat, this.context.currentTime - this.anchorTime)
   }
@@ -838,9 +840,34 @@ export class WebAudioEngine implements AudioEngine {
     this.blockOutput(context, `오디오 이펙트를 적용하지 못해 재생과 모니터링을 중지했습니다. 오디오 설정을 다시 적용해 주세요. ${detail}`)
   }
 
+  /** Subclass hook: run once per new audio context after the built-in worklets are registered. */
+  protected async prepareContext(_context: AudioContext): Promise<void> {}
+
+  /** Subclass hook: false while another renderer (the Rust engine worklet) plays the project, so no idle Web Audio graph is kept. */
+  protected graphEnabled(): boolean { return true }
+
+  /** Drops the Web Audio graph (another renderer took over) or builds it again (that renderer handed back). */
+  protected refreshGraph(): void {
+    if (this.graphEnabled()) { if (!this.graph) this.replaceGraph(); return }
+    if (this.playing) return
+    if (this.graph) disposeGraph(this.graph)
+    this.graph = null
+  }
+
+  /** Subclass hook: meters while there is no Web Audio graph to read. */
+  protected readIdleMeters(): void {
+    this.levels.clear()
+    this.masterLevel = 0
+  }
+
   private replaceGraph(): boolean {
     const context = this.context
     if (!context || !this.project || this.outputFault) return false
+    if (!this.graphEnabled()) {
+      if (this.graph) disposeGraph(this.graph)
+      this.graph = null
+      return false
+    }
     let replacement: EngineGraph | null = null
     try {
       // Construct before retiring the current graph. A failed effect must never leave
@@ -1016,13 +1043,12 @@ export class WebAudioEngine implements AudioEngine {
       }
       this.masterLevel = Math.max(rmsLevel(this.graph.meter, this.graph.meterData), this.masterLevel * 0.7)
     } else {
-      this.levels.clear()
-      this.masterLevel = 0
+      this.readIdleMeters()
     }
     this.publishSnapshot()
   }
 
-  private publishSnapshot(): void {
+  protected publishSnapshot(): void {
     this.publishAudioState()
     const next: TransportSnapshot = {
       playing: this.playing,

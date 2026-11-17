@@ -67,3 +67,16 @@ incremental = false
 inherits = "release"
 lto = "fat"
 strip = true
+
+# The render engine for the web worklet (garak-engine-wasm, `pnpm rust:wasm`; docs/RUST_ENGINE.md 5).
+# Measured on the 16/32-track benchmark (src/audio/rust/engineAB.test.ts): the engine's own code
+# (JSON/protocol, graph preparation, clip/track loops) renders no slower at "s" than at 3, while the
+# garak-dsp kernels lose ~20 % at "s"; so "s" everywhere except garak-dsp: 258 KiB instead of 282 KiB
+# (gzip 105 KB / 113 KB), same CPU. "z" saves 6 KiB more and costs ~20 %. A no_std build with an
+# explicit dlmalloc was 3.7 KiB larger than std's allocator.
+[profile.wasm-engine]
+inherits = "wasm"
+opt-level = "s"
+
+[profile.wasm-engine.package.garak-dsp]
+opt-level = 3
