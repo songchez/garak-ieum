@@ -57,7 +57,6 @@ std::string rustIneligibility(const ProjectTimeline& p) {
     if (t.source.kind != TrackSource::Kind::Audio) return "instrument source on track " + t.id;
     for (const auto& e : t.inserts) if (e.enabled && e.type == "vst3") return "VST3 insert on track " + t.id;
     if (t.route) return "track-input route on track " + t.id;
-    if (!t.directOut || t.preFader) return "pre-fader/direct-out render tap on track " + t.id;
     for (const auto& w : t.audio) if (w.freeze) return "frozen window on track " + t.id;
   }
   return {};
@@ -176,6 +175,8 @@ std::string rustTimelineJson(const ProjectTimeline& p) {
       w.raw("}");
     }
     w.raw("]");
+    if (!t.directOut) { w.key("directOut"); w.boolean(false); }
+    if (t.preFader) { w.key("preFader"); w.boolean(true); }
     w.raw("}");
   }
   w.raw("]}");

@@ -364,11 +364,9 @@ pub fn parse_track(
     t.solo = boolean(item, "solo", false)?;
     t.solo_safe = boolean(item, "soloSafe", false)?;
     t.audible = boolean(item, "audible", true)?;
-    // Offline render taps for freeze/bounce/stems (docs/BOUNCE_FREEZE_STEMS.md) are not ported yet: refuse them
-    // instead of rendering the track post-fader into the master sum.
-    if item.get("preFader").is_some() || item.get("directOut").is_some() {
-        return Err(err("Unsupported render tap (preFader/directOut)"));
-    }
+    // Offline render taps for stems, freeze and bounce (docs/BOUNCE_FREEZE_STEMS.md).
+    t.direct_out = boolean(item, "directOut", true)?;
+    t.pre_fader = boolean(item, "preFader", false)?;
     if let Some(input) = item.get("input").filter(|v| !v.is_null()) {
         let channels = input
             .get("channels")

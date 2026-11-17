@@ -74,8 +74,10 @@ std::string verdict(double d) { return d == 0 ? "bit-identical" : std::to_string
 struct Render { std::vector<float> samples; std::uint32_t latency = 0; bool rust = false; std::uint64_t refusals = 0; };
 
 // native/src/host.cpp renderStopped through RenderEngine in `mode` (0 C++, 1 Rust + fallback, 2 strict).
-Render offline(const Project& project, std::uint32_t block, int mode, std::uint32_t threads = 0, bool bypass = false) {
+Render offline(const Project& project, std::uint32_t block, int mode, std::uint32_t threads = 0, bool bypass = false,
+               const std::function<void(garak::ProjectTimeline&)>& shape = {}) {
   auto timeline = parse(project.json); timeline.cycle.reset();
+  if (shape) shape(timeline);
   garak::RenderEngine engine(timeline.sampleRate, block); engine.setRustEngine(mode); engine.setOffline(true); engine.setMasterBypass(bypass);
   if (threads) { garak::ProcessingOptions options; options.threads = threads; engine.setProcessing(options); }
   auto prepared = engine.prepare(timeline, project.assets);
@@ -134,6 +136,21 @@ void offlineCases() {
   const double d = residual(cpp.samples, rust.samples);
   std::printf("| offline, master bypass | 4+2 | 2 s | 48000 Hz | 512 | %u / %u | %s |\n", cpp.latency, rust.latency, verdict(d).c_str());
   check(dbfs(d) <= -90, "master bypass: residual", dbfs(d));
+  // Stem and freeze/bounce taps (docs/BOUNCE_FREEZE_STEMS.md): one track pre-fader (its own output only), and a
+  // return stem (every sender out of the master sum, their sends still feeding the returns).
+  const std::function<void(garak::ProjectTimeline&)> preFader = [](garak::ProjectTimeline& t) {
+    for (std::size_t i = 0; i < t.tracks.size(); ++i) { t.tracks[i].directOut = i == 1; t.tracks[i].preFader = i == 1; }
+  };
+  const std::function<void(garak::ProjectTimeline&)> returnStem = [](garak::ProjectTimeline& t) {
+    for (auto& track : t.tracks) track.directOut = track.isReturn;
+  };
+  for (const auto& [name, shape] : {std::pair{"pre-fader track (freeze/bounce)", preFader}, std::pair{"return stem (direct-out off)", returnStem}}) {
+    const auto c = offline(project, 512, 0, 0, true, shape), r = offline(project, 512, 2, 0, true, shape);
+    const double x = residual(c.samples, r.samples);
+    std::printf("| offline, %s | 4+2 | 2 s | 48000 Hz | 512 | %u / %u | %s |\n", name, c.latency, r.latency, verdict(x).c_str());
+    check(r.rust && peak(c.samples) > 1e-3, std::string(name) + ": rendered through Rust", peak(c.samples));
+    check(dbfs(x) <= -90, std::string(name) + ": residual", dbfs(x));
+  }
 }
 
 void liveCases() {

@@ -987,7 +987,7 @@ impl Renderer {
                 }
             }
         }
-        for t in &g.tracks {
+        for t in g.tracks.iter().filter(|t| t.direct_out()) {
             for (o, x) in block.iter_mut().zip(t.mix(count)) {
                 *o += *x;
             }

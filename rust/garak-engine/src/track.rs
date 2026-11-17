@@ -411,6 +411,14 @@ impl Track {
         if let Some(t) = post_tap.get_mut(..n) {
             t.copy_from_slice(buf);
         }
+        if plan.pre_fader {
+            self.peak = pre_fader_output(buf, !(self.stereo_source || self.stereo_effects));
+            if let Some(t) = fader_tap.get_mut(..n) {
+                t.copy_from_slice(buf);
+            }
+            output_delay.process(buf);
+            return;
+        }
         let target_pan = f64::from(plan.pan);
         let target_gain = if plan.audible { f64::from(plan.gain) } else { 0.0 };
         let smoothing = math::smoothing(self.sample_rate, 0.012);
@@ -495,8 +503,34 @@ impl Track {
         output_delay.process(buf);
     }
 
+    /// Whether this track joins the master sum (C++ `TrackTimeline::directOut`).
+    pub fn direct_out(&self) -> bool {
+        self.plan.direct_out
+    }
+
     /// This block's output (after `render`).
     pub fn mix(&self, count: u32) -> &[f32] {
         self.buffer.get(..count as usize * 2).unwrap_or(&[])
     }
+}
+
+/// Freeze/bounce output (C++ `TrackRuntime::render` with `timeline.preFader`): the compensated post-insert
+/// signal without pan, fader or mute; a mono track keeps its render mono (right channel silent). Returns the
+/// block peak after non-finite samples are zeroed.
+fn pre_fader_output(buf: &mut [f32], mono: bool) -> f32 {
+    let mut peak = 0.0f32;
+    for [l, r] in buf.as_chunks_mut::<2>().0 {
+        if mono {
+            *r = 0.0;
+        }
+        for x in [l, r] {
+            if !x.is_finite() {
+                *x = 0.0;
+            }
+            if peak < x.abs() {
+                peak = x.abs();
+            }
+        }
+    }
+    peak
 }

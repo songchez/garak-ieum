@@ -190,6 +190,11 @@ pub struct TrackPlan {
     pub controls: Vec<ControlEvent>,
     pub audio: Vec<AudioWindow>,
     pub automation: Vec<AutomationLane>,
+    /// Offline render taps (docs/BOUNCE_FREEZE_STEMS.md, C++ `TrackTimeline::directOut/preFader`): false keeps the
+    /// track out of the master sum (its sends still feed returns); `pre_fader` outputs the compensated
+    /// post-insert signal without pan, fader or mute (a mono source leaves the right channel silent).
+    pub direct_out: bool,
+    pub pre_fader: bool,
 }
 
 impl Default for TrackPlan {
@@ -214,6 +219,8 @@ impl Default for TrackPlan {
             controls: Vec::new(),
             audio: Vec::new(),
             automation: Vec::new(),
+            direct_out: true,
+            pre_fader: false,
         }
     }
 }
