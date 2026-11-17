@@ -482,6 +482,70 @@ impl<'a> Convolver<'a> {
             .zip(p.groups.iter())
             .all(|(a, b)| a.as_ref().map(|g| g.spec) == b.as_ref().map(|g| g.spec))
     }
+
+    /// `Convolver::takeStateFrom` (only when the group layout matches). `whole`: swap the state
+    /// views (the owner then swaps the storage), else copy.
+    fn take_state_from(&mut self, pc: &mut Convolver<'a>, whole: bool) {
+        let groups_match = self.groups.iter().flatten().count() == pc.groups.iter().flatten().count();
+        if !groups_match {
+            return;
+        }
+        self.history = pc.history;
+        self.write = pc.write;
+        for (g, pg) in self.groups.iter_mut().zip(pc.groups.iter_mut()) {
+            if let (Some(g), Some(pg)) = (g, pg)
+                && g.spec.block == pg.spec.block
+                && g.spec.base == pg.spec.base
+                && g.spec.count == pg.spec.count
+            {
+                if whole { g.swap_with(pg) } else { g.copy_from(pg) }
+            }
+        }
+    }
+}
+
+/// A reverb's two convolvers without its pre-delay, filters and mix (the guitar rig's plate,
+/// dsp.cpp `RigReverb`). Kernels from `prepare_kernels`, state from the caller's storage.
+#[derive(Debug)]
+pub(crate) struct StereoConvolver<'a> {
+    channels: [Convolver<'a>; 2],
+}
+
+impl<'a> StereoConvolver<'a> {
+    /// State floats of both channels for an IR of `ir_len` frames.
+    pub(crate) fn state_len(ir_len: usize) -> usize {
+        2 * channel_state_floats(ir_len)
+    }
+
+    pub(crate) fn new(ir_len: usize, kernels: &'a [f32], carver: &mut Carver<'a>) -> Self {
+        let per = channel_kernel_floats(ir_len);
+        let (kl, rest) = kernels.split_at(per.min(kernels.len()));
+        let kr = rest.get(..per).unwrap_or(&[]);
+        Self { channels: [Convolver::new(ir_len, kl, carver), Convolver::new(ir_len, kr, carver)] }
+    }
+
+    #[inline(always)]
+    pub(crate) fn sample(&mut self, x: f32, channel: usize) -> f32 {
+        let [l, r] = &mut self.channels;
+        if channel == 0 { l.sample(x) } else { r.sample(x) }
+    }
+
+    pub(crate) fn reset(&mut self) {
+        for c in &mut self.channels {
+            c.reset();
+        }
+    }
+
+    pub(crate) fn same_layout(&self, p: &StereoConvolver<'_>) -> bool {
+        self.channels.iter().zip(p.channels.iter()).all(|(a, b)| a.same_layout(b))
+    }
+
+    /// Both channels' `Convolver::takeStateFrom`; `whole` as for the reverb.
+    pub(crate) fn take_state_from(&mut self, p: &mut StereoConvolver<'a>, whole: bool) {
+        for (c, pc) in self.channels.iter_mut().zip(p.channels.iter_mut()) {
+            c.take_state_from(pc, whole);
+        }
+    }
 }
 
 /// Convolution reverb with pre-delay, tone low-pass and optional low cut. Size, type and
@@ -542,22 +606,7 @@ impl<'a> Reverb<'a> {
         let whole = self.channels.iter().zip(p.channels.iter()).all(|(a, b)| a.same_layout(b))
             && self.predelay.same_size(&p.predelay);
         for (c, pc) in self.channels.iter_mut().zip(p.channels.iter_mut()) {
-            // Convolver::takeStateFrom: only when the group layout matches.
-            let groups_match = c.groups.iter().flatten().count() == pc.groups.iter().flatten().count();
-            if !groups_match {
-                continue;
-            }
-            c.history = pc.history;
-            c.write = pc.write;
-            for (g, pg) in c.groups.iter_mut().zip(pc.groups.iter_mut()) {
-                if let (Some(g), Some(pg)) = (g, pg)
-                    && g.spec.block == pg.spec.block
-                    && g.spec.base == pg.spec.base
-                    && g.spec.count == pg.spec.count
-                {
-                    if whole { g.swap_with(pg) } else { g.copy_from(pg) }
-                }
-            }
+            c.take_state_from(pc, whole);
         }
         self.tone.take_history_from(&p.tone);
         self.highpass.take_history_from(&p.highpass);

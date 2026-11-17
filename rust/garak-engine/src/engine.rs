@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use crate::delay::CompensationDelay;
 use crate::error::{Error, require};
-use crate::insert::{KernelCache, live_parameter, validated_values};
+use crate::insert::{KernelCache, catalog, live_parameter, validated};
 use crate::json::Json;
 use crate::master::Master;
 use crate::math;
@@ -613,11 +613,11 @@ impl Controller {
                     continue;
                 }
                 let Some(Some(insert)) = runtime.get(k) else { continue }; // disabled: recipe only
-                let Some(kind) = garak_dsp::EffectKind::from_id(a.kind.as_bytes()) else {
+                let Some(defs) = catalog(&a.kind) else {
                     replace = true;
                     break;
                 };
-                validated_values(kind, a)?;
+                validated(defs, a)?;
                 let mut names: Vec<&str> = a.params.iter().map(|(k, _)| k.as_str()).collect();
                 names.extend(b.params.iter().map(|(k, _)| k.as_str()));
                 names.sort_unstable();
@@ -631,7 +631,7 @@ impl Controller {
                         replace = true;
                         break;
                     };
-                    let index = kind.params().iter().position(|d| d.id == name).unwrap_or(0);
+                    let index = defs.iter().position(|d| d.id == name).unwrap_or(0);
                     e.params.push((*insert as u32, index as u32, value));
                 }
             }

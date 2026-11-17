@@ -9,8 +9,11 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 
+use alloc::vec::Vec;
+
+use garak_dsp::fx::guitar::{self, GuitarRig};
 use garak_dsp::fx::reverb;
-use garak_dsp::{EffectKind, Fx, MAX_PARAMS};
+use garak_dsp::{EffectKind, Fx, MAX_PARAMS, ParamDef};
 
 use crate::error::Error;
 use crate::plan::InsertPlan;
@@ -63,15 +66,34 @@ pub(crate) fn widens(plan: &InsertPlan) -> bool {
     ) || (plan.kind == "delay" && plan.param("mode").is_some_and(|m| m >= 0.5))
 }
 
+/// The guitar rig's type id (garak-dsp `fx::guitar`, not an [`EffectKind`]).
+pub(crate) const GUITAR_RIG: &str = "guitar-rig";
+
+/// Parameter catalog of a built-in insert type (C++ `effectDefs`), or None when unsupported.
+pub(crate) fn catalog(kind: &str) -> Option<&'static [ParamDef]> {
+    if kind == GUITAR_RIG {
+        return Some(guitar::PARAMS);
+    }
+    EffectKind::from_id(kind.as_bytes()).map(EffectKind::params)
+}
+
 /// dsp.cpp `liveEffectParameter`: true when set + commit fully applies a new value in place.
 pub(crate) fn live_parameter(kind: &str, id: &str) -> bool {
-    let Some(k) = EffectKind::from_id(kind.as_bytes()) else { return false };
-    if !k.params().iter().any(|d| d.id == id) {
+    let Some(defs) = catalog(kind) else { return false };
+    if !defs.iter().any(|d| d.id == id) {
         return false;
     }
+    // Instance parameters of the rig read "<base>_<n>".
+    let base = |name: &str| {
+        id == name
+            || (id.len() == name.len() + 2
+                && id.starts_with(name)
+                && id.as_bytes().get(name.len()) == Some(&b'_'))
+    };
     match kind {
         "reverb" => id != "size" && id != "type" && id != "predelay",
         "delay" => id != "mode",
+        GUITAR_RIG => !id.starts_with("rackSlot") && !base("reverbDecay") && !base("reverbEnabled"),
         _ => true,
     }
 }
@@ -90,8 +112,19 @@ pub(crate) fn estimate_memory(kind: &str, sample_rate: f64) -> usize {
 /// Catalog-order values of `plan` (missing -> default), refusing unknown ids and out-of-range or
 /// non-finite values exactly like the C++ `Reader`.
 pub(crate) fn validated_values(kind: EffectKind, plan: &InsertPlan) -> Result<[f64; MAX_PARAMS], Error> {
-    let defs = kind.params();
     let mut values = [0.0; MAX_PARAMS];
+    validate_into(kind.params(), plan, &mut values)?;
+    Ok(values)
+}
+
+/// [`validated_values`] for any catalog (the rig has more than `MAX_PARAMS`). Control thread.
+pub(crate) fn validated(defs: &[ParamDef], plan: &InsertPlan) -> Result<Vec<f64>, Error> {
+    let mut values = vec![0.0; defs.len()];
+    validate_into(defs, plan, &mut values)?;
+    Ok(values)
+}
+
+fn validate_into(defs: &[ParamDef], plan: &InsertPlan, values: &mut [f64]) -> Result<(), Error> {
     for (v, d) in values.iter_mut().zip(defs) {
         *v = d.default;
     }
@@ -107,21 +140,31 @@ pub(crate) fn validated_values(kind: EffectKind, plan: &InsertPlan) -> Result<[f
             *slot = *value;
         }
     }
-    Ok(values)
+    Ok(())
+}
+
+/// The processor of an insert: a garak-dsp effect, or the guitar rig (boxed: ~40 KiB of
+/// preallocated rack modules). The effect stays inline: its hot path is unchanged by the rig.
+#[allow(clippy::large_enum_variant)]
+enum Unit {
+    Fx(Fx<'static>),
+    Rig(Box<GuitarRig<'static>>),
 }
 
 pub(crate) struct Insert {
     pub id: String,
-    pub kind: EffectKind,
+    /// The plan's type id ("reverb", "guitar-rig").
+    pub kind: &'static str,
     /// Index in the track plan's `inserts` (disabled inserts have no runtime).
     pub source: u16,
     /// An automation lane drives it (chunked rendering).
     pub automated: bool,
     // Declared before the storage it borrows, so it is dropped first.
-    fx: Fx<'static>,
+    unit: Unit,
+    defs: &'static [ParamDef],
     storage: Box<[f32]>,
-    /// Owner of the reverb kernels `fx` borrows (never read directly).
-    _kernels: Option<Arc<[f32]>>,
+    /// Owners of the reverb kernels `unit` borrows (never read directly).
+    _kernels: [Option<Arc<[f32]>>; guitar::MAX_REVERBS],
 }
 
 impl core::fmt::Debug for Insert {
@@ -139,6 +182,9 @@ impl Insert {
         bpm: f64,
         cache: &mut KernelCache,
     ) -> Result<Self, Error> {
+        if plan.kind == GUITAR_RIG {
+            return Self::rig(plan, source, sample_rate, cache);
+        }
         let kind = EffectKind::from_id(plan.kind.as_bytes())
             .ok_or_else(|| Error::new(format!("Unsupported native effect: {}", plan.kind)))?;
         let values = validated_values(kind, plan)?;
@@ -156,13 +202,13 @@ impl Insert {
         let mut storage: Box<[f32]> =
             vec![0.0f32; Fx::storage_len(kind, sample_rate, ir_len)].into_boxed_slice();
         // SAFETY: `storage` and `kernels` are heap allocations owned by the returned struct and never
-        // reallocated or exposed; their addresses are stable when the struct moves. `fx` is declared
+        // reallocated or exposed; their addresses are stable when the struct moves. `unit` is declared
         // first, so it is dropped before either. `take_state_from` swaps the owners whenever the
         // kernels swap their views. Hence the borrows live exactly as long as the data.
         let storage_view: &'static mut [f32] =
             unsafe { core::slice::from_raw_parts_mut(storage.as_mut_ptr(), storage.len()) };
         let kernel_view: &'static [f32] = match &kernels {
-            // SAFETY: as above; an `Arc<[f32]>` allocation is immutable and outlives `fx`.
+            // SAFETY: as above; an `Arc<[f32]>` allocation is immutable and outlives `unit`.
             Some(k) => unsafe { core::slice::from_raw_parts(k.as_ptr(), k.len()) },
             None => &[],
         };
@@ -170,53 +216,129 @@ impl Insert {
         let mut fx = Fx::new(kind, sample_rate, bpm, values, storage_view, kernel_view, ir_len)
             .map_err(|e| Error::new(format!("Effect initialisation failed ({e:?}): {}", plan.kind)))?;
         fx.reset();
-        Ok(Self { id: plan.id.clone(), kind, source, automated: false, fx, storage, _kernels: kernels })
+        Ok(Self {
+            id: plan.id.clone(),
+            kind: kind.id(),
+            source,
+            automated: false,
+            unit: Unit::Fx(fx),
+            defs: kind.params(),
+            storage,
+            _kernels: [kernels, None, None],
+        })
+    }
+
+    /// C++ `makeEffect("guitar-rig", ...)`. Plate kernels per switched-on reverb come from the
+    /// cache: the same hall impulse a type-0 reverb of that size uses, so the two share entries
+    /// (as C++ `blendedKernel` does).
+    fn rig(plan: &InsertPlan, source: u16, sample_rate: f64, cache: &mut KernelCache) -> Result<Self, Error> {
+        let values = validated(guitar::PARAMS, plan)?;
+        let mut kernels: [Option<Arc<[f32]>>; guitar::MAX_REVERBS] = [None, None, None];
+        let mut ir_len = 0;
+        for (k, decay) in kernels.iter_mut().zip(guitar::reverb_decays(&values)) {
+            if let Some(decay) = decay {
+                let (arc, len) = cache.reverb(sample_rate, 0.0, decay)?;
+                *k = Some(arc);
+                ir_len = len;
+            }
+        }
+        let mut storage: Box<[f32]> =
+            vec![0.0f32; GuitarRig::storage_len(sample_rate, &values, ir_len)].into_boxed_slice();
+        // SAFETY: as in `new`: heap buffers owned by the returned struct, outliving `unit`.
+        let storage_view: &'static mut [f32] =
+            unsafe { core::slice::from_raw_parts_mut(storage.as_mut_ptr(), storage.len()) };
+        let mut views: [&'static [f32]; guitar::MAX_REVERBS] = [&[]; guitar::MAX_REVERBS];
+        for (view, k) in views.iter_mut().zip(&kernels) {
+            if let Some(k) = k {
+                // SAFETY: as in `new`; the `Arc` is kept in `_kernels`.
+                *view = unsafe { core::slice::from_raw_parts(k.as_ptr(), k.len()) };
+            }
+        }
+        let mut rig = GuitarRig::new(sample_rate, &values, storage_view, views, ir_len)
+            .map_err(|e| Error::new(format!("Effect initialisation failed ({e:?}): {}", plan.kind)))?;
+        rig.reset();
+        Ok(Self {
+            id: plan.id.clone(),
+            kind: GUITAR_RIG,
+            source,
+            automated: false,
+            unit: Unit::Rig(Box::new(rig)),
+            defs: guitar::PARAMS,
+            storage,
+            _kernels: kernels,
+        })
     }
 
     #[inline]
     pub fn process(&mut self, stereo: &mut [f32]) {
-        self.fx.process_interleaved(stereo);
+        match &mut self.unit {
+            Unit::Fx(fx) => fx.process_interleaved(stereo),
+            Unit::Rig(rig) => rig.process_interleaved(stereo),
+        }
     }
 
     #[inline]
     pub fn set_tempo(&mut self, bpm: f64) {
-        self.fx.set_tempo(bpm);
+        if let Unit::Fx(fx) = &mut self.unit {
+            fx.set_tempo(bpm);
+        }
     }
 
     /// EffectControl::set (clamped; staged until `commit`).
     #[inline]
     pub fn set_param(&mut self, index: usize, value: f64) {
-        self.fx.set_param(index, value);
+        match &mut self.unit {
+            Unit::Fx(fx) => fx.set_param(index, value),
+            Unit::Rig(rig) => rig.set_param(index, value),
+        }
     }
 
     /// EffectControl::apply: pushes staged values when something changed.
     #[inline]
     pub fn commit(&mut self) {
-        self.fx.commit();
+        match &mut self.unit {
+            Unit::Fx(fx) => fx.commit(),
+            Unit::Rig(rig) => rig.commit(),
+        }
     }
 
     pub fn reset(&mut self) {
-        self.fx.reset();
+        match &mut self.unit {
+            Unit::Fx(fx) => fx.reset(),
+            Unit::Rig(rig) => rig.reset(),
+        }
     }
 
     pub fn latency(&self) -> u32 {
-        self.fx.latency_frames()
+        match &self.unit {
+            Unit::Fx(fx) => fx.latency_frames(),
+            Unit::Rig(rig) => rig.latency_frames(),
+        }
     }
 
     pub fn tail(&self) -> f64 {
-        self.fx.tail_seconds()
+        match &self.unit {
+            Unit::Fx(fx) => fx.tail_seconds(),
+            Unit::Rig(rig) => rig.tail_seconds(),
+        }
     }
 
     pub fn param_index(&self, id: &str) -> Option<usize> {
-        self.kind.params().iter().position(|d| d.id == id)
+        self.defs.iter().position(|d| d.id == id)
     }
 
-    /// C++ `takeStateFrom` between inserts of the same id and type (audio thread, O(1)).
+    /// C++ `takeStateFrom` between inserts of the same id and type (audio thread; O(1), except a
+    /// rig whose storage layout changed, which copies the matching delay lines / reverb state).
     pub fn take_state_from(&mut self, previous: &mut Insert) {
         if self.kind != previous.kind {
             return;
         }
-        if self.fx.take_state_from(&mut previous.fx) {
+        let swapped = match (&mut self.unit, &mut previous.unit) {
+            (Unit::Fx(a), Unit::Fx(b)) => a.take_state_from(b),
+            (Unit::Rig(a), Unit::Rig(b)) => a.take_state_from(b),
+            _ => false,
+        };
+        if swapped {
             core::mem::swap(&mut self.storage, &mut previous.storage);
         }
     }

@@ -13,6 +13,7 @@ pub mod color;
 pub mod delay;
 pub mod dynamics;
 pub mod eq;
+pub mod guitar;
 pub mod modulation;
 pub mod reverb;
 

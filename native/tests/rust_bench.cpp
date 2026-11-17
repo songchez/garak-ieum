@@ -20,7 +20,7 @@
 namespace {
 using garak::dsp::EffectBackend;
 
-struct Case { const char* type; garak::Parameters params; const char* glide = nullptr; double a = 0, b = 0; };
+struct Case { const char* type; garak::Parameters params; const char* glide = nullptr; double a = 0, b = 0; const char* label = nullptr; };
 
 double run(const Case& c, EffectBackend backend, std::size_t totalFrames, const std::vector<float>& input, bool automated) {
   auto fx = garak::dsp::makeEffect(c.type, c.params, 48000, 120, backend);
@@ -70,6 +70,12 @@ int main(int argc, char** argv) {
     {"utility", {{"width", 1.4}, {"pan", .3}}, "gain", 0, -1}, {"delay", {{"age", .5}, {"lowcut", 200}, {"mode", 1}}, "age", .5, .6},
     {"eq", {{"b4On", 1}, {"b5On", 1}, {"b6On", 1}, {"b7On", 1}, {"b8On", 1}, {"b8Slope", 3}}},
     {"filter", {{"slope", 2}}}, {"compressor", {}}, {"drive", {}}, {"reverb", {{"amount", .5}, {"lowcut", 120}}},
+    // Guitar rig: the default rack with the drive and chorus on, and a full pedalboard (every module
+    // switched on, plate reverb included).
+    {"guitar-rig", {{"driveEnabled", 1}, {"chorusEnabled", 1}, {"delayEnabled", 1}}, "ampGain", 10, 11, "guitar-rig (default rack)"},
+    {"guitar-rig", {{"driveEnabled", 1}, {"fuzzEnabled", 1}, {"chorusEnabled", 1}, {"delayEnabled", 1}, {"phaserEnabled", 1}, {"tremoloEnabled", 1},
+                    {"reverbEnabled", 1}, {"rackSlot0", 1}, {"rackSlot1", 2}, {"rackSlot2", 7}, {"rackSlot3", 8}, {"rackSlot4", 3}, {"rackSlot5", 4},
+                    {"rackSlot6", 5}, {"rackSlot7", 6}, {"rackSlot8", 9}, {"rackSlot9", 10}}, "ampGain", 10, 11, "guitar-rig (full rack)"},
   };
   std::printf("%.1f s of 48 kHz stereo per backend (best of %d alternating rounds), 128-frame blocks.\n\n", seconds, rounds);
   std::printf("| effect | C++ (Mframes/s) | Rust (Mframes/s) | Rust / C++ | automated Rust / C++ | C++ x realtime |\n"
@@ -86,7 +92,7 @@ int main(int argc, char** argv) {
     }
     char automated[32] = "-";
     if (c.glide) std::snprintf(automated, sizeof automated, "%.2f", rustAuto / cppAuto);
-    std::printf("| %s | %.2f | %.2f | %.2f | %s | %.0f |\n", c.type, cpp / 1e6, rust / 1e6, rust / cpp, automated, cpp / 48000);
+    std::printf("| %s | %.2f | %.2f | %.2f | %s | %.0f |\n", c.label ? c.label : c.type, cpp / 1e6, rust / 1e6, rust / cpp, automated, cpp / 48000);
   }
   return EXIT_SUCCESS;
 }

@@ -198,6 +198,7 @@ fn transport_and_refusals() {
     let mut bad = plan.clone();
     bad.tracks[0].inserts[0].params.push(("nope".into(), 1.0));
     assert!(c.update(bad).is_err());
+    // A rig given another effect's parameters is refused (unknown ids, like the C++ Reader).
     let mut rig = plan.clone();
     rig.tracks[0].inserts[0].kind = "guitar-rig".into();
     assert!(c.update(rig).is_err());
