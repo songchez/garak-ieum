@@ -1,6 +1,6 @@
 # Rust 렌더 엔진 (4단계)
 
-> **상태 (2026-11-16, 첫 마일스톤):** `rust/garak-engine`이 오디오 트랙(PCM 클립·게인·페이드·크로스페이드), 트랙 볼륨/팬/뮤트/솔로, 내장 이펙트 체인(garak-dsp), 센드/리턴, 마스터, 볼륨/팬/뮤트/센드/인서트 파라미터 오토메이션, 템포 맵을 C++ `RenderEngine`과 같은 의미로 렌더합니다. 같은 엔진이 **네이티브(C++ 호스트, `garak-ffi`)와 브라우저(WASM, `garak-engine-wasm`)에서 처음부터 똑같이** 돕니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW·MSVC, 오프라인 내보내기 4종 + 재생 중 diff, C++·Rust 이펙트 모두. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 ≤ -138 dBFS), WASM 대비 네이티브 Rust **-144.5 dBFS**. **앱은 아직 이 엔진을 쓰지 않습니다**(기본 동작 변화 없음). 악기·VST3·입력 모니터링·녹음은 다음 마일스톤입니다([9장](#9-이번-마일스톤의-범위와-다음-단계)).
+> **상태 (2026-11-16, 첫 마일스톤):** `rust/garak-engine`이 오디오 트랙(PCM 클립·게인·페이드·크로스페이드), 트랙 볼륨/팬/뮤트/솔로, 내장 이펙트 체인(garak-dsp, 기타 랙 인서트 포함), 센드/리턴, 마스터, 볼륨/팬/뮤트/센드/인서트 파라미터 오토메이션, 템포 맵을 C++ `RenderEngine`과 같은 의미로 렌더합니다. 같은 엔진이 **네이티브(C++ 호스트, `garak-ffi`)와 브라우저(WASM, `garak-engine-wasm`)에서 처음부터 똑같이** 돕니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW·MSVC, 오프라인 내보내기 4종 + 재생 중 diff, C++·Rust 이펙트 모두. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 ≤ -138 dBFS), WASM 대비 네이티브 Rust **-144.5 dBFS**. **앱은 아직 이 엔진을 쓰지 않습니다**(기본 동작 변화 없음). 악기·VST3·입력 모니터링·녹음은 다음 마일스톤입니다([9장](#9-이번-마일스톤의-범위와-다음-단계)).
 
 관련 문서: [RUST.md](RUST.md)(1~3단계, DSP 커널), [RENDER_DIFF_PROTOCOL.md](RENDER_DIFF_PROTOCOL.md)(엔진 입력 계약), [SENDS_RETURNS.md](SENDS_RETURNS.md), [AUTOMATION.md](AUTOMATION.md), [TEMPO_MAP.md](TEMPO_MAP.md), [REGION_GAIN_FADES.md](REGION_GAIN_FADES.md).
 
@@ -123,7 +123,7 @@ garak-audio-host (C++)
 | 샘플 악기 / 킷 (`builtin-sampled`) | `SampleSet` 존 선택(`pickZone`), 루프, 릴리스 샘플, 초크, 댐퍼 노이즈 | `samples.ts` + AudioBufferSourceNode | 샘플 세트 등록 API(`sample.set` 대응), PCM은 `put_asset`과 같은 저장소 공유 |
 | IEUM WAVE (`native-wavetable`) | `native/devices/wavetable-synth`(C++ 라이브러리, 테이블 크로스페이드) | 합성 없음(편집만) | 별도 포팅(규모 큼). 그 전까지는 VST3처럼 외부 hook으로 C++ 인스턴스 사용 가능 |
 | VST3 악기 | `vst3.cpp` | 없음 | C++ 유지, 4장의 외부 hook |
-| 기타 랙 인서트 (`guitar-rig`) | `dsp.cpp` | worklet | 2단계 포팅이 garak-dsp에 들어오면 인서트 목록에 추가(지금은 거부) |
+| 기타 랙 인서트 (`guitar-rig`) | `dsp.cpp` `GuitarRig` | Rust 워크릿(대체: Web Audio 노드) | **지원**: garak-dsp `fx::guitar`([RUST.md 2단계](RUST.md#2단계-기타-랙)). 라이브 노브 = Param diff, 랙 배치·리버브 Decay/스위치 = 그 트랙 재준비(모듈별 상태 인계), 플레이트 커널은 리버브 캐시 공유 |
 
 음표 상태 이전 규칙(음표 id 재부여, 지운 음표 릴리스, 재생 위치에 걸친 음표 다음 반복부터)은 프로토콜 4.2에 있고, 악기 마일스톤에서 `renumberNotes`/`removedNotes`와 함께 옮깁니다.
 
@@ -138,7 +138,7 @@ garak-audio-host (C++)
 | `rust/garak-engine/tests/engine.rs` | diff 경로 ↔ 같은 편집을 새 그래프로(`Controller::rebuild`) | ≤ 1e-6 (프로토콜 8.5) |
 | `rust/garak-engine/tests/realtime.rs` | 렌더 중 힙 사용 | 0회 |
 
-테스트 프로젝트(`testkit.rs`): 오디오 트랙 N개 + 리턴 2개. 겹치는 윈도(크로스페이드)와 페이드 5종, 클립 오프셋·게인, 모노/스테레오/44.1 kHz PCM(48 kHz 엔진에서 리샘플), 기타 랙을 뺀 내장 이펙트 15종 전부(드라이브가 PDC 8프레임: 트랙 쪽 8 + 리턴 쪽 8로 센드/리턴 지연 보정까지 거침), 꺼진 인서트, 프리/포스트 센드, 볼륨·팬·뮤트·센드·인서트(컷오프 로그 범위, 컴프 임계값) 오토메이션, 템포 램프(싱크 딜레이·트레몰로), `audible:false` 트랙의 프리 센드 무음. PCM은 사칙연산만으로 만들어 플랫폼마다 같습니다.
+테스트 프로젝트(`testkit.rs`): 오디오 트랙 N개 + 리턴 2개. 겹치는 윈도(크로스페이드)와 페이드 5종, 클립 오프셋·게인, 모노/스테레오/44.1 kHz PCM(48 kHz 엔진에서 리샘플), 기타 랙을 뺀 내장 이펙트 15종 전부(드라이브가 PDC 8프레임: 트랙 쪽 8 + 리턴 쪽 8로 센드/리턴 지연 보정까지 거침), 꺼진 인서트, 프리/포스트 센드, 볼륨·팬·뮤트·센드·인서트(컷오프 로그 범위, 컴프 임계값) 오토메이션, 템포 램프(싱크 딜레이·트레몰로), `audible:false` 트랙의 프리 센드 무음. PCM은 사칙연산만으로 만들어 플랫폼마다 같습니다. 기타 랙 경우는 이 프로젝트에서 트랙 1의 코러스를 리그(컴프·드라이브·크런치 앰프·캐비닛·드라이브 사본·코러스·딜레이·리버브·페이저)로 바꾸고 필터 레인을 앰프 게인 오토메이션으로 바꾼 것입니다(`rust_engine_parity_test.cpp` `withGuitarRig`; 엔진 쪽 단위 테스트는 `tests/guitar_rig.rs`: 렌더 중 힙 사용 0, diff 분류).
 
 C++ 쪽은 두 번 돌립니다: C++ 이펙트로(완전히 독립된 두 구현) 그리고 `GARAK_RUST_EFFECTS=all`처럼 Rust 이펙트로(엔진 구조만 비교). 오프라인 경우는 host.cpp `renderStopped`와 같은 루프(길이 + 꼬리 ≤ 30 s, PDC 앞쪽 제거)이고, 라이브 경우는 재생 중 0.5 s에 Mix+Send+Param+Master diff, 1.5 s에 트랙 재준비를 두 엔진에 같은 JSON으로 보냅니다(분류 결과 `Diff`/`Tracks`도 같아야 통과).
 
@@ -151,6 +151,9 @@ C++ 쪽은 두 번 돌립니다: C++ 이펙트로(완전히 독립된 두 구현
 | 오프라인 내보내기 44.1 kHz, 3 s | 6+2 | 4096 | C++ / Rust | 16 / 16 | **비트 동일** |
 | 오프라인 내보내기 48 kHz, 1 s | 1+2 | 512 | C++ / Rust | 0 / 0 | **비트 동일** |
 | 재생 중 diff(믹스·센드·파라미터·마스터) + 트랙 재준비 | 8+2 | 128 | C++ / Rust | — | **비트 동일** |
+| 오프라인 내보내기 + 기타 랙(리버브·사본, 앰프 게인 오토메이션) 48 kHz, 4 s | 8+2 | 4096 | C++ / Rust | 40 / 40 | **비트 동일** |
+| 오프라인 내보내기 + 기타 랙 44.1 kHz, 3 s | 6+2 | 128 | C++ / Rust | 40 / 40 | **비트 동일** |
+| 재생 중 리그 노브 diff + 랙 재배치(트랙 재준비) | 4+2 | 128 | C++ / Rust | — | **비트 동일** |
 | WASM ↔ 네이티브 Rust, 오프라인 3 s | 8+2 | 4096 | — | 16 / 16 | **-144.5 dBFS** |
 
 **CI (PR #50):** Windows MSVC x64는 위 표와 똑같이 전부 비트 동일입니다. macOS arm64(AppleClang)는 Rust 이펙트를 쓴 C++ 엔진과 비교하면 전부 비트 동일이고(엔진 구조·식이 FMA 축약까지 같다는 뜻), C++ 이펙트와 비교하면 -138.5 ~ -156.5 dBFS입니다. 이 차이는 1단계 커널 표에서 이미 macOS에서만 비트 동일이 아닌 커널 몇 개에서 옵니다.
@@ -206,7 +209,7 @@ CI 러너(같은 벤치, 공유 머신이라 절대값은 들쭉날쭉):
 
 **포함:** 오디오 클립(PCM, 게인, 페이드 5종, 크로스페이드, 클릭 가드, 리샘플, 다운믹스), 트랙 볼륨/팬(모노 등전력·스테레오 밸런스)/뮤트/솔로(`audible`/`unmutedAudible`), 내장 이펙트 15종 체인과 PDC, 프리/포스트 센드와 리턴(리턴 지연 보정 포함), 마스터 게인·마스터 프로세서, 볼륨·팬·뮤트·센드·인서트 파라미터 오토메이션(샘플 단위 / 32프레임 청크), 템포 맵(싱크 이펙트), 사이클·정지·탐색, project.set/patch 파싱과 diff 분류·상태 이전, 오프라인 렌더 API, C ABI, WASM 빌드.
 
-**아직 아님:** 얼린 트랙·바운스·스템(`AudioWindow.freeze`, `TrackTimeline.preFader`/`directOut` — 파서가 거부, 옮길 항목은 [BOUNCE_FREEZE_STEMS.md](BOUNCE_FREEZE_STEMS.md#rust-렌더-엔진stage-4이-지원해야-할-것)), 박자 맵(`meterMap` — 메트로놈 전용이라 파싱 없이 무시, 메트로놈을 옮길 때 `native/include/garak/meter.hpp`와 같은 마디 계산 필요; [METER_MAP.md](METER_MAP.md)), 악기 소스(거부), VST3 인서트/소스(거부; 4장 설계), 기타 랙(거부), 입력 모니터링·녹음·트랙 라우트 탭(파싱만), 메트로놈·카운트인, 라이브 MIDI·미리 듣기, 멀티코어·렌더-어헤드, 다이내믹스 미터·트랙 피크 게시(마스터 피크만), 음표 id 재부여.
+**아직 아님:** 얼린 트랙·바운스·스템(`AudioWindow.freeze`, `TrackTimeline.preFader`/`directOut` — 파서가 거부, 옮길 항목은 [BOUNCE_FREEZE_STEMS.md](BOUNCE_FREEZE_STEMS.md#rust-렌더-엔진stage-4이-지원해야-할-것)), 박자 맵(`meterMap` — 메트로놈 전용이라 파싱 없이 무시, 메트로놈을 옮길 때 `native/include/garak/meter.hpp`와 같은 마디 계산 필요; [METER_MAP.md](METER_MAP.md)), 악기 소스(거부), VST3 인서트/소스(거부; 4장 설계), 입력 모니터링·녹음·트랙 라우트 탭(파싱만), 메트로놈·카운트인, 라이브 MIDI·미리 듣기, 멀티코어·렌더-어헤드, 다이내믹스 미터·트랙 피크 게시(마스터 피크만), 음표 id 재부여.
 
 **다음 마일스톤 제안:**
 

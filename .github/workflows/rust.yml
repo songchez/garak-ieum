@@ -29,6 +29,7 @@ on:
       - 'native/tests/rust_instrument_test.cpp'
       - 'native/src/rust_instrument.hpp'
       - 'src/devices/vintage/**'
+      - 'src/devices/guitar-rig/**'
       - 'src/audio/rust/**'
       - 'src/devices/effects/kernels.ts'
       - 'src/devices/effects/sigimsae.ts'
@@ -98,7 +99,7 @@ jobs:
           node scripts/rust.mjs wasm
           size=$(stat -c %s public/wasm/garak-dsp.wasm)
           gzip=$(gzip -9 -c public/wasm/garak-dsp.wasm | wc -c)
-          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 160 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
+          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 208 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
 
       # The render engine for the worklet (docs/RUST_ENGINE.md 5): not shipped yet, size reported.
       - name: Build the engine WASM module
@@ -206,6 +207,14 @@ jobs:
         env:
           GARAK_RUST_EFFECTS: all
         run: ctest --test-dir build/native-rust -C Release -R native-engine --output-on-failure
+
+      # The guitar rig's CPU gate: the Rust rig may take at most 1.15x the C++ rig's time.
+      - name: Guitar rig CPU gate (Rust <= 1.15x C++)
+        shell: bash
+        run: |
+          dir=build/native-rust
+          [ -d "$dir/Release" ] && dir="$dir/Release"
+          "$dir/garak-rust-bench" 3 --gate=1.15 guitar-rig
 
       - name: Parity table and CPU baseline (C++ vs Rust)
         shell: bash

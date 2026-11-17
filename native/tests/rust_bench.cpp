@@ -1,6 +1,7 @@
 // CPU baseline: frames per second of every ported effect, C++ vs Rust, through the same
 // StereoProcessor interface (128-frame blocks, 48 kHz, a busy parameter set). Not a test: prints a
-// Markdown table for docs/RUST.md and CI logs. Usage: garak-rust-bench [seconds] [effect ...]
+// Markdown table for docs/RUST.md and CI logs. Usage: garak-rust-bench [seconds] [--gate=R] [effect ...]
+// (--gate=R exits non-zero when a selected effect's Rust time exceeds R x the C++ time.)
 // Each backend gets `seconds` of audio in total, split into rounds that alternate C++ and Rust; the
 // best round counts. Alternating cancels clock ramps and noisy neighbours on shared CI runners.
 // "automated" re-runs the effects that have parameter glides with one parameter flipped through
@@ -59,7 +60,13 @@ int main(int argc, char** argv) {
   const double seconds = argc > 1 ? std::max(0.5, std::atof(argv[1])) : 10.0;
   constexpr int rounds = 5;
   const auto totalFrames = static_cast<std::size_t>(48000 * seconds / rounds);
-  std::vector<std::string> only(argv + std::min(argc, 2), argv + argc);
+  std::vector<std::string> only;
+  double gate = 0;
+  bool gateFailed = false;
+  for (int i = 2; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg.rfind("--gate=", 0) == 0) gate = std::atof(arg.c_str() + 7); else only.push_back(arg);
+  }
   std::vector<float> input(48000 * 2);
   std::uint32_t seed = 1;
   for (auto& x : input) { seed = seed * 1664525u + 1013904223u; x = static_cast<float>((seed / 4294967296.0 * 2 - 1) * 0.5); }
@@ -93,6 +100,9 @@ int main(int argc, char** argv) {
     char automated[32] = "-";
     if (c.glide) std::snprintf(automated, sizeof automated, "%.2f", rustAuto / cppAuto);
     std::printf("| %s | %.2f | %.2f | %.2f | %s | %.0f |\n", c.label ? c.label : c.type, cpp / 1e6, rust / 1e6, rust / cpp, automated, cpp / 48000);
+    // --gate=R: fail when Rust takes more than R times the C++ time (static or automated).
+    if (gate > 0 && (rust / cpp < 1 / gate || (c.glide && rustAuto / cppAuto < 1 / gate))) gateFailed = true;
   }
+  if (gateFailed) { std::fprintf(stderr, "CPU gate: Rust took more than %.2fx the C++ time\n", gate); return EXIT_FAILURE; }
   return EXIT_SUCCESS;
 }

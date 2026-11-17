@@ -9,7 +9,8 @@
 // WAV export (renderStopped: offline engine, length + tail, plug-in delay trimmed), at engine
 // blocks of 4096 and 128 frames, with the C++ effects and with the Rust effects behind the C++
 // engine, at 48 and 44.1 kHz; then a live engine applies mid-play diffs (mix, send, insert
-// parameter, master, a track rebuild) on both. Gate: residual <= -90 dBFS, equal latency/length.
+// parameter, master, a track rebuild) on both. The same runs with a guitar rig insert (withGuitarRig):
+// offline exports and a live knob diff + rack reorder. Gate: residual <= -90 dBFS, equal latency/length.
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_engine.h"

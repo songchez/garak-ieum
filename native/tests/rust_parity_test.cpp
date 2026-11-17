@@ -6,6 +6,7 @@
 // StereoProcessor interface (makeEffect(..., EffectBackend::Cpp / ::Rust)) with identical input,
 // block sizes, EffectControl automation, tempo changes, resets and takeStateFrom hand-overs. The
 // gate is a residual <= -90 dBFS per effect plus identical latency, tail and dynamics-meter values.
+// The guitar rig (garak_rs_rig_*) runs through the same comparison in groups (rigParity).
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_rust.h"
