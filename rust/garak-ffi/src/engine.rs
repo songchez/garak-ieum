@@ -16,6 +16,8 @@ use garak_engine::{Ahead, Applied, Controller, EngineConfig, PcmAsset, Renderer,
 
 pub const GARAK_RS_ENGINE_ERROR: i32 = -1;
 
+mod instruments;
+
 /// Opaque engine handle (`GarakRsEngine*`).
 #[derive(Debug)]
 pub struct GarakRsEngine {
@@ -422,6 +424,39 @@ pub unsafe extern "C" fn garak_rs_engine_render_host(
     r.render_host(out, &info, peaks, parallel.as_ref());
 }
 
+/// Audio thread, at a block boundary: a live event for track `track` that the shell applies itself (its live
+/// MIDI ring and live commands). `kind`: 0 note on (`a` = note id), 1 note off (`a` = note id), 2 all notes off,
+/// 3 controller (`pitch` = controller number, `a` = value), 4 preview (`a` = frames). Returns 1 when a built-in
+/// instrument played it, 0 when no track did, -1 for an invalid event.
+///
+/// # Safety
+/// As `garak_rs_engine_render`; the track is not rendering ahead.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_live(
+    e: *mut GarakRsEngine,
+    track: u32,
+    kind: u32,
+    pitch: i32,
+    a: i32,
+    velocity: f32,
+) -> i32 {
+    use garak_engine::LiveEvent;
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return -1 };
+    let note = u8::try_from(pitch).unwrap_or(u8::MAX);
+    let event = match kind {
+        0 => LiveEvent::NoteOn { pitch: note, velocity, id: a },
+        1 => LiveEvent::NoteOff { pitch: note, id: a },
+        2 => LiveEvent::AllNotesOff,
+        3 => LiveEvent::Control { controller: u16::try_from(pitch).unwrap_or(u16::MAX), value: a },
+        4 => LiveEvent::Preview { pitch: note, velocity, frames: u32::try_from(a).unwrap_or(0) },
+        _ => return -1,
+    };
+    if !event.is_valid() {
+        return -1;
+    }
+    i32::from(r.host_live(track as usize, event))
+}
+
 /// Audio thread, after `garak_rs_engine_render_host`: the last block's input of routed track `track`
 /// (interleaved stereo, `max_block` frames of storage), or null when it has no internal route.
 ///
@@ -474,11 +509,17 @@ pub unsafe extern "C" fn garak_rs_engine_render_ahead(
 /// # Safety
 /// As `garak_rs_engine_render_ahead` (the caller owns the track now).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn garak_rs_engine_reset_track(e: *mut GarakRsEngine, track: u32, effects: i32) {
+pub unsafe extern "C" fn garak_rs_engine_reset_track(
+    e: *mut GarakRsEngine,
+    track: u32,
+    frame: i64,
+    chase: i32,
+    effects: i32,
+) {
     // SAFETY: caller contract.
     if let Some(h) = unsafe { e.as_ref() } {
         // SAFETY: caller contract.
-        unsafe { h.ahead.reset_track(track as usize, effects != 0) };
+        unsafe { h.ahead.reset_track(track as usize, frame, chase != 0, effects != 0) };
     }
 }
 
@@ -488,7 +529,13 @@ pub unsafe extern "C" fn garak_rs_engine_reset_track(e: *mut GarakRsEngine, trac
 /// # Safety
 /// As `garak_rs_engine_render`; `skip` is valid for 4 reads.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn garak_rs_engine_reset_skip(e: *mut GarakRsEngine, effects: i32, skip: *const u64) {
+pub unsafe extern "C" fn garak_rs_engine_reset_skip(
+    e: *mut GarakRsEngine,
+    frame: i64,
+    chase: i32,
+    effects: i32,
+    skip: *const u64,
+) {
     // SAFETY: caller contract.
     let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return };
     let mut mask = [0u64; 4];
@@ -496,7 +543,7 @@ pub unsafe extern "C" fn garak_rs_engine_reset_skip(e: *mut GarakRsEngine, effec
         // SAFETY: caller contract.
         mask.copy_from_slice(unsafe { core::slice::from_raw_parts(skip, 4) });
     }
-    r.host_reset_skip(effects != 0, &mask);
+    r.host_reset_skip(frame, chase != 0, effects != 0, &mask);
 }
 
 /// Audio thread, after `garak_rs_engine_render_block`: dynamics meter readings (compressor, limiter,
@@ -525,10 +572,23 @@ pub unsafe extern "C" fn garak_rs_engine_take_dynamics(
 /// # Safety
 /// As `garak_rs_engine_render`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn garak_rs_engine_reset(e: *mut GarakRsEngine, effects: i32) {
+pub unsafe extern "C" fn garak_rs_engine_reset(e: *mut GarakRsEngine, frame: i64, chase: i32, effects: i32) {
     // SAFETY: caller contract.
     if let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) {
-        r.host_reset(effects != 0);
+        r.host_reset(frame, chase != 0, effects != 0);
+    }
+}
+
+/// Audio thread: the shell's transport stopped at the project end (no cycle). Plug-in style Rust instruments
+/// release their notes next block (C++ `requestReset`).
+///
+/// # Safety
+/// As `garak_rs_engine_render`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_stop_at_end(e: *mut GarakRsEngine) {
+    // SAFETY: caller contract.
+    if let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) {
+        r.host_stop_at_end();
     }
 }
 

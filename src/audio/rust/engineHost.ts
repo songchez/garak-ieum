@@ -22,10 +22,10 @@ export async function loadGarakEngineModule(base = baseUrl(), fetchImpl: typeof 
     if (!response.ok) return null
     const module = await WebAssembly.compile(await response.arrayBuffer())
     // Checked without instantiating (every instance reserves its own memory): ABI 3 adds the count-in,
-    // meters, monitoring input, route taps, live events and staged updates. The worklet still verifies
-    // garak_engine_abi_version().
+    // meters, monitoring input, route taps, live events and staged updates; ABI 4 the built-in instruments.
+    // The worklet still verifies garak_engine_abi_version().
     const exports = new Set(WebAssembly.Module.exports(module).map(entry => entry.name))
-    return ENGINE_ABI_VERSION === 3 && exports.has('garak_engine_render_planar_io') && exports.has('garak_engine_stage') ? module : null
+    return ENGINE_ABI_VERSION === 4 && exports.has('garak_engine_render_planar_io') && exports.has('garak_engine_stage') && exports.has('garak_engine_register_samples') ? module : null
   } catch {
     return null
   }

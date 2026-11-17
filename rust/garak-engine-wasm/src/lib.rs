@@ -34,6 +34,8 @@ pub const MAX_INPUT_CHANNELS: usize = 8;
 const MAX_TRACKS: usize = 256;
 const MAX_DYNAMICS: usize = 256;
 
+mod instruments;
+
 struct Instance {
     control: Controller,
     render: Renderer,
@@ -72,7 +74,7 @@ fn state() -> &'static mut State {
     unsafe { &mut *STATE.0.get() }
 }
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 const ERROR_CODE: i32 = -1;
 const NO_ENGINE: &str = "No engine; call garak_engine_create";
 

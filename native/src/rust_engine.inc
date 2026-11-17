@@ -3,11 +3,11 @@
 // engine accepts render its tracks through rust/garak-engine (garak_engine.h), while this C++ engine stays the
 // shell: transport, cycle, count-in, metronome, live MIDI, capture, master bus and snapshots. VST3 instruments
 // and inserts and IEUM WAVE stay C++ processors the Rust graph calls back at their place in the chain (host
-// nodes, docs/RUST_ENGINE.md 4), and so does monitored device input; routes, taps, sends, frozen windows and
-// plug-in delay compensation are the Rust graph's. A graph the Rust engine refuses (built-in instruments until
-// they are ported, guitar rig ...) renders in C++ as before ("1"), or is refused ("strict", for the regression
-// suite). GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1 (diagnostics) renders the C++ built-in instruments as host
-// nodes too, so every graph runs through the Rust graph.
+// nodes, docs/RUST_ENGINE.md 4), and so does monitored device input; routes, taps, sends, frozen windows,
+// plug-in delay compensation and the built-in instruments (synths, drums, sample sets, vintage; their live MIDI
+// is forwarded from the shell) are the Rust graph's. A graph the Rust engine refuses renders in C++ as before
+// ("1"), or is refused ("strict", for the regression suite). GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1
+// (diagnostics) renders the C++ built-in instruments as host nodes instead.
 //
 // The plan travels as the same timeline JSON the host receives (docs/RENDER_DIFF_PROTOCOL.md), written
 // from the ProjectTimeline with round-trip exact numbers, so the Rust parser reads exactly these values.
@@ -62,13 +62,12 @@ class JsonWriter {
 #if GARAK_RUST
 // The reason a timeline cannot render in the Rust engine yet, or empty. The Rust parser and graph builder
 // refuse the rest themselves (their error is the reason then). VST3 and IEUM WAVE are host nodes; built-in
-// instruments are host nodes only with `hostInstruments`.
+// instruments render in the Rust graph (host nodes only with `hostInstruments`, a diagnostic).
 // Checked before the C++ graph changes, so a strict refusal leaves the running graph alone (RenderEngine::update).
 std::string rustIneligibility(const ProjectTimeline& p, bool hostInstruments) {
+  (void)hostInstruments;
   for (const auto& t : p.tracks) {
     if (!t.enabled) continue;
-    if (!hostInstruments && t.source.kind == TrackSource::Kind::BuiltinSampled) return "sampled instrument on track " + t.id;
-    if (!hostInstruments && t.source.kind == TrackSource::Kind::BuiltinSynth) return "instrument source on track " + t.id;
     // Not ported to garak-dsp yet (the Rust graph refuses it too; this names it before anything changes).
     for (const auto& e : t.inserts) if (e.enabled && e.type == "guitar-rig") return "guitar rig insert on track " + t.id;
   }
@@ -81,6 +80,49 @@ std::string patchIdentity(const std::vector<std::uint8_t>& data) {
   for (const auto byte : data) { hash ^= byte; hash *= 1099511628211ULL; }
   char buffer[48]; std::snprintf(buffer, sizeof buffer, "%zu:%016llx", data.size(), static_cast<unsigned long long>(hash));
   return buffer;
+}
+
+// The sample sets `p`'s enabled sampled-instrument tracks use (each once). Missing ones are left out: the Rust
+// graph reports them.
+std::vector<SampleSet> rustSampleSets(const ProjectTimeline& p, const SampleSetStore& sets) {
+  std::vector<SampleSet> out;
+  for (const auto& t : p.tracks) {
+    if (!t.enabled || t.source.kind != TrackSource::Kind::BuiltinSampled) continue;
+    const auto found = sets.find(t.source.sampleSetId);
+    if (found == sets.end()) continue;
+    if (std::none_of(out.begin(), out.end(), [&](const SampleSet& s) { return s.id == found->second.id; })) out.push_back(found->second);
+  }
+  return out;
+}
+
+// A sample set as the `samples.register` params the Rust engine parses (protocol::parse_sample_set): zone files
+// named z<i> / r<i>, mapped to their asset ids.
+std::string sampleSetJson(const SampleSet& s) {
+  JsonWriter w;
+  const auto zones = [&](const char* key, const std::vector<SampleZone>& list, char prefix) {
+    w.key(key); w.raw("[");
+    for (std::size_t i = 0; i < list.size(); ++i) {
+      const auto& z = list[i];
+      w.comma(); w.raw("{"); w.key("file"); w.str(std::string(1, prefix) + std::to_string(i));
+      w.key("root"); w.integer(z.root); w.key("lo"); w.integer(z.lo); w.key("hi"); w.integer(z.hi);
+      w.key("vlo"); w.num(z.vlo); w.key("vhi"); w.num(z.vhi); w.key("gainDb"); w.num(z.gainDb); w.key("tune"); w.num(z.tune);
+      if (z.loop) { w.key("loop"); w.raw("["); w.num(z.loop->at(0)); w.raw(","); w.num(z.loop->at(1)); w.raw("]"); }
+      w.key("choke"); w.integer(z.choke); w.raw("}");
+    }
+    w.raw("]");
+  };
+  w.raw("{"); w.key("id"); w.str(s.id);
+  w.key("manifest"); w.raw("{"); w.key("kind"); w.str(s.isKit ? "kit" : "pitched"); w.key("gainDb"); w.num(s.gainDb); w.key("release"); w.num(s.release);
+  zones("zones", s.zones, 'z');
+  if (!s.releaseZones.empty()) zones("releaseZones", s.releaseZones, 'r');
+  w.raw("}");
+  w.key("files"); w.raw("{");
+  for (std::size_t i = 0; i < s.zones.size(); ++i) { w.key("z" + std::to_string(i)); w.str(s.zones[i].assetId); }
+  for (std::size_t i = 0; i < s.releaseZones.size(); ++i) { w.key("r" + std::to_string(i)); w.str(s.releaseZones[i].assetId); }
+  w.raw("}");
+  w.key("startOffset"); w.num(s.startOffset);
+  w.raw("}");
+  return std::move(w.out);
 }
 
 void writeParams(JsonWriter& w, const Parameters& params) {
@@ -255,16 +297,26 @@ class RustBackend {
   RustBackend& operator=(const RustBackend&) = delete;
   GarakRsEngine* handle;
 
-  // Registers the PCM of `p`'s windows (once per asset object) and submits the plan. Returns false and the
-  // reason when the Rust engine refuses it; the running Rust graph is then unchanged. `recipe`: the C++ graph of
-  // the same timeline (host node delays and tails).
-  bool apply(const ProjectTimeline& p, const AssetStore& assets, const ControlRecipe* recipe, bool hostInstruments, std::string& reason) {
+  // Registers the PCM of `p`'s windows and of the sample sets its sampled instruments use (once per asset
+  // object), the sample sets themselves (when they changed) and submits the plan. Returns false and the reason
+  // when the Rust engine refuses it; the running Rust graph is then unchanged. `recipe`: the C++ graph of the
+  // same timeline (host node delays and tails).
+  bool apply(const ProjectTimeline& p, const AssetStore& assets, const std::vector<SampleSet>& sets, const ControlRecipe* recipe,
+             bool hostInstruments, std::string& reason) {
     reason = rustIneligibility(p, hostInstruments);
     if (!reason.empty()) return false;
-    for (const auto& t : p.tracks) for (const auto& w : t.audio) {
-      const auto found = assets.find(w.assetId);
-      if (found == assets.end() || !found->second) continue; // The Rust graph reports the missing asset.
-      if (!put(found->second)) { reason = lastError(); return false; }
+    const auto putId = [&](const std::string& id) {
+      const auto found = assets.find(id);
+      return found == assets.end() || !found->second || put(found->second); // The Rust graph reports a missing asset.
+    };
+    for (const auto& t : p.tracks) for (const auto& w : t.audio) if (!putId(w.assetId)) { reason = lastError(); return false; }
+    if (!hostInstruments) for (const auto& s : sets) {
+      for (const auto* zones : {&s.zones, &s.releaseZones}) for (const auto& z : *zones) if (!putId(z.assetId)) { reason = lastError(); return false; }
+      auto& slot = registeredSets_[s.id];
+      if (slot && *slot == s) continue;
+      const auto json = sampleSetJson(s);
+      if (garak_rs_engine_register_samples(handle, reinterpret_cast<const std::uint8_t*>(json.data()), json.size()) != 0) { reason = lastError(); return false; }
+      slot = std::make_unique<SampleSet>(s);
     }
     const auto json = rustTimelineJson(p, recipe, hostInstruments);
     if (garak_rs_engine_set(handle, reinterpret_cast<const std::uint8_t*>(json.data()), json.size(), nullptr, 0) < 0) {
@@ -273,18 +325,19 @@ class RustBackend {
     }
     return true;
   }
-  bool apply(const ProjectTimeline& p, const std::vector<std::shared_ptr<const PcmAsset>>& assets, const ControlRecipe* recipe,
-             bool hostInstruments, std::string& reason) {
+  bool apply(const ProjectTimeline& p, const std::vector<std::shared_ptr<const PcmAsset>>& assets, const std::vector<SampleSet>& sets,
+             const ControlRecipe* recipe, bool hostInstruments, std::string& reason) {
     AssetStore store;
     for (const auto& a : assets) if (a) store.emplace(a->id, a);
-    return apply(p, store, recipe, hostInstruments, reason);
+    return apply(p, store, sets, recipe, hostInstruments, reason);
   }
   [[nodiscard]] std::uint64_t ticket() const noexcept { return garak_rs_engine_ticket(handle); }
   void collect() noexcept { garak_rs_engine_collect(handle); }
 
  private:
-  // Asset id -> the PCM object last registered under it.
+  // Asset id -> the PCM object last registered under it; sample set id -> the set last registered under it.
   std::unordered_map<std::string, std::shared_ptr<const PcmAsset>> registered_;
+  std::unordered_map<std::string, std::unique_ptr<SampleSet>> registeredSets_;
   bool put(const std::shared_ptr<const PcmAsset>& asset) {
     auto& slot = registered_[asset->id];
     if (slot == asset) return true;

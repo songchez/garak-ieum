@@ -35,8 +35,12 @@ const WASM_GZIP_BUDGET_BYTES = 80 * 1000
 // count-in (meter map, stroke player), track-input routes with monitoring and recording taps, staged
 // project updates, reverb kernel import, meters and the live event path — measured 259 -> 289 KiB raw,
 // 105 -> 118 KB gzip ("z" for the engine crate saves only 6 KiB, so the profile stays).
-const ENGINE_BUDGET_BYTES = 304 * 1024
-const ENGINE_GZIP_BUDGET_BYTES = 124 * 1000
+// Raised from 304 KiB / 124 KB (rust/engine-integrate): the built-in instruments (rust/engine-instruments: the
+// five synths and drum kit, sample-set zones with release zones, the vintage EP / 106 and IEUM WAVE with its
+// table generator and patch schema) measured 291 -> 460 KiB raw, 119 -> 189 KB gzip. That is still far below
+// the worklet's practical limit; the module is fetched once and compiled off the audio thread.
+const ENGINE_BUDGET_BYTES = 480 * 1024
+const ENGINE_GZIP_BUDGET_BYTES = 196 * 1000
 
 function findCargo() {
   const exe = process.platform === 'win32' ? 'cargo.exe' : 'cargo'

@@ -5,6 +5,7 @@
 #include "metronome.hpp"
 #if GARAK_RUST
 #include "garak_engine.h"
+#include "garak_engine_instruments.h"
 #endif
 
 #include <algorithm>
@@ -1366,6 +1367,7 @@ struct PreparedProject::Impl {
   std::size_t wavetableMemory=0,wavetableTableMemory=0;
   // GARAK_RUST_ENGINE (rust_engine.inc): the PCM objects the Rust graph needs, collected by prepare().
   std::vector<std::shared_ptr<const PcmAsset>> rustAssets;
+  std::vector<SampleSet> rustSets; // The sample sets its sampled instruments use (zone PCM is in rustAssets).
   // Track-input routing: track indices grouped by processing level (sources first). One level = no
   // routes, the original single fork. `masterLevel` is the first level holding a master-resampling track.
   std::vector<std::uint32_t> levelOrder,levelStart;
@@ -1511,6 +1513,13 @@ struct RenderEngine::Impl {
         if(!own(t))break;
         markLive(t);
         const auto type=ev.status&0xF0;
+        if(type==0x90&&ev.data2>0)rustLive(ev.track,0,ev.data1&0x7F,ev.noteId,static_cast<float>(ev.data2&0x7F)/127.f);
+        else if(type==0x80||type==0x90)rustLive(ev.track,1,ev.data1&0x7F,ev.noteId,0);
+        else if(type==0xB0&&(ev.data1==120||ev.data1==123))rustLive(ev.track,2,0,0,0);
+        else if(type==0xB0)rustLive(ev.track,3,ev.data1&0x7F,ev.data2&0x7F,0);
+        else if(type==0xE0)rustLive(ev.track,3,pitchBendController,(((ev.data2&0x7F)<<7)|(ev.data1&0x7F))-8192,0);
+        else if(type==0xD0)rustLive(ev.track,3,channelPressureController,ev.data1&0x7F,0);
+        else if(type==0xC0)rustLive(ev.track,3,programChangeController,ev.data1&0x7F,0);
         if(type==0x90&&ev.data2>0)t.spawn(ev.data1&0x7F,static_cast<float>(ev.data2&0x7F)/127.f,unlimitedFrame,unlimitedFrame,ev.noteId,true,voiceOverflows);
         else if(type==0x80||type==0x90)t.noteOff(ev.data1&0x7F,ev.noteId,voiceOverflows);
         else if(type==0xB0&&(ev.data1==120||ev.data1==123))t.allNotesOff(voiceOverflows);
@@ -1564,19 +1573,19 @@ struct RenderEngine::Impl {
   }
   // Control thread (GARAK_RUST_ENGINE): submit `p` to the Rust graph. False (with rustRefusal set) when the Rust
   // engine refuses it: the C++ tracks render that graph, or in strict mode the call throws.
-  template<class Assets>bool rustApply(const ProjectTimeline& p,const Assets& assets,const ControlRecipe* recipe) {
+  template<class Assets>bool rustApply(const ProjectTimeline& p,const Assets& assets,const std::vector<SampleSet>& sets,const ControlRecipe* recipe) {
 #if GARAK_RUST
     std::string reason;bool ok=false;
     try {
       if(!rust)rust=std::make_unique<RustBackend>(rate,maxBlock,offline);
-      ok=rust->apply(p,assets,recipe,rustHostInstruments,reason);
+      ok=rust->apply(p,assets,sets,recipe,rustHostInstruments,reason);
     } catch(const std::exception& error){reason=error.what();ok=false;}
     if(ok){rustRefusal.clear();return true;}
     rustRefusal=reason;rustRefusals.fetch_add(1,std::memory_order_relaxed);
     if(rustMode==2)throw std::invalid_argument("GARAK_RUST_ENGINE=strict: the Rust engine refused the project: "+reason);
     return false;
 #else
-    (void)p;(void)assets;(void)recipe;rustRefusal="this build has no Rust engine (GARAK_RUST=OFF)";
+    (void)p;(void)assets;(void)sets;(void)recipe;rustRefusal="this build has no Rust engine (GARAK_RUST=OFF)";
     if(rustMode==2)throw std::invalid_argument(rustRefusal);
     return false;
 #endif
@@ -1587,6 +1596,24 @@ struct RenderEngine::Impl {
     return enqueue(c);
 #else
     (void)enabled;return 0;
+#endif
+  }
+  // A live event for the Rust graph's track `track` (callback, after `own` of that track): its built-in instrument
+  // plays it like the C++ track would (kind 0 note on (a = id), 1 note off (a = id), 2 all notes off, 3 controller
+  // (pitch = controller, a = value), 4 preview (a = frames)). The C++ track gets the event too: it renders when the
+  // Rust graph does not.
+  void rustLive(std::uint32_t track,std::uint32_t kind,int pitch,int a,float velocity)noexcept {
+#if GARAK_RUST
+    if(!rustRenders()||!active)return;
+    rustPrepare(); // The event lands on the Rust graph this block renders, after any switch reset.
+    garak_rs_engine_live(rust->handle,track,kind,pitch,a,velocity);
+#else
+    (void)track;(void)kind;(void)pitch;(void)a;(void)velocity;
+#endif
+  }
+  void rustStopAtEnd()noexcept {
+#if GARAK_RUST
+    if(rustRenders())garak_rs_engine_stop_at_end(rust->handle);
 #endif
   }
   // Tracks rendering ahead are skipped: their producer applies the same cycle
@@ -1600,7 +1627,7 @@ struct RenderEngine::Impl {
     if(rust&&rustActive) {
       std::array<std::uint64_t,4>skip{};
       for(std::size_t i=0;i<p.tracks.size()&&i<256;++i){const auto&t=p.tracks[i];if(t.ahead&&t.ahead->mode.load(std::memory_order_relaxed)!=AheadState::Off)skip[i/64]|=std::uint64_t{1}<<(i%64);}
-      garak_rs_engine_reset_skip(rust->handle,effects?1:0,skip.data());
+      garak_rs_engine_reset_skip(rust->handle,position,chase?1:0,effects?1:0,skip.data());
     }
 #endif
   }
@@ -1646,12 +1673,20 @@ struct RenderEngine::Impl {
   }
   // Callback: one Rust block. The track meters follow the Rust graph's; host nodes see the same transport
   // context the C++ tracks would.
+  // Rust commands first (no render-ahead worker may be inside the Rust graph while they apply), so the rings and
+  // the render see the graph this block's C++ graph matches; a switch from C++ resets the idle Rust tracks. Also
+  // run before a live event reaches the Rust graph (rustLive), so the event survives that reset.
+  void rustPrepare()noexcept {
+    if(!rustRendered||rustConsumed!=rustAllowed){quiesce();garak_rs_engine_render_block(rust->handle,nullptr,0,position,playing&&position<active->impl_->timeline.lengthFrames?1:0,rustAllowed,nullptr,0,nullptr,nullptr);rustConsumed=rustAllowed;}
+    if(!rustRendered){ // C++ -> Rust: the Rust tracks were idle.
+      reclaimAll(true);
+      garak_rs_engine_reset(rust->handle,position,playing&&position<active->impl_->timeline.lengthFrames?1:0,1);
+      rustRendered=true;
+    }
+  }
   void renderRust(float*out,std::uint32_t count,const float*input,std::uint32_t cursor,std::uint32_t channels)noexcept {
     auto&p=*active->impl_;
-    // Rust commands first (no render-ahead worker may be inside the Rust graph while they apply), so the rings
-    // below and the render see the graph this block's C++ graph matches.
-    if(!rustRendered||rustConsumed!=rustAllowed){quiesce();garak_rs_engine_render_block(rust->handle,nullptr,0,position,0,rustAllowed,nullptr,0,nullptr,nullptr);rustConsumed=rustAllowed;}
-    if(!rustRendered){reclaimAll(true);garak_rs_engine_reset(rust->handle,1);} // C++ -> Rust: the Rust tracks were idle.
+    rustPrepare();
     const bool audible=playing&&position<p.timeline.lengthFrames;
     ProcessContext context{static_cast<double>(rate),p.timeline.bpm,position,audible,offline,p.timeline.timeSigNumerator,p.timeline.timeSigDenominator};
     tempoContext(context,p);
@@ -1666,7 +1701,7 @@ struct RenderEngine::Impl {
       if(!t.ahead||t.ahead->mode.load(std::memory_order_acquire)==AheadState::Off)continue;
       if(consumeAhead(p,t,static_cast<std::uint32_t>(i))){rustAhead[i]=t.mix;continue;}
       auto&a=*t.ahead;a.lock();a.mode.store(AheadState::Off,std::memory_order_relaxed);a.clear();a.unlock();
-      t.reset(position,audible,true,t.taskOverflows);garak_rs_engine_reset_track(rust->handle,static_cast<std::uint32_t>(i),1);++t.taskResyncs;
+      t.reset(position,audible,true,t.taskOverflows);garak_rs_engine_reset_track(rust->handle,static_cast<std::uint32_t>(i),position,audible?1:0,1);++t.taskResyncs;
     }
     rustScope={this,&p,&context,input,position,cursor,channels,audible};
     rustNodes.user=&rustScope;rustNodes.source=&rustSourceNode;rustNodes.insert=&rustInsertNode;rustNodes.input=&rustInputNode;
@@ -1719,10 +1754,14 @@ struct RenderEngine::Impl {
   // A track the callback takes back from its ring out of sync: voices and tails restart here.
   void resetOwn(TrackRuntime&t,std::uint32_t index,std::int64_t frame,bool chase,std::uint64_t&overflows)noexcept {
     t.reset(frame,chase,true,overflows);
+    rustResetTrack(index,frame,chase,true);
+  }
+  // The same reset of the Rust graph's track (the calling thread owns it: the callback, or its ahead producer).
+  void rustResetTrack(std::uint32_t index,std::int64_t frame,bool chase,bool effects)noexcept {
 #if GARAK_RUST
-    if(rustRenders())garak_rs_engine_reset_track(rust->handle,index,1);
+    if(rustRenders())garak_rs_engine_reset_track(rust->handle,index,frame,chase?1:0,effects?1:0);
 #else
-    (void)index;
+    (void)index;(void)frame;(void)chase;(void)effects;
 #endif
   }
   // Busy holder: render this track's next block exactly as the callback would.
@@ -1730,7 +1769,7 @@ struct RenderEngine::Impl {
     auto&a=*t.ahead;const auto&p=g.timeline;const auto boundary=boundaryOf(p);
     if(a.nextFrame>=boundary) {
       if(!p.cycle)return AheadState::Produce::Ended;
-      a.nextFrame=p.cycle->at(0);t.reset(a.nextFrame,true,false,a.pendingOverflows);
+      a.nextFrame=p.cycle->at(0);t.reset(a.nextFrame,true,false,a.pendingOverflows);rustResetTrack(index,a.nextFrame,true,false);
     }
     if(a.phase==0){a.block=std::max<std::uint32_t>(1,deviceBlock.load(std::memory_order_relaxed));}
     auto count=static_cast<std::uint32_t>(std::min<std::int64_t>({static_cast<std::int64_t>(maxBlock),static_cast<std::int64_t>(a.block-a.phase),boundary-a.nextFrame}));
@@ -1792,12 +1831,12 @@ struct RenderEngine::Impl {
   // callback already wrapped (skipping this track), apply that reset here. If
   // the producer wrapped first, the callback's own wrap repeats the same reset
   // at the same frame, which is idempotent.
-  bool catchUp(const PreparedProject::Impl&g,TrackRuntime&t,std::int64_t frame,std::uint64_t&overflows)noexcept {
+  bool catchUp(const PreparedProject::Impl&g,TrackRuntime&t,std::uint32_t index,std::int64_t frame,std::uint64_t&overflows)noexcept {
     auto&a=*t.ahead;const auto&p=g.timeline;
     overflows+=a.pendingOverflows;a.pendingOverflows=0;
     if(a.nextFrame==frame)return true;
     if(!p.cycle)return false;
-    if(a.nextFrame>=p.cycle->at(1)&&frame==p.cycle->at(0)){a.nextFrame=frame;t.reset(frame,true,false,overflows);return true;}
+    if(a.nextFrame>=p.cycle->at(1)&&frame==p.cycle->at(0)){a.nextFrame=frame;t.reset(frame,true,false,overflows);rustResetTrack(index,frame,true,false);return true;}
     return a.nextFrame==p.cycle->at(0)&&frame>=p.cycle->at(1);
   }
   // Callback (transport change): every ahead track returns to the callback. A
@@ -1811,7 +1850,7 @@ struct RenderEngine::Impl {
       auto&t=g.tracks[i];
       if(!t.ahead||t.ahead->mode.load(std::memory_order_relaxed)==AheadState::Off)continue;
       auto&a=*t.ahead;
-      const bool seamless=a.empty()&&catchUp(g,t,position,voiceOverflows);
+      const bool seamless=a.empty()&&catchUp(g,t,static_cast<std::uint32_t>(i),position,voiceOverflows);
       a.mode.store(AheadState::Off,std::memory_order_relaxed);a.clear();
       if(!seamless&&!resetFollows)resetOwn(t,static_cast<std::uint32_t>(i),position,false,voiceOverflows);
     }
@@ -1826,7 +1865,7 @@ struct RenderEngine::Impl {
       const auto s=i<next.successor.size()?next.successor[i]:-1;
       if(s>=0){const auto&n=next.tracks[static_cast<std::size_t>(s)];if(n.identical&&!next.headerChanged&&n.ahead&&n.ahead->capacity==t.ahead->capacity)continue;}
       auto&a=*t.ahead;
-      const bool seamless=a.empty()&&catchUp(previous,t,position,voiceOverflows);
+      const bool seamless=a.empty()&&catchUp(previous,t,static_cast<std::uint32_t>(i),position,voiceOverflows);
       a.mode.store(AheadState::Off,std::memory_order_relaxed);a.clear();
       if(!seamless)resetOwn(t,static_cast<std::uint32_t>(i),position,playing,voiceOverflows); // The running Rust graph is still `previous`'s.
     }
@@ -1854,7 +1893,7 @@ struct RenderEngine::Impl {
           a.unlock();
           if(!drained)continue;
           // Seamless hand-back: the track's state is exactly at this frame.
-          const bool synced=catchUp(g,t,block.position+got,t.taskOverflows);a.clear();
+          const bool synced=catchUp(g,t,index,block.position+got,t.taskOverflows);a.clear();
           if(!synced)return false;
           auto context=*block.context;context.projectFrame+=got;context.continuousFrame+=got;
           t.meter=renderOwn(g,t,index,block.position+got,count-got,block.playing,context,a.out.data()+static_cast<std::size_t>(got)*2,t.taskOverflows,t.taskInvalid);
@@ -1887,7 +1926,7 @@ struct RenderEngine::Impl {
       if(drained)a.mode.store(AheadState::Off,std::memory_order_relaxed);
       a.unlock();
       if(drained) {
-        if(!catchUp(g,t,block.position+count,t.taskOverflows)){resetOwn(t,index,block.position+count,block.playing,t.taskOverflows);++t.taskResyncs;}
+        if(!catchUp(g,t,index,block.position+count,t.taskOverflows)){resetOwn(t,index,block.position+count,block.playing,t.taskOverflows);++t.taskResyncs;}
         a.clear();
       }
     }
@@ -2051,6 +2090,8 @@ struct RenderEngine::Impl {
           // live notes then start on time from the callback-owned state.
           if(!own(t)){deferred=c;return;}
           markLive(t);
+          rustLive(c.track,c.kind==Kind::NoteOff?1:c.kind==Kind::AllNotesOff?2:c.kind==Kind::Control?3:c.kind==Kind::Preview?4:0,
+                   c.pitch,c.kind==Kind::Control?static_cast<int>(c.value):c.kind==Kind::Preview?static_cast<int>(c.frame):c.noteId,c.value);
           if(c.kind==Kind::NoteOff)t.noteOff(c.pitch,c.noteId,voiceOverflows);
           else if(c.kind==Kind::AllNotesOff)t.allNotesOff(voiceOverflows);
           else if(c.kind==Kind::Control)t.controlChange(c.pitch,static_cast<int>(c.value),voiceOverflows);
@@ -2480,7 +2521,12 @@ std::unique_ptr<PreparedProject> RenderEngine::prepare(const ProjectTimeline& p,
   prepareRoutes(result->tracks,result->levelOrder,result->levelStart,result->masterLevel,impl_->maxBlock);
   if(impl_->rustMode) {
     std::set<const PcmAsset*> seen;
-    for(const auto&t:p.tracks)for(const auto&w:t.audio){const auto found=assets.find(w.assetId);if(found!=assets.end()&&found->second&&seen.insert(found->second.get()).second)result->rustAssets.push_back(found->second);}
+    const auto keep=[&](const std::string& id){const auto found=assets.find(id);if(found!=assets.end()&&found->second&&seen.insert(found->second.get()).second)result->rustAssets.push_back(found->second);};
+    for(const auto&t:p.tracks)for(const auto&w:t.audio)keep(w.assetId);
+#if GARAK_RUST
+    result->rustSets=rustSampleSets(p,sets);
+    for(const auto&s:result->rustSets)for(const auto*zones:{&s.zones,&s.releaseZones})for(const auto&z:*zones)keep(z.assetId);
+#endif
   }
   for(std::size_t i=0;i<result->tracks.size();++i){const auto&t=result->tracks[i];recipe->tracks[i].routing=routingTrack(t);recipe->tracks[i].aheadEligible=aheadCandidate(t)&&!recipe->tracks[i].routing;}
   if(impl_->aheadBlocks&&!impl_->offline) {
@@ -2547,7 +2593,7 @@ std::uint64_t RenderEngine::submit(std::unique_ptr<PreparedProject> project) {
   // GARAK_RUST_ENGINE: hand the same plan to the Rust graph first (update() does this itself), so a strict
   // refusal leaves the running graph alone.
   bool rustEnabled=false;
-  if(impl_->rustMode&&!impl_->rustInUpdate)rustEnabled=impl_->rustApply(recipe->timeline,graph.rustAssets,recipe.get());
+  if(impl_->rustMode&&!impl_->rustInUpdate)rustEnabled=impl_->rustApply(recipe->timeline,graph.rustAssets,graph.rustSets,recipe.get());
   Impl::Command c;c.kind=Impl::Kind::Graph;c.graph=project.get();
   const auto serial=impl_->enqueue(c);
   if(!serial)throw std::runtime_error("Native graph command queue is full");
@@ -2568,13 +2614,19 @@ UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& ass
   // known up front (an ineligible graph) still leaves the running graph alone.
   collectRetired();
 #if GARAK_RUST
-  if(e.rustMode==2&&!rustIneligibility(p,e.rustHostInstruments).empty())(void)e.rustApply(p,assets,nullptr); // Throws.
+  if(e.rustMode==2&&!rustIneligibility(p,e.rustHostInstruments).empty())(void)e.rustApply(p,assets,rustSampleSets(p,sets),nullptr); // Throws.
 #endif
   struct Scope{Impl&e;explicit Scope(Impl&x):e(x){e.rustInUpdate=true;}~Scope(){e.rustInUpdate=false;}};
   UpdateResult result;
   {Scope scope(e);result=updateGraph(p,assets,sets,resolvePlugin);}
   bool rustEnabled=false;
-  try{rustEnabled=e.rustApply(p,assets,e.lastSubmittedRecipe.get());}
+  try{
+#if GARAK_RUST
+    rustEnabled=e.rustApply(p,assets,rustSampleSets(p,sets),e.lastSubmittedRecipe.get());
+#else
+    rustEnabled=e.rustApply(p,assets,std::vector<SampleSet>{},e.lastSubmittedRecipe.get());
+#endif
+  }
   catch(...){(void)e.enqueueRustSync(false);throw;} // Strict: the C++ graph already renders the update.
   const auto ticket=e.enqueueRustSync(rustEnabled);
   if(ticket)result.ticket=ticket;
@@ -2877,7 +2929,7 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
       const auto boundary=!e.offline&&p.cycle?p.cycle->at(1):p.lengthFrames;
       if(e.position>=boundary) {
         if(!e.offline&&p.cycle){e.position=p.cycle->at(0);e.reset(true,false);}
-        else if(!e.offline){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
+        else if(!e.offline){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();e.rustStopAtEnd();}
       }
       if(e.playing&&e.position<boundary)count=static_cast<std::uint32_t>(std::min<std::int64_t>(count,boundary-e.position));
     }
@@ -2981,7 +3033,7 @@ void RenderEngine::render(float* output,const float* input,std::uint32_t frames,
   if(e.active&&e.playing&&!e.offline) {
     const auto&p=e.active->impl_->timeline;
     if(p.cycle&&e.position>=p.cycle->at(1)){e.position=p.cycle->at(0);e.reset(true,false);}
-    else if(!p.cycle&&e.position>=p.lengthFrames){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();}
+    else if(!p.cycle&&e.position>=p.lengthFrames){e.reclaimAll(false);e.playing=false;for(auto&track:e.active->impl_->tracks)if(track.instrument&&!track.wavetable)track.instrument->requestReset();e.rustStopAtEnd();}
   }
   // Events left behind (a track still draining its render-ahead ring) apply at the start of the next call.
   {std::uint32_t kept=0;for(std::uint32_t i=e.liveMidiNext;i<e.liveMidiCount;++i){e.liveMidi[kept]=e.liveMidi[i];e.liveMidi[kept++].offset=0;}e.liveMidiCount=kept;e.liveMidiNext=0;}

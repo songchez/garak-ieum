@@ -63,10 +63,20 @@ interface EngineExports {
   garak_engine_kernel_param(which: number): number
   garak_engine_kernel_ptr(): number
   garak_engine_import_kernel(type: number, size: number, data: number, count: number): number
+  // ABI 4 (docs/RUST_ENGINE.md 6)
+  garak_engine_register_samples(json: number, jsonLen: number): number
+  garak_engine_note_on(track: number, pitch: number, velocity: number, id: number): number
+  garak_engine_note_off(track: number, pitch: number, id: number): number
+  garak_engine_preview_note(track: number, pitch: number, velocity: number, frames: number): number
+  garak_engine_control_change(track: number, controller: number, value: number): number
+  garak_engine_all_notes_off(track: number): number
 }
 
-/** ABI 3: count-in, metronome, meters, monitoring input, route taps, live events, staged updates, kernels. */
-export const ENGINE_ABI_VERSION = 3
+/**
+ * ABI 3: count-in, metronome, meters, monitoring input, route taps, live events, staged updates, kernels.
+ * ABI 4: built-in instruments (sample set registration, per-call live MIDI exports; live events play them).
+ */
+export const ENGINE_ABI_VERSION = 4
 /** Applied kinds of set/patch (docs/RENDER_DIFF_PROTOCOL.md 3.3). */
 export type EngineApplied = 'none' | 'diff' | 'tracks' | 'full'
 const APPLIED: EngineApplied[] = ['none', 'diff', 'tracks', 'full']

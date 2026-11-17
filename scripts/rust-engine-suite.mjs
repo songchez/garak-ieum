@@ -60,7 +60,7 @@ const summary = [
   '',
   `Fallback mode: ${[...fallback.cases.values()].filter(c => c.pass).length}/${fallback.cases.size} pass. ` +
     `Strict mode: ${passedRust} pass through the Rust graph, ${passedOther} pass without rendering a graph, ` +
-    `${[...strict.cases.values()].filter(c => !c.pass).length} expected failures (built-in instruments not ported). ` +
+    `${[...strict.cases.values()].filter(c => !c.pass).length} expected failures (native/tests/rust_engine_expected_failures.txt). ` +
     `Strict with the built-in instruments as host nodes: ${[...hosted.cases.values()].filter(c => c.pass).length}/${hosted.cases.size} pass.`,
   '',
   '| Case | GARAK_RUST_ENGINE=1 (Rust blocks) | strict (Rust blocks) | strict + host instruments (Rust blocks) |',

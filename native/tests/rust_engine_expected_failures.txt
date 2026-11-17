@@ -2,30 +2,6 @@
 # Strict mode refuses any graph the Rust engine cannot render instead of falling back to C++, so these are the
 # Rust engine's missing features, by blocker. scripts/rust-engine-suite.mjs fails CI when a case not listed here
 # fails, and asks for this list to shrink when a listed case starts passing. Format: <test name> | <blocker>
-# Every blocker left is a built-in instrument (rust/engine-instruments): VST3 / IEUM WAVE host nodes, routes,
-# monitoring, recording taps, frozen windows and render-ahead render through the Rust graph. The suite's third
-# run (GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1: the C++ built-in instruments as host nodes) passes every case.
-synths and block independence | instruments (built-in synths)
-audio windows, resampling and cycle | instruments (built-in synths)
-sample zones and required assets | instruments (sampled)
-live MIDI release and equal-power panning | instruments (sampled) + live MIDI
-piano key-release noise | instruments (sampled)
-sigimsae effects | instruments (built-in synths)
-live edits preserve voices and tails | instruments (built-in synths)
-offline consistency and validation | instruments (built-in synths)
-concurrent control/audio isolation | instruments (built-in synths)
-multi-core tracks are bit-identical | instruments (built-in synths)
-render-ahead equals callback rendering | instruments (built-in synths)
-render-ahead yields live tracks | instruments (built-in synths)
-multi-core stress with random buffers | instruments (built-in synths)
-sustain pedal: VST3 CC64 timing, chase, live deferral and retrigger | instruments (built-in synth live-pedal part)
-MIDI controllers: bend, vibrato, expression, chase, live and VST3 | instruments (built-in synths)
-tempo map x returns x controllers | instruments (built-in synths)
-track automation lanes | instruments (built-in synth parameter lane)
-update: diffs equal a full rebuild | instruments (built-in synths)
-update: voices and tails survive edits | instruments (built-in synths)
-update: track add/remove keeps other tracks | instruments (built-in synths)
-update: 32 reverbs share impulse responses | instruments (built-in synths)
-update: render-ahead tracks take diffs | instruments (built-in synths)
-freeze: a frozen track renders like the live track | instruments (built-in synths)
-stems: pre-master stems sum to the mix | instruments (built-in synths)
+# Empty: every case renders through the Rust graph in strict mode (built-in instruments included; VST3 / IEUM
+# WAVE as host nodes). The suite's third run (GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1: the C++ built-in instruments
+# as host nodes) passes every case too.

@@ -303,6 +303,36 @@ fn live_events_reach_the_track() {
 }
 
 #[test]
+fn live_events_play_built_in_instruments() {
+    // The web live ring (keyboard, live MIDI, note previews) reaches the instrument's voices.
+    let mut keys = TrackPlan { id: "keys".into(), ..TrackPlan::default() };
+    keys.source.kind = garak_engine::plan::SourceKind::BuiltinSynth;
+    keys.source.instrument_id = "keys".into();
+    let p = plan(vec![keys], 48_000);
+    let (mut c, mut r) =
+        engine(EngineConfig { sample_rate: RATE, max_block: BLOCK, offline: false }).unwrap();
+    c.update(p).unwrap();
+    let mut out = vec![0.0f32; BLOCK as usize * 2];
+    r.render(&mut out);
+    assert!(out.iter().all(|x| *x == 0.0), "silent before any event");
+    c.live(0, LiveEvent::NoteOn { pitch: 60, velocity: 0.8, id: 1 }).unwrap();
+    let mut energy = 0.0f32;
+    for _ in 0..40 {
+        r.render(&mut out);
+        energy += out.iter().map(|x| x * x).sum::<f32>();
+    }
+    assert!(energy > 0.0, "a live note-on sounds");
+    c.live(0, LiveEvent::NoteOff { pitch: 60, id: 1 }).unwrap();
+    c.live(0, LiveEvent::Preview { pitch: 64, velocity: 0.5, frames: 4800 }).unwrap();
+    c.live(0, LiveEvent::Control { controller: 64, value: 127 }).unwrap();
+    c.live(0, LiveEvent::AllNotesOff).unwrap();
+    r.render(&mut out);
+    let s = c.snapshot();
+    assert_eq!((s.live_played, s.live_ignored), (5, 0));
+    assert!(c.live(0, LiveEvent::Control { controller: 129, value: 9000 }).is_err(), "bend out of range");
+}
+
+#[test]
 fn staged_updates_render_like_update_and_imported_kernels_are_used() {
     // The parity project has reverbs on its returns. One engine applies it with `set_json`; the other in
     // stages (parse, one track per step, commit) with the reverb kernels imported from a helper instance.

@@ -153,6 +153,9 @@ impl Renderer {
         peaks: &mut [f32],
         parallel: Option<&Parallel>,
     ) {
+        // Graph swaps reset or continue tracks at the shell's position.
+        self.position = info.position;
+        self.playing = info.playing;
         self.consume_until(info.allowed);
         let rate = f64::from(self.config.sample_rate);
         let step = (self.config.max_block as usize * 2).max(2);
@@ -214,10 +217,36 @@ impl Renderer {
         (t.routed && !t.route_input.is_empty()).then_some(t.route_input.as_slice())
     }
 
-    /// The shell's transport reset (audio thread): automation cursors and fader state, and with
-    /// `effects` also effect tails, delay lines and the master state (C++ `Impl::reset`).
-    pub fn host_reset(&mut self, effects: bool) {
-        self.reset(effects);
+    /// The shell's transport reset at project frame `frame` (audio thread): instrument voices and cursors
+    /// (`chase`: controllers chased, sounding notes restarted), and with `effects` also effect tails, delay
+    /// lines and the master state (C++ `Impl::reset(chase, effects)`).
+    pub fn host_reset(&mut self, frame: i64, chase: bool, effects: bool) {
+        self.position = frame;
+        self.reset(chase, effects);
+    }
+
+    /// A live event the shell applies itself (audio thread, at a block boundary; C++ live MIDI and its live
+    /// commands): the track's built-in instrument plays it now. Returns whether a track played it (the
+    /// snapshot counts it either way). The shell owns the track (it is not rendering ahead).
+    pub fn host_live(&mut self, track: usize, event: crate::track::LiveEvent) -> bool {
+        let played = event.is_valid()
+            && self
+                .active
+                .as_mut()
+                .and_then(|g| g.tracks.get_mut(track))
+                .is_some_and(|t| t.live_event(event));
+        if played {
+            self.live_played += 1;
+        } else {
+            self.live_ignored += 1;
+        }
+        played
+    }
+
+    /// The shell's transport reached the project end without a cycle (audio thread): plug-in style
+    /// instruments release their notes next block (C++ `requestReset`), built-in voices ring out.
+    pub fn host_stop_at_end(&mut self) {
+        self.stop_at_end();
     }
 
     /// Dynamics meters (audio thread, after `render_block`): each compressor/limiter/gate insert's

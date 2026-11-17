@@ -100,8 +100,8 @@ void garak_rs_engine_render_host(GarakRsEngine* engine, float* out, uint32_t fra
  * reset_skip: the transport reset that leaves ahead tracks alone (bit i of word i/64). */
 const float* garak_rs_engine_render_ahead(GarakRsEngine* engine, uint32_t track, int64_t frame, uint32_t frames,
                                           int32_t playing, const GarakRsHostNodes* nodes, float* peak);
-void garak_rs_engine_reset_track(GarakRsEngine* engine, uint32_t track, int32_t effects);
-void garak_rs_engine_reset_skip(GarakRsEngine* engine, int32_t effects, const uint64_t* skip);
+void garak_rs_engine_reset_track(GarakRsEngine* engine, uint32_t track, int64_t frame, int32_t chase, int32_t effects);
+void garak_rs_engine_reset_skip(GarakRsEngine* engine, int64_t frame, int32_t chase, int32_t effects, const uint64_t* skip);
 /* Audio thread, after render_host: routed track `track`'s input of the last block (what a recording of it
  * captures; interleaved stereo), or null when it has no internal route. Valid until the next render/reset. */
 const float* garak_rs_engine_route_input(GarakRsEngine* engine, uint32_t track);
@@ -109,8 +109,18 @@ const float* garak_rs_engine_route_input(GarakRsEngine* engine, uint32_t track);
  * call, in track then chain order (`insert` indexes the track plan's inserts). Returns the count. */
 typedef struct GarakRsDynamicsReading { uint16_t track, insert; float input, gain; } GarakRsDynamicsReading;
 uint32_t garak_rs_engine_take_dynamics(GarakRsEngine* engine, GarakRsDynamicsReading* out, uint32_t capacity);
-/* Audio thread: transport reset; effects != 0 also clears tails and delay lines. */
-void garak_rs_engine_reset(GarakRsEngine* engine, int32_t effects);
+/* Audio thread: transport reset at project frame `frame` (the shell's position): instrument voices stop and
+ * cursors move there; chase != 0 chases controllers and restarts sounding notes; effects != 0 also clears tails
+ * and delay lines (C++ Impl::reset(chase, effects)). */
+void garak_rs_engine_reset(GarakRsEngine* engine, int64_t frame, int32_t chase, int32_t effects);
+/* Audio thread, at a block boundary: a live event the shell applies itself (its live MIDI ring and live
+ * commands) for track `track`: kind 0 note on (a = note id), 1 note off (a = note id), 2 all notes off,
+ * 3 controller (pitch = controller number, a = value), 4 preview (a = frames). Returns 1 when a built-in
+ * instrument played it, 0 when no track did, -1 for an invalid event. The track must not be rendering ahead. */
+int32_t garak_rs_engine_live(GarakRsEngine* engine, uint32_t track, uint32_t kind, int32_t pitch, int32_t a, float velocity);
+/* Audio thread: the shell's transport stopped at the project end (no cycle): plug-in style Rust instruments
+ * (vintage) release their notes next block. */
+void garak_rs_engine_stop_at_end(GarakRsEngine* engine);
 
 /* Metronome port (rust/garak-engine/src/metronome.rs) for the parity harness: adds `total` frames of clicks to
  * `out` (interleaved stereo) in blocks of `block`, like RenderEngine: a count-in of `count_in` frames at the tempo

@@ -19,6 +19,8 @@ use crate::plan::PcmAsset;
 pub struct TestProject {
     pub json: String,
     pub assets: Vec<(String, PcmAsset)>,
+    /// `samples.register` params (JSON) of the sample instruments the project uses, in order.
+    pub sample_sets: Vec<String>,
 }
 
 fn lcg(seed: &mut u32) -> f32 {
@@ -216,8 +218,11 @@ pub fn project(tracks: usize, seconds: f64, sample_rate: u32) -> TestProject {
 "inserts":[{{"id":"echo","type":"delay","params":{{"amount":0.7,"time":0.75,"feedback":0.45,"dry":0}}}},{{"id":"eq","type":"eq","params":{{"low":-6,"high":-3}}}},{{"id":"grit","type":"drive","params":{{"drive":6,"mix":0.5}}}}]}}]}}"#,
         if tracks == 0 { "" } else { "," }
     );
-    TestProject { json, assets }
+    TestProject { json, assets, sample_sets: Vec::new() }
 }
+
+pub mod instruments;
+pub use instruments::instrument_project;
 
 #[cfg(test)]
 mod tests {

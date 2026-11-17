@@ -109,13 +109,25 @@ export function automationProject(): TestProject {
   return { name: 'automation', project, pcm, note: 'volume/pan automation, tempo ramp' }
 }
 
-/** What the engine does not render yet: an instrument track (until the instrument port lands). */
+/** A built-in synth track (the engine renders built-in instruments since the instrument port). */
 export function instrumentProject(): TestProject {
   const project = base('A/B instrument')
   const track = { ...createTrack('instrument', 'keys'), id: id('track') }
   track.clips = [{ id: id('clip'), name: 'notes', kind: 'midi', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: id('note'), pitch: 60, start: 0, duration: 2, velocity: 0.8 }] } as unknown as Track['clips'][number]]
   project.tracks = [track]
-  return { name: 'instrument', project, pcm: new Map(), note: 'built-in synth (instrument port pending)' }
+  return { name: 'instrument', project, pcm: new Map(), note: 'built-in synth' }
+}
+
+/**
+ * What the web engine refuses: a sampled instrument whose sample set was never registered with it (the web
+ * host does not send `samples.register` to the engine yet), so the app falls back to Web Audio.
+ */
+export function unsupportedProject(): TestProject {
+  const project = base('A/B unsupported')
+  const track = { ...createTrack('instrument', 'grand'), id: id('track') }
+  track.clips = [{ id: id('clip'), name: 'notes', kind: 'midi', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: id('note'), pitch: 60, start: 0, duration: 2, velocity: 0.8 }] } as unknown as Track['clips'][number]]
+  project.tracks = [track]
+  return { name: 'unsupported', project, pcm: new Map(), note: 'sampled instrument without a registered sample set' }
 }
 
 /**

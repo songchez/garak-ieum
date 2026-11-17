@@ -1,6 +1,7 @@
 //! The engine: a control half ([`Controller`]) that prepares graphs and classifies diffs, and an
 //! audio half ([`Renderer`]) that applies commands at block boundaries and renders. Mirrors
-//! native/src/engine.cpp `RenderEngine` (prepare / submit / update / render) for audio tracks.
+//! native/src/engine.cpp `RenderEngine` (prepare / submit / update / render): audio and built-in
+//! instrument tracks, live MIDI to built-in instruments.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -14,11 +15,12 @@ use crate::delay::CompensationDelay;
 use crate::error::{Error, require};
 use crate::external::{DeviceInput, Io, Stage};
 use crate::insert::{KernelCache, live_parameter, validated_values};
+use crate::instrument::{self, removed_notes, renumber_notes, same_notes};
 use crate::json::Json;
 use crate::master::Master;
 use crate::math;
 use crate::metronome::{Clicks, MeterEvent, MeterMap, Metronome, clicks, grid, meter_clicks};
-use crate::plan::{LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, TrackPlan};
+use crate::plan::{LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, SampleSet, SourceKind, TrackPlan};
 use crate::protocol;
 use crate::queue::{Consumer, Producer, channel};
 use crate::routes::{self, Levels};
@@ -120,6 +122,8 @@ pub(crate) struct Graph {
     tail: f64,
     /// Continues the running graph (same project): tracks adopt their predecessors.
     continues: bool,
+    /// Tempo / length / cycle changed: every continuing track recomputes its cursors.
+    header_changed: bool,
 }
 
 enum Command {
@@ -179,7 +183,8 @@ struct Ticketed {
     command: Command,
 }
 
-/// Control-thread record of the running graph (C++ `ControlRecipe`).
+/// Control-thread record of the running graph (C++ `ControlRecipe`). `plan` holds the notes as
+/// renumbered against the running graph (unchanged notes keep their ids).
 #[derive(Debug, Clone)]
 struct Recipe {
     plan: Plan,
@@ -193,7 +198,10 @@ struct Recipe {
 pub struct Controller {
     config: EngineConfig,
     assets: BTreeMap<String, Arc<PcmAsset>>,
+    sets: BTreeMap<String, Arc<SampleSet>>,
     cache: KernelCache,
+    /// Prepared IEUM WAVE table sets, shared by patches with the same user banks.
+    wave: crate::wave::WaveCache,
     recipe: Option<Recipe>,
     /// The host's merged copy of the project (what `project.patch` applies to).
     current: Option<Plan>,
@@ -219,6 +227,9 @@ pub struct Renderer {
     retired: Producer<Retired>,
     published: Arc<Published>,
     active: Option<Box<Graph>>,
+    /// A graph swap waiting for an IEUM WAVE table crossfade of the running graph (engine.cpp
+    /// `deferred`): retried at the next render, before any later command.
+    deferred: Option<Ticketed>,
     playing: bool,
     position: i64,
     master_gain: f32,
@@ -270,7 +281,9 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
         Controller {
             config,
             assets: BTreeMap::new(),
+            sets: BTreeMap::new(),
             cache: KernelCache::default(),
+            wave: crate::wave::WaveCache::default(),
             recipe: None,
             current: None,
             commands: cp,
@@ -286,6 +299,7 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             retired: rp,
             published,
             active: None,
+            deferred: None,
             playing: false,
             position: 0,
             master_gain: 1.0,
@@ -336,6 +350,20 @@ fn runtime_inserts(t: &TrackPlan) -> Vec<Option<usize>> {
         .collect()
 }
 
+/// Instrument identity (engine.cpp `sameSourceIdentity` + the resolved set and PCM objects): equal
+/// sources keep their voices across an edit, parameters may differ.
+fn same_source(old: &TrackPlan, neu: &TrackPlan, old_info: &TrackInfo, new_info: &TrackInfo) -> bool {
+    old.enabled
+        && neu.enabled
+        && old.source.kind == neu.source.kind
+        && old.source.instrument_id == neu.source.instrument_id
+        && old.source.sample_set_id == neu.source.sample_set_id
+        && old.source.is_kit == neu.source.is_kit
+        && old.source.plugin_instance == neu.source.plugin_instance
+        && old_info.set == new_info.set
+        && (neu.source.kind != SourceKind::BuiltinSampled || old_info.assets == new_info.assets)
+}
+
 /// Per runtime insert of `next`: the runtime insert of `old` with the same id and type.
 fn insert_origins(old: &TrackPlan, next: &TrackPlan) -> Vec<Option<usize>> {
     let from = runtime_inserts(old);
@@ -372,6 +400,7 @@ struct Staged {
 }
 
 /// Track `i` of `p`: the one `Controller::step` built for this plan, else built now.
+#[allow(clippy::too_many_arguments)]
 fn take_built(
     prebuilt: &mut [Option<(Track, TrackInfo)>],
     i: usize,
@@ -379,11 +408,15 @@ fn take_built(
     t: &TrackPlan,
     assets: &BTreeMap<String, Arc<PcmAsset>>,
     max_block: u32,
+    sets: &BTreeMap<String, Arc<SampleSet>>,
     cache: &mut KernelCache,
+    wave: &mut crate::wave::WaveCache,
+    reuse: Option<f64>,
 ) -> Result<(Track, TrackInfo), Error> {
     match prebuilt.get_mut(i).and_then(Option::take) {
-        Some(built) => Ok(built),
-        None => Track::build(p, t, assets, max_block, cache),
+        // A track that keeps its IEUM WAVE processor is built here (the prebuilt one made its own).
+        Some(built) if reuse.is_none() => Ok(built),
+        _ => Track::build(p, t, assets, max_block, sets, cache, wave, reuse),
     }
 }
 
@@ -409,6 +442,71 @@ impl Controller {
 
     pub fn remove_asset(&mut self, id: &str) {
         self.assets.remove(id);
+    }
+
+    /// Registers (or replaces) a sample instrument / kit (the host's `samples.register`). Every
+    /// zone's PCM must already be registered. Tracks using a replaced set rebuild on the next update.
+    pub fn put_sample_set(&mut self, set: SampleSet) -> Result<(), Error> {
+        require(!set.id.is_empty() && set.id.len() <= 512, "Invalid sample set id")?;
+        for z in &set.zones {
+            require(self.assets.contains_key(&z.asset_id), "Sample asset is missing")?;
+        }
+        for z in &set.release_zones {
+            require(self.assets.contains_key(&z.asset_id), "Release sample asset is missing")?;
+        }
+        self.sets.insert(set.id.clone(), Arc::new(set));
+        Ok(())
+    }
+
+    /// `samples.register` params as JSON text (see [`protocol::parse_sample_set`]).
+    pub fn register_samples_json(&mut self, text: &[u8]) -> Result<(), Error> {
+        let set = protocol::parse_sample_set(&Json::parse(text)?)?;
+        self.put_sample_set(set)
+    }
+
+    pub fn remove_sample_set(&mut self, id: &str) {
+        self.sets.remove(id);
+    }
+
+    /// Live note-on to an instrument track (C++ `noteOn`): rings until its note-off.
+    pub fn note_on(&mut self, track: u32, pitch: i32, velocity: f32, id: i32) -> Result<u64, Error> {
+        require((0..=127).contains(&pitch), "Invalid live MIDI note")?;
+        checked(f64::from(velocity), 0.0, 2.0, "Invalid MIDI velocity")?;
+        self.live(track, LiveEvent::NoteOn { pitch: pitch as u8, velocity, id })
+    }
+
+    /// An editor audition note of `duration` frames (C++ `previewNote`).
+    pub fn preview_note(
+        &mut self,
+        track: u32,
+        pitch: i32,
+        velocity: f32,
+        duration: u32,
+    ) -> Result<u64, Error> {
+        require(
+            (0..=127).contains(&pitch) && duration > 0 && duration <= self.config.sample_rate * 30,
+            "Invalid preview note",
+        )?;
+        checked(f64::from(velocity), 0.0, 2.0, "Invalid preview velocity")?;
+        self.live(track, LiveEvent::Preview { pitch: pitch as u8, velocity, frames: duration })
+    }
+
+    /// Live note-off (`id` >= 0 matches that note-on's id, else every live note of `pitch`).
+    pub fn note_off(&mut self, track: u32, pitch: i32, id: i32) -> Result<u64, Error> {
+        require((0..=127).contains(&pitch), "Invalid live MIDI note")?;
+        self.live(track, LiveEvent::NoteOff { pitch: pitch as u8, id })
+    }
+
+    /// Live controller (ControlEvent numbering: 0..127 CC, 128 pressure, 129 bend, 130 program,
+    /// 131 bend range). CC64 defers live note-offs of built-in instruments.
+    pub fn control_change(&mut self, track: u32, controller: i32, value: i32) -> Result<u64, Error> {
+        require(instrument::valid_controller_value(controller, value), "Invalid live MIDI controller")?;
+        self.live(track, LiveEvent::Control { controller: controller as u16, value })
+    }
+
+    /// Live panic on one track: lifts the live pedal, releases live notes, centres bend / modulation.
+    pub fn all_notes_off(&mut self, track: u32) -> Result<u64, Error> {
+        self.live(track, LiveEvent::AllNotesOff)
     }
 
     /// Latency (frames), sender latency and tail (seconds) of the last submitted graph.
@@ -523,8 +621,11 @@ impl Controller {
         self.enqueue(Command::Taps(taps))
     }
 
-    /// A live note / controller event for the track at graph index `track` (applied at the next block).
+    /// A live note / controller event for the track at graph index `track` (applied at the next block):
+    /// what live MIDI, the computer keyboard and note previews send. Built-in instruments play it
+    /// (`Track::live_event`); other tracks count it as ignored.
     pub fn live(&mut self, track: u32, event: LiveEvent) -> Result<u64, Error> {
+        require(track < 256 && event.is_valid(), "Invalid live MIDI event")?;
         self.enqueue(Command::Live { track, event })
     }
 
@@ -588,7 +689,24 @@ impl Controller {
         st.next += 1;
         let done = st.next >= st.todo.len();
         let Some(t) = st.plan.tracks.get(i) else { return Ok(done) };
-        match Track::build(&st.plan, t, &self.assets, self.config.max_block, &mut self.cache) {
+        // Unchanged notes keep their running ids (`full` and the replacement path renumber the same way).
+        let mut t = t.clone();
+        if let Some(last) = &self.recipe
+            && last.plan.project_id == st.plan.project_id
+            && let Some(old) = last.plan.tracks.iter().find(|o| o.id == t.id)
+        {
+            let _ = renumber_notes(&old.notes, &mut t.notes);
+        }
+        match Track::build(
+            &st.plan,
+            &t,
+            &self.assets,
+            self.config.max_block,
+            &self.sets,
+            &mut self.cache,
+            &mut self.wave,
+            None,
+        ) {
             Ok(built) => {
                 if let Some(slot) = self.prebuilt.get_mut(i) {
                     *slot = Some(built);
@@ -705,7 +823,10 @@ impl Controller {
                 t,
                 &self.assets,
                 self.config.max_block,
+                &self.sets,
                 &mut self.cache,
+                &mut self.wave,
+                None,
             )?;
             tracks.push(Box::new(track));
             infos.push(info);
@@ -808,24 +929,59 @@ impl Controller {
             sender_latency,
             tail,
             continues: false,
+            header_changed: false,
         };
         let recipe = Recipe { plan: p.clone(), tracks: infos, sender_latency, return_latency, tail };
         Ok((Box::new(graph), recipe))
     }
 
-    /// Submits a new graph that continues the running one by track id (engine.cpp `submit`).
+    /// Submits a new graph that continues the running one by track id (engine.cpp `update`'s full
+    /// path + `submit` + `linkGraph`). Unchanged notes keep their ids.
     fn full(&mut self, p: Plan) -> Result<Applied, Error> {
-        let (mut graph, recipe) = self.prepare(&p)?;
+        let mut staged = p.clone();
         if let Some(last) = &self.recipe
             && last.plan.project_id == p.project_id
         {
+            for t in &mut staged.tracks {
+                if let Some(old) = last.plan.tracks.iter().find(|o| o.id == t.id) {
+                    let _ = renumber_notes(&old.notes, &mut t.notes);
+                }
+            }
+        }
+        let (mut graph, recipe) = self.prepare(&staged)?;
+        if let Some(last) = &self.recipe
+            && last.plan.project_id == p.project_id
+            && last.plan.sample_rate == p.sample_rate
+        {
             graph.continues = true;
-            for (t, plan) in graph.tracks.iter_mut().zip(&p.tracks) {
-                if let Some(prev) = last.plan.tracks.iter().position(|o| o.id == plan.id) {
-                    t.predecessor = Some(prev);
-                    if let Some(old) = last.plan.tracks.get(prev) {
-                        t.insert_origin = insert_origins(old, plan);
-                    }
+            graph.header_changed = !staged.same_timing(&last.plan);
+            for (i, (t, neu)) in graph.tracks.iter_mut().zip(&staged.tracks).enumerate() {
+                let Some(prev) = last.plan.tracks.iter().position(|o| o.id == neu.id) else { continue };
+                let (Some(old), Some(old_info), Some(new_info)) =
+                    (last.plan.tracks.get(prev), last.tracks.get(prev), recipe.tracks.get(i))
+                else {
+                    continue;
+                };
+                t.predecessor = Some(prev);
+                t.same_source = same_source(old, neu, old_info, new_info);
+                let same_events = old.notes == neu.notes
+                    && old.controls == neu.controls
+                    && old.audio == neu.audio
+                    && old.automation == neu.automation
+                    && old_info.assets == new_info.assets
+                    && old.inserts.len() == neu.inserts.len()
+                    && old
+                        .inserts
+                        .iter()
+                        .zip(&neu.inserts)
+                        .all(|(a, b)| a.id == b.id && a.kind == b.kind && a.enabled == b.enabled);
+                t.identical = same_events
+                    && old.enabled == neu.enabled
+                    && (t.same_source || !neu.enabled)
+                    && old.is_return == neu.is_return;
+                t.insert_origin = insert_origins(old, neu);
+                if !t.identical && old.notes != neu.notes {
+                    t.removed = removed_notes(&old.notes, &neu.notes);
                 }
             }
         }
@@ -901,7 +1057,7 @@ impl Controller {
             }
             let mut replace = neu.enabled != old.enabled
                 || neu.input != old.input
-                || neu.notes != old.notes
+                || !same_notes(&neu.notes, &old.notes)
                 || neu.controls != old.controls
                 || neu.audio != old.audio
                 || neu.automation != old.automation
@@ -948,13 +1104,21 @@ impl Controller {
                 }
             }
             if !replace && neu.enabled {
-                // A re-registered PCM asset under the same id: the track resolves it again.
-                let resolved: Vec<usize> = neu
-                    .audio
-                    .iter()
-                    .map(|w| self.assets.get(&w.asset_id).map_or(0, |a| Arc::as_ptr(a) as usize))
-                    .collect();
-                replace = resolved != info.assets;
+                // A re-registered PCM asset or sample set under the same id: the track resolves it
+                // again (same order as the build: sample zones, release zones, windows).
+                let ptr = |id: &str| self.assets.get(id).map_or(0, |a| Arc::as_ptr(a) as usize);
+                let mut resolved: Vec<usize> = Vec::new();
+                if neu.source.kind == SourceKind::BuiltinSampled {
+                    match (self.sets.get(&neu.source.sample_set_id), &info.set) {
+                        (Some(set), Some(old)) if set == old => {
+                            resolved.extend(set.zones.iter().map(|z| ptr(&z.asset_id)));
+                            resolved.extend(set.release_zones.iter().map(|z| ptr(&z.asset_id)));
+                        }
+                        _ => replace = true,
+                    }
+                }
+                resolved.extend(neu.audio.iter().map(|w| ptr(&w.asset_id)));
+                replace |= resolved != info.assets;
             }
             e.replace = replace;
             if replace {
@@ -971,7 +1135,7 @@ impl Controller {
         let Some(last) = &self.recipe else { return self.full(p) };
         // Replacements (control thread); a latency change falls back to a full graph.
         let (sender_latency, return_latency) = (last.sender_latency, last.return_latency);
-        let mut replacements: Vec<(usize, Box<Track>, TrackInfo)> = Vec::new();
+        let mut replacements: Vec<(usize, Box<Track>, TrackInfo, TrackPlan)> = Vec::new();
         for (i, e) in edits.iter().enumerate() {
             if !e.replace {
                 continue;
@@ -981,34 +1145,50 @@ impl Controller {
             else {
                 continue;
             };
+            // IEUM WAVE patch changes keep their table crossfade on the graph path; the same patch
+            // keeps the running processor (engine.cpp `update`).
+            let wave = neu.source.kind == SourceKind::NativeWavetable
+                || old.source.kind == SourceKind::NativeWavetable;
+            let same_wave = neu.source == old.source && neu.enabled && old.enabled;
+            if wave && !same_wave {
+                return self.full(p);
+            }
+            let reuse = if wave { Some(info.instrument_tail) } else { None };
+            let mut neu = neu.clone();
+            let removed = renumber_notes(&old.notes, &mut neu.notes);
             let (mut t, new_info) = take_built(
                 &mut self.prebuilt,
                 i,
                 &p,
-                neu,
+                &neu,
                 &self.assets,
                 self.config.max_block,
+                &self.sets,
                 &mut self.cache,
+                &mut self.wave,
+                reuse,
             )?;
             if new_info.latency != info.latency {
                 return self.full(p);
             }
             t.predecessor = Some(i);
             t.index = i;
-            t.insert_origin = insert_origins(old, neu);
+            t.same_source = same_source(old, &neu, info, &new_info);
+            t.removed = removed;
+            t.insert_origin = insert_origins(old, &neu);
             if old.is_return {
                 t.compensation = CompensationDelay::new(return_latency.saturating_sub(t.latency));
             } else {
                 t.compensation = CompensationDelay::new(sender_latency - t.latency);
                 t.output_delay = CompensationDelay::new(return_latency);
             }
-            replacements.push((i, Box::new(t), new_info));
+            replacements.push((i, Box::new(t), new_info, neu));
         }
         let mut commands: Vec<Command> = Vec::new();
-        let mut infos: Vec<(usize, TrackInfo)> = Vec::new();
-        for (i, runtime, info) in replacements {
+        let mut infos: Vec<(usize, TrackInfo, TrackPlan)> = Vec::new();
+        for (i, runtime, info, plan) in replacements {
             commands.push(Command::Replace { track: i as u32, runtime });
-            infos.push((i, info));
+            infos.push((i, info, plan));
         }
         let replaced = infos.len();
         for (i, (neu, e)) in p.tracks.iter().zip(&edits).enumerate() {
@@ -1048,11 +1228,11 @@ impl Controller {
         }
         // The recipe follows the running graph.
         if let Some(recipe) = &mut self.recipe {
-            for (i, info) in infos {
-                if let (Some(slot), Some(t)) = (recipe.tracks.get_mut(i), p.tracks.get(i)) {
+            for (i, info, plan) in infos {
+                if let Some(slot) = recipe.tracks.get_mut(i) {
                     *slot = info;
                     if let Some(pt) = recipe.plan.tracks.get_mut(i) {
-                        *pt = t.clone();
+                        *pt = plan;
                     }
                 }
             }
@@ -1101,10 +1281,11 @@ impl Renderer {
         }
     }
 
-    fn reset(&mut self, effects: bool) {
+    fn reset(&mut self, chase: bool, effects: bool) {
+        let position = self.position;
         if let Some(g) = &mut self.active {
             for t in &mut g.tracks {
-                t.reset(effects);
+                t.reset(position, chase, effects);
             }
             if effects {
                 g.master.reset();
@@ -1130,22 +1311,45 @@ impl Renderer {
     }
 
     /// Applies queued commands up to ticket `limit` (a host shell keeps later ones for the block in
-    /// which its own matching command applies; see `host.rs`).
+    /// which its own matching command applies; see `host.rs`). A graph swap deferred for an IEUM WAVE
+    /// table crossfade goes first.
     fn consume_until(&mut self, limit: u64) {
-        while self.commands.peek().is_some_and(|c| c.ticket <= limit) {
-            let Some(Ticketed { ticket, command }) = self.commands.pop() else { break };
+        loop {
+            let next = match self.deferred.take() {
+                Some(d) => d,
+                None if self.commands.peek().is_some_and(|c| c.ticket <= limit) => {
+                    let Some(c) = self.commands.pop() else { break };
+                    c
+                }
+                None => break,
+            };
+            let Ticketed { ticket, command } = next;
             match command {
                 Command::Graph(mut next) => {
+                    let continues = next.continues
+                        && self.active.as_ref().is_some_and(|p| p.project_id == next.project_id);
+                    if continues
+                        && let Some(prev) = &mut self.active
+                        && !prev.tracks.iter_mut().all(|t| t.source.ready_to_transfer())
+                    {
+                        self.deferred = Some(Ticketed { ticket, command: Command::Graph(next) });
+                        break;
+                    }
                     let previous = self.active.take();
                     let project_changed = previous.as_ref().is_none_or(|p| p.project_id != next.project_id);
                     let preserve = next.continues && !project_changed;
                     self.target_master_gain = next.master_gain;
                     let mut previous = previous;
                     if preserve && let Some(prev) = &mut previous {
+                        let (position, playing) = (self.position, self.playing);
+                        let header_changed = next.header_changed;
                         for t in &mut next.tracks {
                             match t.predecessor.and_then(|i| prev.tracks.get_mut(i)) {
-                                Some(old) => t.adopt(old, false),
-                                None => t.reset(true),
+                                Some(old) => {
+                                    let same_events = t.identical && !header_changed;
+                                    t.adopt(old, position, same_events, false);
+                                }
+                                None => t.reset(position, playing, true),
                             }
                         }
                         next.master.take_state_from(&prev.master);
@@ -1161,7 +1365,7 @@ impl Renderer {
                     }
                     self.normalize(false);
                     if !preserve {
-                        self.reset(true);
+                        self.reset(self.playing, true);
                     }
                     if let Some(prev) = previous {
                         self.retire(Retired::Graph(prev));
@@ -1176,25 +1380,25 @@ impl Renderer {
                             self.count_in_elapsed = 0;
                         } else {
                             self.playing = self.active.is_some();
-                            self.reset(false);
+                            self.reset(self.playing, false);
                         }
                     }
                 }
                 Command::Pause => {
                     self.count_in_remaining = 0;
                     self.playing = false;
-                    self.reset(false);
+                    self.reset(false, false);
                 }
                 Command::Stop => {
                     self.count_in_remaining = 0;
                     self.playing = false;
                     self.position = 0;
-                    self.reset(true);
+                    self.reset(false, true);
                 }
                 Command::Seek(frame) => {
                     self.position = frame;
                     self.normalize(false);
-                    self.reset(true);
+                    self.reset(self.playing, true);
                 }
                 Command::Mix { track, gain, pan, audible, unmuted_audible } => {
                     if let Some(t) = self.active.as_mut().and_then(|g| g.tracks.get_mut(track as usize)) {
@@ -1226,9 +1430,10 @@ impl Renderer {
                 }
                 Command::Replace { track, mut runtime } => {
                     let slot = self.active.as_mut().and_then(|g| g.tracks.get_mut(track as usize));
+                    let position = self.position;
                     match slot {
                         Some(old) => {
-                            runtime.adopt(old, true);
+                            runtime.adopt(old, position, false, true);
                             core::mem::swap(old, &mut runtime);
                             self.retire(Retired::Track(runtime));
                         }
@@ -1466,9 +1671,9 @@ impl Renderer {
                     match g.cycle {
                         Some((start, _)) => {
                             self.position = start;
-                            self.reset(false);
+                            self.reset(true, false);
                         }
-                        None => self.playing = false,
+                        None => self.stop_at_end(),
                     }
                 }
                 if self.playing && self.position < boundary {
@@ -1534,7 +1739,7 @@ impl Renderer {
                     // The transport starts on the frame right after the count-in.
                     self.count_in_remaining = 0;
                     self.playing = self.active.is_some();
-                    self.reset(false);
+                    self.reset(self.playing, false);
                 }
             }
             cursor += count;
@@ -1547,9 +1752,9 @@ impl Renderer {
             match g.cycle {
                 Some((start, end)) if self.position >= end => {
                     self.position = start;
-                    self.reset(false);
+                    self.reset(true, false);
                 }
-                None if self.position >= g.length_frames => self.playing = false,
+                None if self.position >= g.length_frames => self.stop_at_end(),
                 _ => {}
             }
         }
@@ -1580,6 +1785,17 @@ impl Renderer {
             {
                 Some(src) => dst.copy_from_slice(src),
                 None => dst.fill(0.0),
+            }
+        }
+    }
+
+    /// The transport reached the project end (no cycle): plug-in style instruments release their
+    /// notes next block, built-in voices ring out (engine.cpp `render`).
+    fn stop_at_end(&mut self) {
+        self.playing = false;
+        if let Some(g) = &mut self.active {
+            for t in &mut g.tracks {
+                t.request_instrument_reset();
             }
         }
     }
@@ -1694,6 +1910,11 @@ impl Renderer {
 
     pub fn position(&self) -> i64 {
         self.position
+    }
+
+    /// Voices sounding on track `index` of the running graph (diagnostics and tests).
+    pub fn active_voices(&self, index: usize) -> usize {
+        self.active.as_ref().and_then(|g| g.tracks.get(index)).map_or(0, |t| t.source.active_voices())
     }
 }
 

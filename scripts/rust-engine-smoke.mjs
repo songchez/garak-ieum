@@ -143,7 +143,7 @@ const TASK = async ({ name, arg }) => {
       const exported = await engine.renderAudio(playTest.project, { bitDepth: 16 })
       const exportInfo = engine.diagnostics().lastRender
       // A project the engine refuses: plays on Web Audio, with a console note.
-      const refused = fixtures.instrumentProject()
+      const refused = fixtures.unsupportedProject()
       engine.setProject(refused.project)
       engine.setAssets(new Map())
       await engine.play()

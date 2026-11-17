@@ -30,6 +30,7 @@ pub mod engine;
 pub mod error;
 pub mod external;
 mod insert;
+mod instrument;
 pub mod json;
 mod master;
 pub mod math;
@@ -42,6 +43,7 @@ mod routes;
 pub mod tempo;
 pub mod testkit;
 mod track;
+pub(crate) mod wave;
 
 pub use engine::{
     Ahead, Applied, BlockInfo, Controller, DynamicsReading, EngineConfig, HostTask, MAX_TAPS, Parallel,
@@ -49,6 +51,7 @@ pub use engine::{
 };
 pub use error::Error;
 pub use external::HostCallbacks;
+pub use instrument::UNLIMITED_FRAME;
 pub use offline::{OfflineRender, render_offline};
-pub use plan::{PcmAsset, Plan};
+pub use plan::{PcmAsset, Plan, SampleSet, SampleZone};
 pub use track::LiveEvent;

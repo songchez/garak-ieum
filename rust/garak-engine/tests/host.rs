@@ -137,9 +137,9 @@ fn parallel_senders_are_bit_identical_and_heap_free() {
         assert_eq!(a, d, "reordered senders differ at block {k}");
         if k == 200 {
             arm(true);
-            one.host_reset(true);
-            many.host_reset(true);
-            inline.host_reset(true);
+            one.host_reset(position, true, true);
+            many.host_reset(position, true, true);
+            inline.host_reset(position, true, true);
             arm(false);
         }
     }

@@ -70,15 +70,16 @@ impl Ahead {
         }
     }
 
-    /// The shell's reset of one track it takes back from a ring out of sync (effects: tails and delay lines).
+    /// The shell's reset of one track it takes back from a ring out of sync, at project frame `frame` (`chase`:
+    /// controllers chased and sounding notes restarted; effects: tails and delay lines).
     ///
     /// # Safety
     /// As [`track`](Self::track) (the caller is the thread that owns the track now).
-    pub unsafe fn reset_track(&self, track: usize, effects: bool) {
+    pub unsafe fn reset_track(&self, track: usize, frame: i64, chase: bool, effects: bool) {
         // SAFETY: forwarded caller contract.
         if let Some((_, t)) = unsafe { self.track(track) } {
             // SAFETY: as above.
-            unsafe { (*t).reset(effects) };
+            unsafe { (*t).reset(frame, chase, effects) };
         }
     }
 }
@@ -93,15 +94,16 @@ impl Renderer {
         }
     }
 
-    /// The shell's transport reset that leaves the tracks it renders ahead alone (`skip`: bit `i` of word
-    /// `i / 64`), like C++ `Impl::reset`.
-    pub fn host_reset_skip(&mut self, effects: bool, skip: &[u64; 4]) {
+    /// The shell's transport reset at project frame `frame` that leaves the tracks it renders ahead alone
+    /// (`skip`: bit `i` of word `i / 64`), like C++ `Impl::reset(chase, effects)`.
+    pub fn host_reset_skip(&mut self, frame: i64, chase: bool, effects: bool, skip: &[u64; 4]) {
+        self.position = frame;
         if let Some(g) = &mut self.active {
             for (i, t) in g.tracks.iter_mut().enumerate() {
                 if skip.get(i / 64).is_some_and(|w| w & (1u64 << (i % 64)) != 0) {
                     continue;
                 }
-                t.reset(effects);
+                t.reset(frame, chase, effects);
             }
             if effects {
                 g.master.reset();
