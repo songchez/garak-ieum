@@ -354,6 +354,93 @@ impl Saturator {
     }
 }
 
+/// [`Saturator`] one channel at a time (the guitar rig's pedals and amp run their chain per channel):
+/// the same 17-tap interpolator, shaper and decimator with a history per channel, summed term for term
+/// in the C++ order. The drive insert uses the paired form.
+#[derive(Clone, Debug)]
+pub struct ChannelSaturator {
+    amount: f64,
+    bias: f64,
+    origin: f64,
+    normal: f64,
+    coefficients: [f64; 17],
+    up: [[f64; 17]; 2],
+    down: [[f64; 17]; 2],
+    up_write: [usize; 2],
+    down_write: [usize; 2],
+}
+
+fn fir_channel(coefficients: &[f64; 17], x: f64, state: &mut [f64; 17], write: &mut usize) -> f64 {
+    let w = *write % 17;
+    if let Some(slot) = state.get_mut(w) {
+        *slot = x;
+    }
+    // state[(write + 17 - i) % 17] for i = 0..17: newest first, walking backwards and wrapping.
+    let (upto, after) = state.split_at(w + 1);
+    let mut output = 0.0;
+    for (c, s) in coefficients.iter().zip(upto.iter().rev().chain(after.iter().rev())) {
+        output += c * s;
+    }
+    *write = (w + 1) % 17;
+    output
+}
+
+impl ChannelSaturator {
+    pub fn new(amount: f64, bias: f64) -> Self {
+        let paired = Saturator::new(amount, bias);
+        Self {
+            amount,
+            bias,
+            origin: paired.origin,
+            normal: paired.normal,
+            coefficients: paired.coefficients.map(|c| c.lanes()[0]),
+            up: [[0.0; 17]; 2],
+            down: [[0.0; 17]; 2],
+            up_write: [0; 2],
+            down_write: [0; 2],
+        }
+    }
+
+    #[inline(always)]
+    pub fn sample(&mut self, input: f32, channel: usize) -> f32 {
+        let c = channel.min(1);
+        let (Some(up), Some(down), Some(uw), Some(dw)) =
+            (self.up.get_mut(c), self.down.get_mut(c), self.up_write.get_mut(c), self.down_write.get_mut(c))
+        else {
+            return 0.0;
+        };
+        let up_a = fir_channel(&self.coefficients, 2.0 * f64::from(input), up, uw);
+        let a = fir_channel(
+            &self.coefficients,
+            shape(self.amount, self.bias, self.origin, self.normal, up_a),
+            down,
+            dw,
+        );
+        let up_b = fir_channel(&self.coefficients, 0.0, up, uw);
+        let _ = fir_channel(
+            &self.coefficients,
+            shape(self.amount, self.bias, self.origin, self.normal, up_b),
+            down,
+            dw,
+        );
+        a as f32
+    }
+
+    pub fn reset(&mut self) {
+        self.up = [[0.0; 17]; 2];
+        self.down = [[0.0; 17]; 2];
+        self.up_write = [0; 2];
+        self.down_write = [0; 2];
+    }
+
+    pub fn take_state_from(&mut self, previous: &ChannelSaturator) {
+        self.up = previous.up;
+        self.down = previous.down;
+        self.up_write = previous.up_write;
+        self.down_write = previous.down_write;
+    }
+}
+
 #[inline]
 fn shape(amount: f64, bias: f64, origin: f64, normal: f64, x: f64) -> f64 {
     (math::tanh(amount * std_clamp(x, -1.0, 1.0) + bias) - origin) / normal

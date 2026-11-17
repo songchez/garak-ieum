@@ -23,8 +23,10 @@ export const engineOutput = path.join(root, 'public', 'wasm', 'garak-engine.wasm
 // Budgets for the worklet module; CI fails above them (docs/RUST.md: stage 1 is ~101 KiB raw /
 // ~36 KiB gzip with every built-in effect; the architecture review allows 80 KB gzip). The raw
 // budget went from 128 to 160 KiB with the vintage instruments (~38 KiB of code; gzip ~55 KB, still
-// well inside the 80 KB transfer budget that matters for loading).
-const WASM_BUDGET_BYTES = 160 * 1024
+// well inside the 80 KB transfer budget that matters for loading), and from 160 to 208 KiB with the
+// guitar rig (~43 KiB of code: eleven module types, the rack and its hand-over; ~5 KiB of catalog;
+// ~146 -> ~196 KiB raw, gzip ~53 -> ~69 KB). The gzip budget stays at 80 KB.
+const WASM_BUDGET_BYTES = 208 * 1024
 const WASM_GZIP_BUDGET_BYTES = 80 * 1000
 // The engine module carries the whole render engine (JSON/protocol parser, graph preparation, diff
 // classification, clips, automation, tempo map) on top of every garak-dsp effect. At opt-level 3 it is
@@ -38,9 +40,11 @@ const WASM_GZIP_BUDGET_BYTES = 80 * 1000
 // Raised from 304 KiB / 124 KB (rust/engine-integrate): the built-in instruments (rust/engine-instruments: the
 // five synths and drum kit, sample-set zones with release zones, the vintage EP / 106 and IEUM WAVE with its
 // table generator and patch schema) measured 291 -> 460 KiB raw, 119 -> 189 KB gzip. That is still far below
-// the worklet's practical limit; the module is fetched once and compiled off the audio thread.
-const ENGINE_BUDGET_BYTES = 480 * 1024
-const ENGINE_GZIP_BUDGET_BYTES = 196 * 1000
+// the worklet's practical limit; the module is fetched once and compiled off the audio thread. The guitar rig
+// insert (rust/guitar-rig: eleven module types, the rack, its catalog and hand-over) then measured 460 -> 512 KiB
+// raw, 189 -> 207 KB gzip, hence 528 KiB / 212 KB.
+const ENGINE_BUDGET_BYTES = 528 * 1024
+const ENGINE_GZIP_BUDGET_BYTES = 212 * 1000
 
 function findCargo() {
   const exe = process.platform === 'win32' ? 'cargo.exe' : 'cargo'

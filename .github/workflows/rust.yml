@@ -36,6 +36,7 @@ on:
       - 'native/src/wavetable.cpp'
       - 'native/devices/wavetable-synth/**'
       - 'src/devices/vintage/**'
+      - 'src/devices/guitar-rig/**'
       - 'src/audio/rust/**'
       - 'src/audio/native/timeline.ts'
       - 'src/audio/native/timelineSync.ts'
@@ -228,6 +229,14 @@ jobs:
         env:
           GARAK_RUST_EFFECTS: all
         run: ctest --test-dir build/native-rust -C Release -R native-engine --output-on-failure
+
+      # The guitar rig's CPU gate: the Rust rig may take at most 1.15x the C++ rig's time.
+      - name: Guitar rig CPU gate (Rust <= 1.15x C++)
+        shell: bash
+        run: |
+          dir=build/native-rust
+          [ -d "$dir/Release" ] && dir="$dir/Release"
+          "$dir/garak-rust-bench" 3 --gate=1.15 guitar-rig
 
       - name: Parity table and CPU baseline (C++ vs Rust)
         shell: bash

@@ -77,6 +77,48 @@ interface Exports {
   garak_fx_take_state(slot: number, previous: number): number
   garak_heap_used(): number
   garak_heap_reserved(): number
+  // Guitar rig (rust/garak-wasm/src/rig.rs); absent from modules built before it.
+  garak_rig_params_ptr?(): number
+  garak_rig_decays_ptr?(): number
+  garak_rig_tap_ptr?(): number
+  garak_rig_text_ptr?(): number
+  garak_rig_param_count?(): number
+  garak_rig_param_id?(index: number): number
+  garak_rig_param_range?(index: number): number
+  garak_rig_reverb_decays?(count: number): number
+  garak_rig_create?(rate: number, count: number): number
+  garak_rig_create_prepared?(rate: number, count: number, k0: number, k1: number, k2: number): number
+  garak_rig_free?(slot: number): void
+  garak_rig_automate?(slot: number, count: number): void
+  garak_rig_reset?(slot: number): void
+  garak_rig_process?(slot: number, frames: number): void
+  garak_rig_latency?(slot: number): number
+  garak_rig_tail?(slot: number): number
+  garak_rig_take_state?(slot: number, previous: number): number
+}
+
+type RigExports = Required<Pick<Exports, 'garak_rig_params_ptr' | 'garak_rig_decays_ptr' | 'garak_rig_tap_ptr' | 'garak_rig_text_ptr'
+  | 'garak_rig_param_count' | 'garak_rig_param_id' | 'garak_rig_param_range' | 'garak_rig_reverb_decays' | 'garak_rig_create'
+  | 'garak_rig_create_prepared' | 'garak_rig_free' | 'garak_rig_automate' | 'garak_rig_reset' | 'garak_rig_process'
+  | 'garak_rig_latency' | 'garak_rig_tail' | 'garak_rig_take_state'>>
+
+/**
+ * The guitar rig (native `makeEffect("guitar-rig")`, the desktop's Rust rig). The rack layout and each
+ * reverb's Decay / switch are fixed at construction: a change takes a new rig + `takeStateFrom`.
+ */
+export interface RustGuitarRig {
+  readonly params: readonly RustParamDef[]
+  /** Every parameter re-read (missing -> default, clamped), new targets glide (automation, knobs). */
+  configure(params: Record<string, number> | undefined): void
+  /** Planar stereo in place; `tap` (optional) receives the mono signal arriving at the tuner. */
+  process(left: Float32Array, right: Float32Array, frames?: number, tap?: Float32Array): void
+  reset(): void
+  latencyFrames(): number
+  tailSeconds(): number
+  /** Adopts `previous`'s module states by module and copy (C++ `takeStateFrom`); free `previous` after. */
+  takeStateFrom(previous: RustGuitarRig): void
+  free(): void
+  readonly slot: number
 }
 
 export interface RustCoefficients { b0: number; b1: number; b2: number; a1: number; a2: number }
@@ -131,6 +173,11 @@ export class GarakWasm {
   private meterView!: Float32Array
   private textView!: Uint8Array
   private readonly defs = new Map<RustEffectType, RustParamDef[]>()
+  private rigDefs: RustParamDef[] | null = null
+  private rigParamsView: Float64Array | null = null
+  private rigDecaysView: Float64Array | null = null
+  private rigTapView: Float32Array | null = null
+  private rigTextView: Uint8Array | null = null
 
   constructor(private readonly x: Exports) {
     const abi = x.garak_abi_version()
@@ -149,6 +196,13 @@ export class GarakWasm {
     this.paramsView = new Float64Array(buffer, this.x.garak_params_ptr(), 64)
     this.meterView = new Float32Array(buffer, this.x.garak_meter_ptr(), 2)
     this.textView = new Uint8Array(buffer, this.x.garak_text_ptr(), 64)
+    const r = this.rig
+    if (r) {
+      this.rigParamsView = new Float64Array(buffer, r.garak_rig_params_ptr(), r.garak_rig_param_count())
+      this.rigDecaysView = new Float64Array(buffer, r.garak_rig_decays_ptr(), 3)
+      this.rigTapView = new Float32Array(buffer, r.garak_rig_tap_ptr(), this.maxFrames)
+      this.rigTextView = new Uint8Array(buffer, r.garak_rig_text_ptr(), 64)
+    }
   }
 
   /** Bytes the module's effect arena uses / has reserved (diagnostics). */
@@ -273,6 +327,103 @@ export class GarakWasm {
     const kernels = new Float32Array(x.memory.buffer, region, floats).slice()
     x.garak_region_free(region)
     return kernels
+  }
+
+  /** The module's guitar rig exports, or null for a module built before the rig was ported. */
+  private get rig(): RigExports | null {
+    return typeof this.x.garak_rig_create_prepared === 'function' ? this.x as unknown as RigExports : null
+  }
+
+  /** True when this module runs the guitar rig. */
+  hasGuitarRig(): boolean { return this.rig !== null }
+
+  /** The rig's parameter catalog (dsp.cpp `guitarRigDefs()` order). Empty without the rig exports. */
+  rigParamDefs(): RustParamDef[] {
+    const r = this.rig
+    if (!r) return []
+    if (this.rigDefs) return this.rigDefs
+    const defs: RustParamDef[] = []
+    for (let i = 0; i < r.garak_rig_param_count(); i += 1) {
+      const length = r.garak_rig_param_id(i)
+      this.refreshViews()
+      const id = String.fromCharCode(...this.rigTextView!.subarray(0, length))
+      r.garak_rig_param_range(i)
+      defs.push({ id, default: this.rigParamsView![0], min: this.rigParamsView![1], max: this.rigParamsView![2] })
+    }
+    return this.rigDefs = defs
+  }
+
+  private stageRig(params: Record<string, number> | undefined): number {
+    const defs = this.rigParamDefs()
+    this.refreshViews()
+    defs.forEach((def, i) => {
+      const value = params?.[def.id]
+      this.rigParamsView![i] = clampValue(typeof value === 'number' && Number.isFinite(value) ? value : def.default, def.min, def.max)
+    })
+    return defs.length
+  }
+
+  /**
+   * Decay of each reverb copy (index = copy) the rig in `params` builds convolvers for, or null. Their kernels
+   * are `buildReverbKernels(rate, 0, decay)`: the plate is the reverb's hall impulse blended by Decay.
+   */
+  rigReverbDecays(params: Record<string, number> | undefined): (number | null)[] {
+    const r = this.rig
+    if (!r) return [null, null, null]
+    const mask = r.garak_rig_reverb_decays(this.stageRig(params))
+    this.refreshViews()
+    return [0, 1, 2].map(i => (mask >> i) & 1 ? this.rigDecaysView![i] : null)
+  }
+
+  /**
+   * A guitar rig configured with `params`. `kernels[i]`: `buildReverbKernels(rate, 0, decay)` for reverb copy
+   * `i` when `rigReverbDecays` lists it (only a copy happens here); without them the module synthesises the
+   * impulses itself (~10-20 ms each, too slow for an audio thread). Null when no slot or memory is left.
+   * Control path only (constructor, structural edits), never inside `process()`.
+   */
+  createGuitarRig(sampleRate: number, params?: Record<string, number>, kernels?: readonly (Float32Array | null)[] | null): RustGuitarRig | null {
+    const r = this.rig
+    if (!r) return null
+    const x = this.x
+    const decays = this.rigReverbDecays(params)
+    let slot: number
+    if (kernels && x.garak_region_alloc && decays.every((d, i) => d === null || kernels[i])) {
+      const regions = [0, 0, 0]
+      for (let i = 0; i < 3; i += 1) {
+        const k = decays[i] === null ? null : kernels[i]
+        if (!k) continue
+        const region = x.garak_region_alloc(k.length) >>> 0
+        if (!region) { for (const used of regions) if (used) x.garak_region_free?.(used); return null }
+        new Float32Array(x.memory.buffer, region, k.length).set(k)
+        regions[i] = region
+      }
+      slot = r.garak_rig_create_prepared(sampleRate, this.stageRig(params), regions[0], regions[1], regions[2])
+    } else {
+      slot = r.garak_rig_create(sampleRate, this.stageRig(params))
+    }
+    this.refreshViews()
+    if (slot < 0) return null
+    return {
+      params: this.rigParamDefs(), slot,
+      configure: p => r.garak_rig_automate(slot, this.stageRig(p)),
+      process: (l, right, frames = Math.min(l.length, right.length), tap) => {
+        this.refreshViews()
+        for (let offset = 0; offset < frames; offset += this.maxFrames) {
+          const n = Math.min(this.maxFrames, frames - offset)
+          this.left.set(l.subarray(offset, offset + n))
+          this.right.set(right.subarray(offset, offset + n))
+          r.garak_rig_process(slot, n)
+          l.set(this.left.subarray(0, n), offset)
+          right.set(this.right.subarray(0, n), offset)
+          if (tap && offset < tap.length) tap.set(this.rigTapView!.subarray(0, Math.min(n, tap.length - offset)), offset)
+        }
+      },
+      reset: () => r.garak_rig_reset(slot),
+      latencyFrames: () => r.garak_rig_latency(slot),
+      tailSeconds: () => r.garak_rig_tail(slot),
+      takeStateFrom: previous => { r.garak_rig_take_state(slot, previous.slot) },
+      free: () => r.garak_rig_free(slot),
+    }
   }
 
   // Copies through the static scratch buffers; no allocation per call.

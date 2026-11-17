@@ -9,7 +9,8 @@
 // WAV export (renderStopped: offline engine, length + tail, plug-in delay trimmed), at engine
 // blocks of 4096 and 128 frames, with the C++ effects and with the Rust effects behind the C++
 // engine, at 48 and 44.1 kHz; then a live engine applies mid-play diffs (mix, send, insert
-// parameter, master, a track rebuild) on both. Gate: residual <= -90 dBFS, equal latency/length.
+// parameter, master, a track rebuild) on both. The same runs with a guitar rig insert (withGuitarRig):
+// offline exports and a live knob diff + rack reorder. Gate: residual <= -90 dBFS, equal latency/length.
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_engine.h"
@@ -136,9 +137,13 @@ double peak(const std::vector<float>& a) {
   return m;
 }
 
-void offlineCase(const char* name, std::uint32_t tracks, double seconds, std::uint32_t rate, std::uint32_t block, bool rustEffects) {
+std::string edit(std::string text, const std::string& from, const std::string& to);
+std::string withGuitarRig(std::string json);
+
+void offlineCase(const char* name, std::uint32_t tracks, double seconds, std::uint32_t rate, std::uint32_t block, bool rustEffects, bool rig = false) {
   garak::dsp::setEffectBackend("all", rustEffects ? garak::dsp::EffectBackend::Rust : garak::dsp::EffectBackend::Cpp);
-  const auto project = testProject(tracks, seconds, rate);
+  auto project = testProject(tracks, seconds, rate);
+  if (rig) project.json = withGuitarRig(project.json);
   const auto cpp = renderCpp(project, block);
   const auto rust = renderRust(project, rate, block);
   const double diff = residual(cpp.samples, rust.samples);
@@ -156,6 +161,61 @@ std::string edit(std::string text, const std::string& from, const std::string& t
   const auto at = text.find(from);
   if (at == std::string::npos) throw std::runtime_error("edit target missing: " + from);
   return text.replace(at, from.size(), to);
+}
+
+// The guitar rig as an engine insert: track 1's chorus becomes a rig (compressor, drive, crunch amp,
+// cabinet, a second drive, chorus, delay, plate reverb, phaser) and its filter lane automates the amp gain.
+const char* const kRig = R"({"id":"rig","type":"guitar-rig","params":{"driveEnabled":1,"ampModel":1,"ampGain":18,"cabinet":2,"micType":1,)"
+                         R"("chorusEnabled":1,"delayEnabled":1,"delayTime":180,"reverbEnabled":1,"reverbDecay":0.6,"phaserEnabled":1,"driveEnabled_2":1,)"
+                         R"("rackSlot0":1,"rackSlot1":2,"rackSlot2":3,"rackSlot3":4,"rackSlot4":18,"rackSlot5":5,"rackSlot6":6,"rackSlot7":10,"rackSlot8":8}})";
+std::string withGuitarRig(std::string json) {
+  json = edit(json, R"({"id":"chorus","type":"chorus","params":{"rate":1.3,"depth":0.6,"mix":0.4}})", kRig);
+  return edit(json, R"("insertId":"filter","param":"cutoff"},"minimum":20,"maximum":20000,"logarithmic":true)",
+              R"("insertId":"rig","param":"ampGain"},"minimum":0,"maximum":36)");
+}
+
+// A live engine with the rig: a live knob (Diff, set in place) then a rack reorder (structural: that
+// track is rebuilt and the new rig adopts the old one's state by module).
+void liveRigCase(bool rustEffects) {
+  garak::dsp::setEffectBackend("all", rustEffects ? garak::dsp::EffectBackend::Rust : garak::dsp::EffectBackend::Cpp);
+  constexpr std::uint32_t rate = 48000, block = 128, call = 256;
+  auto project = testProject(4, 3, rate);
+  project.json = withGuitarRig(project.json);
+  auto diff = edit(project.json, R"("revision":1)", R"("revision":2)");
+  diff = edit(diff, R"("ampGain":18)", R"("ampGain":30)");
+  auto rebuild = edit(diff, R"("revision":2)", R"("revision":3)");
+  rebuild = edit(rebuild, R"("rackSlot5":5,"rackSlot6":6)", R"("rackSlot5":6,"rackSlot6":5)");
+  garak::RenderEngine cpp(rate, block);
+  auto* rust = rustEngine(project, rate, block, false);
+  check(cpp.update(parse(project.json), project.assets).kind == garak::UpdateResult::Kind::Full, "live rig: c++ initial graph");
+  check(garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(project.json.data()), project.json.size(), nullptr, 0) == GARAK_RS_APPLIED_FULL, "live rig: rust initial graph " + rustError(rust));
+  (void)cpp.play(); garak_rs_engine_transport(rust, GARAK_RS_PLAY, 0);
+  const std::uint32_t total = rate * 3;
+  std::vector<float> a(std::size_t(total) * 2), b(std::size_t(total) * 2);
+  int stage = 0;
+  for (std::uint32_t done = 0; done < total; done += call) {
+    if (stage == 0 && done >= rate / 2) {
+      const auto kind = cpp.update(parse(diff), project.assets).kind;
+      const auto applied = garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(diff.data()), diff.size(), nullptr, 0);
+      check(kind == garak::UpdateResult::Kind::Diff && applied == GARAK_RS_APPLIED_DIFF, "live rig: knob is a diff", applied);
+      ++stage;
+    } else if (stage == 1 && done >= rate * 3 / 2) {
+      const auto kind = cpp.update(parse(rebuild), project.assets).kind;
+      const auto applied = garak_rs_engine_set(rust, reinterpret_cast<const std::uint8_t*>(rebuild.data()), rebuild.size(), nullptr, 0);
+      check(kind == garak::UpdateResult::Kind::Tracks && applied == GARAK_RS_APPLIED_TRACKS, "live rig: reorder rebuilds the track", applied);
+      ++stage;
+    }
+    const auto frames = std::min(call, total - done);
+    cpp.render(a.data() + std::size_t(done) * 2, nullptr, frames, 0);
+    garak_rs_engine_render(rust, b.data() + std::size_t(done) * 2, frames);
+    cpp.collectRetired(); garak_rs_engine_collect(rust);
+  }
+  garak_rs_engine_destroy(rust);
+  const double d = residual(a, b);
+  std::printf("| live guitar rig (knob diff, rack reorder) | 4 | 3.0 s | %u Hz | %u | %s | — | %.2f | %s |\n", rate, block,
+              rustEffects ? "Rust" : "C++", dbfs(peak(a)), d == 0 ? "bit-identical" : (std::to_string(dbfs(d)).substr(0, 7) + " dBFS").c_str());
+  check(peak(a) > .05, "live rig: silent", peak(a));
+  check(dbfs(d) <= -90, std::string("live rig: residual (") + (rustEffects ? "Rust" : "C++") + " effects)", dbfs(d));
 }
 
 // Live engines (transport, no offline tail): the project is set and played, then mid-play edits
@@ -218,6 +278,9 @@ int main() {
       offlineCase("offline export", 6, 3, 44100, 4096, rustEffects);
       offlineCase("offline export", 1, 1, 48000, 512, rustEffects);
       liveCase(rustEffects);
+      offlineCase("offline export + guitar rig", 8, 4, 48000, 4096, rustEffects, true);
+      offlineCase("offline export + guitar rig", 6, 3, 44100, 128, rustEffects, true);
+      liveRigCase(rustEffects);
     }
   } catch (const std::exception& error) {
     check(false, std::string("exception: ") + error.what());

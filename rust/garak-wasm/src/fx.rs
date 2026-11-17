@@ -23,8 +23,8 @@ struct Slot {
     kernels: usize,
 }
 
-struct FxPool {
-    arena: Arena,
+pub(crate) struct FxPool {
+    pub(crate) arena: Arena,
     slots: [Option<Slot>; MAX_SLOTS],
     params: [f64; MAX_PARAMS],
     meter: [f32; 2],
@@ -43,7 +43,7 @@ static POOL: Global = Global(UnsafeCell::new(FxPool {
     text: [0; 64],
 }));
 
-fn pool() -> &'static mut FxPool {
+pub(crate) fn pool() -> &'static mut FxPool {
     // SAFETY: single-threaded, and no export keeps the reference across another export call.
     unsafe { &mut *POOL.0.get() }
 }
@@ -56,7 +56,7 @@ fn fx(slot: i32) -> Option<&'static mut FxState> {
 
 /// # Safety
 /// `start` is 0 or an arena region of at least `len` floats that outlives every use.
-unsafe fn floats(start: usize, len: usize) -> &'static mut [f32] {
+pub(crate) unsafe fn floats(start: usize, len: usize) -> &'static mut [f32] {
     if start == 0 || len == 0 {
         &mut []
     } else {
@@ -66,7 +66,7 @@ unsafe fn floats(start: usize, len: usize) -> &'static mut [f32] {
 }
 
 /// Releases whatever a failed create had reserved.
-fn release(arena: &mut Arena, regions: &[usize]) {
+pub(crate) fn release(arena: &mut Arena, regions: &[usize]) {
     for &r in regions {
         if r != 0 {
             arena.free(r);
@@ -171,7 +171,7 @@ pub extern "C" fn garak_region_free(region: usize) {
 }
 
 /// IR synthesis + kernel preparation into a new region: (region, floats, ir_len).
-fn build_kernels(
+pub(crate) fn build_kernels(
     arena: &mut Arena,
     sample_rate: f64,
     space: usize,

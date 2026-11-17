@@ -1416,6 +1416,7 @@ struct RenderEngine::Impl {
   // last block did (a switch resets the engine taking over).
   int rustMode=rustEngineModeFromEnvironment();
   bool rustHostInstruments=rustHostInstrumentsFromEnvironment(); // Diagnostics: built-in instruments as host nodes.
+  std::string rustRefuseInsert=rustRefuseInsertFromEnvironment(); // Diagnostics (tests): refuse graphs with this insert.
 #if GARAK_RUST
   std::unique_ptr<RustBackend> rust;
 #endif
@@ -2614,7 +2615,7 @@ UpdateResult RenderEngine::update(const ProjectTimeline& p,const AssetStore& ass
   // known up front (an ineligible graph) still leaves the running graph alone.
   collectRetired();
 #if GARAK_RUST
-  if(e.rustMode==2&&!rustIneligibility(p,e.rustHostInstruments).empty())(void)e.rustApply(p,assets,rustSampleSets(p,sets),nullptr); // Throws.
+  if(e.rustMode==2&&!rustIneligibility(p,e.rustHostInstruments,e.rustRefuseInsert).empty())(void)e.rustApply(p,assets,rustSampleSets(p,sets),nullptr); // Throws.
 #endif
   struct Scope{Impl&e;explicit Scope(Impl&x):e(x){e.rustInUpdate=true;}~Scope(){e.rustInUpdate=false;}};
   UpdateResult result;

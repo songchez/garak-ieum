@@ -5,8 +5,8 @@
 // and inserts and IEUM WAVE stay C++ processors the Rust graph calls back at their place in the chain (host
 // nodes, docs/RUST_ENGINE.md 4), and so does monitored device input; routes, taps, sends, frozen windows,
 // plug-in delay compensation and the built-in instruments (synths, drums, sample sets, vintage; their live MIDI
-// is forwarded from the shell) are the Rust graph's. A graph the Rust engine refuses renders in C++ as before
-// ("1"), or is refused ("strict", for the regression suite). GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1
+// is forwarded from the shell) and the guitar rig are the Rust graph's. A graph the Rust engine refuses renders
+// in C++ as before ("1"), or is refused ("strict", for the regression suite). GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1
 // (diagnostics) renders the C++ built-in instruments as host nodes instead.
 //
 // The plan travels as the same timeline JSON the host receives (docs/RENDER_DIFF_PROTOCOL.md), written
@@ -25,6 +25,17 @@ int rustEngineModeFromEnvironment() noexcept {
   return 1;
 #else
   return 0;
+#endif
+}
+
+// Diagnostics (tests): GARAK_RUST_ENGINE_REFUSE_INSERT=<insert type> makes the shell refuse graphs with that
+// insert, so the fallback and strict-refusal paths stay testable now that the Rust engine renders everything.
+std::string rustRefuseInsertFromEnvironment() {
+#if GARAK_RUST
+  const char* value = std::getenv("GARAK_RUST_ENGINE_REFUSE_INSERT");
+  return value ? std::string(value) : std::string();
+#else
+  return {};
 #endif
 }
 
@@ -60,16 +71,18 @@ class JsonWriter {
 };
 
 #if GARAK_RUST
-// The reason a timeline cannot render in the Rust engine yet, or empty. The Rust parser and graph builder
-// refuse the rest themselves (their error is the reason then). VST3 and IEUM WAVE are host nodes; built-in
-// instruments render in the Rust graph (host nodes only with `hostInstruments`, a diagnostic).
-// Checked before the C++ graph changes, so a strict refusal leaves the running graph alone (RenderEngine::update).
-std::string rustIneligibility(const ProjectTimeline& p, bool hostInstruments) {
+// The reason a timeline cannot render in the Rust engine yet, or empty. Nothing is known up front any more:
+// VST3 and IEUM WAVE are host nodes, built-in instruments and the guitar rig render in the Rust graph (built-in
+// instruments as host nodes only with `hostInstruments`, a diagnostic). The Rust parser and graph builder
+// refuse what they cannot render themselves (their error is the reason then). `refuseInsert` is the test
+// diagnostic above. Checked before the C++ graph changes, so a strict refusal leaves the running graph alone
+// (RenderEngine::update).
+std::string rustIneligibility(const ProjectTimeline& p, bool hostInstruments, const std::string& refuseInsert) {
   (void)hostInstruments;
+  if (refuseInsert.empty()) return {};
   for (const auto& t : p.tracks) {
     if (!t.enabled) continue;
-    // Not ported to garak-dsp yet (the Rust graph refuses it too; this names it before anything changes).
-    for (const auto& e : t.inserts) if (e.enabled && e.type == "guitar-rig") return "guitar rig insert on track " + t.id;
+    for (const auto& e : t.inserts) if (e.enabled && e.type == refuseInsert) return e.type + " insert on track " + t.id + " (GARAK_RUST_ENGINE_REFUSE_INSERT)";
   }
   return {};
 }
@@ -303,7 +316,7 @@ class RustBackend {
   // same timeline (host node delays and tails).
   bool apply(const ProjectTimeline& p, const AssetStore& assets, const std::vector<SampleSet>& sets, const ControlRecipe* recipe,
              bool hostInstruments, std::string& reason) {
-    reason = rustIneligibility(p, hostInstruments);
+    reason = rustIneligibility(p, hostInstruments, refuseInsert);
     if (!reason.empty()) return false;
     const auto putId = [&](const std::string& id) {
       const auto found = assets.find(id);
@@ -332,6 +345,7 @@ class RustBackend {
     return apply(p, store, sets, recipe, hostInstruments, reason);
   }
   [[nodiscard]] std::uint64_t ticket() const noexcept { return garak_rs_engine_ticket(handle); }
+  std::string refuseInsert = rustRefuseInsertFromEnvironment();
   void collect() noexcept { garak_rs_engine_collect(handle); }
 
  private:

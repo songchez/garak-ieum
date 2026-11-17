@@ -29,6 +29,8 @@ pub mod engine;
 pub mod fx;
 mod heap;
 pub mod metronome;
+/// The guitar rig (`garak_rs_rig_*`).
+pub mod rig;
 
 // The engine's control half allocates; the staticlib uses the C runtime heap (tests use std's).
 #[cfg(not(test))]
@@ -288,12 +290,14 @@ mod tests {
     const SOURCE: &str = include_str!("lib.rs");
     const FX_SOURCE: &str = include_str!("fx.rs");
     const INSTRUMENT_SOURCE: &str = include_str!("instruments.rs");
+    const RIG_SOURCE: &str = include_str!("rig.rs");
 
     fn exported() -> Vec<String> {
         SOURCE
             .lines()
             .chain(FX_SOURCE.lines())
             .chain(INSTRUMENT_SOURCE.lines())
+            .chain(RIG_SOURCE.lines())
             .filter_map(|l| l.split("extern \"C\" fn ").nth(1))
             .filter_map(|rest| rest.split('(').next())
             .filter(|name| name.starts_with("garak_rs_"))

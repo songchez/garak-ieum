@@ -148,6 +148,51 @@ int32_t garak_rs_fx_meter(GarakRsFx* fx, float* out_peak, float* out_gain);
  * must then swap the two storage buffers as well. */
 int32_t garak_rs_fx_take_state(GarakRsFx* fx, GarakRsFx* previous);
 
+/* ---- Guitar rig (rust/garak-ffi/src/rig.rs) -------------------------------------------------------
+ * makeEffect("guitar-rig") ported to rust/garak-dsp/src/fx/guitar: up to 18 rack modules (comp, drive,
+ * amp, cabinet + mic, chorus, delay, fuzz, phaser, tremolo, plate reverb, tuner; each up to 3 times),
+ * in the parameter order of dsp.cpp guitarRigDefs(). Lifecycle as for GarakRsFx: allocate
+ * garak_rs_rig_size() bytes aligned to garak_rs_rig_align(), garak_rs_rig_storage_len() floats of state
+ * storage (depends on the rack layout) and, for every reverb instance garak_rs_rig_reverb_decays()
+ * reports, kernels: impulse from garak_rs_rig_reverb_generate_ir(), then garak_rs_reverb_kernel_len() /
+ * garak_rs_reverb_prepare_kernels(). Then garak_rs_rig_init (control thread); the rest is real-time
+ * safe. Plain data: free the bytes, no destructor runs. The rack layout (rackSlot*) and each reverb's
+ * Decay / switch are structural: a new rig + garak_rs_rig_take_state, as in C++. */
+#define GARAK_RS_RIG_MAX_REVERBS 3
+
+typedef struct GarakRsRig GarakRsRig; /* opaque */
+
+size_t garak_rs_rig_size(void);
+size_t garak_rs_rig_align(void);
+uint32_t garak_rs_rig_param_count(void);
+/* Copies the id (no terminator) into out and returns its full length; 0 when out of range. */
+size_t garak_rs_rig_param_id(uint32_t index, char* out, size_t capacity);
+int32_t garak_rs_rig_param_range(uint32_t index, double* out_default, double* out_min, double* out_max);
+/* The plate reverb's impulse (the hall impulse blended by Decay). generate_ir returns 1 on success. */
+size_t garak_rs_rig_reverb_ir_len(double sample_rate);
+size_t garak_rs_rig_reverb_scratch_len(double sample_rate);
+int32_t garak_rs_rig_reverb_generate_ir(double sample_rate, double decay, float* left, float* right, size_t ir_len,
+                                        float* scratch, size_t scratch_len);
+/* Bit i set: reverb instance i is in the rack and switched on, its Decay in out_decays[i] (3 doubles or null). */
+uint32_t garak_rs_rig_reverb_decays(const double* params, uint32_t count, double* out_decays);
+size_t garak_rs_rig_storage_len(double sample_rate, const double* params, uint32_t count, size_t ir_len);
+/* kernels / kernel_lens: GARAK_RS_RIG_MAX_REVERBS entries, one per reverb instance (null / 0 where unused).
+ * Returns GARAK_RS_OK, GARAK_RS_ERR_ARGUMENT, _RATE, _STORAGE or _KERNELS. */
+int32_t garak_rs_rig_init(GarakRsRig* rig, double sample_rate, const double* params, uint32_t count, float* storage,
+                          size_t storage_len, const float* const* kernels, const size_t* kernel_lens, size_t ir_len);
+void garak_rs_rig_process(GarakRsRig* rig, float* stereo, uint32_t frames);
+void garak_rs_rig_process_planar(GarakRsRig* rig, float* left, float* right, uint32_t frames);
+void garak_rs_rig_automate(GarakRsRig* rig, const double* params, uint32_t count);
+void garak_rs_rig_set_param(GarakRsRig* rig, uint32_t index, double value);
+void garak_rs_rig_commit(GarakRsRig* rig);
+double garak_rs_rig_param(const GarakRsRig* rig, uint32_t index);
+void garak_rs_rig_reset(GarakRsRig* rig);
+uint32_t garak_rs_rig_latency(const GarakRsRig* rig);
+double garak_rs_rig_tail(const GarakRsRig* rig);
+/* C++ takeStateFrom by module code and instance. Returns 1 when the two rigs exchanged their whole state
+ * storage: the caller must then swap the two storage buffers as well. */
+int32_t garak_rs_rig_take_state(GarakRsRig* rig, GarakRsRig* previous);
+
 /* ---- Built-in instruments (rust/garak-ffi/src/instruments.rs) -----------------------------------
  * 옥구슬 EP and 한밤 106 (rust/garak-dsp/src/instruments). The same Rust code runs in the browser
  * worklet (garak-wasm), with deterministic math, so both engines render identical samples.

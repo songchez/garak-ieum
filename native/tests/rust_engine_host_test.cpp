@@ -6,8 +6,9 @@
 //   2. live playback with mid-play diffs (mix, send, live insert parameter, master, a track rebuild), a seek and
 //      a cycle: C++ vs Rust shell, through RenderEngine::update (the Rust graph's commands are gated by ticket);
 //   3. multi-core: the Rust shell with 0 and N worker threads must be bit-identical;
-//   4. fallback: a project the Rust engine refuses (guitar rig insert) renders in C++ in mode 1 (counted in
-//      EngineSnapshot::rustRefusals) and throws in strict mode;
+//   4. fallback: a project the Rust engine refuses renders in C++ in mode 1 (counted in EngineSnapshot::rustRefusals)
+//      and throws in strict mode. The Rust engine renders every project now, so the shell's test diagnostic
+//      GARAK_RUST_ENGINE_REFUSE_INSERT names the refused insert (a guitar rig);
 //   5. metronome: the garak-engine port vs native/src/metronome.hpp (grids, compound meters, tempo and meter
 //      maps, count-in), driven the way RenderEngine::renderClicks drives it;
 //   6. host nodes (docs/RUST_ENGINE.md 4): VST3 instrument and inserts (a stand-in plug-in) with events, sustain,
@@ -28,6 +29,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <memory>
@@ -202,7 +204,18 @@ void liveCases() {
   check(m2 == 0, "multi-core offline: Rust output differs from one thread", dbfs(m2));
 }
 
+// Sets (or with null, clears) an environment variable for the engines constructed next.
+void setEnvironment(const char* name, const char* value) {
+#ifdef _WIN32
+  (void)_putenv_s(name, value ? value : "");
+#else
+  if (value) (void)setenv(name, value, 1); else (void)unsetenv(name);
+#endif
+}
+
 void fallbackCases() {
+  setEnvironment("GARAK_RUST_ENGINE_REFUSE_INSERT", "guitar-rig");
+  struct Restore { ~Restore() { setEnvironment("GARAK_RUST_ENGINE_REFUSE_INSERT", nullptr); } } restore;
   const auto project = testProject(2, 1, 48000);
   auto plan = parse(project.json);
   garak::BuiltinInsert rig; rig.id = "rig"; rig.type = "guitar-rig";
