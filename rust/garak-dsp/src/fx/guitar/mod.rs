@@ -412,6 +412,34 @@ impl<'a> GuitarRig<'a> {
         }
     }
 
+    /// [`Self::process_interleaved`], also writing the signal arriving at the tuner (mono, `(l + r) / 2`,
+    /// one value per frame) into `tap` (silence without a tuner): the editor's tuner readout.
+    pub fn process_interleaved_tap(&mut self, s: &mut [f32], tap: &mut [f32]) {
+        tap.fill(0.0);
+        for slot in self.slots.iter_mut().take(self.count) {
+            match &mut slot.module {
+                Module::Comp(m) => run_interleaved(m, s),
+                Module::Drive(m) | Module::Fuzz(m) => run_interleaved(m, s),
+                Module::Amp(m) => run_interleaved(m, s),
+                Module::Cabinet(m) => run_interleaved(m, s),
+                Module::Chorus(m) => run_interleaved(m, s),
+                Module::Delay(m) => run_interleaved(m, s),
+                Module::Phaser(m) => run_interleaved(m, s),
+                Module::Tremolo(m) => run_interleaved(m, s),
+                Module::Reverb(m) => run_interleaved(m, s),
+                Module::Tuner(on) => {
+                    for (t, [l, r]) in tap.iter_mut().zip(s.as_chunks::<2>().0) {
+                        *t = 0.5 * (l + r);
+                    }
+                    if *on {
+                        s.fill(0.0);
+                    }
+                }
+                Module::Empty => {}
+            }
+        }
+    }
+
     /// Planar stereo in place (Web Audio layout), `min(left.len(), right.len())` frames.
     pub fn process_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
         self.process_planar_tap(left, right, &mut []);

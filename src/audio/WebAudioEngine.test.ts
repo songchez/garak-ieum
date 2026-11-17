@@ -2,13 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_AUDIO_SETTINGS } from '../core/audioSettings'
 import { createDevice, createEmptyProject, createTrack } from '../core/project'
 import type { Project } from '../core/types'
-import { WebAudioEngine } from './WebAudioEngine'
-import { prepareEffects } from './effectPreparation'
-import { EFFECT_MODULES } from '../devices/effects/registry'
-import * as guitarRig from '../devices/guitar-rig'
-import type { RememberNode } from '../devices/contracts'
-
-vi.mock('./effectPreparation', () => ({ prepareEffects: vi.fn(() => Promise.resolve()) }))
+import { ENGINE_LOAD_FAILED, resetEngineModuleForTests, WebAudioEngine } from './WebAudioEngine'
+import { deviceAnalysisTap } from '../devices/effects/analysis'
+import { guitarTunerTap } from '../devices/guitar-rig'
+import { renderInEngineWorker, RustEngineNode, sharedGarakEngineModule } from './rust/engineHost'
+import { emptyStatus } from './rust/engineChannel'
+import { GarakEngineError } from './rust/garakEngineWasm'
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void
@@ -17,28 +16,68 @@ function deferred<T = void>() {
   return { promise, resolve, reject }
 }
 
-// Web Audio API spies exercise real engine/graph wiring. They do not measure DSP or hardware latency.
-class Parameter {
-  value = 1
-  cancelScheduledValues = vi.fn()
-  setValueAtTime = vi.fn((value: number, _time: number) => { this.value = value })
-  setTargetAtTime = vi.fn((value: number, _time: number, _constant: number) => { this.value = value })
-}
-
+// Web Audio API spies exercise the engine host's device and transport wiring. The engine itself (garak-engine.wasm)
+// is replaced by FakeEngineNode below; its rendering is covered by src/audio/rust/*.test.ts and the browser smoke.
 class NodeSpy {
   connections = new Set<unknown>()
   connect = vi.fn((target: unknown) => { this.connections.add(target); return target as NodeSpy })
   disconnect = vi.fn((target?: unknown) => { if (target) this.connections.delete(target); else this.connections.clear() })
-  gain = new Parameter()
-  pan = new Parameter()
-  threshold = new Parameter()
-  knee = new Parameter()
-  ratio = new Parameter()
-  attack = new Parameter()
-  release = new Parameter()
-  fftSize = 256
-  getFloatTimeDomainData = (values: Float32Array) => { values.fill(0) }
 }
+
+/** The engine worklet bridge: transport and status as the worklet would apply them on the next quantum. */
+class FakeEngineNode {
+  static instances: FakeEngineNode[] = []
+  static plan: { create?: Promise<void>; refuse?: string } = {}
+  readonly node = new NodeSpy()
+  readonly sharedChannel = false
+  error: string | null = null
+  private seq = 0
+  private readonly state = emptyStatus()
+  constructor(readonly context: ContextSpy) {
+    this.node.connect(context.destination)
+    FakeEngineNode.instances.push(this)
+  }
+  static create = vi.fn(async (context: ContextSpy) => {
+    if (FakeEngineNode.plan.create) await FakeEngineNode.plan.create
+    return new FakeEngineNode(context)
+  })
+  putAsset = vi.fn(async () => undefined)
+  registerSamples = vi.fn(async () => undefined)
+  removeAsset = vi.fn(async () => undefined)
+  update = vi.fn(async () => {
+    if (FakeEngineNode.plan.refuse) throw new GarakEngineError(FakeEngineNode.plan.refuse)
+    return { applied: 'full', latencyFrames: 0, tailSeconds: 0 }
+  })
+  importKernels = vi.fn(async () => undefined)
+  metronome = vi.fn(async () => undefined)
+  monitor = vi.fn(async () => undefined)
+  taps = vi.fn(async () => undefined)
+  live = vi.fn(() => ++this.seq)
+  readMeters = vi.fn(() => null)
+  analysis = vi.fn(async (_taps: { track: number; insert: number; tuner: boolean }[]) => undefined)
+  analysisVersion = 0
+  readAnalysis = vi.fn((_slot: number, out: Float32Array) => { out.fill(0.25); return true })
+  transport = vi.fn((command: string, frame = 0) => {
+    const seq = ++this.seq
+    if (command === 'play' || command === 'countIn') this.state.playing = true
+    if (command === 'pause' || command === 'stop') this.state.playing = false
+    if (command === 'seek') this.state.frame = frame
+    this.state.appliedSeq = seq
+    return seq
+  })
+  readStatus = vi.fn(() => ({ ...this.state }))
+  dispose = vi.fn(() => { this.node.disconnect() })
+}
+
+vi.mock('./rust/engineHost', () => ({
+  ENGINE_WORKLET_UNSUPPORTED: 'AudioWorklet 없음',
+  sharedGarakEngineModule: vi.fn(async () => ({ fake: 'module' })),
+  RustEngineNode: { create: vi.fn((context: ContextSpy) => FakeEngineNode.create(context)) },
+  KernelHelper: class { compute = async () => []; dispose = () => undefined },
+  renderInEngineWorker: vi.fn(async (_module: unknown, request: { sampleRate: number }) => ({
+    left: new Float32Array(8), right: new Float32Array(8), frames: 8, sampleRate: request.sampleRate, latencyFrames: 0, tailSeconds: 0.85, renderMs: 1,
+  })),
+}))
 
 interface ContextPlan {
   resume?: Promise<void>
@@ -65,8 +104,7 @@ class ContextSpy extends EventTarget {
   sinkId = ''
   onstatechange: (() => void) | null = null
   destination = new NodeSpy()
-  gains: NodeSpy[] = []
-  monitors: NodeSpy[] = []
+  monitors: (NodeSpy & { mediaStream: MediaStream; context: ContextSpy })[] = []
 
   constructor(options: AudioContextOptions & { renderSizeHint?: string | number } = {}) {
     super()
@@ -90,13 +128,9 @@ class ContextSpy extends EventTarget {
     if (this.plan.sinkError) throw this.plan.sinkError
     this.sinkId = this.plan.sinkOverride ?? sinkId
   })
-  createGain = () => { const node = new NodeSpy(); this.gains.push(node); return node }
-  createStereoPanner = () => new NodeSpy()
-  createAnalyser = () => new NodeSpy()
-  createDynamicsCompressor = () => new NodeSpy()
-  createMediaStreamSource = vi.fn((_stream: MediaStream) => {
+  createMediaStreamSource = vi.fn((stream: MediaStream) => {
     this.plan.onMonitor?.(this)
-    const node = new NodeSpy()
+    const node = Object.assign(new NodeSpy(), { mediaStream: stream, context: this })
     this.monitors.push(node)
     return node
   })
@@ -104,16 +138,9 @@ class ContextSpy extends EventTarget {
 
 class OfflineContextSpy {
   static instances: OfflineContextSpy[] = []
-  currentTime = 0
-  destination = new NodeSpy()
   constructor(readonly numberOfChannels: number, readonly length: number, readonly sampleRate: number) {
     OfflineContextSpy.instances.push(this)
   }
-  createGain = () => new NodeSpy()
-  createStereoPanner = () => new NodeSpy()
-  createAnalyser = () => new NodeSpy()
-  createDynamicsCompressor = () => new NodeSpy()
-  startRendering = vi.fn(async () => ({ sampleRate: this.sampleRate, getChannelData: () => new Float32Array(8) }))
   decodeAudioData = async () => ({ sampleRate: this.sampleRate, length: 8, duration: 8 / this.sampleRate, numberOfChannels: 1, getChannelData: () => new Float32Array(8) })
 }
 
@@ -129,17 +156,22 @@ function engineFor(project: Project = createEmptyProject()) {
   engines.push(engine)
   return engine
 }
+const bridgeOf = (context: ContextSpy) => FakeEngineNode.instances.find(item => item.context === context)!
 
 beforeEach(() => {
+  vi.clearAllMocks()
+  resetEngineModuleForTests()
   vi.useFakeTimers()
-  vi.mocked(prepareEffects).mockReset().mockResolvedValue(undefined)
   ContextSpy.instances = []
   ContextSpy.plans = []
   OfflineContextSpy.instances = []
+  FakeEngineNode.instances = []
+  FakeEngineNode.plan = {}
   mediaDevices = new MediaDevicesSpy()
   vi.stubGlobal('navigator', { mediaDevices })
   vi.stubGlobal('AudioContext', ContextSpy)
   vi.stubGlobal('OfflineAudioContext', OfflineContextSpy)
+  vi.stubGlobal('AudioWorkletNode', class {})
 })
 
 describe('selected output device health', () => {
@@ -152,36 +184,34 @@ describe('selected output device health', () => {
     vi.spyOn(engine, 'resume').mockReturnValue(ready.promise)
     const audition = engine.previewNote('keys', 60, 0.8, track.id)
     engine.setProject({ ...project, tracks: [{ ...createTrack('instrument', 'wavetable'), id: track.id }] })
-    const nodes = ContextSpy.instances[0].gains.length
     ready.resolve()
     await expect(audition).resolves.toBeUndefined()
-    expect(ContextSpy.instances[0].gains).toHaveLength(nodes)
+    expect(FakeEngineNode.instances[0].live).not.toHaveBeenCalled()
   })
 
-  it('rechecks native support after asynchronous device startup before beginning playback', async () => {
+  it('plays an IEUM WAVE track added during asynchronous device startup (the synth is in the engine module)', async () => {
     const ready = deferred<void>()
     ContextSpy.plans.push({ resume: ready.promise })
     const project = createEmptyProject()
     const engine = engineFor(project)
     const starting = engine.play()
-    const native = createTrack('instrument', 'wavetable')
-    native.clips = [{ id: 'native-pending-clip', kind: 'midi', name: 'Native', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: 'native-pending-note', pitch: 60, start: 0, duration: 1, velocity: 0.8 }] }]
-    engine.setProject({ ...project, tracks: [native] })
+    const wave = createTrack('instrument', 'wavetable')
+    wave.clips = [{ id: 'wave-pending-clip', kind: 'midi', name: 'Wave', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: 'wave-pending-note', pitch: 60, start: 0, duration: 1, velocity: 0.8 }] }]
+    engine.setProject({ ...project, tracks: [wave] })
     ready.resolve()
-    await expect(starting).rejects.toThrow(/네이티브/)
-    expect(engine.getSnapshot().playing).toBe(false)
+    await expect(starting).resolves.toBeUndefined()
+    expect(engine.getSnapshot().playing).toBe(true)
   })
 
-  it('stops an active browser transport if a project edit introduces audible native notes', async () => {
+  it('keeps playing when a project edit adds audible IEUM WAVE notes', async () => {
     const project = createEmptyProject()
     const engine = engineFor(project)
     await engine.play()
     expect(engine.getSnapshot().playing).toBe(true)
-    const native = createTrack('instrument', 'wavetable')
-    native.clips = [{ id: 'native-clip', kind: 'midi', name: 'Native', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: 'native-note', pitch: 60, start: 0, duration: 1, velocity: 0.8 }] }]
-    engine.setProject({ ...project, tracks: [native] })
-    expect(engine.getSnapshot().playing).toBe(false)
-    await expect(engine.play()).rejects.toThrow(/네이티브/)
+    const wave = createTrack('instrument', 'wavetable')
+    wave.clips = [{ id: 'wave-clip', kind: 'midi', name: 'Wave', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: 'wave-note', pitch: 60, start: 0, duration: 1, velocity: 0.8 }] }]
+    engine.setProject({ ...project, tracks: [wave] })
+    expect(engine.getSnapshot().playing).toBe(true)
   })
 
   it('stops transport and monitoring if an explicit output can no longer be verified, and keeps the saved choice', async () => {
@@ -194,20 +224,21 @@ describe('selected output device health', () => {
     vi.advanceTimersByTime(40)
     const context = ContextSpy.instances[0]
     const source = context.monitors[0]
-    const gate = context.gains.at(-5)!
-    expect(source.connections.size).toBe(1)
+    const bridge = bridgeOf(context)
+    expect(source.connections).toEqual(new Set([bridge.node]))
     mediaDevices.enumerateDevices.mockResolvedValue(outputDevices('default'))
     mediaDevices.dispatchEvent(new Event('devicechange'))
     await Promise.resolve()
     expect(engine.getSnapshot()).toMatchObject({ playing: false, ready: false })
     expect(source.connections.size).toBe(0)
-    expect(gate.gain.value).toBe(0)
+    expect(bridge.transport).toHaveBeenLastCalledWith('pause')
+    expect(bridge.monitor).toHaveBeenLastCalledWith([])
+    expect(bridge.node.disconnect).toHaveBeenCalledWith(context.destination)
     expect(engine.getAudioState()).toMatchObject({ status: 'error', needsReconfiguration: true, settings: { outputDeviceId: 'usb' } })
     expect(engine.getAudioState().error).toContain('연결·스피커 권한')
     engine.pause()
     engine.setInputMonitor(stream, ['input'])
     expect(context.createMediaStreamSource).toHaveBeenCalledTimes(1)
-    expect(context.gains.at(-5)!.gain.value).toBe(0)
     await expect(engine.play()).rejects.toThrow('출력 장치')
     engine.setProject({ ...project, sampleRate: 96000 })
     expect(engine.getAudioState().status).toBe('error')
@@ -534,31 +565,30 @@ describe('audio settings and context transactions', () => {
     expect(engine.getAudioState()).toMatchObject({ requestedSampleRate: 48000, sampleRate: 48000, needsReconfiguration: false })
   })
 
-  it('gates the candidate monitor until swap and applies software monitoring without reopening the context', async () => {
+  it('moves monitoring to the new engine on swap and applies software monitoring without reopening the context', async () => {
     const project = { ...createEmptyProject(), tracks: [{ ...createTrack('audio'), id: 'input', monitor: true }] }
     const engine = engineFor(project)
     const stream = { active: true } as MediaStream
     engine.setInputMonitor(stream, ['input'])
     await engine.resume()
+    await vi.advanceTimersByTimeAsync(20)
     const original = ContextSpy.instances[0]
     const originalSource = original.monitors[0]
-    expect(originalSource.connections.size).toBe(1)
-    ContextSpy.plans.push({ onMonitor: candidate => {
-      expect(candidate.gains[2].gain.value).toBe(0)
-      expect(originalSource.connections.size).toBe(1)
-      expect(original.state).toBe('running')
-    } })
+    expect(originalSource.connections).toEqual(new Set([bridgeOf(original).node]))
     await engine.configure({ ...DEFAULT_AUDIO_SETTINGS, latencyHint: 'balanced' }, 48000)
-    const current = ContextSpy.instances[1]
     expect(originalSource.connections.size).toBe(0)
-    expect(current.monitors[0].connections.size).toBe(1)
-    expect(originalSource.disconnect.mock.invocationCallOrder[0]).toBeLessThan(current.gains[2].gain.setValueAtTime.mock.invocationCallOrder[0])
+    expect(bridgeOf(original).dispose).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(20)
+    const current = ContextSpy.instances[1]
+    expect(current.monitors[0].connections).toEqual(new Set([bridgeOf(current).node]))
     await engine.configure({ ...DEFAULT_AUDIO_SETTINGS, latencyHint: 'balanced', softwareMonitoring: false }, 48000)
     expect(ContextSpy.instances).toHaveLength(2)
     expect(current.monitors[0].connections.size).toBe(0)
+    expect(bridgeOf(current).monitor).toHaveBeenLastCalledWith([])
     await engine.configure({ ...DEFAULT_AUDIO_SETTINGS, latencyHint: 'balanced' }, 48000)
-    expect(current.createMediaStreamSource).toHaveBeenCalledTimes(1)
-    expect(current.monitors[0].connections.size).toBe(1)
+    expect(current.createMediaStreamSource).toHaveBeenCalledTimes(2)
+    expect(current.monitors[1].connections.size).toBe(1)
+    expect(bridgeOf(current).monitor).toHaveBeenLastCalledWith([0])
   })
 
   it('exports the project rate independently of the live context and decodes files without opening output', async () => {
@@ -566,277 +596,156 @@ describe('audio settings and context transactions', () => {
     await engine.decodeAsset(new Blob(['audio']), 'test.wav', 'asset')
     expect(ContextSpy.instances).toHaveLength(0)
     await engine.resume()
-    const wav = await engine.exportWav({ ...createEmptyProject(), lengthBeats: 1, sampleRate: 96000 })
+    const wav = await engine.exportWav({ ...createEmptyProject(), lengthBeats: 32, sampleRate: 96000 })
     const header = new DataView(await wav.arrayBuffer())
     expect(header.getUint32(24, true)).toBe(96000)
     expect(header.getUint16(34, true)).toBe(16)
-    expect(OfflineContextSpy.instances.at(-1)?.sampleRate).toBe(96000)
+    expect(renderInEngineWorker).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ sampleRate: 96000 }))
     expect(engine.getAudioState().sampleRate).toBe(48000)
   })
 })
 
-
-describe('worklet preparation and graph startup', () => {
-  it('keeps monitor input detached until all built-in processors are ready', async () => {
-    const prepared = deferred()
-    vi.mocked(prepareEffects).mockReturnValueOnce(prepared.promise)
+describe('engine startup', () => {
+  it('keeps monitor input detached until the engine worklet is ready', async () => {
+    const created = deferred()
+    FakeEngineNode.plan.create = created.promise
     const project = { ...createEmptyProject(), tracks: [{ ...createTrack('audio'), id: 'input' }] }
     const engine = engineFor(project)
     engine.setInputMonitor({ active: true } as MediaStream, ['input'])
     const startup = engine.resume()
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(0)
     const candidate = ContextSpy.instances[0]
-    expect(prepareEffects).toHaveBeenCalledExactlyOnceWith(candidate)
     expect(candidate.monitors).toHaveLength(0)
-    expect(candidate.gains).toHaveLength(0)
     expect(engine.getAudioState().status).toBe('configuring')
-    prepared.resolve()
+    created.resolve()
     await startup
-    expect(candidate.monitors[0].connections.size).toBe(1)
+    await vi.advanceTimersByTimeAsync(20)
+    expect(candidate.monitors[0].connections).toEqual(new Set([bridgeOf(candidate).node]))
+    expect(bridgeOf(candidate).monitor).toHaveBeenLastCalledWith([0])
     expect(engine.getAudioState().status).toBe('ready')
   })
 
-  it('shows preparation failures and preserves the working output during failed reconfiguration', async () => {
+  it('reports a module that cannot load in Korean, closes the candidate and opens nothing for export', async () => {
+    vi.mocked(sharedGarakEngineModule).mockResolvedValue(null)
+    const engine = engineFor()
+    await expect(engine.play()).rejects.toThrow(ENGINE_LOAD_FAILED)
+    expect(ContextSpy.instances[0].state).toBe('closed')
+    expect(engine.getAudioState()).toMatchObject({ status: 'error', error: ENGINE_LOAD_FAILED })
+    await expect(engine.exportWav({ ...createEmptyProject(), lengthBeats: 32 })).rejects.toThrow(ENGINE_LOAD_FAILED)
+    expect(renderInEngineWorker).not.toHaveBeenCalled()
+    // A later load succeeds: the next Play starts on a fresh context.
+    vi.mocked(sharedGarakEngineModule).mockResolvedValue({ fake: 'module' } as unknown as WebAssembly.Module)
+    await engine.play()
+    expect(engine.getSnapshot()).toMatchObject({ playing: true, ready: true })
+  })
+
+  it('shows a worklet start failure and preserves the working output during a failed reconfiguration', async () => {
     const engine = engineFor()
     await engine.resume()
     const active = ContextSpy.instances[0]
-    vi.mocked(prepareEffects).mockRejectedValueOnce(new Error('앰프 프로세서 로딩 실패'))
-    await expect(engine.configure({ ...DEFAULT_AUDIO_SETTINGS, latencyHint: 'balanced' }, 48000)).rejects.toThrow('앰프 프로세서 로딩 실패')
+    vi.mocked(RustEngineNode.create).mockRejectedValueOnce(new Error('addModule failed'))
+    await expect(engine.configure({ ...DEFAULT_AUDIO_SETTINGS, latencyHint: 'balanced' }, 48000)).rejects.toThrow('오디오 엔진을 시작하지 못했습니다')
     expect(ContextSpy.instances[1].state).toBe('closed')
-    expect(ContextSpy.instances[1].gains).toHaveLength(0)
     expect(active.state).toBe('running')
-    expect(engine.getAudioState()).toMatchObject({ status: 'error', error: '앰프 프로세서 로딩 실패', settings: DEFAULT_AUDIO_SETTINGS })
+    expect(engine.getAudioState().error).toContain('addModule failed')
+    expect(engine.getAudioState().settings).toEqual(DEFAULT_AUDIO_SETTINGS)
   })
 
   it('does not publish a prepared context after disposal cancelled startup', async () => {
-    const prepared = deferred()
-    vi.mocked(prepareEffects).mockReturnValueOnce(prepared.promise)
+    const created = deferred()
+    FakeEngineNode.plan.create = created.promise
     const engine = engineFor()
     const startup = engine.resume().catch(error => error)
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(0)
     engine.dispose()
-    prepared.resolve()
+    created.resolve()
     expect(await startup).toMatchObject({ name: 'AbortError' })
     expect(ContextSpy.instances[0].state).toBe('closed')
-    expect(ContextSpy.instances[0].gains).toHaveLength(0)
+    expect(FakeEngineNode.instances[0].dispose).toHaveBeenCalled()
     expect(engine.getSnapshot()).toMatchObject({ playing: false, ready: false })
   })
+})
 
-  it('prepares each offline context before graph construction and rendering', async () => {
+describe('the engine is the only renderer', () => {
+  it('refuses to play a project the engine rejects, with its reason, instead of switching renderers', async () => {
+    FakeEngineNode.plan.refuse = 'unsupported insert'
     const engine = engineFor()
-    await engine.resume()
-    const prepared = deferred()
-    vi.mocked(prepareEffects).mockReturnValueOnce(prepared.promise)
-    const exporting = engine.exportWav({ ...createEmptyProject(), lengthBeats: 1 })
-    const offline = OfflineContextSpy.instances.at(-1)!
-    expect(prepareEffects).toHaveBeenLastCalledWith(offline)
-    expect(offline.startRendering).not.toHaveBeenCalled()
-    prepared.resolve()
-    await exporting
-    expect(offline.startRendering).toHaveBeenCalledTimes(1)
-    expect(prepareEffects).toHaveBeenCalledTimes(2)
+    await expect(engine.play()).rejects.toThrow('오디오 엔진이 이 프로젝트를 재생할 수 없습니다: unsupported insert')
+    expect(engine.getSnapshot().playing).toBe(false)
+    expect(engine.diagnostics()).toMatchObject({ accepted: false, reason: 'unsupported insert' })
+    FakeEngineNode.plan.refuse = undefined
+    engine.setProject({ ...createEmptyProject(), bpm: 100 })
+    await engine.play()
+    expect(engine.getSnapshot().playing).toBe(true)
   })
 
-  it('rejects export on processor loading failure without rendering a dry substitute', async () => {
+  it('stops the transport where it was heard when an edit is refused while playing', async () => {
+    const project = createEmptyProject()
+    const engine = engineFor(project)
+    await engine.play()
+    FakeEngineNode.plan.refuse = 'too many tracks'
+    engine.setProject({ ...project, bpm: 120 })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(engine.getSnapshot().playing).toBe(false)
+    expect(FakeEngineNode.instances[0].transport).toHaveBeenLastCalledWith('pause')
+  })
+
+  it('auditions a track through its engine track and a library instrument on a preview engine', async () => {
+    const keys = { ...createTrack('instrument', 'keys'), id: 'keys' }
+    const engine = engineFor({ ...createEmptyProject(), tracks: [keys] })
+    await engine.previewNote('keys', 60, 0.8, 'keys')
+    const main = FakeEngineNode.instances[0]
+    expect(main.live).toHaveBeenCalledWith(0, 'noteOn', 60, expect.closeTo(0.8, 2), expect.any(Number), expect.any(Number))
+    vi.advanceTimersByTime(400)
+    expect(main.live).toHaveBeenLastCalledWith(0, 'noteOff', 60, 0, expect.any(Number), expect.any(Number))
+    await engine.previewNote('bass', 48)
+    const preview = FakeEngineNode.instances[1]
+    expect(preview).toBeDefined()
+    expect(preview.update).toHaveBeenCalledWith('project.set', expect.objectContaining({ tracks: [expect.objectContaining({ id: 'preview' })] }), null)
+    expect(preview.live).toHaveBeenCalledWith(0, 'noteOn', 48, expect.closeTo(0.8, 2), expect.any(Number))
+    // The project's engine never hears a library preview.
+    expect(main.live).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders exports, stems and freezes on the engine worker, pre-master when asked', async () => {
     const engine = engineFor()
-    vi.mocked(prepareEffects).mockRejectedValueOnce(new Error('오프라인 앰프 로딩 실패'))
-    await expect(engine.exportWav({ ...createEmptyProject(), lengthBeats: 1 })).rejects.toThrow('오프라인 앰프 로딩 실패')
-    expect(OfflineContextSpy.instances.at(-1)!.startRendering).not.toHaveBeenCalled()
+    const project = { ...createEmptyProject(), lengthBeats: 32, tracks: [{ ...createTrack('audio'), id: 'a', devices: [createDevice('delay', { amount: 1, time: 1, feedback: 0.5 })] }] }
+    const rendered = await engine.renderAudio(project, { bitDepth: 32, preMaster: true, tailSeconds: 3 })
+    expect(renderInEngineWorker).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ masterBypass: true, tailSeconds: 3, sampleRate: 48000 }))
+    expect(rendered).toMatchObject({ frames: 8, sampleRate: 48000, tailSeconds: 0.85 })
+    expect(rendered.trackTailSeconds).toBeGreaterThan(1)
+    expect(await engine.renderTail(project)).toBeGreaterThan(1)
     expect(ContextSpy.instances).toHaveLength(0)
   })
 })
 
-
-describe('guitar graph changes and recovery', () => {
-  function stubRig() {
-    const masterDispose = vi.fn()
-    const rigDispose = vi.fn()
-    const create = (context: BaseAudioContext, remember: RememberNode) => {
-      const input = remember(context.createGain())
-      return { input, output: input, update: vi.fn(), dispose: rigDispose }
-    }
-    const master = vi.spyOn(guitarRig, 'createGuitarRigMaster').mockImplementation((context, remember) => ({ ...create(context, remember), dispose: masterDispose }))
-    const rig = vi.spyOn(EFFECT_MODULES['guitar-rig'], 'create').mockImplementation(create)
-    return { create, master, rig, masterDispose, rigDispose }
-  }
-  const inputProject = () => ({ ...createEmptyProject(), tracks: [{ ...createTrack('audio'), id: 'input' }] })
-
-  it('preserves guitar monitoring while audible native notes block browser playback and export', async () => {
-    const { master, rig } = stubRig()
-    const input = { ...createTrack('audio'), id: 'input', devices: [createDevice('guitar-rig')] }
-    const native = createTrack('instrument', 'wavetable')
-    native.clips = [{ id: 'native-clip', kind: 'midi', name: 'Native', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: 'native-note', pitch: 60, start: 0, duration: 1, velocity: 0.8 }] }]
-    const project = { ...createEmptyProject(), tracks: [input, { ...native, mute: true }] }
-    const engine = engineFor(project)
-    engine.setInputMonitor({ active: true } as MediaStream, ['input'])
-    await engine.play()
-    vi.advanceTimersByTime(31)
-    const source = ContextSpy.instances[0].monitors[0]
-    expect(master).toHaveBeenCalled()
-    expect(rig).toHaveBeenCalled()
-    expect(source.connections.size).toBe(1)
-
-    engine.setProject({ ...project, tracks: [input, native] })
-    vi.advanceTimersByTime(31)
-    expect(engine.getSnapshot()).toMatchObject({ playing: false, ready: true })
-    expect(source.connections.size).toBe(1)
-    await expect(engine.play()).rejects.toThrow(/네이티브/)
-    await expect(engine.exportWav()).rejects.toThrow(/네이티브/)
-    expect(OfflineContextSpy.instances).toHaveLength(0)
-    expect(engine.getAudioState()).toMatchObject({ status: 'ready', error: null })
-
-    engine.setProject(project)
-    await engine.play()
-    vi.advanceTimersByTime(31)
-    expect(engine.getSnapshot()).toMatchObject({ playing: true, ready: true })
-    expect(source.connections.size).toBe(1)
-    expect(prepareEffects).toHaveBeenCalledTimes(1)
-  })
-
-  it('switches the master when a monitored guitar track is enabled or disabled while stopped', async () => {
-    const { master, rig } = stubRig()
-    const project = inputProject()
-    const engine = engineFor(project)
-    engine.setInputMonitor({ active: true } as MediaStream, ['input'])
-    await engine.resume()
-    const context = ContextSpy.instances[0]
-    const source = context.monitors[0]
-    const withRig = { ...project, tracks: [{ ...project.tracks[0], devices: [createDevice('guitar-rig')] }] }
-    engine.setProject(withRig)
-    expect(master).toHaveBeenCalledTimes(1)
-    expect(rig).toHaveBeenCalledTimes(1)
-    engine.setProject({ ...withRig, tracks: [{ ...withRig.tracks[0], enabled: false }] })
-    expect(master).toHaveBeenCalledTimes(1)
-    expect(rig).toHaveBeenCalledTimes(2)
-    engine.setProject(withRig)
-    expect(master).toHaveBeenCalledTimes(2)
-    expect(rig).toHaveBeenCalledTimes(3)
-    vi.advanceTimersByTime(31)
-    expect(source.connections.size).toBe(1)
-    expect(context.createMediaStreamSource).toHaveBeenCalledTimes(1)
-    expect(prepareEffects).toHaveBeenCalledTimes(1)
-    expect(ContextSpy.instances).toHaveLength(1)
-    expect(engine.getSnapshot()).toMatchObject({ playing: false, ready: true })
-  })
-
-  it('crossfades monitored graphs with complementary gains before retiring the old route', async () => {
-    stubRig()
-    const project = inputProject()
-    const engine = engineFor(project)
-    engine.setInputMonitor({ active: true } as MediaStream, ['input'])
-    await engine.resume()
-    const context = ContextSpy.instances[0]
-    const source = context.monitors[0]
-    const oldGate = context.gains[2]
-    const oldStart = oldGate.gain.value
-    const previousGains = context.gains.length
-    context.currentTime = 0.125
-    engine.setProject({ ...project, tracks: [{ ...project.tracks[0], devices: [createDevice('guitar-rig')] }] })
-    const incomingGate = context.gains.slice(previousGains).find(node =>
-      node.gain.setValueAtTime.mock.calls.some(([value, time]) => value === 0 && time === context.currentTime),
-    )!
-    expect(incomingGate).toBeDefined()
-    expect(source.connections.size).toBe(2)
-    expect(oldGate.gain.setTargetAtTime).toHaveBeenLastCalledWith(0, context.currentTime, 0.003)
-    expect(incomingGate.gain.setValueAtTime).toHaveBeenLastCalledWith(0, context.currentTime)
-    expect(incomingGate.gain.setTargetAtTime).toHaveBeenLastCalledWith(1, context.currentTime, 0.003)
-    expect(incomingGate.gain.setTargetAtTime.mock.invocationCallOrder.at(-1)!)
-      .toBeLessThan(source.connect.mock.invocationCallOrder.at(-1)!)
-    // Evaluate the Web Audio target envelopes from the scheduled values, including
-    // the first instant that previously duplicated the live input at full gain.
-    const [outTarget, outTime, outConstant] = oldGate.gain.setTargetAtTime.mock.calls.at(-1)!
-    const [inTarget, inTime, inConstant] = incomingGate.gain.setTargetAtTime.mock.calls.at(-1)!
-    const [inStart] = incomingGate.gain.setValueAtTime.mock.calls.at(-1)!
-    for (const elapsed of [0, 0.001, 0.003, 0.01, 0.029]) {
-      const time = context.currentTime + elapsed
-      const outgoing = outTarget + (oldStart - outTarget) * Math.exp(-(time - outTime) / outConstant)
-      const incoming = inTarget + (inStart - inTarget) * Math.exp(-(time - inTime) / inConstant)
-      expect(outgoing + incoming).toBeCloseTo(1, 12)
-    }
-    vi.advanceTimersByTime(31)
-    expect(source.connections.size).toBe(1)
-    expect(oldGate.disconnect).toHaveBeenCalledTimes(1)
-    expect(incomingGate.disconnect).not.toHaveBeenCalled()
-  })
-
-  it('mutes a failed rebuild and recovers with unchanged settings after a failed retry', async () => {
-    const { rig, create, masterDispose } = stubRig()
-    const project = inputProject()
-    const engine = engineFor(project)
-    const stream = { active: true } as MediaStream
-    engine.setInputMonitor(stream, ['input'])
-    await engine.play()
-    vi.advanceTimersByTime(31)
-    const original = ContextSpy.instances[0]
-    const source = original.monitors[0]
-    let fail = true
-    rig.mockImplementation((context, remember) => {
-      if (fail) throw new Error('amp allocation failed')
-      return create(context, remember)
-    })
-    const withRig = { ...project, tracks: [{ ...project.tracks[0], devices: [createDevice('guitar-rig')] }] }
-    expect(() => engine.setProject(withRig)).not.toThrow()
-    expect(source.connections.size).toBe(0)
-    expect(masterDispose).toHaveBeenCalledTimes(1)
-    expect(engine.getSnapshot()).toMatchObject({ playing: false, ready: false })
-    expect(engine.getAudioState()).toMatchObject({ status: 'error', needsReconfiguration: true })
-    expect(engine.getAudioState().error).toContain('amp allocation failed')
-    expect(() => { engine.pause(); engine.stop(); engine.setInputMonitor(stream, ['input']) }).not.toThrow()
-    expect(rig).toHaveBeenCalledTimes(1)
-    await expect(engine.play()).rejects.toThrow('amp allocation failed')
-    await expect(engine.configure(DEFAULT_AUDIO_SETTINGS, 48000)).rejects.toThrow('amp allocation failed')
-    expect(ContextSpy.instances[1].state).toBe('closed')
-    expect(original.state).toBe('running')
-    expect(engine.getAudioState().needsReconfiguration).toBe(true)
-    fail = false
-    await engine.configure(DEFAULT_AUDIO_SETTINGS, 48000)
-    const recovered = ContextSpy.instances[2]
-    expect(original.state).toBe('closed')
-    expect(recovered.monitors[0].connections.size).toBe(1)
-    expect(engine.getAudioState()).toMatchObject({ status: 'ready', error: null, needsReconfiguration: false })
-    await engine.play()
-    expect(engine.getSnapshot()).toMatchObject({ playing: true, ready: true })
-  })
-
-  it('reports a processor creation failure during Play and leaves Stop usable', async () => {
-    const { rig } = stubRig()
-    const project = inputProject()
-    project.tracks[0].devices = [createDevice('guitar-rig')]
+describe('engine analysis taps', () => {
+  it('stream what the open editors look up, and stop when they close', async () => {
+    const eq = { ...createDevice('eq'), id: 'eq' }, rig = { ...createDevice('guitar-rig', { tunerEnabled: 1 }), id: 'rig' }
+    const project = { ...createEmptyProject(), tracks: [{ ...createTrack('audio'), id: 'a', devices: [eq] }, { ...createTrack('audio'), id: 'g', devices: [createDevice('filter'), rig] }] }
     const engine = engineFor(project)
     await engine.resume()
-    rig.mockImplementationOnce(() => { throw new Error('processor unavailable') })
-    await expect(engine.play()).rejects.toThrow('processor unavailable')
-    expect(engine.getSnapshot()).toMatchObject({ playing: false, ready: false })
-    expect(() => engine.stop()).not.toThrow()
-  })
-
-  it('reports a processor error as an audio processing failure and blocks live monitoring', async () => {
-    const engine = engineFor(inputProject())
-    engine.setInputMonitor({ active: true } as MediaStream, ['input'])
-    await engine.play()
-    const context = ContextSpy.instances[0]
-    vi.spyOn(guitarRig, 'assertGuitarRigHealthy').mockImplementation(candidate => {
-      if (candidate === (context as unknown as BaseAudioContext)) throw new Error('기타 앰프 오디오 처리 중 오류')
-    })
-    context.dispatchEvent(new Event('error'))
-    expect(engine.getAudioState().error).toBe('기타 앰프 오디오 처리 중 오류')
-    expect(context.monitors[0].connections.size).toBe(0)
-    expect(engine.getSnapshot()).toMatchObject({ playing: false, ready: false })
-    await engine.configure(DEFAULT_AUDIO_SETTINGS, 48000)
-    expect(engine.getAudioState()).toMatchObject({ status: 'ready', error: null })
-  })
-
-  it('rejects a completed offline render with a processor error and still disposes every processor', async () => {
-    const { masterDispose, rigDispose } = stubRig()
-    const project = inputProject()
-    project.tracks[0].devices = [createDevice('guitar-rig')]
-    const engine = engineFor(project)
-    vi.spyOn(guitarRig, 'assertGuitarRigHealthy').mockImplementation(() => { throw new Error('offline processor failed') })
-    await expect(engine.exportWav(project)).rejects.toThrow('offline processor failed')
-    expect(OfflineContextSpy.instances.at(-1)!.startRendering).toHaveBeenCalledTimes(1)
-    expect(masterDispose).toHaveBeenCalledTimes(1)
-    expect(rigDispose).toHaveBeenCalledTimes(1)
-    expect(ContextSpy.instances).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(20)
+    const bridge = FakeEngineNode.instances[0]
+    await vi.advanceTimersByTimeAsync(400)
+    expect(bridge.analysis).not.toHaveBeenCalled()
+    // The editors look their taps up (the spectrum every 800 ms, the tuner every frame).
+    expect(deviceAnalysisTap('eq')).toBeUndefined()
+    expect(guitarTunerTap('rig')).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bridge.analysis).toHaveBeenLastCalledWith([{ track: 0, insert: 0, tuner: false }, { track: 1, insert: 1, tuner: true }])
+    const spectrum = deviceAnalysisTap('eq')!, tuner = guitarTunerTap('rig')!
+    expect(spectrum.analyser.fftSize).toBe(4096)
+    expect(tuner.analyser.fftSize).toBe(4096)
+    expect(tuner.sampleRate).toBe(48000)
+    const samples = new Float32Array(16)
+    tuner.analyser.getFloatTimeDomainData(samples)
+    expect(samples.every(v => v === 0.25)).toBe(true)
+    expect(bridge.readAnalysis).toHaveBeenCalledWith(1, expect.any(Float32Array))
+    // Nobody looks any more: the taps go, and the engine stops copying them.
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(bridge.analysis).toHaveBeenLastCalledWith([])
+    expect(deviceAnalysisTap('eq')).toBeUndefined()
   })
 })
 
@@ -852,32 +761,5 @@ describe('browser track inputs', () => {
     expect(listener).toHaveBeenCalledTimes(1)
     expect(new WebAudioEngine().getInputChoices()).toEqual([])
     engine.dispose()
-  })
-})
-
-describe('arrangement edits while playing', () => {
-  it('reschedules only the edited track without rebuilding the graph; tempo edits still restart', async () => {
-    const region = (id: string) => ({ id, kind: 'midi' as const, name: id, startBeat: 0, lengthBeats: 4, gain: 1, notes: [] })
-    const a = { ...createTrack('instrument', 'keys'), id: 'a', clips: [region('ra')] }
-    const b = { ...createTrack('instrument', 'keys'), id: 'b', clips: [region('rb')] }
-    const project = { ...createEmptyProject(), tracks: [a, b] }
-    const engine = engineFor(project)
-    await engine.play()
-    const context = ContextSpy.instances[0]
-    const gains = context.gains.length
-    // A region move on track a: no graph replacement (createGraph would add gain nodes), only track a is rescheduled.
-    const moved = { ...project, tracks: [{ ...a, clips: [{ ...a.clips[0], startBeat: 1 }] }, b] }
-    engine.setProject(moved)
-    expect(context.gains).toHaveLength(gains)
-    expect(engine.lastReschedule?.tracks).toEqual(['a'])
-    expect(engine.getSnapshot().playing).toBe(true)
-    // A mixer edit neither restarts nor reschedules.
-    engine.lastReschedule = null
-    engine.setProject({ ...moved, tracks: [{ ...moved.tracks[0], volume: 0.3 }, b] })
-    expect(context.gains).toHaveLength(gains)
-    expect(engine.lastReschedule).toBeNull()
-    // A tempo change moves every onset: the transport restarts on a fresh graph, as before.
-    engine.setProject({ ...moved, bpm: moved.bpm + 10 })
-    expect(context.gains.length).toBeGreaterThan(gains)
   })
 })

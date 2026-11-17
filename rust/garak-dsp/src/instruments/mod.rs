@@ -6,8 +6,8 @@
 //!   resonant 4-pole ladder, ADSR + LFO, env or gate VCA, the classic two-tap stereo chorus).
 //!
 //! Unlike the effect kernels these have no C++ / TypeScript twin: the C++ host reaches them through
-//! garak-ffi (`garak_rs_instrument_*`) and the browser worklet through garak-wasm
-//! (`garak_instrument_*`). All arithmetic goes through [`dmath`], so both render bit-identical
+//! garak-ffi (`garak_rs_instrument_*`) and the browser through the engine (garak-engine-wasm).
+//! All arithmetic goes through [`dmath`], so both render bit-identical
 //! samples (the parity tests compare checksums of the same scripted performance).
 //!
 //! Real-time contract as the rest of the crate: fixed voice pools inside the struct, no allocation,
@@ -419,9 +419,8 @@ pub(crate) mod test_support {
     }
 }
 
-/// The cross-engine parity scene (docs/RUST.md "빈티지 악기"): native/tests/rust_parity_test.cpp and
-/// src/audio/rust/vintage.test.ts build the same performance and must reach the checksums in
-/// `parity.golden` through garak-ffi and garak-wasm. Changing the DSP changes the checksums: update
+/// The cross-engine parity scene (docs/RUST.md "빈티지 악기"): native/tests/rust_instrument_test.cpp builds
+/// the same performance and must reach the checksums in `parity.golden` through garak-ffi. Changing the DSP changes the checksums: update
 /// the golden file (`cargo test -p garak-dsp parity_scene -- --nocapture` prints them).
 #[cfg(test)]
 pub(crate) mod parity_scene {

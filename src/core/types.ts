@@ -404,10 +404,6 @@ export interface AudioAsset {
   /** Multi-resolution peaks for close zoom; without it a waveform draws the overview only. */
   pyramid?: WaveformPyramid
 }
-/** An asset with its PCM resolved (the legacy Web Audio graph schedules AudioBufferSourceNodes from it). */
-export interface PlayableAsset extends AudioAsset {
-  buffer: AudioBuffer
-}
 export type RenderBitDepth = 16 | 24 | 32
 export interface RenderOptions {
   /** 32 = IEEE float (unclipped). */
@@ -446,7 +442,7 @@ export interface AudioEngine {
   readonly kind: 'web-audio' | 'native'
   /** IEUM WAVE: supplied by engines with the Rust synth (the desktop host, the browser's garak-engine.wasm engine). */
   readonly wavetable?: WavetableNativeBridge
-  /** Whether this engine can run the vintage instruments (Rust core: native GARAK_RUST or garak-dsp.wasm). */
+  /** Whether this engine can run the vintage instruments (Rust core: native GARAK_RUST or garak-engine.wasm). */
   readonly vintage?: VintageBridge
   setProject(project: Project): void
   setAssets(assets: Map<string, AudioAsset>): void

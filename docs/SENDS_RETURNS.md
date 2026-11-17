@@ -7,7 +7,7 @@
 - 순수 로직: `src/core/sends.ts` (만들기, 센드 편집, 삭제·복제 처리, 리턴 문자 A/B/…), `src/core/playback.ts`
   (`audibleTrackIds` 솔로 규칙), `src/core/trackRouting.ts` (처리 레벨·마스터 피드에 리턴 반영)
 - 통합 Rust 엔진(데스크톱·웹 공통, 0.3.2 기본): `rust/garak-engine/src/routes.rs`(처리 레벨·센드 해석), `src/track.rs`(리턴 입력·PDC), `src/plan.rs`·`src/protocol.rs`(`return`, `sends` 필드). [RUST_ENGINE](RUST_ENGINE.md)
-- 웹 Web Audio 대체 경로: `src/audio/graph.ts` (`connectSends`, `updateGraph`, `renderTailSeconds`)
+- 웹: 엔진 호스트 `src/audio/WebAudioEngine.ts`, 내보내기 꼬리 추정 `src/audio/renderTail.ts` (이전 Web Audio 대체 경로 `src/audio/graph.ts`는 0.3.3에서 삭제)
 - 네이티브 셸: `native/include/garak/engine.hpp` (`TrackSend`, `TrackTimeline::isReturn`, `senderLatencyFrames`),
   `native/src/engine.cpp` (렌더-어헤드 대상 판정 `routingTracks`; 센드·리턴 렌더는 Rust 엔진), `native/src/protocol.hpp`
   (`return`, `sends` 필드), `native/src/host.cpp` (라우팅 테이크 보정값), `src/audio/native/timeline.ts`
@@ -64,7 +64,10 @@
 
 ## 3. 엔진 구현
 
-### 웹 엔진 (Web Audio)
+### 웹 엔진 (Web Audio, 0.3.3에서 삭제)
+
+지금 웹은 통합 Rust 엔진이 데스크톱과 같은 규칙(`routes.rs`, `track.rs`)으로 센드/리턴을 처리합니다. 아래는 삭제된 Web Audio 그래프의 기록입니다.
+
 - 리턴도 일반 트랙과 같은 채널(`input → 시김새 → postFx → 팬 → fader → 미터 → 합`)입니다.
 - `connectSends`: 센드마다 `GainNode` 하나. 포스트는 `fader`에서, 프리는 `postFx`에서 받아 리턴의 `input`으로.
   레벨은 `updateGraph`가 파라미터로 바꾸므로 노브를 돌려도 그래프를 다시 만들지 않습니다. 센드 대상·프리/포스트가
@@ -96,8 +99,9 @@
   트랙 + 13프레임 지연 리턴에서 임펄스가 원음·리턴 모두 정확히 +18 프레임에 한 번 나오는지, 페이더 후 라우팅
   테이크가 정확히 +5(`senderLatencyFrames`)인지, 워커 스레드와 비트 단위로 같은지, 리턴의 센드 거부, 없는 리턴·
   리턴을 가리키는 라우트가 무음인지, 100% 웻 에코 리턴이 원음을 통과시키지 않고 소스가 멈춘 뒤에도 울리는지.
-- `src/core/sends.test.ts` (모델·솔로·라우팅 레벨·스키마), `src/audio/graph.test.ts` (배선·게인·꼬리),
-  `src/audio/native/timeline.test.ts`.
+- `src/core/sends.test.ts` (모델·솔로·라우팅 레벨·스키마), `src/audio/automationCrossFeature.test.ts`(컴파일된 엔진 타임라인에서
+  오토메이션 × 템포 맵 × 센드/리턴), `src/devices/effects/registry.test.ts`(꼬리 추정), `src/audio/native/timeline.test.ts`.
+  (Web Audio 배선을 보던 `src/audio/graph.test.ts`는 0.3.3에서 삭제)
 
 ## 4. 남은 일 (v1 밖)
 - 리턴에서 다른 리턴으로 보내기(리턴의 센드), 리턴을 내부 녹음 입력으로 고르기.

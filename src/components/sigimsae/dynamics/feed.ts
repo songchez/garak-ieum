@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import type { AudioEngine } from '../../../core/types'
-import { webDynamicsReading, type DynamicsReading } from '../../../devices/effects/dynamicsMeter'
+import type { DynamicsReading } from '../../../devices/effects/dynamicsMeter'
 import { MeterHistory, meterFrame, type MeterFrame } from './curve'
 
 /** History length: 6 s at 60 frames/s. */
@@ -9,9 +9,8 @@ const FRAME_SECONDS = 1 / 60
 
 /** The live reading for a device on whichever engine is running. */
 export function readDeviceMeter(engine: AudioEngine, deviceId: string): DynamicsReading | null {
-  // The native host and the web Rust engine meter their own inserts; plain Web Audio binds its nodes.
-  if (engine.getDeviceMeter) return engine.getDeviceMeter(deviceId)
-  return webDynamicsReading(deviceId)
+  // The desktop host and the web engine worklet both meter their own inserts.
+  return engine.getDeviceMeter?.(deviceId) ?? null
 }
 
 /**

@@ -25,7 +25,7 @@
 
 ## 엔진 통합 방침
 
-가락이음에는 두 엔진이 있습니다. 브라우저의 `WebAudioEngine`(AudioWorklet, TypeScript)과 데스크톱의 C++20 `RenderEngine`입니다. 조사한 DSP는 대부분 C/C++입니다.
+가락이음에는 두 엔진이 있습니다. 브라우저의 `WebAudioEngine`(AudioWorklet, TypeScript)과 데스크톱의 C++20 `RenderEngine`입니다(조사 당시. 0.3.2부터 두 호스트가 통합 Rust 엔진을 쓰고, 0.3.3에서 웹의 Web Audio 엔진은 삭제됐습니다. 옥구슬 EP·한밤 106도 이 엔진의 일부입니다). 조사한 DSP는 대부분 C/C++입니다.
 
 - **권장:** `native/devices/<악기>/`에 C++ DSP를 하나 둡니다. 데스크톱은 직접 링크하고 웹은 Emscripten WASM으로 빌드해 AudioWorklet에서 실행합니다. 기존 Signalsmith WASM 사례(`src/devices/pitch-editor/vendor/`)와 같은 방식입니다. TS와 C++로 두 번 포팅하지 않아도 되고 두 엔진의 소리가 같습니다. (이후 실제로는 Rust로 구현해 데스크톱·웹이 같은 코드를 씁니다. IEUM WAVE도 0.3.3부터 Rust 엔진에서만 렌더합니다.)
 - **악기 정의:** `src/core/instruments.ts`의 `kind: 'native'`(WAVE와 같은 방식) 또는 `'sampled'`로 등록합니다. 샘플 기반은 [SAMPLES.md](SAMPLES.md) 규격(Opus/AAC, 세트당 20 MB 이하, `scripts/samples/<set>.py` 재현 스크립트)을 따릅니다.

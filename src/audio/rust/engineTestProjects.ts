@@ -1,5 +1,5 @@
-// Deterministic projects for the Rust engine A/B tests (engineAB.test.ts in Node, and
-// scripts/rust-engine-smoke.mjs in Chromium against the Web Audio engine). Test support only: the
+// Deterministic projects for the engine tests (engineAB.test.ts and effects.test.ts in Node, and
+// scripts/rust-engine-smoke.mjs in Chromium). Test support only: the
 // app never imports this file.
 
 import { createDevice, createEmptyProject, createTrack, withWavetablePatch } from '../../core/project'

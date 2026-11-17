@@ -4,7 +4,7 @@
 
 **상태: 첫 구현을 추가한 확장 설계.** 여섯 이펙트 모듈 분리와 단선율 피치 분석·편집 UI·Worker 재합성·원본 보존·프로젝트 Undo/저장/출력 경로를 구현했습니다. 실제 지원 범위와 사용법은 [PITCH_EDITOR](PITCH_EDITOR.md), 현재 모듈 구조는 [ARCHITECTURE](ARCHITECTURE.md), 실행한 검증은 [IMPLEMENTATION_STATUS](IMPLEMENTATION_STATUS.md)를 기준으로 합니다.
 
-이 문서의 §1은 위 기준 커밋에서 수행한 **착수 전 구조 감사**입니다. 나머지 기능 비교·목표 계약·단계별 완료 조건에는 아직 구현하지 않은 확장 기능이 포함됩니다. 범용 악기/리전 프로세서 플러그인 등록, 피치 MCP, 타이밍·정밀 보컬·다성음 편집과 Melodyne 수준의 음질을 완료했다는 뜻은 아닙니다.
+이 문서의 §1은 위 기준 커밋에서 수행한 **착수 전 구조 감사**입니다(거기 나오는 `graph.ts`는 0.3.3에서 삭제됐고, 지금 웹 DSP는 통합 Rust 엔진입니다). 나머지 기능 비교·목표 계약·단계별 완료 조건에는 아직 구현하지 않은 확장 기능이 포함됩니다. 범용 악기/리전 프로세서 플러그인 등록, 피치 MCP, 타이밍·정밀 보컬·다성음 편집과 Melodyne 수준의 음질을 완료했다는 뜻은 아닙니다.
 
 ## 1. 착수 전 디바이스 구조 감사 (0b49a2b)
 
@@ -14,7 +14,7 @@
 |---|---|---|
 | 인스턴스와 순서 | `id`, `type`, `enabled`, 숫자형 `params`; `Track.devices` 배열 | [`types.ts`](../src/core/types.ts)의 `Device`, `Track` |
 | 파라미터 | 범위·단위·기본값·로그 스케일 공통화 | [`devices.ts`](../src/core/devices.ts)의 `ParamDef`, `EFFECT_DEFS` |
-| 효과 처리 | 여섯 종류의 factory가 한 파일에 존재 | [`graph.ts`](../src/audio/graph.ts)의 `DEVICE_FACTORIES` |
+| 효과 처리 | 여섯 종류의 factory가 한 파일에 존재 | `graph.ts`(0.3.3에서 삭제)의 `DEVICE_FACTORIES` |
 | 효과 화면 | 모든 효과를 같은 카드·노브로 표시 | [`DeviceChain.tsx`](../src/components/DeviceChain.tsx) |
 | 악기 | 카탈로그는 분리되었지만 합성은 중앙 함수에서 분기 | [`instruments.ts`](../src/core/instruments.ts), `graph.ts`의 `scheduleInstrument` |
 | 저장과 MCP | 효과 값 저장·검증, 카탈로그 및 편집 명령 제공 | [`project.ts`](../src/core/project.ts), [`commands.ts`](../src/core/commands.ts), [`host.ts`](../src/automation/host.ts) |

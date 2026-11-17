@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { createTrack } from '../../core/project'
+import { createDevice, createTrack } from '../../core/project'
+import { GUITAR_RIG_DEFAULTS, guitarRigOrderParams } from '../../devices/guitar-rig'
+import { ANALYSIS_SLOTS } from './engineChannel'
 import type { Track } from '../../core/types'
 import { metronomeStrokes } from '../metronomeSounds'
 import { compileNativeTimeline, type NativePcmAsset } from '../native/timeline'
@@ -224,5 +226,33 @@ describe.skipIf(!wasm)('web Rust engine host paths', () => {
     const direct = run(false), staged = run(true)
     expect(energy(direct)).toBeGreaterThan(0)
     expect(staged).toEqual(direct)
+  })
+
+  it('streams analysis taps: an insert output for the editors and a guitar rig tuner input', () => {
+    const test = effectsProject()
+    const chain = test.project.tracks[0]
+    // The chain's last insert becomes a rig with an engaged tuner after the amp: it mutes what follows.
+    chain.devices = [...chain.devices.slice(0, 4), createDevice('guitar-rig', { ...GUITAR_RIG_DEFAULTS, ...guitarRigOrderParams(['amp', 'tuner', 'cabinet']), tunerEnabled: 1 })]
+    const { engine } = realtime(test)
+    expect(engine.maxAnalysis).toBe(ANALYSIS_SLOTS)
+    engine.analysis([{ track: 0, insert: 0, tuner: false }, { track: 0, insert: 4, tuner: true }, { track: 0, insert: 4, tuner: false }])
+    engine.transport('play')
+    const sums = [0, 0, 0]
+    let mono = true
+    for (let q = 0; q < 40; q += 1) {
+      engine.renderPlanar(BLOCK)
+      const view = engine.analysisView()
+      expect(view.length).toBe(ANALYSIS_SLOTS * BLOCK * 2)
+      for (let k = 0; k < 3; k += 1) sums[k] += energy(view.subarray(k * BLOCK * 2, (k + 1) * BLOCK * 2))
+      for (let i = 0; i < BLOCK; i += 1) mono &&= view[BLOCK * 2 + 2 * i] === view[BLOCK * 2 + 2 * i + 1]
+    }
+    expect(sums[0]).toBeGreaterThan(0)
+    expect(sums[1]).toBeGreaterThan(0)
+    expect(mono).toBe(true)
+    expect(sums[2]).toBe(0)
+    engine.analysis([])
+    engine.renderPlanar(BLOCK)
+    expect(energy(engine.analysisView())).toBe(0)
+    engine.destroy()
   })
 })

@@ -40,7 +40,7 @@
 
 ### 분석기
 
-웹 오디오 엔진: 각 EQ·필터 뒤에 `AnalyserNode`(FFT 4096)를 달아 장치 ID로 묶습니다(`src/devices/effects/analysis.ts`, 오프라인 내보내기에서는 만들지 않음). 화면은 4.5 dB/oct 기울임과 피크 홀드로 차분하게 그리고, 30 fps로 React 렌더 없이 SVG 경로만 바꿉니다. 데스크톱(네이티브) 엔진은 아직 스펙트럼을 UI로 보내지 않아 분석기를 숨기고 안내 문구를 보입니다.
+웹에서는 편집기가 장치의 탭을 조회하면 엔진이 그 EQ·필터 뒤 신호를 분석 탭으로 보내고(`src/devices/effects/analysis.ts`, `src/audio/engineAnalyser.ts`: AnalyserNode와 같은 FFT 4096·Blackman 창·평활 0.72·dB), 화면은 4.5 dB/oct 기울임과 피크 홀드로 차분하게, 30 fps로 React 렌더 없이 SVG 경로만 바꿔 그립니다. 유틸리티의 스테레오 스코프도 같은 탭의 좌우 1024프레임을 읽습니다. 데스크톱 엔진은 아직 스펙트럼을 보내지 않아 "분석기: 데스크톱 엔진은 아직 스펙트럼을 보내지 않습니다"를 보입니다.
 
 ## 공간·모듈레이션·드라이브
 
@@ -67,7 +67,7 @@
 - 모든 드래그는 한 번의 실행 취소 단위(history gesture). 드래그 중 Esc = 원래 값으로 되돌리고 취소. Shift = 미세(1/5 속도). 손잡이 더블 클릭 = 그 손잡이의 기본값.
 - 손잡이·XY 패드·대역 모서리는 `role="slider"` + 방향키(좌우 = X 파라미터, 위아래 = Y, PageUp/Down = 크게, Shift = 미세). 칩은 radiogroup + 방향키.
 - 노브는 그대로 남겨 숫자 정밀 조절(카드 4개 안팎, 큰 편집기는 전부).
-- 그림은 DSP를 그대로 따른다: `space/math.ts`가 kernels.ts / reverb.ts / drive.ts 수식을 미러링하고 단위 테스트(`math.test.ts`)로 고정.
+- 그림은 DSP를 그대로 따른다: `space/math.ts`가 이펙트 수식(처음에는 kernels.ts / reverb.ts / drive.ts, 0.3.3부터 DSP는 Rust 커널 `rust/garak-dsp`뿐)을 미러링하고 단위 테스트(`math.test.ts`)로 고정.
 
 ### 성능
 
@@ -76,7 +76,7 @@
 
 ### 남은 일
 
-- 실제 신호 고니오미터/스펙트럼: 엔진에 장치별 분석 탭(AnalyserNode / 네이티브 링버퍼) API가 생기면 테스트 신호 대신 연결.
+- 실제 신호 고니오미터/스펙트럼: 엔진(웹 워크릿·네이티브)에 장치별 분석 스트림 API가 생기면 테스트 신호 대신 연결(0.3.3부터 웹도 Web Audio 분석 탭이 없음).
 - 리버브 초기 반사(early reflections) 표시, 딜레이 테이프 와우/플러터 흔들림 표시.
 - 테이프 온기(로우패스+저역 범프)는 전달 곡선에 안 보임 → 작은 톤 곡선 추가 여지.
 
@@ -103,7 +103,7 @@
 - **큰 편집기**: 기타 앰프 창과 같은 어두운 대화상자(Esc 닫기, 포커스 가둠, 닫으면 원래 버튼으로 포커스 복귀). 전달 곡선 · 스크롤 기록 · 큰 GR 미터 · (76) VU 바늘 · (게이트) 엔벨로프 · 모든 파라미터 노브와 숫자 칸.
 - **곡선 수식**은 DSP와 같음: 컴프는 네이티브 `Compressor`의 6 dB 소프트 니(`kneeOver`), 리미터는 `min(입력+게인, 실링)`, 게이트는 4 dB 히스테리시스(`curve.ts`, 단위 테스트).
 - **실시간 계량**: 엔진이 장치별로 `input`(검출기 피크, 선형)과 `gain`(가장 낮은 적용 게인, 선형, 메이크업 제외)을 냄.
-  - 웹: 컴프레서는 `DynamicsCompressorNode.reduction` + 입력 AnalyserNode, 리미터·게이트는 공용 워클릿이 뷰가 요청한 뒤에만 30 Hz로 `port.postMessage`. `bindDynamicsMeter`가 장치 id로 등록(오프라인 렌더는 등록 안 함).
+  - 웹: 엔진 워크릿이 `take_dynamics` 값을 미터 블록(SAB seqlock, 없으면 상태 메시지)에 게시하고 `WebAudioEngine.getDeviceMeter`가 인서트 id로 읽음([RUST_ENGINE 5.7](RUST_ENGINE.md#57-웹-호스트-2차-엔진-안에서-끝나는-일)). 이전 Web Audio 경로(`DynamicsCompressorNode.reduction`, 공용 워클릿 `port.postMessage`)는 0.3.3에서 삭제.
   - 네이티브: `StereoProcessor::dynamics()`의 `DynamicsTap`(원자값, 콜백 무할당) → 콜백 끝 `publishDynamics`가 25~50 ms 2-버킷 창으로 모아 `EngineSnapshot::dynamics` → 호스트 상태 JSON `dynamics[deviceId]` → `NativeAudioEngine.getDeviceMeter`. 기존 25 Hz 상태 폴링을 그대로 탐.
   - 화면은 rAF에서 ref에 직접 그림(React 재렌더 없음), 탭이 숨으면 멈춤. 엔진이 값을 안 주면 정적 곡선만 보이고 점·미터는 쉼.
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DELAY_DEF, TREMOLO_DEF, UTILITY_DEF, BITCRUSHER_DEF } from '../../../devices/effects/sigimsaeDefs'
-import { readParams } from '../../../devices/effects/kernels'
+import { readParams } from '../../../devices/effects/sigimsae'
 import type { ParamDef } from '../../../devices/contracts'
 import {
   chorusDelays, crushSequence, delayParamsForTime, delayReadout, delayTime, delayWindow, driveTransfer, echoTaps,

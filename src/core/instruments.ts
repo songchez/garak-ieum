@@ -3,7 +3,7 @@ import type { SampleAttribution } from './types'
 import { WAVETABLE_DEFINITION } from '../devices/wavetable-synth/definition'
 import { HANBAM_106_DEFINITION, OKGU_EP_DEFINITION } from '../devices/vintage/definition'
 
-/** native: IEUM WAVE (native host only); vintage: the Rust instrument core (native engine or garak-dsp.wasm). */
+/** native: IEUM WAVE (native host only); vintage: the Rust instrument core (native engine or garak-engine.wasm). */
 export type InstrumentKind = 'synth' | 'sampled' | 'native' | 'vintage'
 export type InstrumentCategory = 'synth' | 'vintage' | 'piano' | 'keys' | 'drums' | 'gugak'
 

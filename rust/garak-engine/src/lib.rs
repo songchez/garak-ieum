@@ -46,8 +46,8 @@ mod track;
 pub(crate) mod wave;
 
 pub use engine::{
-    Ahead, Applied, BlockInfo, Controller, DynamicsReading, EngineConfig, HostTask, MAX_TAPS, Parallel,
-    Renderer, Snapshot, engine,
+    Ahead, AnalysisTap, Applied, BlockInfo, Controller, DynamicsReading, EngineConfig, HostTask,
+    MAX_ANALYSIS, MAX_TAPS, Parallel, Renderer, Snapshot, engine,
 };
 pub use error::Error;
 pub use external::{HostCallbacks, LiveFn};

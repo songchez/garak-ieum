@@ -2,7 +2,7 @@ import { HANBAM_106_ID, HANBAM_106_PARAMS, OKGU_EP_ID, OKGU_EP_PARAMS } from './
 
 /**
  * Library entries (악기 › 빈티지). `kind: 'vintage'`: the DSP is the Rust core — the native engine
- * links it (GARAK_RUST), the browser runs it from garak-dsp.wasm; without either the instrument is
+ * links it (GARAK_RUST), the browser runs it in the engine (garak-engine.wasm); without either the instrument is
  * shown but cannot play (see src/audio/instrumentSupport.ts).
  */
 export const OKGU_EP_DEFINITION = {

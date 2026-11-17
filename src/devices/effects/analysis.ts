@@ -1,45 +1,45 @@
-import type { DeviceGraph } from '../contracts.js'
-
 /**
- * Live analysis taps for graphical 시김새 editors (spectrum behind the EQ curve, etc.).
- * A realtime device graph may expose `analysisTap`; the audio graph binds it to the device id.
- * Offline (export) contexts never register. Only the Web Audio engine feeds taps; the native
- * desktop engine has no analysis stream to the UI yet.
+ * Live analysis taps for graphical 시김새 editors (spectrum behind the EQ curve, the utility's stereo scope).
+ *
+ * Looking a tap up is also the request for it: the web engine (src/audio/WebAudioEngine.ts) asks the engine
+ * worklet for the taps editors looked up in the last moment (`requestedDeviceAnalysis`), and registers each
+ * one here once the engine streams it. Closing the editor stops the lookups, and the engine stops the tap.
+ * The desktop host has no analysis stream to the UI yet.
  */
-export interface DeviceAnalysisTap { readonly analyser: AnalyserNode; readonly sampleRate: number }
-const taps = new Map<string, DeviceAnalysisTap>()
 
-export function bindDeviceAnalysis(graph: DeviceGraph, deviceId: string, context: BaseAudioContext): void {
-  const tap = (graph as DeviceGraph & { analysisTap?: DeviceAnalysisTap }).analysisTap
-  if (!tap || 'startRendering' in context) return
-  taps.set(deviceId, tap)
+/** The AnalyserNode subset the editors read (the engine's taps implement it: src/audio/engineAnalyser.ts). */
+export interface AnalysisReader {
+  readonly fftSize: number
+  readonly frequencyBinCount: number
+  getFloatTimeDomainData(out: Float32Array<ArrayBuffer>): void
+  getFloatFrequencyData(out: Float32Array<ArrayBuffer>): void
 }
-export function unbindDeviceAnalysis(tap: DeviceAnalysisTap): void {
-  for (const [id, value] of taps) if (value === tap) taps.delete(id)
-}
-export function deviceAnalysisTap(deviceId: string): DeviceAnalysisTap | undefined { return taps.get(deviceId) }
 
-/** Post-effect analyser for realtime contexts only (none while exporting). */
-export function createAnalysisTap(context: BaseAudioContext, source: AudioNode, remember: <T extends AudioNode>(node: T) => T): DeviceAnalysisTap | undefined {
-  if ('startRendering' in context || typeof context.createAnalyser !== 'function') return undefined
-  const analyser = remember(context.createAnalyser())
-  analyser.fftSize = 4096
-  analyser.smoothingTimeConstant = 0.72
-  analyser.minDecibels = -110
-  analyser.maxDecibels = 0
-  source.connect(analyser)
-  return { analyser, sampleRate: context.sampleRate }
-}
+export interface DeviceAnalysisTap { readonly analyser: AnalysisReader; readonly sampleRate: number }
 
 /** Stereo time-domain scope (goniometer / correlation) on top of the mono tap interface. */
-export interface StereoScopeTap extends DeviceAnalysisTap { readonly left: AnalyserNode; readonly right: AnalyserNode }
+export interface StereoScopeTap extends DeviceAnalysisTap { readonly left: AnalysisReader; readonly right: AnalysisReader }
 
-/** Post-effect L/R analysers for realtime contexts only (utility's stereo image view). */
-export function createStereoScopeTap(context: BaseAudioContext, source: AudioNode, remember: <T extends AudioNode>(node: T) => T): StereoScopeTap | undefined {
-  if ('startRendering' in context || typeof context.createAnalyser !== 'function') return undefined
-  const splitter = remember(context.createChannelSplitter(2))
-  const left = remember(context.createAnalyser()), right = remember(context.createAnalyser())
-  left.fftSize = 1024; right.fftSize = 1024
-  source.connect(splitter); splitter.connect(left, 0); splitter.connect(right, 1)
-  return { analyser: left, left, right, sampleRate: context.sampleRate }
+/** A tap stays requested this long after its last lookup (editors look up at least once a second). */
+export const ANALYSIS_REQUEST_MS = 1500
+
+const taps = new Map<string, DeviceAnalysisTap>()
+const requested = new Map<string, number>()
+const now = () => typeof performance !== 'undefined' ? performance.now() : Date.now()
+
+export function registerDeviceAnalysis(deviceId: string, tap: DeviceAnalysisTap): () => void {
+  taps.set(deviceId, tap)
+  return () => { if (taps.get(deviceId) === tap) taps.delete(deviceId) }
+}
+
+/** The device's tap, if the engine streams it; asks the engine for it either way. */
+export function deviceAnalysisTap(deviceId: string): DeviceAnalysisTap | undefined {
+  requested.set(deviceId, now())
+  return taps.get(deviceId)
+}
+
+/** Devices whose tap an editor looked up within `maxAgeMs` (older requests are forgotten). */
+export function requestedDeviceAnalysis(maxAgeMs = ANALYSIS_REQUEST_MS, at = now()): string[] {
+  for (const [id, time] of requested) if (at - time > maxAgeMs) requested.delete(id)
+  return [...requested.keys()]
 }

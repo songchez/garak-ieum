@@ -1,7 +1,7 @@
 import type { ParamDef } from '../contracts.js'
 
 /**
- * Parametric EQ ("Curve") model shared by the Web Audio graph, the editor graph and tests.
+ * Parametric EQ ("Curve") model shared by the editor graph and tests (the engine's EQ, garak-dsp, mirrors it).
  * Keep the section maths in sync with native/src/eq_effects.inc.
  *
  * Saved-state compatibility: the original 3-band EQ stored `low`, `mid`, `midFreq` and `high`.

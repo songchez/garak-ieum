@@ -42,9 +42,9 @@
 
 ### 웹(AudioWorklet의 Rust 엔진)
 
-웹(0.3.2)과 데스크톱(0.3.3)은 통합 Rust 엔진이 같은 규칙(`rust/garak-engine/src/metronome.rs`, 이전 C++ `metronome.hpp`·`meter.hpp` 포팅, 그 렌더의 골든 레퍼런스와 비트 동일)으로 클릭과 카운트인을 마스터 뒤에 섞습니다. 아래 Web Audio 예약은 엔진이 프로젝트를 거부했을 때의 대체 경로입니다. [RUST_ENGINE 5.7](RUST_ENGINE.md#57-웹-호스트-2차-엔진-안에서-끝나는-일)
+웹(0.3.2)과 데스크톱(0.3.3)은 통합 Rust 엔진이 같은 규칙(`rust/garak-engine/src/metronome.rs`, 이전 C++ `metronome.hpp`·`meter.hpp` 포팅, 그 렌더의 골든 레퍼런스와 비트 동일)으로 클릭과 카운트인을 마스터 뒤에 섞습니다. 소리(`metronomeSounds.ts`의 세 레벨 PCM)는 엔진에 한 번 보냅니다. 아래 Web Audio 예약(`webMetronome.ts`)은 0.3.3에서 삭제된 대체 경로의 기록입니다. [RUST_ENGINE 5.7](RUST_ENGINE.md#57-웹-호스트-2차-엔진-안에서-끝나는-일)
 
-### 웹(Web Audio 대체 경로)
+### 웹(Web Audio 대체 경로, 0.3.3에서 삭제)
 
 엔진의 미리 예약 스케줄러(25 ms마다 120 ms 앞까지)가 재생 구간을 나눌 때 같은 구간의 클릭을 `AudioBufferSourceNode.start(시각)`으로 오디오 시계에 예약합니다. 타이머로 소리를 내지 않습니다. 클릭 버스는 프로젝트 그래프 밖에서 `destination`으로 바로 갑니다. 그래서 마스터 볼륨·이펙트·미터, MediaRecorder 입력, `OfflineAudioContext` 내보내기와 섞이지 않습니다. 정지·탐색·템포 변경 때에는 아직 울리지 않은 클릭을 취소합니다. 카운트인은 재생 기준 시각을 카운트인 길이만큼 늦추고, `play()`는 다운비트 시각에 돌아와 녹음이 음악과 함께 시작합니다.
 
@@ -59,6 +59,5 @@ UI가 합성한 세 레벨 PCM을 `metronome.set { enabled, volume, sampleRate, 
 ## 테스트
 
 - [`src/core/metronome.test.ts`](../src/core/metronome.test.ts): 박·강세, 겹박자 묶음, 구간 경계에서 중복·누락 없음, 템포 변경, 루프 넘김, 카운트인, 환경설정 정규화
-- [`src/audio/webMetronome.test.ts`](../src/audio/webMetronome.test.ts): 오디오 시계 예약, 끔 상태와 카운트인, 취소
 - [`src/audio/metronomeSounds.test.ts`](../src/audio/metronomeSounds.test.ts): 모든 소리가 짧고 유한하며 박 위치(1.5 ms 이내)에서 울리는지
 - [`native/tests/engine_test.cpp`](../native/tests/engine_test.cpp) `metronome clicks, count-in and export`: 임펄스 클릭으로 4/4·6/8·루프·카운트인(녹음 포함)의 정확한 샘플 위치와 레벨, 오프라인 내보내기 무음, 샘플레이트 불일치 무시

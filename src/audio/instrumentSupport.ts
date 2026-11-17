@@ -65,8 +65,11 @@ export function assertNativeInstrumentsSupported(project: Project, sourceAvailab
   throw new Error(`${reason} 대상 트랙: ${tracks.slice(0, 4).join(', ')}${tracks.length > 4 ? '…' : ''}`)
 }
 
-/** `vintage`: the browser engine's Rust/WASM availability (the vintage instruments have no TS fallback). */
-const webSource = (vintage?: VintageBridge) => (track: Track) => instrumentDef(track.instrument).kind === 'vintage' && vintage?.available() === true
+/**
+ * `vintage`: the browser engine's availability (garak-engine.wasm). The vintage instruments and IEUM WAVE exist only
+ * in that module.
+ */
+const webSource = (vintage?: VintageBridge) => (track: Track) => (instrumentDef(track.instrument).kind === 'vintage' || track.instrument === 'wavetable') && vintage?.available() === true
 
 export function unsupportedWebAudioInstruments(project: Project, vintage?: VintageBridge): string[] {
   return unsupportedNativeInstruments(project, webSource(vintage))

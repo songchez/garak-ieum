@@ -31,9 +31,9 @@ flowchart TD
 
 ## 2. 남아 있는 Web Audio의 용도
 
-브라우저는 같은 Rust 엔진을 AudioWorklet(`garak-engine.wasm`)에서 쓰고, 엔진이 거부한 프로젝트만 `WebAudioEngine`의 Web Audio 그래프로 대체합니다([RUST_ENGINE 5장](RUST_ENGINE.md#5-wasm-호스트-audioworklet--5단계-웹-호스트)). 데스크톱의 `NativeAudioEngine`은 `OfflineAudioContext`를 **압축 파일의 일회성 디코딩 도구**로 사용하며, 만든 Float32 PCM 자산을 네이티브 엔진에 등록합니다. 파형·피치 분석과 기존 Signalsmith WASM 피치 편집은 비실시간 작업으로 유지하고 결과 PCM을 같은 네이티브 그래프에서 재생합니다. 데스크톱 실시간 출력·녹음·모니터링·WAV 렌더링을 Web Audio에 넘기는 경로는 사용하지 않습니다. 네이티브 호스트가 없거나 실패하면 오류를 보여 주며 브라우저 엔진으로 조용히 전환하지 않습니다.
+브라우저는 같은 Rust 엔진을 AudioWorklet(`garak-engine.wasm`)에서만 씁니다. 0.3.3에서 Web Audio 그래프 대체 경로를 삭제해, 엔진이 거부한 프로젝트는 이유와 함께 재생·내보내기가 실패합니다([RUST_ENGINE 5장](RUST_ENGINE.md#5-wasm-호스트-audioworklet--5단계-웹-호스트)). 데스크톱의 `NativeAudioEngine`은 `OfflineAudioContext`를 **압축 파일의 일회성 디코딩 도구**로 사용하며, 만든 Float32 PCM 자산을 네이티브 엔진에 등록합니다. 파형·피치 분석과 기존 Signalsmith WASM 피치 편집은 비실시간 작업으로 유지하고 결과 PCM을 같은 네이티브 그래프에서 재생합니다. 데스크톱 실시간 출력·녹음·모니터링·WAV 렌더링을 Web Audio에 넘기는 경로는 사용하지 않습니다. 네이티브 호스트가 없거나 실패하면 오류를 보여 주며 브라우저 엔진으로 조용히 전환하지 않습니다.
 
-이는 Opus/WebM·AAC/M4A 샘플을 miniaudio가 직접 디코딩한다고 가정하지 않는 구성입니다. 원본 Blob, 자산 ID, 샘플레이트, 채널 수, 길이와 소스 오프셋을 보존합니다. `.garak`와 피치 편집 문서의 원본·렌더 자산도 유지합니다. 데스크톱과 브라우저는 같은 Rust 엔진 코드를 쓰지만(WASM ↔ 네이티브 패리티 -144.5 dBFS), Web Audio 대체 경로의 출력은 비트 단위로 같다고 보장하지 않습니다. [피치 편집기](PITCH_EDITOR.md) · [샘플 규격](SAMPLES.md)
+이는 Opus/WebM·AAC/M4A 샘플을 miniaudio가 직접 디코딩한다고 가정하지 않는 구성입니다. 원본 Blob, 자산 ID, 샘플레이트, 채널 수, 길이와 소스 오프셋을 보존합니다. `.garak`와 피치 편집 문서의 원본·렌더 자산도 유지합니다. 데스크톱과 브라우저는 같은 Rust 엔진 코드를 씁니다(WASM ↔ 네이티브 패리티 -144.5 dBFS). [피치 편집기](PITCH_EDITOR.md) · [샘플 규격](SAMPLES.md)
 
 ## 3. 장치 설정과 지연
 

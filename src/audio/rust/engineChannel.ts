@@ -8,7 +8,9 @@
 //   worklet drains at the start of `process()` (no message hop, applied on the very next quantum);
 // - status: a seqlock-protected block the worklet writes after every quantum (transport frame,
 //   playing, count-in, master peak, render-time statistics, the context frame of that quantum);
-// - meters: a seqlock-protected block of track peaks and dynamics readings, written ~40 times a second.
+// - meters: a seqlock-protected block of track peaks and dynamics readings, written ~40 times a second;
+// - analysis: a seqlock-protected block with the latest ANALYSIS_FRAMES of each requested analysis tap
+//   (the editors' spectrum, stereo scope and rig tuner), written ~30 times a second while any is open.
 // Without isolation the same commands go by postMessage and the worklet posts status and meters
 // ~30 times a second. Ring commands carry the sequence number of the last message sent before them,
 // and the worklet holds a command back until that message has been applied, so `set` + `play` keep order.
@@ -53,6 +55,12 @@ export const METER_DYNAMICS = 256
 // Float32 slots after the Int32 seqlock word: [revision, count, peaks..., dynamics count, (track, insert, input, gain)...].
 const METER_SLOTS = 2 + METER_TRACKS + 1 + METER_DYNAMICS * 4
 export const METER_BYTES = 8 + METER_SLOTS * 4
+
+/** Analysis taps (garak_engine_max_analysis) and the history each keeps: enough for an 8192-point tuner window at 96 kHz. */
+export const ANALYSIS_SLOTS = 4
+export const ANALYSIS_FRAMES = 8192
+/** Int32 seqlock word, Int32 publish counter, then per slot ANALYSIS_FRAMES interleaved stereo frames, oldest first. */
+export const ANALYSIS_BYTES = 8 + ANALYSIS_SLOTS * ANALYSIS_FRAMES * 2 * 4
 
 export interface EngineStatus {
   frame: number
@@ -99,7 +107,7 @@ export interface EngineMeters {
   dynamics: { track: number; insert: number; input: number; gain: number }[]
 }
 
-export interface SharedChannel { status: SharedArrayBuffer; ring: SharedArrayBuffer; meters: SharedArrayBuffer }
+export interface SharedChannel { status: SharedArrayBuffer; ring: SharedArrayBuffer; meters: SharedArrayBuffer; analysis: SharedArrayBuffer }
 
 export function sharedChannelAvailable(): boolean {
   return typeof SharedArrayBuffer !== 'undefined' && (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated === true
@@ -107,7 +115,7 @@ export function sharedChannelAvailable(): boolean {
 
 export function createSharedChannel(): SharedChannel | null {
   if (!sharedChannelAvailable()) return null
-  return { status: new SharedArrayBuffer(STATUS_BYTES), ring: new SharedArrayBuffer(RING_BYTES), meters: new SharedArrayBuffer(METER_BYTES) }
+  return { status: new SharedArrayBuffer(STATUS_BYTES), ring: new SharedArrayBuffer(RING_BYTES), meters: new SharedArrayBuffer(METER_BYTES), analysis: new SharedArrayBuffer(ANALYSIS_BYTES) }
 }
 
 /** Worklet side of the status block. */
@@ -224,6 +232,74 @@ export class MeterReader {
   }
 }
 
+/**
+ * Worklet side of the analysis taps: a history ring per slot that every render appends to (no allocation),
+ * published oldest-first to the shared block or as copies by postMessage.
+ */
+export class AnalysisRings {
+  readonly data = new Float32Array(ANALYSIS_SLOTS * ANALYSIS_FRAMES * 2)
+  private write = 0
+  /** Appends `frames` of each of the `count` first slots of `view` (slots of `slotFrames` interleaved stereo frames). */
+  append(view: Float32Array, slotFrames: number, count: number, frames: number): void {
+    const size = ANALYSIS_FRAMES * 2
+    for (let i = 0; i < frames; i += 1) {
+      const at = ((this.write + i) % ANALYSIS_FRAMES) * 2
+      for (let k = 0; k < count; k += 1) {
+        const from = k * slotFrames * 2 + i * 2
+        this.data[k * size + at] = view[from]
+        this.data[k * size + at + 1] = view[from + 1]
+      }
+    }
+    this.write = (this.write + frames) % ANALYSIS_FRAMES
+  }
+  clear(): void { this.data.fill(0); this.write = 0 }
+  /** Slot `k` oldest first into `out` (ANALYSIS_FRAMES * 2 values). */
+  copySlot(k: number, out: Float32Array): void {
+    const size = ANALYSIS_FRAMES * 2, base = k * size, split = this.write * 2
+    out.set(this.data.subarray(base + split, base + size), 0)
+    out.set(this.data.subarray(base, base + split), size - split)
+  }
+}
+
+export class AnalysisWriter {
+  private readonly lock: Int32Array
+  private readonly slots: Float32Array
+  constructor(buffer: SharedArrayBuffer) {
+    this.lock = new Int32Array(buffer, 0, 2)
+    this.slots = new Float32Array(buffer, 8, ANALYSIS_SLOTS * ANALYSIS_FRAMES * 2)
+  }
+  write(rings: AnalysisRings, count: number): void {
+    Atomics.add(this.lock, 0, 1)
+    const size = ANALYSIS_FRAMES * 2
+    for (let k = 0; k < count; k += 1) rings.copySlot(k, this.slots.subarray(k * size, (k + 1) * size))
+    Atomics.add(this.lock, 1, 1)
+    Atomics.add(this.lock, 0, 1)
+  }
+}
+
+/** Main-thread side of the analysis block. */
+export class AnalysisReader {
+  private readonly lock: Int32Array
+  private readonly slots: Float32Array
+  constructor(buffer: SharedArrayBuffer) {
+    this.lock = new Int32Array(buffer, 0, 2)
+    this.slots = new Float32Array(buffer, 8, ANALYSIS_SLOTS * ANALYSIS_FRAMES * 2)
+  }
+  /** Publications so far (a new value means new data). */
+  get version(): number { return Atomics.load(this.lock, 1) }
+  /** Slot `k` (oldest first) into `out`; false when the worklet kept writing. */
+  read(k: number, out: Float32Array): boolean {
+    const size = ANALYSIS_FRAMES * 2
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const before = Atomics.load(this.lock, 0)
+      if (before & 1) continue
+      out.set(this.slots.subarray(k * size, (k + 1) * size))
+      if (Atomics.load(this.lock, 0) === before) return true
+    }
+    return false
+  }
+}
+
 export interface RingCommand { command: number; frame: number; afterSeq: number; seq: number; a?: number; b?: number; c?: number; d?: number; e?: number }
 
 /** Single producer (main thread), single consumer (worklet). Indices only grow; capacity is a power of two. */
@@ -274,6 +350,7 @@ export type EngineRequest =
   | { type: 'metronome'; seq: number; on: boolean; gain: number; strokes: Float32Array[] | null }
   | { type: 'monitor'; seq: number; tracks: number[] }
   | { type: 'taps'; seq: number; tracks: number[] }
+  | { type: 'analysis'; seq: number; taps: { track: number; insert: number; tuner: boolean }[] }
   | { type: 'dispose'; seq: number }
 
 export type EngineReply =
@@ -281,6 +358,8 @@ export type EngineReply =
   | { type: 'error'; seq: number; message: string; engine: boolean }
   | { type: 'status'; status: EngineStatus; meters: EngineMeters | null }
   | { type: 'fatal'; message: string }
+  /** Without a SharedArrayBuffer: the analysis taps' latest ANALYSIS_FRAMES (oldest first), one array per tap. */
+  | { type: 'analysis'; slots: Float32Array[] }
 
 export interface EngineProcessorOptions {
   module: WebAssembly.Module

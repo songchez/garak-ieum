@@ -1,10 +1,10 @@
 # 가락이음 아키텍처
 
-0.3.2(2026-11-17) 기준 소스 구조입니다. 오디오는 데스크톱과 브라우저가 함께 쓰는 **하나의 Rust 엔진**(`rust/garak-engine`)이 렌더하고, 데스크톱의 C++ `garak-audio-host`는 장치·플러그인·녹음을 맡는 셸, 브라우저의 Web Audio 그래프는 자동 대체 경로입니다. Rust 엔진의 내부는 [RUST_ENGINE](RUST_ENGINE.md), DSP 커널과 툴체인은 [RUST](RUST.md)에 있습니다. 실제 장치/청감 검증 상태는 [네이티브 오디오](NATIVE_AUDIO.md)와 [구현 상태](IMPLEMENTATION_STATUS.md)에 따로 기록합니다.
+0.3.2(2026-11-17) 기준 소스 구조입니다. 오디오는 데스크톱과 브라우저가 함께 쓰는 **하나의 Rust 엔진**(`rust/garak-engine`)이 렌더하고, 데스크톱의 C++ `garak-audio-host`는 장치·플러그인·녹음을 맡는 셸입니다. 브라우저에는 0.3.3부터 다른 렌더러가 없습니다(Web Audio 그래프 대체 경로 삭제). Rust 엔진의 내부는 [RUST_ENGINE](RUST_ENGINE.md), DSP 커널과 툴체인은 [RUST](RUST.md)에 있습니다. 실제 장치/청감 검증 상태는 [네이티브 오디오](NATIVE_AUDIO.md)와 [구현 상태](IMPLEMENTATION_STATUS.md)에 따로 기록합니다.
 
 ## 1. 현재 실행 구조
 
-`ProjectShell`은 프로젝트 목록과 편집기를 나눕니다. React 화면과 MCP 편집은 같은 `ProjectSession`의 프로젝트·이력을 사용합니다. [engineFactory](../src/audio/engineFactory.ts)는 데스크톱에서 `NativeAudioEngine`, 브라우저에서 `RustWebAudioEngine`(AudioWorklet의 Rust 엔진)을 선택합니다. 두 경로 모두 렌더러의 `NativeTimelineCompiler`가 만든 같은 계획을 [렌더-diff 프로토콜](RENDER_DIFF_PROTOCOL.md)(`project.set`/`project.patch`)로 같은 Rust 엔진에 보냅니다. 데스크톱에서 native bridge/helper가 없으면 오류를 표시하며 Web Audio로 자동 대체하지 않습니다. 브라우저는 엔진이 프로젝트를 거부하거나 WASM 모듈이 없을 때만 Web Audio 그래프(`WebAudioEngine`)로 이어서 재생합니다.
+`ProjectShell`은 프로젝트 목록과 편집기를 나눕니다. React 화면과 MCP 편집은 같은 `ProjectSession`의 프로젝트·이력을 사용합니다. [engineFactory](../src/audio/engineFactory.ts)는 데스크톱에서 `NativeAudioEngine`, 브라우저에서 `WebAudioEngine`(AudioWorklet의 Rust 엔진 호스트)을 선택합니다. 두 경로 모두 렌더러의 `NativeTimelineCompiler`가 만든 같은 계획을 [렌더-diff 프로토콜](RENDER_DIFF_PROTOCOL.md)(`project.set`/`project.patch`)로 같은 Rust 엔진에 보냅니다. 데스크톱에서 native bridge/helper가 없으면 오류를 표시하며 Web Audio로 자동 대체하지 않습니다. 브라우저도 대체 경로가 없습니다: AudioWorklet·WebAssembly가 없거나 `garak-engine.wasm`을 불러오지 못하면 오디오 설정이 분명한 오류로 실패하고, 엔진이 거부하는 프로젝트는 재생·내보내기가 이유와 함께 실패합니다(재생 중 거부되는 편집은 전송을 멈춤).
 
 ```mermaid
 flowchart TD
@@ -18,10 +18,9 @@ flowchart TD
   C -.->|"호스트 노드 콜백"| V["VST3 (C++)"]
   E -.-> V
   C --> D["ASIO / WASAPI / Core Audio"]
-  T --> W["브라우저 RustWebAudioEngine"]
+  T --> W["브라우저 WebAudioEngine"]
   W --> K["AudioWorklet<br/>garak-engine.wasm"]
   K --> E2["같은 Rust 엔진 (WASM)"]
-  W -.->|"거부·모듈 없음"| B["Web Audio 그래프 (대체)"]
   A["원본 Blob → 준비한 PCM"] --> C
   A --> K
 ```
@@ -54,7 +53,7 @@ flowchart TD
 | [`src/core/recordingOffset.ts`](../src/core/recordingOffset.ts) | 수동 녹음 보정의 부호·범위 검증, 리전 배치와 프로젝트 0 경계의 소스 오프셋 계산 |
 | [`src/core/instruments.ts`](../src/core/instruments.ts) | 악기 레지스트리: 합성·샘플 악기의 ID, 이름, 분류, 색, 조절기 정의, 샘플 세트 ID, 출처 표기 |
 | [`src/core/devices.ts`](../src/core/devices.ts) | 공통 파라미터 값 변환과 이펙트 레지스트리의 호환 export |
-| [`src/devices/contracts.ts`](../src/devices/contracts.ts), [`src/devices/effects/registry.ts`](../src/devices/effects/registry.ts) | 실시간 이펙트 계약과 여섯 모듈 등록; 각 모듈이 정의·DSP·잔향 시간을 소유 |
+| [`src/devices/contracts.ts`](../src/devices/contracts.ts), [`src/devices/effects/registry.ts`](../src/devices/effects/registry.ts) | 이펙트 계약과 여섯 모듈의 카탈로그 등록; 각 모듈은 정의와 내보내기 꼬리 추정만 가짐(DSP는 Rust 엔진) |
 | [`src/devices/pitch-editor/`](../src/devices/pitch-editor/) | 리전 피치/포먼트 UI·음계 보정·세션 초안/도구옵션·원본 분석·Worker 렌더·v2 문서 검증·float WAV 자산 |
 | [`src/audio/samples.ts`](../src/audio/samples.ts) | 샘플 세트 로더: 매니페스트 해석, 포맷 선택, 디코딩 캐시, 존 선택, 로딩 상태 알림 |
 | [`src/core/projectRecords.ts`](../src/core/projectRecords.ts) | 자동 저장용 레코드 분할(메타·트랙·리전·원본), 내용 해시, 매니페스트 조립 |
@@ -63,24 +62,23 @@ flowchart TD
 | [`src/audio/native/timeline.ts`](../src/audio/native/timeline.ts), [`src/core/nativePlugins.ts`](../src/core/nativePlugins.ts) | 리전 의미를 샘플 프레임 계획으로 변환, schema 6 VST3 식별·파라미터·상태 계약 |
 | [`desktop/native-audio.ts`](../desktop/native-audio.ts), [`native/src/host.cpp`](../native/src/host.cpp) | 승인된 IPC·파일·플러그인 카탈로그, 프로세스 수명, 녹음 파일·오프라인 출력 |
 | [`rust/garak-engine/`](../rust/garak-engine/) | 통합 Rust 렌더 엔진(`no_std + alloc`): 계획·프로토콜 파서, `Controller`(제어 스레드)/`Renderer`(오디오 스레드)와 lock-free 큐, 트랙·클립·내장 악기(`instrument.rs`, `wave/`)·인서트·센드/리턴·라우트(`routes.rs`)·오토메이션·템포 맵·메트로놈·오프라인 렌더. [RUST_ENGINE](RUST_ENGINE.md) |
-| [`rust/garak-dsp/`](../rust/garak-dsp/) | 시김새·기타 랙 커널과 내장 악기 보이스(`instruments/`). `#![no_std]`, 할당 없음; 웹용 `garak-dsp.wasm`(`rust/garak-wasm`)으로도 빌드. [RUST](RUST.md) |
+| [`rust/garak-dsp/`](../rust/garak-dsp/) | 시김새·기타 랙 커널과 내장 악기 보이스(`instruments/`). `#![no_std]`, 할당 없음; 웹에서는 `garak-engine.wasm` 안에 들어감(별도 `garak-dsp.wasm`은 0.3.3에서 삭제). [RUST](RUST.md) |
 | [`rust/garak-ffi/`](../rust/garak-ffi/), [`rust/garak-engine-wasm/`](../rust/garak-engine-wasm/) | 데스크톱용 C ABI 정적 라이브러리(헤더 `include/garak_engine.h`·`garak_engine_instruments.h`·`garak_rust.h`)와 AudioWorklet용 WASM 모듈 |
 | [`native/src/engine.cpp`](../native/src/engine.cpp), `native/src/rust_engine.inc` | Rust 엔진을 감싼 셸: 전송·카운트인 타이밍, 라이브 MIDI 전달, 녹음 캡처, 워커 풀·render-ahead 링, 스냅숏, VST3 호스트 노드(`HostTrack`), IEUM WAVE 패치 검증. 트랙·IEUM WAVE·마스터 버스·메트로놈은 Rust 엔진이 렌더(이전 C++ 트랙 경로·`dsp.cpp`·C++ WAVE 신스는 0.3.3에서 삭제) |
 | [`native/src/device.cpp`](../native/src/device.cpp), [`native/src/vst3.cpp`](../native/src/vst3.cpp) | ASIO/WASAPI/Core Audio 장치와 실제 VST3 SDK 호스트·네이티브 창 |
-| [`src/audio/rust/RustWebAudioEngine.ts`](../src/audio/rust/RustWebAudioEngine.ts), [`engine.worklet.ts`](../src/audio/rust/engine.worklet.ts), [`engineHost.ts`](../src/audio/rust/engineHost.ts), [`engineChannel.ts`](../src/audio/rust/engineChannel.ts) | 브라우저 호스트: 계획 동기화, 워크릿 프로세서, SharedArrayBuffer 명령 링·상태/미터 블록, Worker 오프라인 렌더, 거부 시 Web Audio 대체 |
-| [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 브라우저의 컨텍스트·장치·디코딩·샘플·녹음·미리 듣기(`RustWebAudioEngine`의 기반 클래스)와 Web Audio 대체 재생 |
+| [`src/audio/WebAudioEngine.ts`](../src/audio/WebAudioEngine.ts) | 브라우저 엔진 호스트(클래스 하나, 0.3.3에서 `RustWebAudioEngine`을 합침): 컨텍스트·장치 상태, 디코딩, 샘플 세트 등록, 계획 동기화, 입력 모니터링·라우트 녹음, Web MIDI·키보드 라이브 노트, 메트로놈·카운트인, 미터, 미리 듣기(라이브러리 미리 듣기는 작은 두 번째 엔진 노드 `PreviewEngine`), Worker 내보내기, 엔진 시작 실패·거부 오류 |
+| [`engine.worklet.ts`](../src/audio/rust/engine.worklet.ts), [`engineHost.ts`](../src/audio/rust/engineHost.ts), [`engineChannel.ts`](../src/audio/rust/engineChannel.ts) | 워크릿 프로세서, 모듈 로드·노드 브리지, SharedArrayBuffer 명령 링·상태/미터 블록, Worker 오프라인 렌더 |
 | [`src/audio/InputCapture.ts`](../src/audio/InputCapture.ts) | 녹음·모니터링 입력 공유, 입력 변경의 준비·확정·복구, 지연된 권한 응답과 장치 종료 처리 |
 | [`src/audio/AudioRecording.ts`](../src/audio/AudioRecording.ts), [`src/audio/recordingTransport.ts`](../src/audio/recordingTransport.ts) | 한 번의 녹음과 마지막 데이터 이벤트의 수명, 녹음을 함께 종료하는 재생·정지·자동 종료 연결 |
 | [`src/core/recording.ts`](../src/core/recording.ts), [`src/components/RecordingRegion.tsx`](../src/components/RecordingRegion.tsx) | 녹음 시작 위치·임시 리전·최종 추가의 공통 계약, 실제 경과 시간 표시 |
 | [`src/audio/AudioDeviceProbe.ts`](../src/audio/AudioDeviceProbe.ts), [`src/audio/OutputTest.ts`](../src/audio/OutputTest.ts) | 설정 창의 임시 입력 권한·레벨 테스트, 취소 가능한 적용 출력 테스트와 각 자원의 정리 |
-| [`src/audio/graph.ts`](../src/audio/graph.ts) | Web Audio 대체 경로와 멈춘 프로젝트의 미리 듣기: 기본 악기, 트랙·마스터 오디오 연결, 효과, 음성 수명 주기, 범위별 음표·오디오 클립 예약 |
 | [`src/audio/math.ts`](../src/audio/math.ts) | 박자·시간 변환, 루프 위치, 페이드 계산, 16-bit PCM WAV 인코딩 |
 | [`src/components/Timeline.tsx`](../src/components/Timeline.tsx) | 타임라인, 클립 이동·길이 편집, 재생 커서, 트랙·마스터 미터 |
 | [`src/components/PianoRoll.tsx`](../src/components/PianoRoll.tsx) | 음표·세기 편집, 음표 단위 단축키, 미리듣기 요청 |
 | [`src/components/Mixer.tsx`](../src/components/Mixer.tsx) | 트랙·마스터 믹서 조작 |
 | [`src/components/DeviceChain.tsx`](../src/components/DeviceChain.tsx) | 시김새 체인 UI: 공통 카드·노브, 악기 선택, 시김새 추가(라이브러리 드롭)·삭제·순서·바이패스 조작 |
-| [`src/components/GuitarRig.tsx`](../src/components/GuitarRig.tsx), [`src/devices/guitar-rig`](../src/devices/guitar-rig) | 기타 앰프 전용 편집기, 수치형 설정·프리셋, 컴프·페달·앰프·캐비닛/마이크 모델, causal 마스터. [사용법과 범위](GUITAR_RIG.md) |
-| [`src/audio/effectPreparation.ts`](../src/audio/effectPreparation.ts) | 실시간/오프라인 컨텍스트별 효과 프로세서 등록, 중복 준비 합치기와 오류 전달 |
+| [`src/components/GuitarRig.tsx`](../src/components/GuitarRig.tsx), [`src/devices/guitar-rig`](../src/devices/guitar-rig) | 기타 앰프 전용 편집기, 정의·튜너 UI 도우미·사용자 프리셋. DSP(컴프·페달·앰프·캐비닛/마이크 모델)는 Rust 엔진의 `guitar-rig` 인서트. [사용법과 범위](GUITAR_RIG.md) |
+| [`src/audio/renderTail.ts`](../src/audio/renderTail.ts) | 내보내기 꼬리(이펙트 잔향·딜레이 시간) 추정 |
 | [`src/components/Waveform.tsx`](../src/components/Waveform.tsx), [`src/core/waveform.ts`](../src/core/waveform.ts), [`src/core/waveformPyramid.ts`](../src/core/waveformPyramid.ts) | 원본 구간에 맞춘 파형 표시. 확대 수준에 따라 320점 개요, 파형 피라미드, (블록보다 좁은 열에서만) 필요할 때 디코드한 PCM 사용 |
 | [`src/audio/assetPcm.ts`](../src/audio/assetPcm.ts) | 오디오 자산의 PCM을 원본 바이트에서 필요할 때 디코드하는 작은 LRU 캐시, 디코드 직후의 자산 생성(메타데이터·개요·피라미드) |
 | [`src/components/AudioSettingsDialog.tsx`](../src/components/AudioSettingsDialog.tsx), [`src/components/useAudioDevices.ts`](../src/components/useAudioDevices.ts) | 장치·녹음·프로젝트·진단 설정 초안, 적용/취소 UI, 수동 권한·장치 목록·테스트 연결 |
@@ -140,7 +138,7 @@ MCP 편집은 `projectId`·`expectedRevision`·`operationId`와 명시적인 명
 
 엔진은 제어 스레드의 `Controller`(파싱·그래프 준비·diff 분류, 할당 자유)와 오디오 스레드의 `Renderer`(할당·해제·잠금·패닉 없음)로 나뉩니다. 둘은 고정 용량 SPSC 큐(명령, 교체된 객체 반환)로만 통신하며, `tests/realtime.rs`가 렌더 중 힙 사용이 0인지 검사합니다. 같은 엔진이 오프라인 내보내기(`offline.rs`)도 렌더합니다. [RUST_ENGINE 3장](RUST_ENGINE.md#3-데이터-모델과-실시간-규칙)
 
-**이전 엔진.** 데스크톱의 C++ 트랙 경로와 C++ 이펙트 DSP는 0.3.3에서 삭제했고, 데스크톱은 항상 Rust 엔진으로 렌더합니다. 웹은 숨은 스위치 `localStorage` `garak.rustEngine=0`(`WebAudioEngine`)·`garak.rustDsp=0`(TS 커널)이 남아 있으며, 아래에서 "Web Audio 그래프"는 그 대체 경로를 뜻합니다.
+**이전 엔진.** 0.3.3에서 데스크톱의 C++ 트랙 경로·C++ 이펙트 DSP·C++ IEUM WAVE 신스와 웹의 Web Audio 그래프·TS 커널·대체 스위치(`garak.rustEngine`, `garak.rustDsp`)를 삭제했습니다. 두 호스트 모두 Rust 엔진으로만 렌더합니다.
 
 ### 데스크톱 장치와 그래프
 
@@ -152,11 +150,11 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 
 ### 브라우저: AudioWorklet의 Rust 엔진
 
-`RustWebAudioEngine`이 `garak-engine` AudioWorklet 노드 하나(= 엔진 하나)를 만들고, 데스크톱과 같은 `project.set`/`project.patch`와 PCM 자산을 보냅니다. 페이지가 cross-origin isolated면 전송 명령·라이브 이벤트는 SharedArrayBuffer 링으로 다음 렌더 퀀텀에 적용되고(라이브 이벤트는 MIDI `timeStamp`에서 정한 컨텍스트 프레임을 실어 퀀텀 안 그 샘플에서 시작: [RUST_ENGINE 5.8](RUST_ENGINE.md#58-라이브-midi-샘플-정확도)), 상태와 트랙·다이내믹스 미터는 seqlock 블록으로 게시됩니다(아니면 postMessage). 메트로놈·카운트인, 입력 모니터링(`Io::input`), 트랙 라우트와 녹음 탭(`tap_output`)도 엔진 안에서 처리합니다. 내보내기·바운스·프리즈·스템은 Worker에서 새 엔진 인스턴스로 오프라인 렌더합니다. 엔진이 들리는 동안에는 Web Audio 그래프를 두지 않습니다. [RUST_ENGINE 5장](RUST_ENGINE.md#5-wasm-호스트-audioworklet--5단계-웹-호스트)
+`WebAudioEngine`이 `garak-engine` AudioWorklet 노드 하나(= 엔진 하나)를 만들고, 데스크톱과 같은 `project.set`/`project.patch`와 PCM 자산을 보냅니다. 페이지가 cross-origin isolated면 전송 명령·라이브 이벤트는 SharedArrayBuffer 링으로 다음 렌더 퀀텀에 적용되고(라이브 이벤트는 MIDI `timeStamp`에서 정한 컨텍스트 프레임을 실어 퀀텀 안 그 샘플에서 시작: [RUST_ENGINE 5.8](RUST_ENGINE.md#58-라이브-midi-샘플-정확도)), 상태와 트랙·다이내믹스 미터는 seqlock 블록으로 게시됩니다(아니면 postMessage). 메트로놈·카운트인, 입력 모니터링(`Io::input`), 트랙 라우트와 녹음 탭(`tap_output`)도 엔진 안에서 처리합니다. 내보내기·바운스·프리즈·스템은 Worker에서 새 엔진 인스턴스로 오프라인 렌더합니다. 트랙이 있는 음표 미리 듣기는 그 트랙의 엔진 라이브 이벤트로, 라이브러리 미리 듣기는 트랙 하나짜리 프로젝트를 도는 두 번째 작은 엔진 노드로 냅니다. [RUST_ENGINE 5장](RUST_ENGINE.md#5-wasm-호스트-audioworklet--5단계-웹-호스트)
 
-엔진이 프로젝트를 거부하면(예: 웹 호스트가 아직 샘플 세트를 엔진에 등록하지 않는 샘플 악기 프로젝트) 콘솔에 이유를 남기고 Web Audio 그래프로 재생·렌더합니다. 이 대체 경로는 브라우저 기본 노드와 `src/devices/effects/` registry의 시김새 워크릿(가능하면 `garak-dsp.wasm` 커널)을 쓰고, `AudioContext.currentTime` 기준으로 JavaScript 타이머가 이벤트를 미리 예약합니다.
+대체 경로는 없습니다(0.3.3에서 Web Audio 그래프 삭제). AudioWorklet이나 WebAssembly가 없거나 `garak-engine.wasm`을 불러오지 못하거나 워크릿이 시작하지 못하면 오디오 설정이 분명한 한국어 오류로 실패합니다. 엔진이 프로젝트를 거부하면 재생·내보내기가 "오디오 엔진이 이 프로젝트를 재생할 수 없습니다: <이유>"로 실패하고, 재생 중 편집이 거부되면 전송을 멈춥니다. EQ/필터 스펙트럼 분석기, 기타 랙 튜너 표시, 유틸리티 스테레오 스코프는 엔진 분석 탭: 편집기가 열려 있는 장치만 요청되고(`devices/effects/analysis.ts`·`devices/guitar-rig/tuner.ts`의 조회가 곧 요청), 워크릿이 그 인서트 뒤 신호(기타 랙은 튜너 위치의 신호)를 최근 8192프레임씩 SharedArrayBuffer 블록에(격리되지 않은 페이지는 postMessage로) 약 30번/초 게시합니다. 오디오 스레드 할당 없음(`rust/garak-engine/tests/analysis.rs`). 데스크톱 호스트는 아직 보내지 않습니다. 라이브 MIDI는 노트와 CC만 엔진으로 전달하고, 피치벤드·애프터터치는 녹음되지만 웹에서 실시간으로 소리 나지 않습니다.
 
-브라우저의 `latencyHint`/`renderSizeHint`는 요청값이고 실제 장치 I/O 버퍼 제어와 같지 않습니다. `InputCapture`·`AudioDeviceProbe`·Web Audio 기반 출력 테스트도 브라우저용입니다. 데스크톱 설정은 별도 `NativeAudioSettingsDialog`와 native 장치 API를 사용합니다. 두 호스트는 같은 엔진 코드를 쓰며 WASM과 네이티브 Rust 렌더의 차이는 패리티 테스트로 -144.5 dBFS 수준입니다([RUST_ENGINE 7장](RUST_ENGINE.md#7-패리티-전략과-결과)). Web Audio 대체 경로의 출력은 비트 단위로 같다고 보장하지 않습니다.
+브라우저의 `latencyHint`/`renderSizeHint`는 요청값이고 실제 장치 I/O 버퍼 제어와 같지 않습니다. `InputCapture`·`AudioDeviceProbe`·Web Audio 기반 출력 테스트도 브라우저용입니다. 데스크톱 설정은 별도 `NativeAudioSettingsDialog`와 native 장치 API를 사용합니다. 두 호스트는 같은 엔진 코드를 쓰며 WASM과 네이티브 Rust 렌더의 차이는 패리티 테스트로 -144.5 dBFS 수준입니다([RUST_ENGINE 7장](RUST_ENGINE.md#7-패리티-전략과-결과)).
 
 ### 리전 피치 처리
 
@@ -182,11 +180,11 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 
 ### 샘플 악기
 
-악기는 `src/core/instruments.ts`의 레지스트리 `INSTRUMENTS`에 정의합니다. 각 항목은 고정 ID(저장 파일이 참조), 표시 이름, 분류(신스·피아노·건반·드럼·국악), 합성/샘플 종류, 킷 여부, 조절기 정의를 가집니다. `Track.instrument`는 이 ID 문자열이며, `validateProject`는 레지스트리에 없는 ID를 거부합니다. 합성 악기(`drums`, `bass`, `keys`, `pad`, `pluck`, `rhodes`)와 빈티지 악기는 두 호스트 모두 Rust 엔진(`rust/garak-engine/src/instrument.rs`, 보이스는 `rust/garak-dsp/src/instruments/`)이 생성하고(Web Audio 대체 경로에서는 `graph.ts`), 샘플 악기는 `set` 필드가 가리키는 `public/samples/<set>/` 폴더의 음원을 씁니다. 매니페스트 규격은 [`SAMPLES.md`](SAMPLES.md)를 따릅니다.
+악기는 `src/core/instruments.ts`의 레지스트리 `INSTRUMENTS`에 정의합니다. 각 항목은 고정 ID(저장 파일이 참조), 표시 이름, 분류(신스·피아노·건반·드럼·국악), 합성/샘플 종류, 킷 여부, 조절기 정의를 가집니다. `Track.instrument`는 이 ID 문자열이며, `validateProject`는 레지스트리에 없는 ID를 거부합니다. 합성 악기(`drums`, `bass`, `keys`, `pad`, `pluck`, `rhodes`)와 빈티지 악기는 두 호스트 모두 Rust 엔진(`rust/garak-engine/src/instrument.rs`, 보이스는 `rust/garak-dsp/src/instruments/`)이 생성하고, 샘플 악기는 `set` 필드가 가리키는 `public/samples/<set>/` 폴더의 음원을 씁니다. 매니페스트 규격은 [`SAMPLES.md`](SAMPLES.md)를 따릅니다.
 
-`src/audio/samples.ts`의 `SampleLibrary`는 브라우저와 데스크톱에서 자산 로딩 규격을 공유합니다. 데스크톱은 `OfflineAudioContext`로 압축 파일을 한 번 디코딩해 Float32 PCM과 존 설정을 native host에 등록하고, 셸이 이를 `samples.register`로 Rust 엔진에 넘깁니다. 매 callback에서 JS로 재생하거나 디코딩하지 않습니다. 브라우저 호스트도 같은 JSON과 PCM을 Rust 엔진에 등록하므로(0.3.2) 샘플 악기 프로젝트도 엔진에서 재생합니다. 다음의 예약 설명은 엔진을 쓸 수 없을 때의 Web Audio 대체 경로입니다. 브라우저에서는 `WebAudioEngine.samples`로 접근합니다. `load(setId, context)`는 `manifest.json`을 읽고, 브라우저가 지원하는 포맷(Opus/webm 우선, 아니면 AAC/m4a)을 고른 뒤 모든 존 파일을 동시 6개 이하로 받아 `decodeAudioData`로 디코딩합니다. 세트별로 진행 중인 Promise를 캐시하므로 동시 요청은 한 번만 내려받고, 디코딩된 `AudioBuffer`는 컨텍스트에 묶이지 않아 그래프 재생성과 `OfflineAudioContext` 내보내기에서 그대로 재사용합니다. m4a는 AAC 인코더 지연만큼(44 ms) 재생 시작 위치를 건너뜁니다.
+`src/audio/samples.ts`의 `SampleLibrary`는 브라우저와 데스크톱에서 자산 로딩 규격을 공유합니다. 데스크톱은 `OfflineAudioContext`로 압축 파일을 한 번 디코딩해 Float32 PCM과 존 설정을 native host에 등록하고, 셸이 이를 `samples.register`로 Rust 엔진에 넘깁니다. 매 callback에서 JS로 재생하거나 디코딩하지 않습니다. 브라우저 호스트도 디코딩한 세트를 같은 JSON과 PCM으로 Rust 엔진에 등록하므로(0.3.2) 샘플 악기 프로젝트도 엔진에서 재생합니다. 브라우저에서는 `WebAudioEngine.samples`로 접근합니다. `load(setId, context)`는 `manifest.json`을 읽고, 브라우저가 지원하는 포맷(Opus/webm 우선, 아니면 AAC/m4a)을 고른 뒤 모든 존 파일을 동시 6개 이하로 받아 `decodeAudioData`로 디코딩합니다. 세트별로 진행 중인 Promise를 캐시하므로 동시 요청은 한 번만 내려받고, 디코딩된 `AudioBuffer`는 컨텍스트에 묶이지 않아 컨텍스트를 바꾸거나 내보낼 때도 다시 디코딩하지 않습니다. m4a는 AAC 인코더 지연만큼(44 ms) 재생 시작 위치를 건너뜁니다.
 
-재생 중 아직 준비되지 않은 세트의 음표는 건너뛰고 로드를 시작합니다. 세트가 준비되면 엔진이 현재 박에서 다시 예약하므로 짧은 끊김이 한 번 생길 수 있습니다. 트랙 추가나 악기 변경으로 새 샘플 악기가 프로젝트에 들어오면 `setProject`에서 미리 로드를 시작하고, WAV 내보내기는 프로젝트가 쓰는 모든 세트를 기다린 뒤 렌더링합니다. UI는 `AudioEngine.sampleStatus`·`subscribeSamples`로 로딩·오류 상태를 트랙 헤더에 표시하고, `sampleAttribution`으로 로드된 세트의 출처를 시김새 체인의 악기 카드에 보여 줍니다.
+웹 엔진은 프로젝트가 쓰는 세트를 모두 디코드해 엔진에 등록한 뒤 프로젝트를 동기화하므로, 새 샘플 악기가 들어온 편집은 세트가 준비될 때까지 엔진에 반영되지 않습니다. 트랙 추가나 악기 변경으로 새 샘플 악기가 프로젝트에 들어오면 `setProject`에서 미리 로드를 시작하고, WAV 내보내기는 프로젝트가 쓰는 모든 세트를 기다린 뒤 렌더링합니다. UI는 `AudioEngine.sampleStatus`·`subscribeSamples`로 로딩·오류 상태를 트랙 헤더에 표시하고, `sampleAttribution`으로 로드된 세트의 출처를 시김새 체인의 악기 카드에 보여 줍니다.
 
 존 선택(`pickZone`)은 음높이 범위 `[lo, hi]`와 세기 레이어 `[vlo, vhi)`로 고르며 가장 센 레이어는 `vhi`를 포함합니다. 킷은 `root`가 음표 번호와 같은 존만 씁니다. 음높이 악기는 `playbackRate`로 `root`와의 차이를 보정하고 어택·릴리즈 포락선과 루프 구간을 적용하며, 킷은 샘플을 끝까지 재생하되 `decay` 조절기로 줄일 수 있고 같은 `choke` 그룹의 이전 소리를 끊습니다.
 
@@ -282,7 +280,7 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 
 데스크톱은 같은 셸과 Rust 그래프, 새 VST3 인스턴스를 오프라인 모드로 실행합니다(`render.wav` 응답의 `rustEngine`이 Rust로 렌더됐는지 알려 줍니다). 실시간 callback을 정지한 뒤 플러그인 상태를 읽고 프로젝트 레이트로 렌더합니다. 플러그인/내장 이펙트 tail을 포함하되 전체 tail은 30초로 제한하며, 트랙 보상용 앞부분은 파일에서 제거합니다. 출력은 블록 단위로 기록하는 스테레오 PCM 16-bit WAV입니다.
 
-브라우저는 Worker에서 `garak-engine.wasm`의 새 인스턴스로 오프라인 렌더합니다(데스크톱 `renderStopped`와 같은 루프: 길이 + 꼬리 ≤ 30 s, PDC 앞쪽 제거). 엔진이 거부한 프로젝트만 `OfflineAudioContext`와 Web Audio 그래프 함수로 렌더합니다. 두 경로 모두 전체 렌더 결과를 RAM에 만들며 기존 길이 제한을 적용합니다. 피치 편집으로 만들어진 PCM 자산은 두 환경 모두의 출력에 반영합니다. 오프라인 WAV는 물리 장치의 음질이나 왕복 지연을 측정하는 검사가 아닙니다.
+브라우저는 Worker에서 `garak-engine.wasm`의 새 인스턴스로 오프라인 렌더합니다(데스크톱 `renderStopped`와 같은 루프: 길이 + 꼬리 ≤ 30 s, PDC 앞쪽 제거). 엔진이 거부한 프로젝트는 내보내기가 이유와 함께 실패합니다(대체 렌더 없음). 두 환경 모두 전체 렌더 결과를 RAM에 만들며 기존 길이 제한을 적용합니다. 피치 편집으로 만들어진 PCM 자산은 두 환경 모두의 출력에 반영합니다. 오프라인 WAV는 물리 장치의 음질이나 왕복 지연을 측정하는 검사가 아닙니다.
 
 ## 8. 검증 경계
 
@@ -291,7 +289,8 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 | `rust/garak-engine/tests/*.rs` (`pnpm rust:test`) | 엔진 오프라인 렌더, diff == 새 그래프, 호스트 경로·티켓 게이트, 악기, 기타 랙, 웹 경로, 렌더 중 힙 사용 0(`realtime*.rs`) |
 | `native/tests/rust_*_test.cpp` | Rust 커널·엔진·셸(오디오·악기·호스트 노드·멀티코어·render-ahead·메트로놈)을 0.3.2 C++ 경로에서 한 번 기록한 골든 레퍼런스(`native/tests/golden/`)와 비교: Windows x64 비트 동일, 그 밖 ≤ -90 dBFS |
 | `native/tests/engine_test.cpp` | `RenderEngine`(Rust 엔진) 프레임·DSP·믹싱·입력·플러그인 지연 보상 회귀. 이펙트 단위 검사는 `rust_fx.hpp`로 Rust 커널을 직접 구동 |
-| `src/audio/rust/*.test.ts` | WASM 엔진 ↔ 네이티브 Rust 렌더, 웹 경로 A/B, 워크릿 채널, 시김새·기타 랙·빈티지 WASM 패리티 |
+| `src/audio/rust/*.test.ts` | WASM 엔진 ↔ 네이티브 Rust 렌더, 웹 경로 A/B, 워크릿 채널, 웹 호스트 경로, 내장 이펙트 전부·카탈로그 전체(기타 랙 프리셋 포함)의 엔진 렌더(`effects.test.ts`) |
+| `src/audio/automationCrossFeature.test.ts`, `src/devices/effects/registry.test.ts` | 컴파일된 엔진 타임라인에서 오토메이션 × 템포 맵 × 센드/리턴, 카탈로그와 `renderTail.ts` 꼬리 추정 |
 | `native/tests/vst3_test.cpp` | 실제 SDK/fixture 모듈 탐색·effect/instrument·MIDI/parameter offset·state·reset |
 | `native/tests/vst3_device_test.cpp` | ASIO PCM endian·유효 비트·clipping·비정상 값 변환 |
 | `scripts/native-smoke.mjs` | 실제 native helper의 IPC·승인 경계·녹음·오프라인 WAV·VST3 상태 왕복 |
@@ -308,7 +307,7 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 | `src/core/audioSettings.test.ts`, `src/core/recordingOffset.test.ts` | 로컬 설정·입력 요청·수동 녹음 정렬과 0 경계 |
 | `src/audio/InputCapture.test.ts`, `src/audio/AudioDeviceProbe.test.ts` | 입력 준비·권한·취소·전환과 테스트 자원 수명 |
 | `src/core/waveformPyramid.test.ts`, `src/audio/assetPcm.test.ts` | 피라미드 블록 최대·범위 질의·메모리, 피라미드로 그린 파형과 샘플 비교, 자산 생성(PCM 비참조), 필요할 때 디코드·동시 요청 합치기·LRU 예산·유휴 해제·불일치 거부 |
-| `src/audio/WebAudioEngine.test.ts`, `src/audio/OutputTest.test.ts` | 컨텍스트 교체·복구·프로젝트 레이트·WAV·출력 장치 오류와 테스트음 취소 |
+| `src/audio/WebAudioEngine.test.ts`, `src/audio/OutputTest.test.ts` | (가짜 엔진 노드로) 장치 상태·토글·설정 트랜잭션, 엔진 시작 실패, 대체 없는 거부, 미리 듣기, 컨텍스트 교체 시 모니터링 이동, 엔진 내보내기·WAV, 출력 장치 오류와 테스트음 취소 |
 
 이 테스트들은 실제 브라우저의 오디오 장치, 마이크 지연, 모든 타사 네이티브 플러그인의 호환성, 장시간 재생 성능을 측정하지 않습니다. 실제 fixture를 사용하는 검사는 별도로 위 표에 표시했습니다. fake-indexeddb 저장소 검사와 실제 브라우저의 IndexedDB 실행도 구분합니다. 실제 화면에서의 URL 직접 열기·뒤로/앞으로·새로고침·저장 복원·녹음·내보내기와 세 샘플의 청음·최종 음량 확인은 별도 검증 항목입니다.
 
@@ -316,4 +315,4 @@ VST3 module 생성·bus 협상·controller 연결·state·활성화는 제어 �
 
 Windows x64와 Apple Silicon arm64 배포는 실제 VST3 SDK와 장치 어댑터를 요구합니다. Windows의 ASIO SDK는 사용자가 선택한 GPLv3 경로를 사용하며 앱 코드는 GPL-3.0-only입니다. [고정 manifest](../native/dependencies.lock.json)는 ASIO 2.3.4, miniaudio 0.11.26, JSON 3.11.3 및 VST3 3.8.1의 필요한 하위 소스 전체를 URL/SHA-256으로 고정합니다. 대응 소스 ZIP은 같은 8개 archive를 포함합니다.
 
-모든 네이티브 빌드(`--core-only` 포함)는 `rust/garak-ffi`를 cargo로 빌드해 정적 라이브러리로 링크합니다(0.3.3부터 필수). 고정 Rust 툴체인(`rust/rust-toolchain.toml`)은 `scripts/setup-rust.ps1`(Windows)·`scripts/setup-rust.sh`(macOS/Linux)로 설치합니다. `pnpm build`는 Vite 전에 `garak-dsp.wasm`·`garak-engine.wasm`을 만듭니다([RUST](RUST.md#빌드와-rust-없는-개발)). `pnpm native:build`는 네이티브 빌드/CTest/설치를, `pnpm native:test`는 실제 프로세스와 VST3 fixture 스모크를 수행합니다. 새 Windows/macOS CI 결과와 실제 장치·권한·플러그인 창·긴 세션·왕복 지연은 해당 환경에서 확인해야 합니다. Linux 실제 SDK/fixture 통과와 Windows 소스 문법 검사 결과를 물리 장치 검증으로 해석하지 않습니다. 상세 한도·빌드 방법은 [NATIVE_AUDIO](NATIVE_AUDIO.md)를 따릅니다.
+모든 네이티브 빌드(`--core-only` 포함)는 `rust/garak-ffi`를 cargo로 빌드해 정적 라이브러리로 링크합니다(0.3.3부터 필수). 고정 Rust 툴체인(`rust/rust-toolchain.toml`)은 `scripts/setup-rust.ps1`(Windows)·`scripts/setup-rust.sh`(macOS/Linux)로 설치합니다. `pnpm build`는 Vite 전에 `garak-engine.wasm`을 만듭니다([RUST](RUST.md#빌드와-rust-없는-개발)). `pnpm native:build`는 네이티브 빌드/CTest/설치를, `pnpm native:test`는 실제 프로세스와 VST3 fixture 스모크를 수행합니다. 새 Windows/macOS CI 결과와 실제 장치·권한·플러그인 창·긴 세션·왕복 지연은 해당 환경에서 확인해야 합니다. Linux 실제 SDK/fixture 통과와 Windows 소스 문법 검사 결과를 물리 장치 검증으로 해석하지 않습니다. 상세 한도·빌드 방법은 [NATIVE_AUDIO](NATIVE_AUDIO.md)를 따릅니다.

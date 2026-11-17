@@ -65,7 +65,7 @@ Project.meterMap?: MeterEvent[]   // 스키마 18
 ## 6. 테스트
 
 - `src/core/meterMap.test.ts`: 마디 ↔ 박 왕복, 마디.박 표시, 마디선 탐색, 박자별 스냅, 템포 맵과 함께 마디 → 초, 정규화·편집·실행 취소, 스키마 18 저장/17 이하 마이그레이션/거부, 박자 변경을 넘는 메트로놈 강세·겹박자·구간 분할 불변·템포 맵 시각·카운트인, 눈금자·격자, FF 58 내보내기/가져오기, 네이티브 타임라인 `meterMap`.
-- `src/audio/webMetronome.test.ts`: 웹 메트로놈이 박자 변경마다 첫 박 강세, 시작 위치 박자의 카운트인.
+- 웹 메트로놈·카운트인은 0.3.3부터 엔진이 칩니다(Web Audio 클릭 예약 `webMetronome.ts`와 그 테스트는 삭제). 엔진 쪽 강세·카운트인은 `rust/garak-engine/tests/web.rs`와 `pnpm rust:engine-smoke`의 카운트인 확인이 지킵니다.
 - `native/tests/engine_test.cpp` `meter map: metronome accents across time-signature changes`: 4/4 → 3/4 → 7/8 → 6/8 클릭 프레임·강세, 중간에서 시작, 시작 위치 박자의 카운트인, 템포 맵과 함께.
 - `scripts/meter-smoke.mjs`(`pnpm meter:smoke`, Playwright): 박자 행 더블클릭 추가 → 눈금자 마디선, 실행 취소/다시 실행, 드래그 이동, 팝오버 편집, 삭제.
 

@@ -1,40 +1,48 @@
 import { instrumentDef } from '../core/instruments'
 import { DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, normalizeAudioSettings, projectSampleRate, type AudioSettings, type AudioState, type RenderSizeHint, type SampleRate } from '../core/audioSettings'
-import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
-import type { AudioAsset, AudioEngine, PlayableAsset, ControllerKey, InputChoice, InstrumentId, Project, RenderOptions, RenderedAudio, SampleAttribution, SampleStatus, TransportSnapshot, VintageBridge } from '../core/types'
-import { playbackProject } from '../core/freeze'
-import { encodeWav } from './wavEncode'
+import { isTrackEnabled, trackNote } from '../core/playback'
+import type { AudioAsset, AudioEngine, ControllerKey, InputChoice, InstrumentId, Project, RenderOptions, RenderedAudio, SampleAttribution, SampleStatus, Track, TransportSnapshot, VintageBridge } from '../core/types'
+import { freezeStatus, playbackProject } from '../core/freeze'
+import { countInBeats, type MetronomeEngineState, type PlayOptions } from '../core/metronome'
+import { meterMapOf } from '../core/meterMap'
+import { createEmptyProject, createTrack } from '../core/project'
 import { numberedInputChoices } from '../core/trackInputs'
-import {
-  applyControl, connectMonitor, createGraph, disconnectMonitor, disposeGraph, renderTailSeconds, trackTailSeconds, resetAutomationState, rmsLevel, scheduleAutomation, scheduleInstrument, scheduleRange, scheduleSampled,
-  setRouteMonitoring, stopTrackVoices, trackLayoutKey, updateEffectTempo, updateGraph,
-} from './graph'
-import { diffArrangement, type TrackChange } from './arrangementDiff'
-import { hasActiveAutomation } from '../core/automation'
-import type { EngineGraph } from './graph'
-import { clamp, loopRange, normalizedStart, positionAfter } from './math'
 import { tempoMapOf } from '../core/tempoMap'
-import { SampleLibrary } from './samples'
+import type { TakeCallbacks } from '../core/recording'
+import type { DynamicsReading } from '../devices/effects/dynamicsMeter'
+import { VINTAGE_WEB_UNAVAILABLE } from '../devices/vintage/availability'
+import { registerDeviceAnalysis, requestedDeviceAnalysis, type StereoScopeTap } from '../devices/effects/analysis'
+import { registerGuitarTunerTap, requestedGuitarTuners, unregisterGuitarTunerTap } from '../devices/guitar-rig/tuner'
+import { EngineAnalyser, type AnalysisSource } from './engineAnalyser'
+import { encodeWav } from './wavEncode'
+import { clamp, loopRange, normalizedStart } from './math'
+import { SampleLibrary, type LoadedSet } from './samples'
 import { ownAudioBytes } from './assetBytes'
 import { assetPcm, createAudioAsset, referencedAssetIds } from './assetPcm'
 import { playOutputTest } from './OutputTest'
-import { assertWebAudioProjectSupported, unsupportedWebAudioInstruments, WAVETABLE_HOST_REQUIRED } from './instrumentSupport'
-import { prepareEffects } from './effectPreparation'
-import { loadVintageWasm, subscribeVintageWasm, vintageWasmStatus, vintageWorkletSupported, VINTAGE_WEB_UNAVAILABLE } from '../devices/vintage/availability'
-import { flushVintage, prepareVintage } from '../devices/vintage/web'
-import { assertGuitarRigHealthy } from '../devices/guitar-rig'
+import { assertWebAudioProjectSupported, canPlayInstrument, instrumentUnavailableReason, unsupportedWebAudioInstruments, WAVETABLE_HOST_REQUIRED } from './instrumentSupport'
 import { prepareRouteRecorder, RouteRecordings, type RouteRecordingHost } from './RouteRecording'
-import type { TakeCallbacks } from '../core/recording'
-import { WebMetronome } from './webMetronome'
-import type { MetronomeEngineState, PlayOptions } from '../core/metronome'
 import { WebLiveMidi, type LiveVoiceHandle } from './liveMidi'
-import { heardTransportBeat, LIVE_NOTE_HOLD_SECONDS } from '../core/midiRecording'
-import { paramValue } from '../core/devices'
+import { metronomeStrokes } from './metronomeSounds'
+import { renderTailSeconds, trackTailSeconds } from './renderTail'
+import { packAudioBuffer } from './native/pcmTransfer'
+import { compileNativeTimeline, NativeTimelineCompiler, type NativePcmAsset, type NativeProjectTimeline } from './native/timeline'
+import { encodeTracks, planNativeSync, type SyncTimeline } from './native/timelineSync'
+import { ANALYSIS_FRAMES, ANALYSIS_SLOTS, emptyStatus, liveControllerNumber, TAP_CHANNELS, type EngineMeters, type EngineStatus } from './rust/engineChannel'
+import { ENGINE_WORKLET_UNSUPPORTED, KernelHelper, renderInEngineWorker, RustEngineNode, sharedGarakEngineModule } from './rust/engineHost'
+import type { EngineRenderAsset } from './rust/engineOffline'
+import { GarakEngineError, utf8Encode } from './rust/garakEngineWasm'
+import { liveContextFrame, liveLeadSeconds } from './rust/liveTiming'
+import { encodeWavetablePatch, wavetablePatchData, WAVETABLE_UNAVAILABLE_STATUS, type WavetableBridgeStatus, type WavetableNativeBridge } from '../devices/wavetable-synth/bridge'
+import { combineWavetablePatch, type WavetablePatch } from '../devices/wavetable-synth/model'
 
-const SCHEDULER_INTERVAL_MS = 25
-const LOOKAHEAD_SECONDS = 0.12
-const START_LEAD_SECONDS = 0.025
+const TICK_INTERVAL_MS = 25
+/** How often the analysis taps follow the editors that are open. */
+const ANALYSIS_SYNC_MS = 200
 const SNAPSHOT_INTERVAL_MS = 40
+/** Note previews: this long (pads and sampled instruments ring a little longer). */
+const PREVIEW_SECONDS = 0.3
+const LONG_PREVIEW_SECONDS = 0.65
 
 type ContextExtras = {
   setSinkId?: (sinkId: string) => Promise<void>
@@ -45,89 +53,325 @@ type ContextExtras = {
 const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 const configurationCancelled = () => new DOMException('오디오 설정 요청이 취소되었습니다.', 'AbortError')
 const contextKey = (settings: AudioSettings): string => JSON.stringify([settings.outputDeviceId, settings.latencyHint, settings.renderSizeHint])
+const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
+/** A superseded IEUM WAVE patch request (the editor ignores it; a newer one follows). */
+const waveAbort = () => new DOMException('오디오 작업이 취소되었습니다.', 'AbortError')
+const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((value, i) => value === b[i])
+
+/** User-facing reasons the audio engine cannot run in this browser (it has no other renderer). */
+export const ENGINE_WASM_UNSUPPORTED = '이 브라우저는 오디오 엔진에 필요한 WebAssembly를 지원하지 않아 소리를 낼 수 없습니다. 최신 Chrome, Edge, Firefox 또는 Safari에서 열어 주세요.'
+export const ENGINE_LOAD_FAILED = '가락이음 오디오 엔진(garak-engine.wasm)을 불러오지 못해 소리를 낼 수 없습니다. 네트워크 연결을 확인한 뒤 페이지를 새로 고쳐 주세요.'
+export const engineStartFailed = (detail: string) => `오디오 엔진을 시작하지 못했습니다. 페이지를 새로 고친 뒤 다시 시도해 주세요. (${detail})`
+export const engineRefused = (reason: string) => `오디오 엔진이 이 프로젝트를 재생할 수 없습니다: ${reason}`
+
+/** The page's engine module: fetched and compiled once; a failed load may be retried by the next request. */
+type EngineModuleState = 'idle' | 'loading' | 'ready' | 'unavailable'
+let moduleState: EngineModuleState = 'idle'
+let moduleTask: Promise<WebAssembly.Module | null> | null = null
+const moduleListeners = new Set<() => void>()
+function publishModuleState(next: EngineModuleState): void {
+  if (moduleState === next) return
+  moduleState = next
+  for (const listener of [...moduleListeners]) listener()
+}
+function loadEngineModule(): Promise<WebAssembly.Module | null> {
+  if (moduleState === 'ready' && moduleTask) return moduleTask
+  if (moduleTask && moduleState === 'loading') return moduleTask
+  publishModuleState('loading')
+  const task = sharedGarakEngineModule().then(module => {
+    if (!module) console.info('[가락이음] garak-engine.wasm이 없거나 불러오지 못했습니다. 개발 중이면 pnpm rust:wasm으로 만드세요 (docs/RUST.md).')
+    publishModuleState(module ? 'ready' : 'unavailable')
+    return module
+  }, () => { publishModuleState('unavailable'); return null })
+  moduleTask = task
+  return task
+}
+/** Test hook: forget the page's module state. */
+export function resetEngineModuleForTests(): void {
+  moduleState = 'idle'
+  moduleTask = null
+}
+async function requireEngineModule(): Promise<WebAssembly.Module> {
+  if (typeof WebAssembly === 'undefined') { publishModuleState('unavailable'); throw new Error(ENGINE_WASM_UNSUPPORTED) }
+  const module = await loadEngineModule()
+  if (!module) throw new Error(ENGINE_LOAD_FAILED)
+  return module
+}
+
+/** What the page is doing with the engine (tests, the smoke script and bug reports). */
+export interface EngineDiagnostics {
+  /** The worklet node exists on the current audio context. */
+  running: boolean
+  /** Status and transport use a SharedArrayBuffer (cross-origin isolated page). */
+  sharedChannel: boolean
+  /** The engine accepted the current project; otherwise `reason` says why it is silent. */
+  accepted: boolean
+  reason: string
+  playing: boolean
+  status: EngineStatus
+  /** The last offline render (export/bounce/freeze/stems). */
+  lastRender: { renderMs: number; frames: number; preMaster: boolean } | null
+  /** Tracks the engine monitors (graph indices) and route taps being recorded. */
+  monitoring: number[]
+  taps: number[]
+  /** Reverb kernels the helper worker computed for the worklet. */
+  kernels: number
+}
+
+const pcmMetadata = (id: string, pcm: Pick<AudioBuffer, 'sampleRate' | 'length' | 'numberOfChannels'>): NativePcmAsset => ({ id, sampleRate: pcm.sampleRate, frames: pcm.length, channels: pcm.numberOfChannels })
+
+/** The engine asset id of one decoded sample file (the desktop host uses the same scheme). */
+const sampleAssetId = (setId: string, file: string): string => `sample:${setId}:${file}`
+
+/** A decoded sample set as the `samples.register` params the desktop host sends (protocol::parse_sample_set). */
+function sampleSetJson(setId: string, loaded: LoadedSet): string {
+  const files: Record<string, string> = {}
+  for (const file of loaded.buffers.keys()) files[file] = sampleAssetId(setId, file)
+  return JSON.stringify({ id: setId, manifest: loaded.set, startOffset: loaded.startOffset, files })
+}
+
+/** Reverb insert parameter maps of a timeline (enabled tracks and inserts), keyed for the kernel cache. */
+function reverbParams(timeline: NativeProjectTimeline): Map<string, Record<string, number>> {
+  const found = new Map<string, Record<string, number>>()
+  for (const track of timeline.tracks) {
+    if (!track.enabled) continue
+    for (const insert of track.inserts) {
+      if (!insert.enabled || insert.type !== 'reverb') continue
+      const params = (insert as { params: Readonly<Record<string, number>> }).params
+      const picked: Record<string, number> = {}
+      for (const key of ['type', 'size']) if (typeof params[key] === 'number') picked[key] = params[key]
+      found.set(JSON.stringify(picked), picked)
+    }
+  }
+  return found
+}
+
+/** The graph order of an applied timeline: track ids and each track's insert ids (meters map through it). */
+interface GraphOrder { ids: string[]; inserts: string[][] }
+
+/** One analysis tap's history, read from the bridge once per publication. */
+class BridgeAnalysisSource implements AnalysisSource {
+  private readonly data = new Float32Array(ANALYSIS_FRAMES * 2)
+  private version = -1
+  private filled = false
+  constructor(private readonly bridge: RustEngineNode, private readonly slot: number) {}
+  latest(): Float32Array | null {
+    const version = this.bridge.analysisVersion
+    if (version !== this.version) {
+      this.version = version
+      if (this.bridge.readAnalysis(this.slot, this.data)) this.filled = true
+    }
+    return this.filled ? this.data : null
+  }
+}
 
 /**
- * Initial browser backend. Native Web Audio nodes perform DSP; JavaScript only
- * queues timestamped events. This is not an openDAW or native VST host.
+ * PCM and sample sets already handed to one engine node, re-sent only when their source changes: a project asset
+ * (its PCM decoded on demand for the upload, src/audio/assetPcm.ts; the worklet keeps the only lasting copy) or a
+ * sample file's decoded buffer.
+ */
+class EngineUploads {
+  readonly pcm = new Map<string, WeakRef<object>>()
+  readonly sets = new Map<string, LoadedSet>()
+
+  async put(bridge: RustEngineNode, id: string, source: object, load: () => AudioBuffer | Promise<AudioBuffer>): Promise<void> {
+    if (this.pcm.get(id)?.deref() === source) return
+    await bridge.putAsset(id, await load())
+    this.pcm.set(id, new WeakRef(source))
+  }
+
+  /** A decoded set: its zones' PCM (chunked into the worklet like any asset), then the set as samples.register JSON. */
+  async putSet(bridge: RustEngineNode, setId: string, loaded: LoadedSet, referenced: Set<string>): Promise<void> {
+    for (const [file, buffer] of loaded.buffers) {
+      const id = sampleAssetId(setId, file)
+      referenced.add(id)
+      await this.put(bridge, id, buffer, () => buffer)
+    }
+    if (this.sets.get(setId) !== loaded) {
+      await bridge.registerSamples(sampleSetJson(setId, loaded))
+      this.sets.set(setId, loaded)
+    }
+  }
+
+  /** PCM nothing references any more leaves the worklet. */
+  prune(bridge: RustEngineNode, referenced: ReadonlySet<string>, sets: readonly string[]): void {
+    for (const setId of [...this.sets.keys()]) if (!sets.includes(setId)) this.sets.delete(setId)
+    for (const id of [...this.pcm.keys()]) if (!referenced.has(id)) { this.pcm.delete(id); void bridge.removeAsset(id).catch(() => undefined) }
+  }
+
+  clear(): void { this.pcm.clear(); this.sets.clear() }
+}
+
+/**
+ * Library previews (no track): a second, tiny engine node playing a one-track project of the previewed
+ * instrument, so an audition never touches the project's graph. Created on the first library preview.
+ */
+class PreviewEngine {
+  private readonly uploads = new EngineUploads()
+  private key = ''
+  private noteId = 0
+
+  constructor(readonly bridge: RustEngineNode) {}
+
+  async play(instrument: InstrumentId, loaded: LoadedSet | undefined, pitch: number, velocity: number, seconds: number): Promise<void> {
+    const bridge = this.bridge, def = instrumentDef(instrument)
+    const key = `${instrument}:${bridge.context.sampleRate}`
+    if (key !== this.key) {
+      const referenced = new Set<string>()
+      if (def.set && loaded) await this.uploads.putSet(bridge, def.set, loaded, referenced)
+      this.uploads.prune(bridge, referenced, def.set ? [def.set] : [])
+      const project: Project = { ...createEmptyProject(), sampleRate: bridge.context.sampleRate as Project['sampleRate'], tracks: [{ ...createTrack('instrument', instrument), id: 'preview' }] }
+      const timeline = compileNativeTimeline(project, new Map())
+      const encoded = encodeTracks(timeline.tracks)
+      await bridge.update('project.set', { ...timeline, tracks: encoded.tracks }, encoded.binary)
+      this.key = key
+    }
+    const id = ++this.noteId
+    bridge.live(0, 'noteOn', pitch, clamp(velocity, 0, 1), id)
+    setTimeout(() => { bridge.live(0, 'noteOff', pitch, 0, id) }, seconds * 1000)
+  }
+
+  dispose(): void { this.bridge.dispose() }
+}
+
+/**
+ * The browser's audio engine: the unified Rust render engine (garak-engine.wasm) in one AudioWorklet
+ * (docs/RUST_ENGINE.md 5), the same engine and render-diff protocol the desktop host runs.
  *
- * Constructing this service never opens an audio device. resume/play/preview
- * should be called from a user gesture. dispose is idempotent, and a subsequent
- * explicit resume may open a fresh context (including React StrictMode remounts).
+ * Everything that makes a project sound — clips, instruments, effect chains, sends/returns, automation, tempo
+ * map, master, metronome and count-in — renders in the worklet, fed by NativeTimelineCompiler + planNativeSync
+ * (project.set, then project.patch per edit). Export, bounce, freeze and stems (pre-master included) render
+ * the same engine in a Worker. Track and dynamics meters, input monitoring, track-input route monitoring and
+ * route recording taps, live notes and previews all go through the engine. There is no other renderer: a
+ * browser without AudioWorklet or WebAssembly, or a module that fails to load, gets a clear error instead.
+ *
+ * This class keeps the browser around the engine: device setup and health, decoding, sample libraries,
+ * MediaStream capture, route recorders and Web MIDI. Constructing it never opens an audio device;
+ * resume/play/preview should be called from a user gesture. dispose is idempotent, and a later explicit
+ * resume may open a fresh context (including React StrictMode remounts).
  */
 export class WebAudioEngine implements AudioEngine {
   readonly kind = 'web-audio' as const
-  /** 옥구슬 EP / 한밤 106 run from the Rust core compiled to WASM (no TypeScript fallback). */
+  /** 옥구슬 EP / 한밤 106 are part of the engine module (the Rust instrument core). */
   readonly vintage: VintageBridge = {
-    available: () => vintageWasmStatus() === 'ready' && vintageWorkletSupported(),
-    reason: () => vintageWasmStatus() === 'ready' ? '' : vintageWasmStatus() === 'loading' || vintageWasmStatus() === 'idle' ? 'Rust 오디오 코어(WASM)를 불러오는 중입니다.' : VINTAGE_WEB_UNAVAILABLE,
-    subscribe: listener => { void loadVintageWasm(); return subscribeVintageWasm(listener) },
+    available: () => moduleState === 'ready' && typeof AudioWorkletNode !== 'undefined',
+    reason: () => moduleState === 'ready' ? '' : moduleState === 'loading' || moduleState === 'idle' ? '오디오 엔진(WASM)을 불러오는 중입니다.' : VINTAGE_WEB_UNAVAILABLE,
+    subscribe: listener => {
+      moduleListeners.add(listener)
+      if (typeof WebAssembly !== 'undefined') void loadEngineModule()
+      return () => { moduleListeners.delete(listener) }
+    },
   }
   /** One MediaRecorder per take; a browser records the chosen track only. */
   readonly maxSimultaneousRecordings = 1
-  /** Decoded sample sets outlive contexts and graphs; see audio/samples.ts. */
+  /** Decoded sample sets outlive contexts; see audio/samples.ts. */
   readonly samples = new SampleLibrary()
-  protected project: Project | null = null
-  protected assets = new Map<string, AudioAsset>()
-  /** PCM of the assets the Web Audio graph is playing: resolved before Play, dropped on pause/stop (src/audio/assetPcm.ts). */
-  private playable = new Map<string, PlayableAsset>()
-  private playableReload: Promise<void> | null = null
-  private playableStale = false
-  protected context: AudioContext | null = null
+  private project: Project | null = null
+  private sourceProject: Project | null = null
+  private assets = new Map<string, AudioAsset>()
+  private context: AudioContext | null = null
   private decodeContext: OfflineAudioContext | null = null
-  private graph: EngineGraph | null = null
-  private retiredGraphs = new Map<EngineGraph, ReturnType<typeof setTimeout>>()
-  private scheduler: ReturnType<typeof setInterval> | null = null
-  protected listeners = new Set<() => void>()
-  protected levels = new Map<string, number>()
-  protected masterLevel = 0
-  protected playing = false
-  protected position = 0
-  private anchorBeat = 0
-  private anchorTime = 0
-  private cursorBeat = 0
-  private cursorTime = 0
-  private chaseCursor = true
+  private ticker: ReturnType<typeof setInterval> | null = null
+  private readonly listeners = new Set<() => void>()
+  private readonly levels = new Map<string, number>()
+  private masterLevel = 0
+  private playing = false
+  private position = 0
   private lastSnapshotTime = 0
   private lifecycle = 0
   private transportRequest = 0
   private pendingPlayRequest: number | null = null
-  private monitorStream: MediaStream | null = null
-  private monitorSource: MediaStreamAudioSourceNode | null = null
-  private monitorTrackIds: string[] = []
-  /** Channel routes last wired for monitoring; a track input change rewires without a new stream. */
-  private monitorRoutes = ''
-  /** Routed tracks whose internal input is heard (docs/TRACK_INPUT_ROUTING.md); independent of any mic stream. */
-  private routeMonitorIds: string[] = []
-  /** Route recorders and the track input each listens to; rewired to every replacement graph. */
-  private routeRecorders = new Map<AudioNode, string>()
   /** Channels of the last live input stream; null until a stream has been seen. */
   private inputChannelCount: number | null = null
-  protected snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: 0 }
+  private snapshot: TransportSnapshot = { playing: false, beat: 0, ready: false, sampleRate: 0 }
   private settings: AudioSettings
   private desiredSampleRate: SampleRate = DEFAULT_SAMPLE_RATE
   private audioStatus: AudioState['status'] = 'idle'
   private audioError: string | null = null
   private audioSnapshot: AudioState
-  private audioListeners = new Set<() => void>()
+  private readonly audioListeners = new Set<() => void>()
   private configurationRequest = 0
   private configurationTask: Promise<void> | null = null
-  private preparingContexts = new Set<AudioContext>()
+  private readonly preparingContexts = new Set<AudioContext>()
   private outputFault: string | null = null
   private removeOutputListeners: (() => void) | null = null
-  /** Monitor-only clicks on the audio clock; never part of the graph, recordings or export. */
-  protected readonly metronome = new WebMetronome()
-  /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md). */
+
+  // The engine worklet and its project sync.
+  private bridge: RustEngineNode | null = null
+  private kernels: KernelHelper | null = null
+  private readonly kernelKeys = new Set<string>()
+  private kernelCount = 0
+  private readonly compiler = new NativeTimelineCompiler()
+  /** The last timeline the engine accepted on this bridge (patches are planned against it). */
+  private synced: SyncTimeline | null = null
+  private readonly orders = new Map<number, GraphOrder>()
+  private timelineRevision = 0
+  private projectRevision = 0
+  private syncedRevision = -1
+  private syncTask: Promise<void> | null = null
+  private syncTimer: ReturnType<typeof setTimeout> | null = null
+  private verdict = { accepted: false, reason: '아직 오디오 엔진에 프로젝트를 보내지 않았습니다.' }
+  private readonly uploads = new EngineUploads()
+  private preview: PreviewEngine | null = null
+  /** Sequence number of the last play/seek command; status before it is stale. */
+  private transportSeq = 0
+  private status: EngineStatus = emptyStatus()
+  private peak = 0
+  private readonly notes = new Set<string>()
+  private lastRender: EngineDiagnostics['lastRender'] = null
+  private metronomeState: MetronomeEngineState | null = null
+  private metronomeSent = ''
+  private readonly dynamics = new Map<string, DynamicsReading>()
+  /** Input monitoring (stream + tracks) and route monitoring, as the app last asked for them. */
+  private liveStream: MediaStream | null = null
+  private monitorTracks: string[] = []
+  private routeMonitorTracks: string[] = []
+  private liveSource: MediaStreamAudioSourceNode | null = null
+  private monitored: number[] = []
+  private monitoringKey = ''
+  /** Route recording taps: graph index per slot, and the splitter on the worklet's tap output. */
+  private tapSlots: (string | null)[] = []
+  private tapIndices: number[] = []
+  private tapSplitter: ChannelSplitterNode | null = null
+  private liveNoteId = 0
+  /** Analysis taps the open editors asked for (key: their engine addresses) and how to unregister them. */
+  private analysisKey = ''
+  private analysisRelease: (() => void)[] = []
+  private lastAnalysisSync = 0
+  /** IEUM WAVE (docs/IEUM_WAVE.md): the synth exists only in garak-engine.wasm, so its availability is the module's. */
+  private waveStatus: WavetableBridgeStatus = WAVETABLE_UNAVAILABLE_STATUS
+  private readonly waveListeners = new Set<(status: WavetableBridgeStatus) => void>()
+  private readonly wavePatchRequests = new Map<string, number>()
+  /** Editor keyboard notes per track: `${channel}:${pitch}` -> live note id. */
+  private readonly waveNotes = new Map<string, Map<string, number>>()
+  /** Encoded patches per WAVE track, kept while the track's parameter and state objects stay the same. */
+  private readonly wavePayloads = new Map<string, { params: Track['instrumentParams']; state: Track['instrumentState']; data: string }>()
+
+  /** The WAVE editor's host contract (bridge.ts), served by the engine's live events and project sync. */
+  readonly wavetable: WavetableNativeBridge = {
+    protocolVersion: 1,
+    getStatus: () => { this.watchWaveModule(); return this.waveStatus },
+    subscribe: listener => {
+      this.waveListeners.add(listener)
+      this.watchWaveModule()
+      return () => { this.waveListeners.delete(listener) }
+    },
+    applyPatch: (trackId, patch, revision) => this.applyWavePatch(trackId, patch, revision),
+    previewNoteOn: (trackId, note, velocity, channel = 0) => this.waveNoteOn(trackId, note, velocity, channel),
+    previewNoteOff: (trackId, note, channel = 0) => this.waveNoteOff(trackId, note, channel),
+    allNotesOff: trackId => this.waveAllNotesOff(trackId),
+  }
+  private waveWatching = false
+
+  /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md), stamped for sample-accurate timing. */
   readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity, time) => this.startLiveNote(trackId, pitch, velocity, time), beatAt: time => this.heardBeatAt(time),
     control: (trackId, key, value, time) => this.liveControl(trackId, key, value, time) })
 
   constructor(project?: Project, settings: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     this.settings = normalizeAudioSettings(settings)
     this.audioSnapshot = this.readAudioState()
-    // Notes of a set that arrived mid-playback were skipped; rescheduling from the
-    // current beat picks them up at the cost of one small restart.
-    this.samples.subscribe((_, status) => {
-      if (status === 'ready' && this.playing) this.restartAt(this.currentBeat())
-    })
+    // A sample set that finished decoding reaches the engine with the next sync.
+    this.samples.subscribe((_, status) => { if (status === 'ready' && this.project && this.sampleSets(this.project).length) this.markDirty() })
     if (project) this.setProject(project)
   }
 
@@ -136,6 +380,23 @@ export class WebAudioEngine implements AudioEngine {
   readonly subscribeAudioState = (callback: () => void): (() => void) => {
     this.audioListeners.add(callback)
     return () => { this.audioListeners.delete(callback) }
+  }
+
+  diagnostics(): EngineDiagnostics {
+    if (this.bridge) this.poll()
+    return {
+      running: !!this.bridge && this.bridge.context === this.context && !this.bridge.error,
+      sharedChannel: !!this.bridge?.sharedChannel,
+      accepted: this.verdict.accepted, reason: this.verdict.reason,
+      playing: this.playing, status: { ...this.status }, lastRender: this.lastRender,
+      monitoring: [...this.monitored], taps: this.tapIndices.filter(index => index >= 0), kernels: this.kernelCount,
+    }
+  }
+
+  private note(text: string): void {
+    if (this.notes.has(text)) return
+    this.notes.add(text)
+    console.info(`[가락이음] 오디오 엔진: ${text}`)
   }
 
   /** Explicit Apply is transactional: a failed candidate never replaces the working context. */
@@ -154,12 +415,12 @@ export class WebAudioEngine implements AudioEngine {
     const lifecycle = this.lifecycle
     const current = () => request === this.configurationRequest && lifecycle === this.lifecycle
     const active = this.context
-    if (active && !this.outputFault && active.state !== 'closed' && active.sampleRate === rate && contextKey(next) === contextKey(this.settings)) {
+    if (active && this.bridge && !this.outputFault && active.state !== 'closed' && active.sampleRate === rate && contextKey(next) === contextKey(this.settings)) {
       this.settings = next
       this.desiredSampleRate = rate
       this.audioStatus = 'ready'
       this.audioError = null
-      this.wireMonitor()
+      this.syncMonitoring()
       this.publishAudioState()
       return Promise.resolve()
     }
@@ -168,8 +429,7 @@ export class WebAudioEngine implements AudioEngine {
     this.publishAudioState()
     const task = (async () => {
       let candidate: AudioContext | null = null
-      let candidateGraph: EngineGraph | null = null
-      let candidateMonitor: MediaStreamAudioSourceNode | null = null
+      let candidateBridge: RustEngineNode | null = null
       let candidateOutputError: Error | null = null
       const candidateError = () => { candidateOutputError = new Error('출력 장치를 시작하는 중 오류가 발생했습니다. 장치 연결과 스피커 권한을 확인해 주세요.') }
       try {
@@ -178,6 +438,9 @@ export class WebAudioEngine implements AudioEngine {
         candidate = new AudioContext(options)
         this.preparingContexts.add(candidate)
         candidate.addEventListener('error', candidateError)
+        // The engine is the only renderer: without its module the candidate is closed with a clear error.
+        const module = await requireEngineModule()
+        if (!current()) throw configurationCancelled()
         const extras = candidate as AudioContext & ContextExtras
         if (candidate.sampleRate !== rate) throw new Error(`브라우저가 요청한 ${rate} Hz 대신 ${candidate.sampleRate} Hz를 선택했습니다.`)
         if (next.renderSizeHint !== 'default' && typeof extras.renderQuantumSize !== 'number') throw new Error('이 브라우저는 렌더 블록 크기 설정을 지원하지 않습니다. 기본값을 사용해 주세요.')
@@ -188,64 +451,81 @@ export class WebAudioEngine implements AudioEngine {
         }
         if (candidate.state !== 'running') await candidate.resume()
         if (!current()) throw configurationCancelled()
-        // Load all built-in worklets once per context. Later graph edits are synchronous.
-        await prepareEffects(candidate)
-        // The vintage instruments' worklet + Rust core (never throws; unavailable keeps them silent).
-        await prepareVintage(candidate)
-        // Subclass hook (the Rust engine worklet, src/audio/rust/RustWebAudioEngine.ts); never throws.
-        await this.prepareContext(candidate)
+        try { candidateBridge = await RustEngineNode.create(candidate, module) } catch (error) { throw message(error) === ENGINE_WORKLET_UNSUPPORTED ? error : new Error(engineStartFailed(message(error)), { cause: error }) }
         if (!current()) throw configurationCancelled()
         if (candidateOutputError) throw candidateOutputError
         if (candidate.state !== 'running') throw new Error('오디오 장치를 시작하지 못했습니다. 적용 버튼을 다시 눌러 주세요.')
         if (next.outputDeviceId && typeof extras.sinkId === 'string' && extras.sinkId !== next.outputDeviceId) throw new Error('브라우저의 실제 출력이 선택한 장치와 다릅니다. 출력 장치를 다시 선택해 주세요.')
-        if (this.project && this.graphEnabled()) {
-          candidateGraph = createGraph(candidate, this.project)
-          candidateGraph.gate.gain.value = 0
-          this.wireRoutes(candidateGraph)
-          if (next.softwareMonitoring && this.monitorStream?.active && this.monitorTrackIds.length) {
-            candidateMonitor = candidate.createMediaStreamSource(this.monitorStream)
-            connectMonitor(candidateGraph, candidateMonitor, this.monitorTrackIds, this.monitorInputs())
-          }
-        }
-        if (!current()) throw configurationCancelled()
         // No awaits after this point: publish the new context, then retire the old resources.
         const previous = this.context
         this.removeOutputListeners?.()
         this.removeOutputListeners = null
-        if (this.graph) disposeGraph(this.graph)
-        this.monitorSource?.disconnect()
-        for (const [graph, timeout] of this.retiredGraphs) { clearTimeout(timeout); disposeGraph(graph) }
-        this.retiredGraphs.clear()
+        this.releaseEngine()
         this.context = candidate
-        this.graph = candidateGraph
-        this.monitorSource = candidateMonitor
         this.settings = next
         this.desiredSampleRate = rate
         this.outputFault = null
         this.preparingContexts.delete(candidate)
         candidate.removeEventListener('error', candidateError)
         this.watchOutput(candidate, next.outputDeviceId)
-        if (candidateGraph) candidateGraph.gate.gain.setValueAtTime(1, candidate.currentTime)
+        this.installEngine(candidateBridge, module)
+        candidateBridge = null
         if (previous) { previous.onstatechange = null; this.closeContext(previous) }
-        if (this.scheduler === null) this.scheduler = setInterval(() => this.tick(), SCHEDULER_INTERVAL_MS)
+        if (this.ticker === null) this.ticker = setInterval(() => this.tick(), TICK_INTERVAL_MS)
         this.levels.clear()
         this.masterLevel = 0
         this.audioStatus = 'ready'
         this.audioError = null
         this.publishSnapshot()
       } catch (error) {
-        candidateMonitor?.disconnect()
-        if (candidateGraph) disposeGraph(candidateGraph)
+        candidateBridge?.dispose()
         if (candidate) { candidate.removeEventListener('error', candidateError); this.preparingContexts.delete(candidate); this.closeContext(candidate) }
         if (!current()) throw configurationCancelled()
         this.audioStatus = 'error'
-        this.audioError = error instanceof Error ? error.message : String(error)
+        this.audioError = message(error)
         this.publishAudioState()
         throw error
       }
     })().finally(() => { if (this.configurationTask === task) this.configurationTask = null })
     this.configurationTask = task
     return task
+  }
+
+  /** The new context's engine node: a fresh project sync (project.set), metronome strokes and monitoring. */
+  private installEngine(bridge: RustEngineNode, module: WebAssembly.Module): void {
+    this.bridge = bridge
+    if (this.kernels?.sampleRate !== bridge.context.sampleRate) { this.kernels?.dispose(); this.kernels = new KernelHelper(module, bridge.context.sampleRate) }
+    this.kernelKeys.clear()
+    this.synced = null
+    this.orders.clear()
+    this.uploads.clear()
+    this.syncedRevision = -1
+    this.metronomeSent = ''
+    this.monitoringKey = ''
+    this.monitored = []
+    this.status = emptyStatus()
+    this.verdict = { accepted: false, reason: '아직 오디오 엔진에 프로젝트를 보내지 않았습니다.' }
+    this.pushMetronome()
+    this.scheduleSync()
+    this.waveNotes.clear()
+    this.publishWaveStatus()
+  }
+
+  /** Drops the engine nodes of the current context (a new context gets its own). */
+  private releaseEngine(): void {
+    if (this.syncTimer !== null) clearTimeout(this.syncTimer)
+    this.syncTimer = null
+    this.liveSource?.disconnect()
+    this.liveSource = null
+    this.disposeTaps()
+    this.releaseAnalysis()
+    this.preview?.dispose()
+    this.preview = null
+    this.bridge?.dispose()
+    this.bridge = null
+    this.synced = null
+    this.uploads.clear()
+    this.dynamics.clear()
   }
 
   private closeContext(context: AudioContext): void {
@@ -265,7 +545,7 @@ export class WebAudioEngine implements AudioEngine {
     let disposed = false
     let enumeration = 0
     const current = () => !disposed && this.context === context
-    const fail = (message: string) => { if (current()) this.blockOutput(context, message) }
+    const fail = (text: string) => { if (current()) this.blockOutput(context, text) }
     const sinkChanged = () => {
       if (!current()) return
       const sinkId = (context as AudioContext & ContextExtras).sinkId
@@ -288,13 +568,7 @@ export class WebAudioEngine implements AudioEngine {
         if (current() && request === enumeration) fail('출력 장치 변경 후 연결·권한을 확인하지 못해 재생과 모니터링을 중지했습니다. 출력 장치를 다시 적용하거나 시스템 기본 출력을 선택해 주세요.')
       })
     }
-    const outputError = () => {
-      try { assertGuitarRigHealthy(context) } catch (error) {
-        fail(error instanceof Error ? error.message : String(error))
-        return
-      }
-      fail('출력 장치 오류로 재생과 모니터링을 중지했습니다. 장치 연결·스피커 권한을 확인한 뒤 출력 설정을 다시 적용해 주세요.')
-    }
+    const outputError = () => fail('출력 장치 오류로 재생과 모니터링을 중지했습니다. 장치 연결·스피커 권한을 확인한 뒤 출력 설정을 다시 적용해 주세요.')
     context.onstatechange = () => { if (current()) this.publishSnapshot() }
     context.addEventListener('sinkchange', sinkChanged)
     context.addEventListener('error', outputError)
@@ -309,23 +583,25 @@ export class WebAudioEngine implements AudioEngine {
     }
   }
 
-  private blockOutput(context: AudioContext, message: string): void {
+  /** Stops the transport and silences the engine (monitoring included) until a newly validated context replaces it. */
+  private blockOutput(context: AudioContext, text: string): void {
     if (this.context !== context) return
     this.position = this.currentBeat()
+    if (this.playing) this.bridge?.transport('pause')
     this.playing = false
     this.transportRequest += 1
-    this.outputFault = message
+    this.outputFault = text
     this.audioStatus = 'error'
-    this.audioError = message
-    for (const graph of [this.graph, ...this.retiredGraphs.keys()]) {
-      if (!graph) continue
-      graph.gate.gain.cancelScheduledValues(context.currentTime)
-      graph.gate.gain.setValueAtTime(0, context.currentTime)
-      disconnectMonitor(graph)
-      for (const voice of graph.voices) voice.stop(context.currentTime)
+    this.audioError = text
+    this.liveSource?.disconnect()
+    this.liveSource = null
+    if (this.bridge) {
+      if (this.monitored.length) { this.monitored = []; void this.bridge.monitor([]).catch(() => undefined) }
+      this.monitoringKey = ''
+      try { this.bridge.node.disconnect(context.destination) } catch { /* Already detached. */ }
     }
-    this.monitorSource?.disconnect()
-    this.monitorSource = null
+    this.preview?.dispose()
+    this.preview = null
     this.levels.clear()
     this.masterLevel = 0
     this.publishSnapshot()
@@ -349,7 +625,7 @@ export class WebAudioEngine implements AudioEngine {
     }
   }
 
-  protected publishAudioState(): void {
+  private publishAudioState(): void {
     const next = this.readAudioState()
     if (JSON.stringify(next) === JSON.stringify(this.audioSnapshot)) return
     this.audioSnapshot = next
@@ -370,13 +646,10 @@ export class WebAudioEngine implements AudioEngine {
   }
 
   private preloadProjectSamples(project: Project): void {
-    for (const track of project.tracks) {
-      const def = instrumentDef(track.instrument)
-      if (track.kind === 'instrument' && def.set && this.samples.status(def.set) === 'idle') void this.preloadSamples(def.set).catch(() => undefined)
-    }
+    for (const setId of this.sampleSets(project)) if (this.samples.status(setId) === 'idle') void this.preloadSamples(setId).catch(() => undefined)
   }
 
-  protected sampleSets(project: Project): string[] {
+  private sampleSets(project: Project): string[] {
     return [...new Set(project.tracks.flatMap(track => {
       const def = instrumentDef(track.instrument)
       return track.kind === 'instrument' && def.set ? [def.set] : []
@@ -395,17 +668,18 @@ export class WebAudioEngine implements AudioEngine {
 
   readonly getMasterLevel = (): number => this.masterLevel
 
+  /** A compressor/limiter/gate insert's live reading from the engine's meter block. */
+  readonly getDeviceMeter = (deviceId: string): DynamicsReading | null => this.dynamics.get(deviceId) ?? null
+
   setProject(source: Project): void {
     this.sourceProject = source
     // Frozen tracks play their cached render (core/freeze.ts); everything below sees that playback project.
     const project = playbackProject(source, this.assets)
-    // A live edit can introduce a native instrument. Stop before the browser scheduler
-    // would omit it; the next Play explains the host requirement without replacing its sound.
+    // A live edit can introduce an instrument this browser cannot play. Stop; the next Play explains why.
     if (this.playing && unsupportedWebAudioInstruments(project, this.vintage).length) this.pause()
     const beat = this.currentBeat()
     const rate = projectSampleRate(project.sampleRate)
-    const changedRate = rate !== this.desiredSampleRate
-    if (changedRate) {
+    if (rate !== this.desiredSampleRate) {
       this.cancelConfiguration()
       this.lifecycle += 1
       this.transportRequest += 1
@@ -414,79 +688,235 @@ export class WebAudioEngine implements AudioEngine {
       this.audioStatus = this.outputFault ? 'error' : this.context ? 'ready' : 'idle'
       this.audioError = this.outputFault
     }
-    // Identity diff over immutable project snapshots (src/audio/arrangementDiff.ts), not a stringify of every clip.
-    const arrangement = diffArrangement(this.project, project)
-    const changedLayout = this.project === null || (this.project.tracks !== project.tracks && trackLayoutKey(this.project.tracks) !== trackLayoutKey(project.tracks))
     this.project = project
     this.position = clamp(beat, 0, project.lengthBeats)
     this.preloadProjectSamples(project)
-    if (this.context) {
-      try {
-        if (this.playing && (arrangement.global || changedLayout)) this.restartAt(this.position)
-        else if (!this.graph || changedLayout || changedRate) this.replaceGraph()
-        else {
-          // A mixer edit (fader, send level, effect knob) keeps synced effects — returns' delays included — on the
-          // tempo at the playhead, not the project's beat-0 tempo (docs/TEMPO_MAP.md); automated targets keep their lanes.
-          this.applyStatic(project)
-          // A region/note edit while playing replaces only the edited tracks' upcoming voices; the rest keep sounding.
-          if (this.playing && arrangement.tracks.size) this.rescheduleTracks(arrangement.tracks)
-        }
-      } catch (error) {
-        this.blockEffectGraph(this.context, error)
-      }
-      if (this.graph && this.monitorStream && JSON.stringify([...this.monitorInputs()]) !== this.monitorRoutes) this.wireMonitor()
-    }
-    // A live edit that places an asset the graph has no PCM for yet restarts once it is decoded.
-    if (this.playing && [...referencedAssetIds(project)].some(id => this.assets.has(id) && !this.playable.has(id))) this.reloadPlayable()
+    this.markDirty()
     this.publishSnapshot()
   }
 
   setAssets(assets: Map<string, AudioAsset>): void {
     const changed = assets.size !== this.assets.size || [...assets].some(([id, asset]) => this.assets.get(id) !== asset)
     this.assets = new Map(assets)
-    for (const [id, playable] of [...this.playable]) if (this.assets.get(id)?.blob !== playable.blob) this.playable.delete(id)
     // A freeze cache arriving or leaving switches its track between the cached render and live playback.
-    if (changed && this.sourceProject?.tracks.some(track => track.freeze)) {
-      const before = this.project
-      this.setProject(this.sourceProject)
-      if (before !== this.project) return
-    }
-    if (changed && this.playing) this.reloadPlayable()
+    if (changed && this.sourceProject?.tracks.some(track => track.freeze)) { this.setProject(this.sourceProject); return }
+    if (changed) this.markDirty()
   }
 
-  /** Resolves the PCM the graph needs for `project` into `into` (decoded from each asset's bytes, src/audio/assetPcm.ts). */
-  private async loadPlayable(project: Project, into: Map<string, PlayableAsset>): Promise<Map<string, PlayableAsset>> {
-    for (const id of referencedAssetIds(project)) {
-      const asset = this.assets.get(id)
-      if (!asset || into.get(id)?.blob === asset.blob) continue
-      const buffer = await assetPcm(asset)
-      if (this.assets.get(id) === asset) into.set(id, { ...asset, buffer })
-    }
-    return into
+  private markDirty(): void {
+    this.projectRevision += 1
+    this.scheduleSync()
   }
 
-  /** While playing: decodes what the graph lacks, then restarts at the heard beat. */
-  private reloadPlayable(): void {
-    // Edits during a reload only mark it stale: one more pass runs after it (no decode or restart per edit).
-    if (this.playableReload) { this.playableStale = true; return }
-    const request = this.transportRequest
+  private scheduleSync(): void {
+    if (!this.bridge || this.syncTimer !== null) return
+    // Coalesces a burst of edits (a fader drag) into one patch, like the native engine.
+    this.syncTimer = setTimeout(() => {
+      this.syncTimer = null
+      void this.syncNow().catch(error => this.note(`프로젝트 동기화 실패: ${message(error)}`))
+    }, 16)
+  }
+
+  private syncNow(): Promise<void> {
+    if (this.syncTask) return this.syncTask
     const task = (async () => {
-      do {
-        this.playableStale = false
-        if (this.project) await this.loadPlayable(this.project, this.playable)
-      } while (this.playableStale && request === this.transportRequest)
-      if (this.playing && request === this.transportRequest && this.project) this.restartAt(this.currentBeat())
+      while (this.bridge && this.project && this.syncedRevision !== this.projectRevision) {
+        const bridge = this.bridge, revision = this.projectRevision
+        await this.syncOnce(bridge, this.project)
+        if (bridge !== this.bridge) return
+        this.syncedRevision = revision
+      }
     })()
-    this.playableReload = task
-    void task.catch(error => console.warn('[가락이음] 오디오 자산을 디코드하지 못했습니다:', error))
-      .finally(() => { if (this.playableReload === task) this.playableReload = null })
+    this.syncTask = task
+    void task.finally(() => { if (this.syncTask === task) this.syncTask = null }).catch(() => undefined)
+    return task
   }
-  private sourceProject: Project | null = null
+
+  private async syncOnce(bridge: RustEngineNode, project: Project): Promise<void> {
+    const reject = (reason: string) => { this.synced = null; this.setVerdict(false, reason) }
+    if (bridge.error) return reject(bridge.error)
+    if (project.sampleRate !== bridge.context.sampleRate) return reject(`프로젝트 ${project.sampleRate} Hz와 오디오 장치 ${bridge.context.sampleRate} Hz가 다릅니다.`)
+    const metadata = new Map<string, NativePcmAsset>()
+    const referenced = referencedAssetIds(project)
+    const sets = this.sampleSets(project)
+    try {
+      for (const id of referenced) {
+        const asset = this.assets.get(id)
+        if (!asset) return reject(`오디오 자산을 찾을 수 없습니다: ${id}`)
+        await this.uploads.put(bridge, id, asset, () => assetPcm(asset))
+        if (bridge !== this.bridge) return
+        metadata.set(id, pcmMetadata(id, asset))
+      }
+      // Sampled instruments: the decoded sets, registered as the desktop host does.
+      for (const setId of sets) {
+        await this.preloadSamples(setId)
+        if (bridge !== this.bridge) return
+        const loaded = this.samples.get(setId)
+        if (!loaded) return reject(`샘플 세트를 불러오지 못했습니다: ${setId}`)
+        await this.uploads.putSet(bridge, setId, loaded, referenced)
+      }
+      this.uploads.prune(bridge, referenced, sets)
+    } catch (error) {
+      return reject(message(error))
+    }
+    let timeline: NativeProjectTimeline
+    try { timeline = this.compiler.compile(project, metadata, ++this.timelineRevision) } catch (error) { return reject(message(error)) }
+    // Reverb kernels are generated by the helper worker; the worklet only imports them.
+    try {
+      const fresh = [...reverbParams(timeline)].filter(([key]) => !this.kernelKeys.has(key))
+      if (fresh.length && this.kernels) {
+        const kernels = await this.kernels.compute(fresh.map(([, params]) => params))
+        if (bridge !== this.bridge) return
+        await bridge.importKernels(kernels)
+        for (const [key] of fresh) this.kernelKeys.add(key)
+        this.kernelCount += kernels.length
+      }
+    } catch (error) {
+      // The worklet generates what it lacks (one long quantum): a slower edit, not a failure.
+      this.note(`리버브 커널을 미리 만들지 못했습니다: ${message(error)}`)
+    }
+    const wired = this.wireWave(timeline, project)
+    const plan = planNativeSync(this.synced, wired)
+    try {
+      await bridge.update(plan.method, plan.method === 'project.set' ? (plan.params as { timeline: unknown }).timeline : plan.params, plan.binary)
+      if (bridge !== this.bridge) return
+      this.synced = wired
+      this.orders.set(timeline.revision, { ids: timeline.tracks.map(track => track.id), inserts: timeline.tracks.map(track => track.inserts.map(insert => insert.id)) })
+      for (const key of [...this.orders.keys()]) if (key < timeline.revision - 8) this.orders.delete(key)
+      this.setVerdict(true, '')
+      this.syncMonitoring()
+      this.syncTaps()
+    } catch (error) {
+      if (bridge !== this.bridge) return
+      // A refused patch leaves the engine on its previous project: the next sync sends project.set.
+      reject(message(error))
+    }
+  }
+
+  private setVerdict(accepted: boolean, reason: string): void {
+    const changed = accepted !== this.verdict.accepted
+    this.verdict = { accepted, reason }
+    if (!accepted) this.note(`프로젝트를 재생할 수 없습니다: ${reason}`)
+    if (changed) this.syncMonitoring()
+    // An edit the engine refuses while playing stops the transport where it was heard; Play then says why.
+    if (changed && !accepted && this.playing) this.pause()
+  }
+
+  /** The engine renders the current project now. */
+  private engineReady(): boolean {
+    return !!this.bridge && !this.bridge.error && this.bridge.context === this.context && this.verdict.accepted && !this.outputFault
+  }
+
+  /** Follows the engine module's state, so IEUM WAVE knows whether it can sound before audio starts. */
+  private watchWaveModule(): void {
+    if (this.waveWatching) return
+    this.waveWatching = true
+    moduleListeners.add(() => this.publishWaveStatus())
+    if (typeof WebAssembly !== 'undefined') void loadEngineModule()
+    this.publishWaveStatus()
+  }
+
+  private publishWaveStatus(): void {
+    const bridge = this.bridge
+    const reason = moduleState === 'unavailable' ? 'garak-engine.wasm을 불러오지 못해 이 브라우저에서는 IEUM WAVE 소리를 낼 수 없습니다. 음색 편집과 저장은 사용할 수 있습니다.'
+      : moduleState !== 'ready' ? '오디오 엔진(WASM)을 불러오는 중입니다. 음색 편집과 저장은 사용할 수 있습니다.'
+      : bridge?.error ? `오디오 엔진이 멈췄습니다: ${bridge.error}`
+      : ''
+    const sampleRate = bridge && bridge.context === this.context ? bridge.context.sampleRate : undefined
+    const next: WavetableBridgeStatus = Object.freeze(reason ? { available: false, reason } : { available: true, ...(sampleRate ? { sampleRate } : {}) })
+    if (next.available === this.waveStatus.available && next.reason === this.waveStatus.reason && next.sampleRate === this.waveStatus.sampleRate) return
+    this.waveStatus = next
+    for (const listener of [...this.waveListeners]) listener(next)
+  }
+
+  /** The WAVE track `trackId` of the current project (a frozen one plays its render, not the synth). */
+  private waveTrack(trackId: string): Track | undefined {
+    const project = this.project
+    return project?.tracks.find(track => track.id === trackId && track.kind === 'instrument' && track.instrument === 'wavetable' && !track.pluginInstrument && freezeStatus(project, track, this.assets) !== 'frozen')
+  }
+
+  /**
+   * The timeline as the engine reads it: each IEUM WAVE source carries its patch as base64 `patchData` (like the
+   * desktop host's). The pack is encoded again only when the track's parameters or state object changed.
+   */
+  private wireWave(timeline: NativeProjectTimeline, project: Project): SyncTimeline {
+    if (!timeline.tracks.some(track => track.source.kind === 'native-wavetable')) return timeline
+    const tracks = timeline.tracks.map(track => {
+      if (track.source.kind !== 'native-wavetable') return track
+      const { patch, ...source } = track.source
+      const owner = project.tracks.find(item => item.id === track.id)
+      const cached = owner && this.wavePayloads.get(track.id)
+      const data = cached && cached.params === owner.instrumentParams && cached.state === owner.instrumentState ? cached.data : wavetablePatchData(patch)
+      if (owner) this.wavePayloads.set(track.id, { params: owner.instrumentParams, state: owner.instrumentState, data })
+      return { ...track, source: { ...source, patchData: data } }
+    })
+    for (const id of [...this.wavePayloads.keys()]) if (!project.tracks.some(track => track.id === id)) this.wavePayloads.delete(id)
+    return { ...timeline, tracks }
+  }
+
+  /**
+   * Resolves once the engine plays `patch` on `trackId`: the project carrying it is synchronized and accepted.
+   * The project (not this call) is what reaches the engine; a newer edit or another revision aborts this one.
+   */
+  private async applyWavePatch(trackId: string, patch: WavetablePatch, revision: number): Promise<{ revision: number }> {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('IEUM WAVE 패치 확인 번호가 유효하지 않습니다.')
+    if (revision <= (this.wavePatchRequests.get(trackId) ?? 0)) throw waveAbort()
+    this.wavePatchRequests.set(trackId, revision)
+    const wanted = encodeWavetablePatch(patch)
+    const current = () => {
+      if (this.wavePatchRequests.get(trackId) !== revision) throw waveAbort()
+      const track = this.waveTrack(trackId)
+      if (!track || !sameBytes(encodeWavetablePatch(combineWavetablePatch(track.instrumentParams, track.instrumentState)), wanted)) throw waveAbort()
+    }
+    // Yield first: React's project effect can follow the editor's effect in the same commit.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    current()
+    if (!this.waveStatus.available) throw new Error(this.waveStatus.reason ?? WAVETABLE_HOST_REQUIRED)
+    await this.resume()
+    await this.syncNow()
+    current()
+    if (!this.engineReady()) throw new Error(this.bridge ? engineRefused(this.verdict.reason) : WAVETABLE_HOST_REQUIRED)
+    if (this.trackIndex(trackId) < 0) throw waveAbort()
+    return { revision }
+  }
+
+  private waveNoteOn(trackId: string, pitch: number, velocity: number, channel: number): void {
+    if (!Number.isInteger(pitch) || pitch < 0 || pitch > 127 || !Number.isInteger(channel) || channel < 0 || channel > 15 || !Number.isFinite(velocity) || velocity < 0 || velocity > 1) throw new Error('IEUM WAVE 미리듣기 음표가 유효하지 않습니다.')
+    if (velocity === 0) { this.waveNoteOff(trackId, pitch, channel); return }
+    const bridge = this.bridge, index = this.trackIndex(trackId)
+    if (!bridge || !this.engineReady() || index < 0 || !this.waveTrack(trackId)?.enabled) throw new Error('IEUM WAVE의 최신 음색이 오디오 엔진에 적용될 때까지 기다려 주세요.')
+    this.waveNoteOff(trackId, pitch, channel)
+    let notes = this.waveNotes.get(trackId)
+    if (!notes) { notes = new Map(); this.waveNotes.set(trackId, notes) }
+    const id = ++this.liveNoteId
+    notes.set(`${channel}:${pitch}`, id)
+    bridge.live(index, 'noteOn', pitch, velocity, id)
+  }
+
+  private waveNoteOff(trackId: string, pitch: number, channel: number): void {
+    const notes = this.waveNotes.get(trackId), key = `${channel}:${pitch}`, id = notes?.get(key)
+    if (id === undefined) return
+    notes!.delete(key)
+    const index = this.trackIndex(trackId)
+    if (this.bridge && index >= 0) this.bridge.live(index, 'noteOff', pitch, 0, id)
+  }
+
+  /** Releases this track's editor and live notes; its timeline notes and other tracks keep playing. */
+  private waveAllNotesOff(trackId: string): void {
+    this.waveNotes.delete(trackId)
+    const index = this.trackIndex(trackId)
+    if (this.bridge && index >= 0 && this.engineReady()) this.bridge.live(index, 'allNotesOff')
+  }
+
+  /** Graph index of a track in the engine's current graph (the last accepted timeline), or -1. */
+  private trackIndex(trackId: string): number {
+    return this.synced ? this.synced.tracks.findIndex(track => track.id === trackId) : -1
+  }
 
   async resume(): Promise<void> {
     if (this.configurationTask) await this.configurationTask
     if (this.outputFault) throw new Error(this.audioError ?? this.outputFault)
-    if (!this.context || this.context.state === 'closed' || this.context.sampleRate !== this.desiredSampleRate) {
+    if (!this.context || !this.bridge || this.context.state === 'closed' || this.context.sampleRate !== this.desiredSampleRate) {
       await this.configureAudio(this.settings, this.desiredSampleRate, false)
     }
     const context = this.context
@@ -513,193 +943,140 @@ export class WebAudioEngine implements AudioEngine {
     else await this.play()
   }
 
-  setMetronome(state: MetronomeEngineState): void {
-    this.metronome.setState(state, this.context?.currentTime ?? 0)
+  /** A project whose vintage instruments wait for the engine module (fetched once per page) before the support check. */
+  private awaitsModule(project: Project): boolean {
+    return moduleState !== 'ready' && typeof WebAssembly !== 'undefined' && unsupportedWebAudioInstruments(project, this.vintage).length > 0
   }
 
   async play(options: PlayOptions = {}): Promise<void> {
     if (!this.project) throw new Error('재생할 프로젝트가 없습니다.')
-    // A first Play of a project with vintage instruments waits for the Rust core (fetched once per page).
-    if (vintageWasmStatus() !== 'ready' && unsupportedWebAudioInstruments(this.project, this.vintage).length) await loadVintageWasm()
+    if (this.awaitsModule(this.project)) await loadEngineModule()
     assertWebAudioProjectSupported(this.project, this.vintage)
     const request = ++this.transportRequest
     const lifecycle = this.lifecycle
     this.pendingPlayRequest = request
+    const current = () => request === this.transportRequest && lifecycle === this.lifecycle
     try {
       await this.resume()
-      if (request !== this.transportRequest || lifecycle !== this.lifecycle || !this.context || !this.project) return
-      if (this.playing) return
-      await this.loadPlayable(this.project, this.playable)
-      if (request !== this.transportRequest || lifecycle !== this.lifecycle || !this.context || !this.project || this.playing) return
+      if (!current() || !this.context || !this.project || this.playing) return
+      await this.syncNow()
+      if (!current() || !this.context || !this.project || this.playing) return
       // Project edits may land while a device permission/configuration promise is pending.
       assertWebAudioProjectSupported(this.project, this.vintage)
-      let beat = normalizedStart(this.project, this.position)
-      if (!loopRange(this.project) && beat >= this.project.lengthBeats) beat = 0
-      this.playing = true
-      // A count-in delays the transport anchor; its clicks share the same audio clock.
-      const countIn = this.metronome.countInSeconds(this.project, options.countInBars ?? 0, beat)
-      this.restartAt(beat, countIn)
-      if (countIn > 0 && this.context && !this.outputFault) this.metronome.scheduleCountIn(this.context, this.project, options.countInBars ?? 0, this.anchorTime - countIn, beat)
       if (this.outputFault) throw new Error(this.audioError ?? this.outputFault)
+      if (!this.engineReady()) throw new Error(engineRefused(this.verdict.reason))
+      const bridge = this.bridge!, project = this.project, context = this.context
+      let beat = normalizedStart(project, this.position)
+      if (!loopRange(project) && beat >= project.lengthBeats) beat = 0
+      this.position = beat
+      bridge.transport('seek', Math.round(tempoMapOf(project).frameAt(beat, project.sampleRate)))
+      // A count-in is a scheduled start in the engine: it clicks at the tempo and meter where the
+      // transport starts (meter-map accents, the chosen sound), then the transport starts on the next frame.
+      const countIn = Math.round(countInBeats(meterMapOf(project).meterAt(beat), options.countInBars ?? 0) * 60 / tempoMapOf(project).bpmAt(beat) * context.sampleRate)
+      this.transportSeq = countIn > 0 ? bridge.transport('countIn', countIn) : bridge.transport('play')
+      this.playing = true
       this.publishSnapshot()
       // Resolve on the downbeat, so a recording starts its capture with the music.
-      if (countIn > 0) await this.waitForAnchor(request)
+      if (countIn > 0) await this.waitForDownbeat(request)
     } finally {
       // A cancelled play may settle after a newer play has already taken ownership.
       if (this.pendingPlayRequest === request) this.pendingPlayRequest = null
     }
   }
 
+  /** Waits until the engine has applied the count-in and left it (or the play was cancelled). */
+  private async waitForDownbeat(request: number): Promise<void> {
+    const limit = performance.now() + 130_000
+    while (this.playing && request === this.transportRequest && performance.now() < limit) {
+      const status = this.poll()
+      if (status.appliedSeq >= this.transportSeq && !status.countingIn) return
+      await new Promise(resolve => setTimeout(resolve, 4))
+    }
+  }
+
   pause(): void {
     this.transportRequest += 1
-    this.position = this.currentBeat()
+    if (this.playing) {
+      const beat = this.engineBeat()
+      this.bridge?.transport('pause')
+      this.position = beat
+    }
     this.playing = false
-    this.metronome.cancel(this.context?.currentTime ?? 0)
-    this.replaceGraph()
-    this.playable.clear()
     this.publishSnapshot()
   }
 
   stop(): void {
     this.transportRequest += 1
+    if (this.playing) this.bridge?.transport('stop')
     this.playing = false
-    this.metronome.cancel(this.context?.currentTime ?? 0)
     this.position = 0
-    this.cursorBeat = 0
-    this.replaceGraph()
-    this.playable.clear()
     this.publishSnapshot()
   }
 
   seek(beat: number): void {
     if (!this.project) return
-    this.position = clamp(beat, 0, this.project.lengthBeats)
-    if (this.playing) this.restartAt(this.position)
-    else if (this.graph && hasActiveAutomation(this.project)) this.applyStatic(this.project)
+    const project = this.project
+    this.position = clamp(beat, 0, project.lengthBeats)
+    if (this.playing && this.bridge) this.transportSeq = this.bridge.transport('seek', Math.round(tempoMapOf(project).frameAt(this.position, project.sampleRate)))
     this.publishSnapshot()
   }
 
-  /** Static parameter edit. Automated targets keep their lane value at the heard beat; while playing, the
-   * automation already scheduled ahead is replaced from now on (docs/AUTOMATION.md). */
-  private applyStatic(project: Project): void {
-    if (!this.graph || !this.context) return
-    const automated = hasActiveAutomation(project)
-    const beat = this.currentBeat()
-    this.effectBpm = tempoMapOf(project).bpmAt(beat)
-    updateGraph(this.graph, project, true, automated ? beat : undefined, this.effectBpm)
-    resetAutomationState(this.graph)
-    if (automated && this.playing && this.cursorTime > this.context.currentTime) {
-      const anchorBeat = this.anchorBeat, anchorTime = this.anchorTime
-      scheduleAutomation(this.graph, project, this.context.currentTime, this.cursorTime, time => positionAfter(project, anchorBeat, time - anchorTime))
-    }
+  /** The engine clicks the metronome after its master (strokes sent once per sound/rate). */
+  setMetronome(state: MetronomeEngineState): void {
+    this.metronomeState = { ...state }
+    this.pushMetronome()
   }
 
-  async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8, trackId?: string): Promise<void> {
-    const lifecycle = this.lifecycle
-    const def = instrumentDef(instrument)
-    if (def.kind === 'native') throw new Error(WAVETABLE_HOST_REQUIRED)
-    if (def.kind === 'vintage' && !this.vintage.available()) throw new Error(this.vintage.reason())
-    await this.resume()
-    if (def.set) await this.preloadSamples(def.set)
-    if (lifecycle !== this.lifecycle || !this.context || !this.graph || this.outputFault) return
-    const tracks = this.project?.tracks ?? []
-    const track = trackId === undefined ? undefined : tracks.find(item => item.id === trackId)
-    // Do not audition a stale instrument through a track that changed (or was removed)
-    // while output/sample preparation was pending. Library previews have no trackId.
-    if (trackId !== undefined && (!track || track.kind !== 'instrument' || track.instrument !== instrument)) return
-    if (track && !isTrackEnabled(track)) return
-    const live = trackNote(track, pitch, velocity)
-    if (!live) return
-    const audible = track !== undefined && audibleTrackIds(tracks).has(track.id)
-    const channel = audible ? this.graph.tracks.get(track.id) : undefined
-    const params = track?.instrument === instrument ? track.instrumentParams : undefined
-    const duration = instrument === 'pad' || def.kind === 'sampled' ? 0.65 : 0.3
-    const destination = channel?.input ?? this.graph.previewInput
-    const loaded = def.set ? this.samples.get(def.set) : undefined
-    if (loaded) scheduleSampled(this.graph, destination, loaded, def.isKit, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params, channel?.chokes)
-    else scheduleInstrument(this.graph, destination, instrument, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params)
+  private pushMetronome(): void {
+    const state = this.metronomeState, bridge = this.bridge
+    if (!state || !bridge) return
+    const rate = bridge.context.sampleRate
+    const key = `${state.sound}:${state.accent}:${rate}`
+    const strokes = key === this.metronomeSent ? null : metronomeStrokes(state.sound, state.accent, rate).map(stroke => new Float32Array(stroke))
+    // The count-in clicks at the metronome volume even with the metronome off (it is the cue to start).
+    void bridge.metronome(state.enabled, clamp(Number.isFinite(state.volume) ? state.volume : 0, 0, 1), strokes)
+      .then(() => { if (strokes) this.metronomeSent = key })
+      .catch(error => this.note(`메트로놈을 설정하지 못했습니다: ${message(error)}`))
   }
 
-  /** A live controller (pitch bend, modulation, CC) on the track's instrument. */
-  protected liveControl(trackId: string, key: ControllerKey, value: number, _timeMs?: number): void {
-    const controls = this.graph?.tracks.get(trackId)?.controls
-    if (controls && this.context) applyControl(controls, key, value, this.context.currentTime)
-  }
-
-  /** A held live note through the track's chain; released by its note-off with the instrument's release. */
-  protected startLiveNote(trackId: string, pitch: number, velocity: number, _timeMs?: number): LiveVoiceHandle | null {
-    const context = this.context, graph = this.graph
-    const track = this.project?.tracks.find(item => item.id === trackId)
-    if (!context || !graph || this.outputFault || !track || track.kind !== 'instrument' || !isTrackEnabled(track)) return null
-    if (context.state !== 'running') { void context.resume().catch(() => undefined); return null }
-    const def = instrumentDef(track.instrument)
-    const channel = graph.tracks.get(track.id)
-    if (def.kind === 'native' || !channel) return null
-    const loaded = def.set ? this.samples.get(def.set) : undefined
-    if (def.set && !loaded) { void this.preloadSamples(def.set).catch(() => undefined); return null }
-    const when = context.currentTime
-    // available === duration: no release-noise sample is scheduled at the far end of the hold.
-    const input = channel.controls?.input ?? channel.input, pitchBus = def.isKit ? undefined : channel.controls?.pitch
-    const voice = loaded
-      ? scheduleSampled(graph, input, loaded, def.isKit, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, channel.chokes, pitchBus)
-      : scheduleInstrument(graph, input, track.instrument, pitch, when, LIVE_NOTE_HOLD_SECONDS, velocity, LIVE_NOTE_HOLD_SECONDS, track.instrumentParams, pitchBus)
-    if (!voice) return null
-    // Drum hits ring out on their own, like timeline notes; note-offs do not cut them.
-    if (def.isKit) return { release: () => undefined }
-    const release = clamp(paramValue(def.params, track.instrumentParams, 'release'), 0.005, 30)
-    return { release: () => voice.release(context.currentTime, release) }
-  }
-
-  /** Transport beat the listener heard at `timeMs` (performance.now base): the output timestamp folds in output latency. */
-  protected heardBeatAt(timeMs: number): number | null {
-    const context = this.context
-    if (!this.playing || !context || !this.project) return null
-    const stamp = typeof context.getOutputTimestamp === 'function' ? context.getOutputTimestamp() : undefined
-    const latency = (context as AudioContext & ContextExtras).outputLatency ?? 0
-    const contextTime = stamp && typeof stamp.contextTime === 'number' && typeof stamp.performanceTime === 'number' && stamp.performanceTime > 0
-      ? stamp.contextTime + (timeMs - stamp.performanceTime) / 1000
-      : context.currentTime - (performance.now() - timeMs) / 1000 - (context.baseLatency ?? 0) - latency
-    return heardTransportBeat(this.project, this.anchorBeat, this.anchorTime, contextTime)
-  }
-
-  /** One source node per stream, rewired to the current graph's track inputs; no context is opened without a stream. */
+  /** Routes a live input stream into the given audio tracks (the engine's input 0); no context is opened without a stream. */
   setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void {
-    if (stream !== this.monitorStream && this.monitorSource) {
-      if (this.graph) disconnectMonitor(this.graph)
-      this.monitorSource.disconnect()
-      this.monitorSource = null
-    }
-    this.monitorStream = stream
-    this.monitorTrackIds = stream ? [...trackIds] : []
-    if (!stream) return
-    this.observeInputStream(stream)
-    if (this.context && this.context.state !== 'closed') this.wireMonitor()
-  }
-
-  private wireMonitor(): void {
-    if (!this.context || !this.graph) return
-    if (this.outputFault || !this.settings.softwareMonitoring || !this.monitorStream || !this.monitorTrackIds.length) { disconnectMonitor(this.graph); this.monitorRoutes = ''; return }
-    this.monitorSource ??= this.context.createMediaStreamSource(this.monitorStream)
-    const inputs = this.monitorInputs()
-    connectMonitor(this.graph, this.monitorSource, this.monitorTrackIds, inputs)
-    this.monitorRoutes = JSON.stringify([...inputs])
-  }
-
-  /** Track input channels for the monitored tracks; absent = the whole stream (the default input). */
-  private monitorInputs(): Map<string, readonly number[]> {
-    const ids = new Set(this.monitorTrackIds)
-    return new Map((this.project?.tracks ?? []).flatMap(track => ids.has(track.id) && track.kind === 'audio' && track.input ? [[track.id, track.input.channels] as const] : []))
+    this.liveStream = stream
+    this.monitorTracks = stream ? [...trackIds] : []
+    if (stream) this.observeInputStream(stream)
+    this.syncMonitoring()
   }
 
   /** Monitor gates of routed tracks (track/master inputs); these need no microphone stream. */
   setRouteMonitor(trackIds: readonly string[]): void {
-    this.routeMonitorIds = [...trackIds]
-    if (this.graph) setRouteMonitoring(this.graph, this.routeMonitorIds)
+    this.routeMonitorTracks = [...trackIds]
+    this.syncMonitoring()
   }
 
-  private wireRoutes(graph: EngineGraph): void {
-    setRouteMonitoring(graph, this.routeMonitorIds)
-    for (const [node, trackId] of this.routeRecorders) graph.routes.get(trackId)?.input.connect(node)
+  /** Monitoring through the engine: its live input is the stream, its route inputs the source taps. */
+  private syncMonitoring(): void {
+    const bridge = this.bridge
+    if (!bridge || this.outputFault) return
+    const ready = this.engineReady()
+    const software = this.settings.softwareMonitoring
+    const stream = ready && software && this.liveStream?.active ? this.liveStream : null
+    if (stream && this.monitorTracks.length) {
+      if (this.liveSource?.mediaStream !== stream || this.liveSource.context !== bridge.context) {
+        this.liveSource?.disconnect()
+        this.liveSource = bridge.context.createMediaStreamSource(stream)
+        this.liveSource.connect(bridge.node, 0, 0)
+      }
+    } else if (this.liveSource) {
+      this.liveSource.disconnect()
+      this.liveSource = null
+    }
+    const live = stream ? this.monitorTracks : []
+    const indices = ready ? [...new Set([...live, ...this.routeMonitorTracks].map(id => this.trackIndex(id)).filter(index => index >= 0))].sort((a, b) => a - b) : []
+    const key = `${this.synced?.revision ?? 0}:${indices.join(',')}`
+    if (key === this.monitoringKey) return
+    this.monitoringKey = key
+    this.monitored = indices
+    void bridge.monitor(indices).catch(error => this.note(`모니터링을 설정하지 못했습니다: ${message(error)}`))
   }
 
   /** Loads the route recorder processor ahead of the take, so capture starts with the transport. */
@@ -709,30 +1086,59 @@ export class WebAudioEngine implements AudioEngine {
   }
 
   /**
-   * Records routed tracks straight from the graph (no MediaRecorder, any number of tracks). Must be
-   * created while the transport plays; the take positions come from the audio clock.
+   * Records routed tracks (any number up to the engine's tap slots, no MediaRecorder): each take records its
+   * track's route input from the engine's tap output (output 1, a stereo slot per take), clocked by the engine's
+   * transport. Must be created while the transport plays.
    */
   createRouteRecordings(trackIds: readonly string[], callbacks: TakeCallbacks): RouteRecordings {
-    const context = this.context
-    if (!context || context.state === 'closed') throw new Error('오디오 장치를 먼저 시작해 주세요.')
+    const bridge = this.bridge, context = this.context
+    if (!context || context.state === 'closed' || !bridge) throw new Error('오디오 장치를 먼저 시작해 주세요.')
+    if (!this.engineReady()) throw new Error(engineRefused(this.verdict.reason))
+    if (trackIds.length > TAP_CHANNELS / 2) throw new Error(`트랙 입력은 한 번에 ${TAP_CHANNELS / 2}개까지 녹음할 수 있습니다.`)
     const host: RouteRecordingHost = {
       context,
       attach: (trackId, node) => {
-        this.routeRecorders.set(node, trackId)
-        this.graph?.routes.get(trackId)?.input.connect(node)
+        const free = this.tapSlots.indexOf(null)
+        const slot = free >= 0 ? free : this.tapSlots.length
+        if (slot >= TAP_CHANNELS / 2) throw new Error('동시에 녹음할 수 있는 트랙 입력 수를 넘었습니다.')
+        this.tapSlots[slot] = trackId
+        this.tapSplitter ??= (() => { const splitter = context.createChannelSplitter(TAP_CHANNELS); bridge.node.connect(splitter, 1); return splitter })()
+        const merger = context.createChannelMerger(2)
+        this.tapSplitter.connect(merger, 2 * slot, 0)
+        this.tapSplitter.connect(merger, 2 * slot + 1, 1)
+        merger.connect(node)
+        this.syncTaps()
         return () => {
-          this.routeRecorders.delete(node)
-          try { node.disconnect() } catch { /* Already detached. */ }
-          for (const graph of [this.graph, ...this.retiredGraphs.keys()]) try { graph?.routes.get(trackId)?.input.disconnect(node) } catch { /* Not connected. */ }
+          try { merger.disconnect() } catch { /* Already detached. */ }
+          try { this.tapSplitter?.disconnect(merger) } catch { /* Not connected. */ }
+          this.tapSlots[slot] = null
+          this.syncTaps()
         }
       },
       projectFrameAt: time => {
-        const project = this.project
-        if (!project) return 0
-        return (tempoMapOf(project).secondsAt(this.anchorBeat) + time - this.anchorTime) * projectSampleRate(project.sampleRate)
+        // Linear while playing: the engine's transport frame at the end of the last published quantum.
+        const status = this.poll()
+        return status.frame + (time * context.sampleRate - status.contextFrame)
       },
     }
     return new RouteRecordings(host, trackIds, callbacks)
+  }
+
+  private syncTaps(): void {
+    const bridge = this.bridge
+    if (!bridge) return
+    while (this.tapSlots.length && this.tapSlots[this.tapSlots.length - 1] === null) this.tapSlots.pop()
+    const indices = this.tapSlots.map(id => id === null ? -1 : this.trackIndex(id))
+    if (indices.join(',') === this.tapIndices.join(',')) return
+    this.tapIndices = indices
+    void bridge.taps(indices).catch(error => this.note(`트랙 입력 녹음을 설정하지 못했습니다: ${message(error)}`))
+  }
+
+  private disposeTaps(): void {
+    try { this.tapSplitter?.disconnect() } catch { /* Already detached. */ }
+    this.tapSplitter = null
+    this.tapSlots = []
+    this.tapIndices = []
   }
 
   /** Browsers do not name input channels; choices are numbered from the stream (or the requested count). */
@@ -746,6 +1152,112 @@ export class WebAudioEngine implements AudioEngine {
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count === this.inputChannelCount) return
     this.inputChannelCount = count
     for (const listener of this.audioListeners) listener()
+  }
+
+  /**
+   * A short audition. With a track, the note is a live event through that track's instrument and chain in
+   * the engine; a library preview (no track) plays on a small preview engine of its own.
+   */
+  async previewNote(instrument: InstrumentId, pitch: number, velocity = 0.8, trackId?: string): Promise<void> {
+    const lifecycle = this.lifecycle
+    const def = instrumentDef(instrument)
+    if (def.kind === 'native' && trackId === undefined) throw new Error('IEUM WAVE 미리듣기에는 프로젝트의 악기 트랙이 필요합니다.')
+    if ((def.kind === 'vintage' || def.kind === 'native') && moduleState !== 'ready' && typeof WebAssembly !== 'undefined') await loadEngineModule()
+    if (!canPlayInstrument(this, instrument)) throw new Error(instrumentUnavailableReason(this, instrument))
+    await this.resume()
+    if (def.set) await this.preloadSamples(def.set)
+    if (lifecycle !== this.lifecycle || !this.context || this.outputFault) return
+    const track = trackId === undefined ? undefined : this.project?.tracks.find(item => item.id === trackId)
+    // Do not audition a stale instrument through a track that changed (or was removed)
+    // while output/sample preparation was pending. Library previews have no trackId.
+    if (trackId !== undefined && (!track || track.kind !== 'instrument' || track.instrument !== instrument || !isTrackEnabled(track))) return
+    const live = trackNote(track, pitch, velocity)
+    if (!live) return
+    const seconds = instrument === 'pad' || def.kind === 'sampled' ? LONG_PREVIEW_SECONDS : PREVIEW_SECONDS
+    if (track) {
+      await this.syncNow()
+      if (lifecycle !== this.lifecycle) return
+      if (!this.engineReady()) throw new Error(engineRefused(this.verdict.reason))
+      this.engineVoice(track.id, live.pitch, live.velocity, seconds)
+      return
+    }
+    const preview = await this.previewEngine()
+    if (!preview || lifecycle !== this.lifecycle) return
+    await preview.play(instrument, def.set ? this.samples.get(def.set) : undefined, live.pitch, live.velocity, seconds)
+  }
+
+  private async previewEngine(): Promise<PreviewEngine | null> {
+    const context = this.context, bridge = this.bridge
+    if (!context || !bridge) return null
+    if (this.preview?.bridge.context === context && !this.preview.bridge.error) return this.preview
+    this.preview?.dispose()
+    this.preview = null
+    const module = await requireEngineModule()
+    const node = await RustEngineNode.create(context, module)
+    if (this.context !== context || this.outputFault) { node.dispose(); return null }
+    this.preview = new PreviewEngine(node)
+    return this.preview
+  }
+
+  /** A note through the engine's track (live event path); null when the engine does not render that track. */
+  private engineVoice(trackId: string, pitch: number, velocity: number, seconds?: number, timeMs?: number): LiveVoiceHandle | null {
+    const bridge = this.bridge, index = this.trackIndex(trackId)
+    const track = this.synced?.tracks[index]
+    if (!bridge || !this.engineReady() || index < 0 || !track || track.source.kind === 'audio') return null
+    const id = ++this.liveNoteId
+    bridge.live(index, 'noteOn', pitch, clamp(velocity, 0, 1), id, this.liveFrame(timeMs))
+    const release = (releaseMs?: number) => { bridge.live(index, 'noteOff', pitch, 0, id, this.liveFrame(releaseMs)) }
+    if (seconds !== undefined) setTimeout(release, seconds * 1000)
+    return { release }
+  }
+
+  /**
+   * The context frame a live event stamped `timeMs` (performance.now() base; now when absent) sounds at: the render
+   * clock at that moment plus a constant lead (liveTiming.ts), so live notes keep their timing inside a quantum and
+   * unstamped events (panic, timers) stay in order behind stamped ones.
+   */
+  private liveFrame(timeMs?: number): number {
+    const context = this.context
+    if (!context) return 0
+    const now = performance.now()
+    return liveContextFrame(timeMs ?? now, now, context.currentTime, context.sampleRate, liveLeadSeconds(context.sampleRate, context.baseLatency))
+  }
+
+  /** Live MIDI and computer-keyboard notes: through the engine's track, released by their note-off. */
+  private startLiveNote(trackId: string, pitch: number, velocity: number, timeMs?: number): LiveVoiceHandle | null {
+    const context = this.context
+    const track = this.project?.tracks.find(item => item.id === trackId)
+    if (!context || this.outputFault || !track || track.kind !== 'instrument' || !isTrackEnabled(track)) return null
+    if (context.state !== 'running') { void context.resume().catch(() => undefined); return null }
+    const def = instrumentDef(track.instrument)
+    if (def.set && this.samples.status(def.set) !== 'ready') { void this.preloadSamples(def.set).catch(() => undefined); return null }
+    return this.engineVoice(trackId, pitch, velocity, undefined, timeMs)
+  }
+
+  /**
+   * A live controller on the track's instrument at its stamp: CCs, pitch bend and aftertouch (poly pressure arrives
+   * as aftertouch) and program change.
+   */
+  private liveControl(trackId: string, key: ControllerKey, value: number, timeMs?: number): void {
+    const index = this.trackIndex(trackId)
+    const controller = liveControllerNumber(key)
+    if (!this.bridge || !this.engineReady() || index < 0 || controller === null) return
+    this.bridge.live(index, 'control', controller, value, 0, this.liveFrame(timeMs))
+  }
+
+  /** Transport beat the listener heard at `timeMs` (performance.now base): the output timestamp folds in output latency. */
+  private heardBeatAt(timeMs: number): number | null {
+    const context = this.context, project = this.project
+    if (!this.playing || !context || !project) return null
+    const stamp = typeof context.getOutputTimestamp === 'function' ? context.getOutputTimestamp() : undefined
+    const latency = (context as AudioContext & ContextExtras).outputLatency ?? 0
+    const contextTime = stamp && typeof stamp.contextTime === 'number' && typeof stamp.performanceTime === 'number' && stamp.performanceTime > 0
+      ? stamp.contextTime + (timeMs - stamp.performanceTime) / 1000
+      : context.currentTime - (performance.now() - timeMs) / 1000 - (context.baseLatency ?? 0) - latency
+    const status = this.poll()
+    if (status.countingIn) return null
+    const frame = status.frame + (contextTime * context.sampleRate - status.contextFrame)
+    return clamp(tempoMapOf(project).beatAtFrame(Math.max(0, frame), project.sampleRate), 0, project.lengthBeats)
   }
 
   async decodeAsset(blob: Blob, name: string, id?: string): Promise<AudioAsset> {
@@ -773,49 +1285,56 @@ export class WebAudioEngine implements AudioEngine {
     return Math.min(30, renderTailSeconds(playbackProject(project, this.assets)))
   }
 
-  /** Offline render (export, bounce, freeze, stems; docs/BOUNCE_FREEZE_STEMS.md). */
+  /** Offline render on the engine in a Worker (export, bounce, freeze, stems; docs/BOUNCE_FREEZE_STEMS.md). */
   async renderAudio(source: Project, options: RenderOptions): Promise<RenderedAudio> {
     const project = playbackProject(source, this.assets)
-    if (vintageWasmStatus() !== 'ready' && unsupportedWebAudioInstruments(project, this.vintage).length) await loadVintageWasm()
+    if (this.awaitsModule(project)) await loadEngineModule()
     assertWebAudioProjectSupported(project, this.vintage)
+    const module = await requireEngineModule()
+    const sampleRate = projectSampleRate(project.sampleRate)
+    const metadata = new Map<string, NativePcmAsset>()
+    const assets: EngineRenderAsset[] = []
+    const sampleSets: string[] = []
     for (const setId of this.sampleSets(project)) {
       try { await this.preloadSamples(setId) } catch (error) {
-        throw new Error(`샘플 악기 "${setId}"를 불러오지 못했습니다: ${error instanceof Error ? error.message : ''}`)
+        throw new Error(`샘플 악기 "${setId}"를 불러오지 못했습니다: ${message(error)}`, { cause: error })
       }
+      const loaded = this.samples.get(setId)
+      if (!loaded) throw new Error(`샘플 악기 "${setId}"를 불러오지 못했습니다.`)
+      for (const [file, buffer] of loaded.buffers) {
+        const pcm = packAudioBuffer(buffer)
+        assets.push({ id: sampleAssetId(setId, file), sampleRate: pcm.sampleRate, channels: pcm.channels, samples: new Float32Array(pcm.data.buffer, pcm.data.byteOffset, pcm.frames * pcm.channels) })
+      }
+      sampleSets.push(sampleSetJson(setId, loaded))
     }
-    const sampleRate = projectSampleRate(project.sampleRate)
-    const tempo = tempoMapOf(project)
-    const tailSeconds = options.tailSeconds === undefined ? renderTailSeconds(project) : Math.min(30, Math.max(0, options.tailSeconds))
-    const duration = tempo.secondsAt(project.lengthBeats) + tailSeconds
-    const frames = Math.ceil(duration * sampleRate)
-    if (!Number.isFinite(frames) || frames < 1) throw new Error('프로젝트의 내보내기 길이가 올바르지 않습니다.')
-    // OfflineAudioContext stores all rendered samples in RAM. Fail clearly before
-    // allocating a multi-gigabyte buffer in this initial browser implementation.
-    if (frames > sampleRate * 60 * 15) throw new Error('이 초기 버전은 한 번에 최대 15분까지 WAV로 내보낼 수 있습니다. 프로젝트 길이를 줄여 주세요.')
-    const offline = new OfflineAudioContext(2, frames, sampleRate)
-    await prepareEffects(offline)
-    await prepareVintage(offline)
-    const playable = await this.loadPlayable(project, new Map())
-    const graph = createGraph(offline, project, { preMaster: options.preMaster })
+    for (const id of referencedAssetIds(project)) {
+      const asset = this.assets.get(id)
+      if (!asset) throw new Error(`오디오 자산을 찾을 수 없습니다: ${id}`)
+      metadata.set(id, pcmMetadata(id, asset))
+      // One interleaved copy per export, transferred to the worker (which frees it once the module has it).
+      const pcm = packAudioBuffer(await assetPcm(asset))
+      assets.push({ id, sampleRate: pcm.sampleRate, channels: pcm.channels, samples: new Float32Array(pcm.data.buffer, pcm.data.byteOffset, pcm.frames * pcm.channels) })
+    }
+    const timeline = compileNativeTimeline(project, metadata)
+    if (timeline.lengthFrames > sampleRate * 60 * 15) throw new Error('이 초기 버전은 한 번에 최대 15분까지 WAV로 내보낼 수 있습니다. 프로젝트 길이를 줄여 주세요.')
+    const wired = this.wireWave(timeline, project)
+    const encoded = encodeTracks(wired.tracks)
+    let result
     try {
-      scheduleRange(graph, project, playable, 0, project.lengthBeats, 0, project.lengthBeats, true, false, this.samples)
-      // Automation is scheduled for the whole render before it starts, so worklet events are queued first.
-      if (hasActiveAutomation(project)) {
-        const tempo = tempoMapOf(project)
-        updateGraph(graph, project, false, 0)
-        scheduleAutomation(graph, project, 0, duration, time => Math.min(project.lengthBeats, tempo.beatAt(time)))
-      }
-      scheduleTempoUpdates(offline, graph, project, duration)
-      // Vintage instrument nodes are built now, with every note of the render in their options.
-      flushVintage(graph)
-      const rendered = await offline.startRendering()
-      assertGuitarRigHealthy(offline)
-      const start = Math.min(rendered.length - 1, Math.max(0, Math.round(options.startFrame ?? 0)))
-      const channels = [rendered.getChannelData(0).subarray(start), rendered.getChannelData(1).subarray(start)]
-      return { blob: encodeWav(channels, rendered.sampleRate, options.bitDepth), sampleRate: rendered.sampleRate, frames: channels[0].length, tailSeconds, trackTailSeconds: trackTailSeconds(project) }
-    } finally {
-      disposeGraph(graph)
+      result = await renderInEngineWorker(module, {
+        timeline: utf8Encode(JSON.stringify({ ...wired, tracks: encoded.tracks })), binary: encoded.binary ?? undefined,
+        sampleRate, lengthFrames: timeline.lengthFrames, assets, sampleSets,
+        tailSeconds: options.tailSeconds === undefined ? undefined : Math.min(30, Math.max(0, options.tailSeconds)),
+        startFrame: options.startFrame,
+        // Stems and freeze: pre-master, like the C++ host's setMasterBypass.
+        masterBypass: !!options.preMaster,
+      })
+    } catch (error) {
+      if (error instanceof GarakEngineError) throw new Error(`오디오 엔진이 이 프로젝트를 렌더하지 못했습니다: ${error.message}`, { cause: error })
+      throw error
     }
+    this.lastRender = { renderMs: result.renderMs, frames: result.frames, preMaster: !!options.preMaster }
+    return { blob: encodeWav([result.left, result.right], sampleRate, options.bitDepth), sampleRate, frames: result.frames, tailSeconds: result.tailSeconds, trackTailSeconds: trackTailSeconds(project) }
   }
 
   dispose(): void {
@@ -826,20 +1345,13 @@ export class WebAudioEngine implements AudioEngine {
     this.transportRequest += 1
     this.playing = false
     this.position = 0
-    if (this.scheduler !== null) clearInterval(this.scheduler)
-    this.scheduler = null
-    this.metronome.dispose()
-    if (this.graph) disposeGraph(this.graph)
-    this.graph = null
-    this.monitorSource?.disconnect()
-    this.monitorSource = null
-    this.monitorStream = null
-    this.monitorTrackIds = []
-    for (const [graph, timeout] of this.retiredGraphs) {
-      clearTimeout(timeout)
-      disposeGraph(graph)
-    }
-    this.retiredGraphs.clear()
+    if (this.ticker !== null) clearInterval(this.ticker)
+    this.ticker = null
+    this.releaseEngine()
+    this.kernels?.dispose()
+    this.kernels = null
+    this.liveStream = null
+    this.monitorTracks = []
     const context = this.context
     this.context = null
     if (context) {
@@ -861,225 +1373,134 @@ export class WebAudioEngine implements AudioEngine {
     return this.project
   }
 
-  protected currentBeat(): number {
-    if (!this.playing || !this.context || !this.project) return this.position
-    return positionAfter(this.project, this.anchorBeat, this.context.currentTime - this.anchorTime)
+  private currentBeat(): number {
+    return this.playing ? this.engineBeat() : this.position
   }
 
-  private blockEffectGraph(context: AudioContext, error: unknown): void {
-    const detail = error instanceof Error ? error.message : String(error)
-    this.blockOutput(context, `오디오 이펙트를 적용하지 못해 재생과 모니터링을 중지했습니다. 오디오 설정을 다시 적용해 주세요. ${detail}`)
-  }
-
-  /** Subclass hook: run once per new audio context after the built-in worklets are registered. */
-  protected async prepareContext(_context: AudioContext): Promise<void> {}
-
-  /** Subclass hook: false while another renderer (the Rust engine worklet) plays the project, so no idle Web Audio graph is kept. */
-  protected graphEnabled(): boolean { return true }
-
-  /** Drops the Web Audio graph (another renderer took over) or builds it again (that renderer handed back). */
-  protected refreshGraph(): void {
-    if (this.graphEnabled()) { if (!this.graph) this.replaceGraph(); return }
-    if (this.playing) return
-    if (this.graph) disposeGraph(this.graph)
-    this.graph = null
-  }
-
-  /** Subclass hook: meters while there is no Web Audio graph to read. */
-  protected readIdleMeters(): void {
-    this.levels.clear()
-    this.masterLevel = 0
-  }
-
-  private replaceGraph(): boolean {
-    const context = this.context
-    if (!context || !this.project || this.outputFault) return false
-    if (!this.graphEnabled()) {
-      if (this.graph) disposeGraph(this.graph)
-      this.graph = null
-      return false
+  private poll(): EngineStatus {
+    if (this.bridge) {
+      const status = this.bridge.readStatus()
+      this.peak = Math.max(this.peak, status.peak)
+      this.status = status
     }
-    let replacement: EngineGraph | null = null
-    try {
-      // Construct before retiring the current graph. A failed effect must never leave
-      // a partly connected replacement or quietly substitute the old/dry signal.
-      replacement = createGraph(context, this.project)
-      if (hasActiveAutomation(this.project) || !tempoMapOf(this.project).isConstant) updateGraph(replacement, this.project, false, this.currentBeat())
-      if (this.graph) {
-        const old = this.graph
-        if (context.state === 'running') {
-          const now = context.currentTime
-          const fadeSeconds = 0.003
-          // Both graphs briefly receive live input. Complementary envelopes keep
-          // their total gain at unity while the previous processors are retired.
-          replacement.gate.gain.value = 0
-          replacement.gate.gain.setValueAtTime(0, now)
-          old.gate.gain.cancelScheduledValues(now)
-          old.gate.gain.setTargetAtTime(0, now, fadeSeconds)
-          replacement.gate.gain.setTargetAtTime(1, now, fadeSeconds)
-          for (const voice of old.voices) voice.stop(now)
-          const timeout = setTimeout(() => {
-            disposeGraph(old)
-            this.retiredGraphs.delete(old)
-          }, 30)
-          this.retiredGraphs.set(old, timeout)
-        } else disposeGraph(old)
-      }
-      this.graph = replacement
-      this.effectBpm = 0
-      if (this.outputFault) this.graph.gate.gain.value = 0
-      this.wireRoutes(replacement)
-      this.wireMonitor()
-      this.levels.clear()
-      this.masterLevel = 0
-      return true
-    } catch (error) {
-      if (replacement && replacement !== this.graph) disposeGraph(replacement)
-      this.blockEffectGraph(context, error)
-      return false
-    }
+    return this.status
   }
 
-  private restartAt(beat: number, preRollSeconds = 0): void {
-    if (!this.context || !this.project) return
-    this.position = normalizedStart(this.project, beat)
-    this.anchorBeat = this.position
-    this.anchorTime = this.context.currentTime + START_LEAD_SECONDS + preRollSeconds
-    this.metronome.cancel(this.context.currentTime)
-    this.cursorBeat = this.position
-    this.cursorTime = this.anchorTime
-    this.chaseCursor = true
-    if (!this.replaceGraph()) return
-    this.schedule()
-  }
-
-  /** Tracks rescheduled by the last live edit (tests and profiling). */
-  lastReschedule: { tracks: string[]; stopped: number } | null = null
-
-  /**
-   * Replaces the already scheduled look-ahead of the edited tracks only. Notes that have not sounded yet are stopped and
-   * the window from now to the scheduler cursor is scheduled again from the edited project; untouched tracks, the
-   * graph, effect tails and the transport anchor stay as they are (no restart). `hard` changes also cut sounding notes
-   * and chase sustained ones, like a seek does for that track alone.
-   */
-  private rescheduleTracks(changes: ReadonlyMap<string, TrackChange>): void {
-    if (!this.playing || !this.context || !this.project || !this.graph) return
-    const graph = this.graph, project = this.project
-    const from = Math.max(this.context.currentTime + 0.003, this.anchorTime)
-    let stopped = 0
-    for (const [trackId, change] of changes) stopped += stopTrackVoices(graph, trackId, from, change === 'hard')
-    this.lastReschedule = { tracks: [...changes.keys()], stopped }
-    if (this.cursorTime <= from) return
-    const only = new Map([...changes].map(([trackId, change]) => [trackId, change === 'hard']))
-    const loop = loopRange(project)
-    const tempo = tempoMapOf(project)
-    const boundary = loop?.end ?? project.lengthBeats
-    let beat = positionAfter(project, this.anchorBeat, from - this.anchorTime)
-    let time = from
-    let chase = true
-    for (let iterations = 0; time < this.cursorTime - 0.000001 && iterations < 128; iterations++) {
-      if (beat >= boundary - 0.0000001) {
-        if (!loop) break
-        beat = loop.start
-        chase = true
-      }
-      const remainingSeconds = tempo.secondsBetween(beat, boundary)
-      const segmentSeconds = Math.min(this.cursorTime - time, remainingSeconds)
-      if (segmentSeconds <= 0.00000001) break
-      const endBeat = segmentSeconds >= remainingSeconds ? boundary : Math.min(boundary, tempo.beatAfter(beat, segmentSeconds))
-      scheduleRange(graph, project, this.playable, beat, endBeat, time, boundary, chase, true, this.samples, only)
-      time += segmentSeconds
-      beat = endBeat
-      chase = false
-    }
-  }
-
-  private schedule(): void {
-    if (!this.playing || !this.context || !this.project || !this.graph) return
+  /** The engine's transport beat (the start beat until the last play/seek has been applied). */
+  private engineBeat(): number {
     const project = this.project
-    const loop = loopRange(project)
-    const tempo = tempoMapOf(project)
-    const boundary = loop?.end ?? project.lengthBeats
-    const horizon = this.context.currentTime + LOOKAHEAD_SECONDS
-
-    // A backgrounded tab can miss timer ticks. Resume from the audio clock instead
-    // of firing a burst of stale onsets; audio clips chase their correct offsets.
-    if (this.cursorTime < this.context.currentTime - LOOKAHEAD_SECONDS) {
-      const nextTime = this.context.currentTime + 0.008
-      const beat = positionAfter(project, this.anchorBeat, nextTime - this.anchorTime)
-      if (!this.replaceGraph()) return
-      this.cursorTime = nextTime
-      this.cursorBeat = beat
-      this.chaseCursor = true
-    }
-
-    let iterations = 0
-    while (this.cursorTime < horizon && iterations < 128) {
-      iterations += 1
-      if (this.cursorBeat >= boundary - 0.0000001) {
-        if (!loop) break
-        this.cursorBeat = loop.start
-        this.chaseCursor = true
-      }
-      const remainingSeconds = tempo.secondsBetween(this.cursorBeat, boundary)
-      const segmentSeconds = Math.min(horizon - this.cursorTime, remainingSeconds)
-      if (segmentSeconds <= 0.00000001) break
-      const endBeat = segmentSeconds >= remainingSeconds ? boundary : Math.min(boundary, tempo.beatAfter(this.cursorBeat, segmentSeconds))
-      scheduleRange(this.graph, project, this.playable, this.cursorBeat, endBeat, this.cursorTime, boundary, this.chaseCursor, true, this.samples)
-      const segmentBeat = this.cursorBeat, segmentTime = this.cursorTime
-      scheduleAutomation(this.graph, project, segmentTime, segmentTime + segmentSeconds, time => tempo.beatAfter(segmentBeat, time - segmentTime))
-      if (!this.outputFault) this.metronome.scheduleSegment(this.context, project, this.cursorBeat, endBeat, this.cursorTime)
-      this.cursorTime += segmentSeconds
-      this.cursorBeat = endBeat
-      this.chaseCursor = false
-    }    // Tempo-synced effects (delay, tremolo) follow the tempo at the playhead (docs/TEMPO_MAP.md).
-    if (!tempo.isConstant) this.followTempo(tempo.bpmAt(this.currentBeat()))
-  }
-
-  private effectBpm = 0
-  private followTempo(bpm: number): void {
-    if (!this.graph || !this.project || Math.abs(bpm - this.effectBpm) < 0.05) return
-    this.effectBpm = bpm
-    // Only non-automated synced effects: a full updateGraph would cancel the scheduled automation.
-    updateEffectTempo(this.graph, this.project, bpm)
-  }
-
-  /** Waits on the audio clock for a count-in to reach the transport anchor (or for the play to be cancelled). */
-  private async waitForAnchor(request: number): Promise<void> {
-    while (this.context && this.playing && request === this.transportRequest) {
-      const remaining = this.anchorTime - this.context.currentTime
-      if (remaining <= 0.002) return
-      await new Promise(resolve => setTimeout(resolve, Math.min(50, Math.max(1, (remaining - 0.001) * 1000))))
-    }
+    if (!project) return this.position
+    const status = this.poll()
+    if (status.appliedSeq < this.transportSeq) return this.position
+    return clamp(tempoMapOf(project).beatAtFrame(status.frame, project.sampleRate), 0, project.lengthBeats)
   }
 
   private tick(): void {
     if (!this.context) return
-    if (this.playing && this.project) {
-      const completed = !loopRange(this.project) && this.context.currentTime >= this.anchorTime + tempoMapOf(this.project).secondsBetween(this.anchorBeat, this.project.lengthBeats)
-      if (completed) {
-        this.position = this.project.lengthBeats
-        this.playing = false
-        // Let instrument releases, reverb, and delay decay naturally at the end.
-        this.publishSnapshot()
-      } else this.schedule()
-    }
     const now = performance.now()
-    if (now - this.lastSnapshotTime < SNAPSHOT_INTERVAL_MS) return
-    this.lastSnapshotTime = now
-    if (this.graph && this.context.state === 'running') {
-      for (const [id, channel] of this.graph.tracks) {
-        const level = rmsLevel(channel.meter, channel.meterData)
-        this.levels.set(id, Math.max(level, (this.levels.get(id) ?? 0) * 0.7))
-      }
-      this.masterLevel = Math.max(rmsLevel(this.graph.meter, this.graph.meterData), this.masterLevel * 0.7)
-    } else {
-      this.readIdleMeters()
+    if (now - this.lastAnalysisSync >= ANALYSIS_SYNC_MS) {
+      this.lastAnalysisSync = now
+      this.syncAnalysis()
+    }
+    if (now - this.lastSnapshotTime >= SNAPSHOT_INTERVAL_MS) {
+      this.lastSnapshotTime = now
+      this.readMeters()
     }
     this.publishSnapshot()
   }
 
-  protected publishSnapshot(): void {
+  /**
+   * Analysis taps follow the editors that are open: the devices whose spectrum, stereo scope or tuner was
+   * looked up recently (devices/effects/analysis.ts, devices/guitar-rig/tuner.ts) become engine taps, and
+   * each streamed tap is registered for its editor. Nothing is requested while no editor looks.
+   */
+  private syncAnalysis(): void {
+    const bridge = this.bridge, synced = this.synced
+    if (!bridge || !synced || !this.engineReady() || bridge.error) { this.releaseAnalysis(); return }
+    const address = (deviceId: string): [number, number] | null => {
+      for (let track = 0; track < synced.tracks.length; track += 1) {
+        const insert = synced.tracks[track].inserts.findIndex(item => item.id === deviceId)
+        if (insert >= 0) return [track, insert]
+      }
+      return null
+    }
+    const wanted: { id: string; track: number; insert: number; tuner: boolean }[] = []
+    for (const [ids, tuner] of [[requestedDeviceAnalysis(), false], [requestedGuitarTuners(), true]] as const) {
+      for (const id of ids) {
+        const at = address(id)
+        if (at && wanted.length < ANALYSIS_SLOTS) wanted.push({ id, track: at[0], insert: at[1], tuner })
+      }
+    }
+    const key = wanted.map(item => `${item.id}:${item.track}:${item.insert}:${item.tuner ? 1 : 0}`).join(',')
+    if (key === this.analysisKey) return
+    this.releaseAnalysis()
+    if (!wanted.length) return
+    this.analysisKey = key
+    void bridge.analysis(wanted.map(({ track, insert, tuner }) => ({ track, insert, tuner })))
+      .catch(error => { this.note(`분석 신호를 요청하지 못했습니다: ${message(error)}`); this.releaseAnalysis() })
+    const rate = bridge.context.sampleRate
+    wanted.forEach((item, slot) => {
+      const source = new BridgeAnalysisSource(bridge, slot)
+      if (item.tuner) {
+        // The tuner window of the 0.3.2 rig analyser: 4096 frames, 8192 above 50 kHz.
+        const tap = { analyser: new EngineAnalyser(source, rate > 50000 ? 8192 : 4096, 'mono'), sampleRate: rate }
+        registerGuitarTunerTap(item.id, tap)
+        this.analysisRelease.push(() => unregisterGuitarTunerTap(tap))
+      } else {
+        // The spectrum reads a 4096-point mono analyser; the utility's scope reads 1024 frames per side.
+        const tap: StereoScopeTap = {
+          analyser: new EngineAnalyser(source, 4096, 'mono'), sampleRate: rate,
+          left: new EngineAnalyser(source, 1024, 'left'), right: new EngineAnalyser(source, 1024, 'right'),
+        }
+        this.analysisRelease.push(registerDeviceAnalysis(item.id, tap))
+      }
+    })
+  }
+
+  private releaseAnalysis(): void {
+    for (const release of this.analysisRelease) release()
+    this.analysisRelease = []
+    if (this.analysisKey && this.bridge && !this.bridge.error) void this.bridge.analysis([]).catch(() => undefined)
+    this.analysisKey = ''
+  }
+
+  /** Track and dynamics meters from the engine (peaks per graph track, readings per insert). */
+  private readMeters(): void {
+    if (!this.bridge || !this.engineReady() || this.context?.state !== 'running') { this.levels.clear(); this.masterLevel = 0; this.dynamics.clear(); return }
+    this.poll()
+    this.masterLevel = Math.max(this.peak, this.masterLevel * 0.7)
+    this.peak = 0
+    const meters = this.bridge.readMeters()
+    if (meters) this.applyMeters(meters)
+    else for (const [id, level] of this.levels) this.levels.set(id, level * 0.7)
+  }
+
+  private applyMeters(meters: EngineMeters): void {
+    const order = this.orders.get(meters.revision)
+    if (!order) return
+    const seen = new Set<string>()
+    meters.peaks.forEach((peak, index) => {
+      const id = order.ids[index]
+      if (id === undefined) return
+      seen.add(id)
+      this.levels.set(id, Math.max(peak, (this.levels.get(id) ?? 0) * 0.7))
+    })
+    for (const id of [...this.levels.keys()]) if (!seen.has(id)) this.levels.delete(id)
+    for (const d of meters.dynamics) {
+      const device = order.inserts[d.track]?.[d.insert]
+      if (device) this.dynamics.set(device, { input: Math.max(0, Math.min(64, d.input)), gain: Math.max(0, Math.min(1, d.gain)) })
+    }
+  }
+
+  private publishSnapshot(): void {
+    if (this.playing && this.bridge) {
+      const status = this.poll()
+      if (status.appliedSeq >= this.transportSeq && !status.playing) {
+        // The engine reached the project end (no cycle): tails ring out, the transport rests there.
+        this.playing = false
+        this.position = this.project?.lengthBeats ?? this.position
+      }
+    }
     this.publishAudioState()
     const next: TransportSnapshot = {
       playing: this.playing,
@@ -1090,24 +1511,5 @@ export class WebAudioEngine implements AudioEngine {
     if (next.playing === this.snapshot.playing && next.beat === this.snapshot.beat && next.ready === this.snapshot.ready && next.sampleRate === this.snapshot.sampleRate) return
     this.snapshot = next
     for (const listener of this.listeners) listener()
-  }
-}
-
-/**
- * Offline export: tempo-synced effects follow the tempo map. The render suspends where the tempo has moved
- * by more than 0.05 BPM (checked every 50 ms) and retunes the effects, like the realtime scheduler does.
- */
-function scheduleTempoUpdates(offline: OfflineAudioContext, graph: EngineGraph, project: Project, duration: number): void {
-  const tempo = tempoMapOf(project)
-  if (tempo.isConstant || typeof offline.suspend !== 'function') return
-  const step = 0.05
-  let last = tempo.bpmAt(0)
-  for (let time = step; time < duration; time += step) {
-    const bpm = tempo.bpmAt(Math.min(project.lengthBeats, tempo.beatAt(time)))
-    if (Math.abs(bpm - last) < 0.05) continue
-    last = bpm
-    // Suspend times are quantized to render quanta (128 frames); each one is unique here.
-    const at = Math.ceil(time * offline.sampleRate / 128) * 128 / offline.sampleRate
-    offline.suspend(at).then(() => { updateEffectTempo(graph, project, bpm); return offline.resume() }).catch(() => undefined)
   }
 }

@@ -315,6 +315,18 @@ impl Insert {
         }
     }
 
+    /// [`Self::process`], writing a guitar rig's tuner input (mono, one value per frame) into `tap`;
+    /// silence for every other insert.
+    pub fn process_tuner_tap(&mut self, stereo: &mut [f32], tap: &mut [f32]) {
+        match &mut self.unit {
+            Unit::Fx(fx) => {
+                fx.process_interleaved(stereo);
+                tap.fill(0.0);
+            }
+            Unit::Rig(rig) => rig.process_interleaved_tap(stereo, tap),
+        }
+    }
+
     #[inline]
     pub fn set_tempo(&mut self, bpm: f64) {
         if let Unit::Fx(fx) = &mut self.unit {
