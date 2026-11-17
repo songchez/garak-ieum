@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Daily Rust commands (docs/RUST.md): `pnpm rust:test | rust:build | rust:wasm | rust:check`.
 // Runs cargo inside rust/, where rust-toolchain.toml pins the toolchain. `pnpm build` runs the
-// `web-build` step below; `pnpm dev` never needs this script (the app falls back to the TypeScript
-// kernels without the Rust artifact).
+// `web-build` step below. The web app renders only through garak-engine.wasm: `pnpm dev` without it
+// shows the engine load error instead of sound, so build it once with `pnpm rust:wasm`.
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'
@@ -13,21 +13,11 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const workspace = path.join(root, 'rust')
 const wasmTarget = 'wasm32-unknown-unknown'
-const wasmBuilt = path.join(workspace, 'target', wasmTarget, 'wasm', 'garak_wasm.wasm')
-export const wasmOutput = path.join(root, 'public', 'wasm', 'garak-dsp.wasm')
-// The unified render engine for the web (docs/RUST_ENGINE.md 5): loaded only with the
-// `garak.rustEngine` flag, by one AudioWorklet node and the export worker.
+// The unified render engine for the web (docs/RUST_ENGINE.md 5): the web's only renderer, loaded by
+// the engine AudioWorklet node, the preview node, the export worker and the reverb kernel helper.
 const ENGINE_PROFILE = 'wasm-engine'
 const engineBuilt = path.join(workspace, 'target', wasmTarget, ENGINE_PROFILE, 'garak_engine_wasm.wasm')
 export const engineOutput = path.join(root, 'public', 'wasm', 'garak-engine.wasm')
-// Budgets for the worklet module; CI fails above them (docs/RUST.md: stage 1 is ~101 KiB raw /
-// ~36 KiB gzip with every built-in effect; the architecture review allows 80 KB gzip). The raw
-// budget went from 128 to 160 KiB with the vintage instruments (~38 KiB of code; gzip ~55 KB, still
-// well inside the 80 KB transfer budget that matters for loading), and from 160 to 208 KiB with the
-// guitar rig (~43 KiB of code: eleven module types, the rack and its hand-over; ~5 KiB of catalog;
-// ~146 -> ~196 KiB raw, gzip ~53 -> ~69 KB). The gzip budget stays at 80 KB.
-const WASM_BUDGET_BYTES = 208 * 1024
-const WASM_GZIP_BUDGET_BYTES = 80 * 1000
 // The engine module carries the whole render engine (JSON/protocol parser, graph preparation, diff
 // classification, clips, automation, tempo map) on top of every garak-dsp effect. At opt-level 3 it is
 // 282 KiB raw / 113 KB gzip; the `wasm-engine` profile (opt-level "s", garak-dsp kernels kept at 3)
@@ -62,7 +52,7 @@ function cargoBinary() {
   console.error([
     'Rust is not installed. One command sets it up (about a minute):',
     process.platform === 'win32' ? '  powershell -ExecutionPolicy Bypass -File scripts/setup-rust.ps1' : '  sh scripts/setup-rust.sh',
-    'Web-only work does not need Rust: the app falls back to the TypeScript kernels.',
+    'The web app renders only through garak-engine.wasm, so web work needs it too (built once, then `pnpm dev`).',
   ].join('\n'))
   process.exit(1)
 }
@@ -93,43 +83,37 @@ function publish(name, built, output, budget, gzipBudget, doc) {
 }
 
 function wasm() {
-  run(['build', '-p', 'garak-wasm', '--target', wasmTarget, '--profile', 'wasm'])
-  publish('garak-dsp.wasm', wasmBuilt, wasmOutput, WASM_BUDGET_BYTES, WASM_GZIP_BUDGET_BYTES, 'docs/RUST.md')
   run(['build', '-p', 'garak-engine-wasm', '--target', wasmTarget, '--profile', ENGINE_PROFILE])
   publish('garak-engine.wasm', engineBuilt, engineOutput, ENGINE_BUDGET_BYTES, ENGINE_GZIP_BUDGET_BYTES, 'docs/RUST_ENGINE.md 5')
 }
 
 /**
  * The step `pnpm build` runs before Vite, so every web deployment and desktop bundle ships the
- * module the app now uses by default (docs/RUST.md, stage 3):
- * - opted out (`GARAK_RUST_DSP=0` or `VITE_GARAK_RUST_DSP=0`): skipped, the app uses the TS kernels;
+ * engine module, without which the web app cannot make sound (docs/RUST_ENGINE.md 5):
  * - Rust installed: builds it, and any failure fails the build;
  * - no Rust on a CI machine (GitHub workflows install it first; Cloudflare Workers Builds does not):
  *   installs the pinned toolchain with scripts/setup-rust.sh --skip-verify, then builds;
- * - no Rust on a contributor's machine: a note, and the build goes on without the module.
+ * - no Rust on a contributor's machine: a warning, and the build goes on without the module (that build
+ *   shows the engine load error; it is never deployable).
  */
 function webBuild() {
-  if (process.env.GARAK_RUST_DSP === '0' || process.env.VITE_GARAK_RUST_DSP === '0') {
-    console.log('Rust DSP opted out (GARAK_RUST_DSP=0 / VITE_GARAK_RUST_DSP=0): not building garak-dsp.wasm.')
-    return
-  }
   const ci = !!process.env.CI && process.env.CI !== 'false'
   if (!findCargo() && ci && process.platform !== 'win32') {
-    console.log('Rust is not installed on this CI machine: installing the pinned toolchain for garak-dsp.wasm (scripts/setup-rust.sh --skip-verify).')
+    console.log('Rust is not installed on this CI machine: installing the pinned toolchain for garak-engine.wasm (scripts/setup-rust.sh --skip-verify).')
     const setup = spawnSync('sh', [path.join(root, 'scripts', 'setup-rust.sh'), '--skip-verify'], { stdio: 'inherit' })
     if (setup.status !== 0) {
-      console.error('Installing Rust failed. Set GARAK_RUST_DSP=0 to deploy without the Rust DSP module (the app then uses the TypeScript kernels).')
+      console.error('Installing Rust failed: the web app cannot be deployed without garak-engine.wasm (docs/DEPLOYMENT.md).')
       process.exit(setup.status ?? 1)
     }
   }
   if (!findCargo()) {
     if (ci) {
-      console.error('CI builds must include garak-dsp.wasm: install Rust first (scripts/setup-rust.ps1 -SkipVerify / setup-rust.sh --skip-verify), or set GARAK_RUST_DSP=0.')
+      console.error('CI builds must include garak-engine.wasm: install Rust first (scripts/setup-rust.ps1 -SkipVerify / setup-rust.sh --skip-verify).')
       process.exit(1)
     }
     console.warn([
-      'Rust is not installed, so this build has no public/wasm/garak-dsp.wasm (docs/RUST.md).',
-      'The app still works: it falls back to the TypeScript kernels and Web Audio nodes.',
+      'Rust is not installed, so this build has no public/wasm/garak-engine.wasm (docs/RUST.md).',
+      'The web app renders only through it: this build shows the engine load error instead of sound. Do not deploy it.',
       `Release and deployment builds include it; to build it here: ${process.platform === 'win32' ? 'powershell -ExecutionPolicy Bypass -File scripts/setup-rust.ps1' : 'sh scripts/setup-rust.sh'}`,
     ].join('\n'))
     return
@@ -148,7 +132,7 @@ switch (command) {
   case 'check':
     run(['fmt', '--all', '--check'])
     run(['clippy', '--workspace', '--all-targets', '--', '-D', 'warnings'])
-    run(['clippy', '-p', 'garak-dsp', '-p', 'garak-wasm', '-p', 'garak-engine', '-p', 'garak-engine-wasm', '--target', wasmTarget, '--', '-D', 'warnings'])
+    run(['clippy', '-p', 'garak-dsp', '-p', 'garak-engine', '-p', 'garak-engine-wasm', '--target', wasmTarget, '--', '-D', 'warnings'])
     break
   case 'fmt': run(['fmt', '--all']); break
   default:

@@ -1,10 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_AUDIO_SETTINGS } from '../../core/audioSettings'
-import { createAudioEngine } from '../engineFactory'
-import { WebAudioEngine } from '../WebAudioEngine'
+import { describe, expect, it } from 'vitest'
 import { CommandRing, emptyStatus, METER_BYTES, MeterReader, MeterWriter, RING_BYTES, RING_LIVE, STATUS_BYTES, StatusReader, StatusWriter, type RingCommand } from './engineChannel'
-import { RUST_ENGINE_STORAGE_KEY, rustEngineRequested } from './flag'
-import { RustWebAudioEngine } from './RustWebAudioEngine'
 
 const ring = () => new CommandRing(new SharedArrayBuffer(RING_BYTES))
 
@@ -67,34 +62,5 @@ describe('engine worklet channel', () => {
     // A new graph (revision) starts its peaks afresh.
     writer.write(6, new Float32Array([0.125]), 1, [])
     expect([...reader.read()!.peaks]).toEqual([0.125])
-  })
-})
-
-describe('Rust engine flag', () => {
-  afterEach(() => { vi.unstubAllGlobals() })
-  const storage = (value: string | null) => vi.stubGlobal('localStorage', { getItem: (key: string) => key === RUST_ENGINE_STORAGE_KEY ? value : null })
-
-  it('is on by default (0.3.2) and follows localStorage', () => {
-    storage(null)
-    expect(rustEngineRequested()).toBe(true)
-    storage('1')
-    expect(rustEngineRequested()).toBe(true)
-    storage('0')
-    expect(rustEngineRequested()).toBe(false)
-  })
-
-  it('selects the Rust engine host unless opted out; it stays a WebAudioEngine', () => {
-    vi.stubGlobal('window', {})
-    storage('0')
-    const plain = createAudioEngine(DEFAULT_AUDIO_SETTINGS)
-    expect(plain).not.toBeInstanceOf(RustWebAudioEngine)
-    plain.dispose()
-    storage(null)
-    const rust = createAudioEngine(DEFAULT_AUDIO_SETTINGS)
-    expect(rust).toBeInstanceOf(RustWebAudioEngine)
-    expect(rust).toBeInstanceOf(WebAudioEngine)
-    expect(rust.kind).toBe('web-audio')
-    expect((rust as RustWebAudioEngine).diagnostics()).toMatchObject({ running: false, accepted: false, playing: null })
-    rust.dispose()
   })
 })

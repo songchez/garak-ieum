@@ -9,13 +9,13 @@ import { compileNativeTimeline, type NativePcmAsset, type NativeProjectTimeline 
 import { encodeTracks, planNativeSync } from '../native/timelineSync'
 import { renderEngineOffline, type EngineRenderAsset } from './engineOffline'
 import { automationProject, benchProject, dryMixProject, effectsProject, fadesProject, instrumentProject, type TestProject } from './engineTestProjects'
-import { GarakEngineError, instantiateGarakEngine } from './garakEngineWasm'
+import { instantiateGarakEngine } from './garakEngineWasm'
 
-// A/B of the web Rust engine path in Node: Project -> NativeTimelineCompiler (the renderer side the
-// app runs) -> garak-engine.wasm, against a TypeScript reference of the Web Audio engine's mixing
-// semantics (clip placement through the tempo map, clipEnvelope fades, region gain, StereoPannerNode
-// pan law, fader, mute/solo). The Web Audio engine itself needs a browser; the same projects run
-// through both engines in Chromium in scripts/rust-engine-smoke.mjs. Skipped without the module
+// A/B of the web engine path in Node: Project -> NativeTimelineCompiler (the renderer side the
+// app runs) -> garak-engine.wasm, against a TypeScript reference of the mixing semantics the removed
+// Web Audio engine had (clip placement through the tempo map, clipEnvelope fades, region gain,
+// StereoPannerNode pan law, fader, mute/solo), so projects keep sounding as they did. The same projects
+// render through the real worklet and worker in Chromium in scripts/rust-engine-smoke.mjs. Skipped without the module
 // (`pnpm rust:wasm` builds public/wasm/garak-engine.wasm; CI's checks.yml and rust.yml do).
 const artifact = fileURLToPath(new URL('../../../public/wasm/garak-engine.wasm', import.meta.url))
 const built = existsSync(artifact)
@@ -171,17 +171,8 @@ describe.skipIf(!built)('Rust engine on the web path: A/B against the Web Audio 
     expect(diff).toBeLessThan(1e-6)
   })
 
-  it('refuses what it cannot render yet with an engine error (the app then falls back), or renders it once supported', () => {
-    const test = instrumentProject()
-    try {
-      const rust = render(test)
-      // The instrument port landed: the engine now plays this project, and the web flag uses it automatically.
-      expect(peakDb(rust)).toBeGreaterThan(-60)
-      console.info('instrument project: rendered by the Rust engine')
-    } catch (error) {
-      expect(error).toBeInstanceOf(GarakEngineError)
-      console.info(`instrument project: refused (${(error as Error).message}) -> Web Audio fallback`)
-    }
+  it('renders an instrument project (the built-in instruments are part of the engine)', () => {
+    expect(peakDb(render(instrumentProject()))).toBeGreaterThan(-60)
   })
 
   it('renders 16 and 32 tracks faster than realtime (CPU report)', () => {

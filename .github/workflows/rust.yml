@@ -90,7 +90,7 @@ jobs:
         working-directory: rust
         run: |
           cargo clippy --locked --workspace --all-targets -- -D warnings
-          cargo clippy --locked -p garak-dsp -p garak-wasm -p garak-engine -p garak-engine-wasm --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy --locked -p garak-dsp -p garak-engine -p garak-engine-wasm --target wasm32-unknown-unknown -- -D warnings
 
       # Also writes the engine parity project and its native render to rust/target/engine-parity/.
       - name: Unit tests
@@ -103,18 +103,16 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      # garak-dsp.wasm (effect/instrument worklets) and garak-engine.wasm (the render engine for the
-      # web worklet and export worker, docs/RUST_ENGINE.md 5). scripts/rust.mjs writes both size
-      # reports to the step summary and fails above either budget.
-      - name: Build the WASM modules (fail above their size budgets)
+      # garak-engine.wasm: the web's render engine (worklet and export worker, docs/RUST_ENGINE.md 5).
+      # scripts/rust.mjs writes the size report to the step summary and fails above the budget.
+      - name: Build the WASM engine module (fail above its size budget)
         run: node scripts/rust.mjs wasm
 
-      - name: Upload the WASM modules
+      - name: Upload the WASM engine module
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: garak-dsp-wasm
+          name: garak-engine-wasm
           path: |
-            public/wasm/garak-dsp.wasm
             public/wasm/garak-engine.wasm
           if-no-files-found: error
           retention-days: 14

@@ -1,9 +1,9 @@
-//! `garak-engine` for the browser AudioWorklet (docs/RUST_ENGINE.md 5): the web host behind the
-//! `garak.rustEngine` flag (src/audio/rust/RustWebAudioEngine.ts) and its offline export worker.
+//! `garak-engine` for the browser AudioWorklet (docs/RUST_ENGINE.md 5): the web's only renderer
+//! (src/audio/WebAudioEngine.ts hosts it) and its offline export worker.
 //!
-//! Like `garak-wasm`: raw `extern "C"` exports, no wasm-bindgen glue, one engine per module
-//! instance (one worklet node, or one export worker). Unlike it, the engine owns unbounded project
-//! data, so this module has a general allocator:
+//! Raw `extern "C"` exports, no wasm-bindgen glue, one engine per module instance (one worklet
+//! node, or one export worker). The engine owns unbounded project data, so this module has a
+//! general allocator:
 //! - std's allocator (dlmalloc on wasm32-unknown-unknown). A `no_std` build with dlmalloc as an
 //!   explicit global allocator measured 3.7 KiB *larger* (std's copy is better tuned), so std stays.
 //! - Control exports (`*_alloc*`, `put_asset*`, `set`, `patch`, `transport`, `collect`) may

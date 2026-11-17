@@ -1,8 +1,9 @@
 /**
- * Rack tuner. The rig taps the signal at the tuner's rack position with an AnalyserNode; the editor
+ * Rack tuner. A tap of the signal at the tuner's rack position (an AnalyserNode) is registered per device; the editor
  * reads it here and runs the same YIN estimator as the pitch editor (src/devices/pitch-editor/analysis.ts:
  * cumulative mean normalised difference, 0.15 threshold, parabolic refinement of the raw difference).
- * Only the Web Audio engine can feed it; the native desktop engine has no analysis stream to the UI yet.
+ * Both engines render the rig off the main thread and neither streams that tap to the UI yet, so the
+ * readout waits for one (the estimator and the editor are ready for it).
  */
 export const TUNER_A4 = 440
 const NOTE_NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'] as const

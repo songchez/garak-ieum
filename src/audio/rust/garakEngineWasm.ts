@@ -8,7 +8,14 @@
 // allocates, so the output views returned by render()/renderPlanar() stay valid until the next
 // control call.
 
-import { MATH_IMPORTS } from './garakWasm.js'
+/**
+ * The module's only imports: transcendentals from the host `Math` (rust/garak-dsp/src/math.rs).
+ * Passed as the builtins themselves, never wrapped: engines recognise imported `Math.*` builtins
+ * and call their native implementation directly, which is faster than the same function compiled to wasm.
+ */
+export const MATH_IMPORTS = {
+  math: { garak_tan: Math.tan, garak_exp: Math.exp, garak_log: Math.log, garak_pow: Math.pow },
+} as const
 
 interface EngineExports {
   memory: WebAssembly.Memory
@@ -192,7 +199,7 @@ function utf8Decode(bytes: Uint8Array): string {
 }
 
 export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: number, maxBlock: number, offline = false): GarakEngine {
-  // garak-dsp on wasm32 imports the Math.* transcendentals (rust/garak-dsp/src/math.rs), like garak-dsp.wasm.
+  // garak-dsp on wasm32 imports the Math.* transcendentals (rust/garak-dsp/src/math.rs).
   const instance = new WebAssembly.Instance(module, MATH_IMPORTS)
   const x = instance.exports as unknown as EngineExports
   if (x.garak_engine_abi_version() !== ENGINE_ABI_VERSION) throw new Error('garak-engine.wasm ABI mismatch')

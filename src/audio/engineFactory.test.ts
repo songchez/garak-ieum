@@ -7,10 +7,12 @@ import { WebAudioEngine } from './WebAudioEngine'
 
 afterEach(() => vi.unstubAllGlobals())
 describe('audio engine selection', () => {
-  it('keeps the browser demo on Web Audio', () => {
+  it('runs the browser on the engine worklet host, which opens nothing until asked', () => {
     vi.stubGlobal('window', {})
     const engine = createAudioEngine(DEFAULT_AUDIO_SETTINGS)
     expect(engine).toBeInstanceOf(WebAudioEngine)
+    expect(engine.kind).toBe('web-audio')
+    expect((engine as WebAudioEngine).diagnostics()).toMatchObject({ running: false, accepted: false, playing: false })
     engine.dispose()
   })
   it('selects native in desktop even when an old preload is missing the audio API', async () => {

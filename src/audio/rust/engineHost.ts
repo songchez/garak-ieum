@@ -1,4 +1,4 @@
-/// <reference path="../../devices/guitar-rig/worklet-assets.d.ts" />
+/// <reference path="../worklet-assets.d.ts" />
 // Main-thread side of the Rust engine worklet (docs/RUST_ENGINE.md 5): module loading, the
 // AudioWorkletNode bridge (PCM, project.set/patch, transport, status) and the export worker.
 
@@ -32,17 +32,25 @@ export async function loadGarakEngineModule(base = baseUrl(), fetchImpl: typeof 
 }
 
 let shared: Promise<WebAssembly.Module | null> | null = null
-/** The page's garak-engine module, fetched once (only when the flag is on). */
+/** The page's garak-engine module, fetched once; a failed load is fetched again by the next caller. */
 export function sharedGarakEngineModule(): Promise<WebAssembly.Module | null> {
-  shared ??= loadGarakEngineModule()
+  if (!shared) {
+    const task = loadGarakEngineModule()
+    shared = task
+    void task.then(module => { if (!module && shared === task) shared = null })
+  }
   return shared
 }
+
+/** Shown when the browser cannot run the engine worklet at all (no AudioWorklet, e.g. an insecure origin). */
+export const ENGINE_WORKLET_UNSUPPORTED = '이 브라우저는 오디오 엔진에 필요한 AudioWorklet을 지원하지 않습니다. 최신 Chrome, Edge, Firefox 또는 Safari에서 보안 연결(https)로 열어 주세요.'
 
 const registered = new WeakMap<BaseAudioContext, Promise<void>>()
 function registerProcessor(context: BaseAudioContext): Promise<void> {
   let task = registered.get(context)
   if (!task) {
     task = import('./engineWorkletUrl').then(({ default: url }) => context.audioWorklet.addModule(url))
+    task.catch(() => { if (registered.get(context) === task) registered.delete(context) })
     registered.set(context, task)
   }
   return task
@@ -108,6 +116,7 @@ export class RustEngineNode {
   }
 
   static async create(context: AudioContext, module: WebAssembly.Module): Promise<RustEngineNode> {
+    if (!context.audioWorklet || typeof AudioWorkletNode === 'undefined') throw new Error(ENGINE_WORKLET_UNSUPPORTED)
     await registerProcessor(context)
     return new RustEngineNode(context, module, createSharedChannel())
   }

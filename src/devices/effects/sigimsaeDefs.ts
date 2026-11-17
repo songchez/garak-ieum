@@ -1,9 +1,8 @@
 import type { EffectDef } from '../contracts.js'
 
 /**
- * Parameter catalogs of the sample-processed 시김새 (effects). They are shared by the Web Audio
- * worklet kernels (kernels.ts) and mirrored by native/src/sigimsae_effects.inc. Keep the ids,
- * ranges and defaults identical in both engines: saved projects store these numbers.
+ * Parameter catalogs of the sample-processed 시김새 (effects), mirrored by the engine's kernels
+ * (rust/garak-dsp). Keep the ids, ranges and defaults identical: saved projects store these numbers.
  */
 
 const ON_OFF = [{ value: 0, label: '끔' }, { value: 1, label: '켬' }] as const

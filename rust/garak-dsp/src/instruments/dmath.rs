@@ -6,7 +6,7 @@
 //! functions below: polynomials over `+ - * /` and exact bit tricks. IEEE-754 makes those
 //! identical on every target Rust supports here (x86-64 SSE2, aarch64, wasm32; Rust never fuses or
 //! reassociates floating-point operations on its own), so the C++ host (garak-ffi) and the browser
-//! worklet (garak-wasm) render the very same samples.
+//! engine worklet (garak-engine-wasm) render the very same samples.
 
 /// `floor` for |x| < 2^62 (larger values are integral already and pass through).
 #[inline(always)]

@@ -30,7 +30,7 @@ export function FilterView(props: DeviceViewProps) {
   const [open, setOpen] = useState(false), [selected, setSelected] = useState<number | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const gesture = useRef<{ resonance: number; id: string } | null>(null)
-  const tap = useAnalysisTap(device.id, props.engine.kind === 'web-audio' && device.enabled)
+  const tap = useAnalysisTap(device.id, device.enabled)
   const name = effectDeviceName(device)
   const set = (params: Record<string, number>, label: string, mergeKey?: string) => onParams(params, { label, mergeKey })
   const node: GraphNode = {
@@ -71,7 +71,7 @@ export function FilterView(props: DeviceViewProps) {
     {menu && !open && <ContextMenu x={menu.x} y={menu.y} label="필터 메뉴" items={menuItems} onClose={() => setMenu(null)}/>}
     {open && <EditorDialog eyebrow="SIGIMSAE · FILTER" title={name} subtitle={`${MODES[mode]?.label} · ${FILTER_SLOPES[slope]} dB/oct`} onClose={() => setOpen(false)} hint={HINT}>
       <div className="eqe-graph"><CurveGraph {...graphProps} range={24} showNotes ariaLabel="필터 응답 그래프. 노드를 선택해 방향키로 조절"/>
-        {props.engine.kind !== 'web-audio' && <span className="eqe-note">분석기: 데스크톱 엔진은 아직 스펙트럼을 보내지 않습니다</span>}</div>
+        {!tap && <span className="eqe-note">분석기: 오디오 엔진은 아직 스펙트럼을 보내지 않습니다</span>}</div>
       <div className="eqe-panel"><div className="eqe-controls" style={{ '--node': node.color } as React.CSSProperties}>
         {switches}
         <NumberField label="컷오프" value={cutoff} format={formatHz} parse={parseHz} suffix={noteName(cutoff)} step={(v, d, fine) => clamp(v * Math.pow(2, d * (fine ? 1 / 48 : 1 / 12)), 20, 20000)} onCommit={v => set({ cutoff: round(clamp(v, 20, 20000), 4) }, '필터 컷오프 입력')}/>
