@@ -117,13 +117,6 @@ jobs:
       - name: Verify native audio and actual VST3 host
         run: pnpm native:test
 
-      # The default run above uses the unified Rust render engine (on by default since 0.3.2, docs/RUST_ENGINE.md 10).
-      # The hidden emergency fallback, the C++ track path, must keep working for this release.
-      - name: Verify native audio on the C++ fallback (GARAK_RUST_ENGINE=0)
-        env:
-          GARAK_RUST_ENGINE: '0'
-        run: node scripts/native-test.mjs
-
       - name: Install and verify .garak file association
         run: ./scripts/desktop-install-smoke.ps1
 

@@ -141,7 +141,7 @@ const command = process.argv[2]
 const extra = process.argv.slice(3)
 switch (command) {
   case 'test': run(['test', '--workspace', ...extra]); break
-  // Native staticlib for the C++ host (the CMake build with -DGARAK_RUST=ON does this itself).
+  // Native staticlib for the C++ host (its CMake build does this itself).
   case 'build': run(['build', '-p', 'garak-ffi', '--release', ...extra]); break
   case 'wasm': wasm(); break
   case 'web-build': webBuild(); break
