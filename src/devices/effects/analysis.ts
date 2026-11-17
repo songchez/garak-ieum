@@ -1,10 +1,10 @@
 /**
  * Live analysis taps for graphical 시김새 editors (spectrum behind the EQ curve, the utility's stereo scope).
  *
- * Looking a tap up is also the request for it: the web engine (src/audio/WebAudioEngine.ts) asks the engine
- * worklet for the taps editors looked up in the last moment (`requestedDeviceAnalysis`), and registers each
- * one here once the engine streams it. Closing the editor stops the lookups, and the engine stops the tap.
- * The desktop host has no analysis stream to the UI yet.
+ * Looking a tap up is also the request for it: the engine hosts (src/audio/WebAudioEngine.ts, the desktop's
+ * src/audio/native/NativeAudioEngine.ts) ask the engine for the taps editors looked up in the last moment
+ * (`requestedDeviceAnalysis`), and register each one here once the engine streams it. Closing the editor stops
+ * the lookups, and the engine stops the tap.
  */
 
 /** The AnalyserNode subset the editors read (the engine's taps implement it: src/audio/engineAnalyser.ts). */

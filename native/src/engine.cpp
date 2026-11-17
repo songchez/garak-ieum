@@ -774,6 +774,30 @@ struct RenderEngine::Impl {
   bool rustRendered=false;
   std::uint64_t rustAllowed=0;
   std::array<float,256> rustPeaks{};
+  // Analysis taps (setAnalysis): the callback appends each Rust render's tap signals to a history ring per slot,
+  // published under a seqlock (odd while writing) for readAnalysis on the control thread.
+  std::vector<float> analysisRing=std::vector<float>(static_cast<std::size_t>(analysisSlots)*analysisFrames*2);
+  std::uint32_t analysisWrite=0;
+  std::atomic<std::uint32_t> analysisTaps{0},analysisSeq{0};
+  std::atomic<std::uint64_t> analysisVersion{0};
+  void publishAnalysis(std::uint32_t count)noexcept {
+    const auto taps=analysisTaps.load(std::memory_order_acquire);
+    count=std::min(count,maxBlock);
+    if(!taps||!count||!rust)return;
+    const float* src=garak_rs_engine_analysis_output(rust->handle);
+    if(!src)return;
+    analysisSeq.fetch_add(1,std::memory_order_acq_rel);
+    std::atomic_thread_fence(std::memory_order_release);
+    const std::size_t size=static_cast<std::size_t>(analysisFrames)*2,slot=static_cast<std::size_t>(maxBlock)*2;
+    for(std::uint32_t i=0;i<count;++i){
+      const std::size_t at=static_cast<std::size_t>((analysisWrite+i)%analysisFrames)*2;
+      for(std::uint32_t k=0;k<taps;++k){const float* f=src+k*slot+static_cast<std::size_t>(i)*2;analysisRing[k*size+at]=f[0];analysisRing[k*size+at+1]=f[1];}
+    }
+    analysisWrite=(analysisWrite+count)%analysisFrames;
+    std::atomic_thread_fence(std::memory_order_release);
+    analysisSeq.fetch_add(1,std::memory_order_acq_rel);
+    analysisVersion.fetch_add(1,std::memory_order_release);
+  }
   GarakRsTask rustTask=nullptr;void* rustJob=nullptr; // Current parallel Rust job (callback + pool workers).
   // Host node callbacks (VST3, device input) for the Rust graph. `user` is a RustScope: the block
   // the callbacks render (the callback's, or a render-ahead producer's own).
@@ -1072,6 +1096,7 @@ struct RenderEngine::Impl {
     const bool parallel=pool&&forkEnabled&&p.tracks.size()>=2;
     garak_rs_engine_render_host(rust->handle,out,count,&b,rustPeaks.data(),static_cast<std::uint32_t>(std::min<std::size_t>(p.tracks.size(),rustPeaks.size())),
       parallel?&rustParallelRun:nullptr,this);
+    publishAnalysis(count);
     for(std::size_t i=0;i<p.tracks.size();++i) {
       auto&t=p.tracks[i];
       if(i<rustPeaks.size()&&!rustAhead[i])t.meter=rustPeaks[i]; // Ahead tracks: their ring's chunk peaks.
@@ -1291,7 +1316,7 @@ struct RenderEngine::Impl {
         auto&a=*t.ahead;
         if(a.mode.load(std::memory_order_relaxed)!=AheadState::Off){++count;continue;}
         if(!open||a.capacity<std::uint64_t{blockFrames}*2||continuousFrame<t.liveUntil)continue;
-        if((monitor[i/64]&(std::uint64_t{1}<<(i%64)))||t.pendingCount||t.releaseAudition)continue;
+        if((monitor[i/64]&(std::uint64_t{1}<<(i%64)))||t.pendingCount)continue;
         if(capture&&std::any_of(capture->takes.begin(),capture->takes.end(),[&](const RecordingTake&take){return take.track==i;}))continue;
         a.clear();a.nextFrame=position;a.continuous=continuousFrame;a.block=blockFrames;
         a.mode.store(AheadState::Active,std::memory_order_release);++count;
@@ -1906,6 +1931,34 @@ void RenderEngine::setOffline(bool value)noexcept{
   if(!e.lastSubmittedRecipe&&!e.active)e.rust.reset();
 }
 std::uint64_t rustEngineBlocks()noexcept{return rustBlockCounter.load(std::memory_order_relaxed);}
+std::uint64_t RenderEngine::setAnalysis(std::span<const AnalysisTap> taps){
+  auto&e=*impl_;
+  require(taps.size()<=analysisSlots,"Too many analysis taps");
+  std::array<std::int32_t,analysisSlots*3> raw{};
+  for(std::size_t k=0;k<taps.size();++k){require(taps[k].track>=-1&&taps[k].track<256&&taps[k].insert>=-1&&taps[k].insert<=65535,"Invalid analysis tap");raw[k*3]=taps[k].track;raw[k*3+1]=taps[k].insert;raw[k*3+2]=taps[k].tuner?1:0;}
+  if(!e.rust)return 0;
+  if(garak_rs_engine_set_analysis(e.rust->handle,raw.data(),static_cast<std::uint32_t>(taps.size()))<0)throw std::runtime_error("The Rust engine refused the analysis taps");
+  // The callback keeps appending the previous slots until the Rust command applies: a new tap's history starts
+  // with a little of the old one, which the next publications push out.
+  e.analysisTaps.store(static_cast<std::uint32_t>(taps.size()),std::memory_order_release);
+  return e.enqueueRustSync();
+}
+std::uint64_t RenderEngine::readAnalysis(std::uint32_t slot,std::span<float> out)const noexcept{
+  const auto&e=*impl_;
+  const std::size_t size=static_cast<std::size_t>(analysisFrames)*2;
+  if(slot>=analysisSlots||out.size()<size)return 0;
+  for(int attempt=0;attempt<8;++attempt){
+    const auto before=e.analysisSeq.load(std::memory_order_acquire);
+    if(before&1u){std::this_thread::yield();continue;}
+    const auto version=e.analysisVersion.load(std::memory_order_acquire);
+    const std::size_t base=slot*size,split=static_cast<std::size_t>(e.analysisWrite)*2;
+    std::copy(e.analysisRing.begin()+static_cast<std::ptrdiff_t>(base+split),e.analysisRing.begin()+static_cast<std::ptrdiff_t>(base+size),out.begin());
+    std::copy(e.analysisRing.begin()+static_cast<std::ptrdiff_t>(base),e.analysisRing.begin()+static_cast<std::ptrdiff_t>(base+split),out.begin()+static_cast<std::ptrdiff_t>(size-split));
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if(e.analysisSeq.load(std::memory_order_relaxed)==before)return version;
+  }
+  return 0;
+}
 void RenderEngine::setMasterBypass(bool value)noexcept{
   auto&e=*impl_;
   e.controlMasterBypass=value;

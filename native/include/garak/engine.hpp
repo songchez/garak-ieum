@@ -304,6 +304,13 @@ struct MetronomeClicks {
 // offset is callback-relative; 0x90 data2 is the MIDI velocity (0 = note off),
 // 0x80 is note off, 0xB0 with data1 120/123 releases this track's live notes.
 // noteId pairs a note-off with its note-on (-1 matches by pitch).
+// One analysis tap (RenderEngine::setAnalysis).
+struct AnalysisTap {
+  std::int32_t track = -1, insert = -1;
+  bool tuner = false;
+};
+inline constexpr std::uint32_t analysisSlots = 4, analysisFrames = 8192;
+
 struct LiveMidiEvent {
   std::uint32_t offset = 0;
   std::uint32_t track = 0;
@@ -556,6 +563,14 @@ class RenderEngine {
   // Offline only: skip master gain and the master processor (pre-master stems, freeze and bounce renders).
   // Set only while stopped, before submitting/playing a project.
   void setMasterBypass(bool bypass) noexcept;
+  // Control thread: the analysis taps the open editors show (the EQ/filter spectrum, the utility's stereo scope,
+  // the guitar-rig tuner; at most analysisSlots; docs/RUST_ENGINE.md 5.7). Each is the signal after insert `insert`
+  // of graph track `track`, or with `tuner` a guitar rig's tuner input there. An empty list turns them off.
+  std::uint64_t setAnalysis(std::span<const AnalysisTap> taps);
+  // Control thread: slot `slot`'s latest analysisFrames interleaved stereo frames, oldest first, into `out`
+  // (at least analysisFrames * 2 values). Returns how many renders have published so far (0: nothing yet, or the
+  // callback kept writing).
+  [[nodiscard]] std::uint64_t readAnalysis(std::uint32_t slot, std::span<float> out) const noexcept;
   // Control thread, before the first submit and before the device starts:
   // creates the worker pool (threads > 0, or 1 when only rendering ahead).
   // Graphs prepared afterwards carry render-ahead rings within a memory budget.

@@ -12,7 +12,9 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
 use garak_engine::testkit::{TestProject, project};
-use garak_engine::{Ahead, Applied, Controller, EngineConfig, PcmAsset, Renderer, engine};
+use garak_engine::{
+    Ahead, AnalysisTap, Applied, Controller, EngineConfig, MAX_ANALYSIS, PcmAsset, Renderer, engine,
+};
 
 pub const GARAK_RS_ENGINE_ERROR: i32 = -1;
 
@@ -667,6 +669,54 @@ pub unsafe extern "C" fn garak_rs_engine_set_master_bypass(e: *mut GarakRsEngine
     // SAFETY: caller contract.
     let Some((c, error)) = (unsafe { control(e) }) else { return i64::from(GARAK_RS_ENGINE_ERROR) };
     ticket(c.set_master_bypass(bypass != 0), error)
+}
+
+/// Control: the analysis taps (the editors' spectrum, stereo scope and guitar-rig tuner; at most
+/// `GARAK_RS_MAX_ANALYSIS`): `taps` holds `count` triples (graph track, insert plan index, tuner 0/1). Their
+/// signals are copied out every block (`garak_rs_engine_analysis_output`); `count == 0` turns them off.
+/// Returns the ticket or -1.
+///
+/// # Safety
+/// `e` is null or live; `taps` is valid for `3 * count` values (or null with `count == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_set_analysis(
+    e: *mut GarakRsEngine,
+    taps: *const i32,
+    count: u32,
+) -> i64 {
+    // SAFETY: caller contract.
+    let Some((c, error)) = (unsafe { control(e) }) else { return i64::from(GARAK_RS_ENGINE_ERROR) };
+    let n = count as usize;
+    if n > MAX_ANALYSIS || (n > 0 && taps.is_null()) {
+        error.clear();
+        error.push_str("Too many analysis taps");
+        return i64::from(GARAK_RS_ENGINE_ERROR);
+    }
+    let mut list = [AnalysisTap::OFF; MAX_ANALYSIS];
+    if n > 0 {
+        // SAFETY: caller contract.
+        let raw = unsafe { core::slice::from_raw_parts(taps, n * 3) };
+        for (slot, t) in list.iter_mut().zip(raw.chunks_exact(3)) {
+            *slot = AnalysisTap { track: t[0], insert: t[1], tuner: t[2] != 0 };
+        }
+    }
+    ticket(c.set_analysis(list.get(..n).unwrap_or(&[])), error)
+}
+
+/// Audio thread, after `garak_rs_engine_render_host`: the analysis taps of that call, `GARAK_RS_MAX_ANALYSIS`
+/// slots of `max_block` interleaved stereo frames (the frames the call rendered, from the slot start; silence
+/// for a tap that found no track). Null for a null engine.
+///
+/// # Safety
+/// As `garak_rs_engine_render`. The pointer is valid until the engine is destroyed; its contents change with
+/// the next render.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_analysis_output(e: *mut GarakRsEngine) -> *const f32 {
+    // SAFETY: caller contract.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &*h.render.get() }) else {
+        return core::ptr::null();
+    };
+    r.analysis_output().as_ptr()
 }
 
 /// Control: the metronome (C++ `setMetronome`). `strokes`: 0 keeps the current strokes, 1 replaces them with

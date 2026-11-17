@@ -51,6 +51,8 @@ for (const method of ['devices.probe', 'device.suspend', 'device.resume', 'devic
 for (const method of ['midi.devices', 'midi.enable', 'midi.routes', 'midi.inject', 'midi.panic']) METHODS.add(method)
 // Incremental project sync (docs/RENDER_DIFF_PROTOCOL.md): only changed tracks, bulk events as a binary frame.
 METHODS.add('project.patch')
+// Analysis taps for the open editors' spectrum, scope and tuner (docs/RUST_ENGINE.md 5.7).
+for (const method of ['analysis.set', 'analysis.read']) METHODS.add(method)
 /** Requests that may carry a binary frame (`params.binary`, a Uint8Array): bulk note/controller records. */
 const BINARY_METHODS = new Set(['project.set', 'project.patch'])
 /** Electron passes only `message` across IPC; the renderer (src/audio/native/deviceErrors.ts) parses this suffix. */

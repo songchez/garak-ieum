@@ -5,8 +5,8 @@ import { ANALYSIS_REQUEST_MS, type AnalysisReader } from '../effects/analysis.js
  * `GuitarRig::process_interleaved_tap`, an engine analysis tap) and registers it per device; the editor
  * reads it here and runs the same YIN estimator as the pitch editor (src/devices/pitch-editor/analysis.ts:
  * cumulative mean normalised difference, 0.15 threshold, parabolic refinement of the raw difference).
- * Looking the tap up is the request for it (as for the 시김새 analysers, devices/effects/analysis.ts). The
- * desktop host has no analysis stream to the UI yet.
+ * Looking the tap up is the request for it (as for the 시김새 analysers, devices/effects/analysis.ts), on the web
+ * and the desktop alike.
  */
 export const TUNER_A4 = 440
 const NOTE_NAMES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'] as const

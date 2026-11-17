@@ -256,6 +256,43 @@ class Host {
     if (method=="device.controlPanel" || method=="devices.controlPanel") { if(test_) return Json::object(); device_.showControlPanel(a.value("backend",std::string{}),a.value("deviceId",std::string{})); return Json::object(); }
     if (method=="devices.probe") return probeJson(test_?testProbe():device_.probe(string(a,"backend",32),a.value("deviceId",std::string{})));
     if (method.rfind("device.",0)==0) return deviceRequest(method,a);
+    // Analysis taps for the open editors (EQ/filter spectrum, utility scope, guitar-rig tuner; docs/RUST_ENGINE.md
+    // 5.7): `taps` [{trackId, deviceId, tuner}] in slot order (an unknown device is a silent slot), then
+    // `analysis.read` returns each slot's latest garak::analysisFrames stereo frames, oldest first, as base64 float32.
+    if (method=="analysis.set") {
+      std::vector<AnalysisTap> taps;
+      if (a.contains("taps")) {
+        const auto& list=a.at("taps");
+        if (!list.is_array() || list.size()>analysisSlots) throw std::runtime_error("Invalid analysis taps");
+        for (const auto& item:list) {
+          AnalysisTap tap; tap.tuner=item.value("tuner",false);
+          const auto trackId=string(item,"trackId",200), deviceId=string(item,"deviceId",200);
+          for (std::size_t i=0;i<project_.tracks.size()&&tap.track<0;++i) {
+            if (project_.tracks[i].id!=trackId) continue;
+            const auto& inserts=project_.tracks[i].inserts;
+            for (std::size_t k=0;k<inserts.size();++k) if (inserts[k].id==deviceId) { tap.track=static_cast<std::int32_t>(i); tap.insert=static_cast<std::int32_t>(k); break; }
+          }
+          taps.push_back(tap);
+        }
+      }
+      // Not awaited: the taps apply with the callback (none while the device is stopped, and nothing to show then).
+      if (engine_) (void)engine_->setAnalysis(taps);
+      return {{"slots",taps.size()}};
+    }
+    if (method=="analysis.read") {
+      const auto count=static_cast<std::uint32_t>(integer(a,"slots",0,analysisSlots,0));
+      Json data=Json::array(); std::uint64_t version=0;
+      std::vector<float> slot(static_cast<std::size_t>(analysisFrames)*2);
+      for (std::uint32_t k=0;k<count;++k) {
+        const auto v=engine_?engine_->readAnalysis(k,slot):0;
+        if (!v) { data.push_back(nullptr); continue; }
+        version=std::max(version,v);
+        std::vector<std::uint8_t> bytes(slot.size()*sizeof(float));
+        std::memcpy(bytes.data(),slot.data(),bytes.size());
+        data.push_back(base64(bytes));
+      }
+      return {{"version",version},{"frames",analysisFrames},{"data",data}};
+    }
     // A device/plugin fault must not prevent a captured take being finalized.
     if(method!="record.stop") requireEngine();
     if (method=="transport.play") { awaitApplied(engine_->play(integer(a,"countInFrames",0,std::int64_t(engine_->snapshot().sampleRate)*60,0))); return snapshot(); }

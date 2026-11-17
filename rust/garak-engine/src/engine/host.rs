@@ -16,7 +16,7 @@
 
 use core::ffi::c_void;
 
-use super::{Graph, Renderer};
+use super::{Graph, MAX_ANALYSIS, Renderer};
 use crate::external::{HostCallbacks, Io, Stage};
 use crate::math;
 
@@ -58,7 +58,7 @@ pub struct BlockInfo<'a> {
     pub master: bool,
     /// Monitored tracks (bit `i` of word `i / 64`).
     pub monitor: [u64; 4],
-    /// VST3 / IEUM WAVE processors and device input; None renders host nodes as silence (sources) or
+    /// VST3 processors and device input; None renders host nodes as silence (sources) or
     /// pass-through (inserts).
     pub host: Option<&'a HostCallbacks>,
     /// Per track (may be shorter than the track list): this block's output of a track the shell renders ahead
@@ -167,9 +167,15 @@ impl Renderer {
         let mut peak = 0.0f32;
         let master = info.master && !(self.config.offline && self.master_bypass);
         let smoothing = math::smoothing(rate, 0.012) as f32;
+        let mut cursor = 0u32;
         for block in out.chunks_mut(step) {
             block.fill(0.0);
             let count = (block.len() / 2) as u32;
+            // Analysis taps (the editors' spectrum, scope and tuner): probes on their tracks for this block.
+            let placed = match &mut self.active {
+                Some(g) => Self::place_probes(g, &self.analysis, &mut self.probed),
+                None => [(-1, 0); MAX_ANALYSIS],
+            };
             if let Some(g) = &mut self.active {
                 let audible = playing && at < g.length_frames;
                 let gain = (self.master_gain, self.target_master_gain);
@@ -208,6 +214,12 @@ impl Renderer {
                 }
                 g.master.process(block);
             }
+            if let Some(g) = &self.active
+                && cursor + count <= self.config.max_block
+            {
+                Self::copy_analysis(g, &placed, &mut self.analysis_out, self.config.max_block, cursor, count);
+            }
+            cursor += count;
             if playing {
                 at += i64::from(count);
             }

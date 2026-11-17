@@ -13,6 +13,8 @@ use garak_engine::{AnalysisTap, Applied, EngineConfig, MAX_ANALYSIS, engine};
 struct Counting;
 static ARMED: AtomicBool = AtomicBool::new(false);
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
+/// The allocation counter is process-wide: the tests run one at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // SAFETY: forwards to the system allocator; the counters are lock-free atomics.
 unsafe impl GlobalAlloc for Counting {
@@ -49,6 +51,7 @@ fn energy(x: &[f32]) -> f64 {
 
 #[test]
 fn taps_carry_the_insert_output_and_the_rig_tuner_input_without_allocating() {
+    let _serial = SERIAL.lock().unwrap();
     let p = project(2, 1.5, 48_000);
     let json = p.json.replacen(
         r#"{"id":"chorus","type":"chorus","params":{"rate":1.3,"depth":0.6,"mix":0.4}}"#,
@@ -107,4 +110,41 @@ fn taps_carry_the_insert_output_and_the_rig_tuner_input_without_allocating() {
     render(&mut r, &mut out);
     assert!(r.analysis_output().iter().all(|v| *v == 0.0));
     assert!(c.set_analysis(&[AnalysisTap::OFF; MAX_ANALYSIS + 1]).is_err());
+}
+
+#[test]
+fn the_desktop_shell_path_copies_the_same_taps() {
+    let _serial = SERIAL.lock().unwrap();
+    // render_host (garak-ffi / RenderEngine) places the probes per block like render does.
+    let p = project(2, 1.5, 48_000);
+    let plan = timeline_from_bytes(p.json.as_bytes(), &[]).unwrap();
+    let (mut c, mut r) =
+        engine(EngineConfig { sample_rate: 48_000, max_block: BLOCK as u32, offline: false }).unwrap();
+    for (id, a) in &p.assets {
+        c.put_asset(id, a.clone()).unwrap();
+    }
+    assert_eq!(c.update(plan).unwrap(), Applied::Full);
+    let mut out = vec![0.0f32; 2 * BLOCK];
+    let mut peaks = [0.0f32; 4];
+    let mut position = 0i64;
+    for _ in 0..8 {
+        r.render_block(&mut out, position, true, u64::MAX, &mut peaks, None);
+        position += BLOCK as i64;
+    }
+    assert!(r.analysis_output().iter().all(|v| *v == 0.0));
+    c.set_analysis(&[AnalysisTap { track: 0, insert: 0, tuner: false }]).unwrap();
+    let slot = BLOCK * 2;
+    let mut a = 0.0;
+    for _ in 0..40 {
+        ARMED.store(true, Ordering::SeqCst);
+        r.render_block(&mut out, position, true, u64::MAX, &mut peaks, None);
+        ARMED.store(false, Ordering::SeqCst);
+        position += BLOCK as i64;
+        a += energy(&r.analysis_output()[..slot]);
+    }
+    assert!(a > 1e-6, "the insert output reaches its tap on the shell path");
+    assert_eq!(EVENTS.load(Ordering::SeqCst), 0, "the shell path touched the heap");
+    c.set_analysis(&[]).unwrap();
+    r.render_block(&mut out, position, true, u64::MAX, &mut peaks, None);
+    assert!(r.analysis_output().iter().all(|v| *v == 0.0));
 }

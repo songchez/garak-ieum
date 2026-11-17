@@ -517,6 +517,30 @@ void bench() {
     std::printf("| %u | %.1fx | %.1fx | %.2fx |\n", tracks, one, many, many / one);
   }
 }
+// Analysis taps (docs/RUST_ENGINE.md 5.7): RenderEngine::setAnalysis on track 0's first insert, read back as the
+// latest analysisFrames stereo frames; a tap that names no track stays silent; turning taps off stops publishing.
+void analysisCase() {
+  const auto project = testProject(4, 2, 48000);
+  garak::RenderEngine e(48000, 128, 48000);
+  (void)e.update(parse(project.json), project.assets);
+  (void)e.play();
+  std::vector<float> out(512), slot(std::size_t(garak::analysisFrames) * 2);
+  const std::array<garak::AnalysisTap, 2> taps{garak::AnalysisTap{0, 0, false}, garak::AnalysisTap{-1, -1, false}};
+  (void)e.setAnalysis(taps);
+  for (int k = 0; k < 80; ++k) { e.render(out.data(), nullptr, 256, 0); if (k % 16 == 0) e.collectRetired(); }
+  const auto version = e.readAnalysis(0, slot);
+  double energy = 0; for (const auto x : slot) energy += double(x) * x;
+  double silent = 0; check(e.readAnalysis(1, slot) > 0, "analysis: second slot published");
+  for (const auto x : slot) silent += double(x) * x;
+  std::printf("| analysis taps: insert output, silent slot | 4+2 | 0.4 s | 48000 Hz | 128 (256 calls) | — | %s |\n", energy > 1e-6 && silent == 0 ? "streamed" : "missing");
+  check(version > 0 && energy > 1e-6, "analysis: the insert output reaches its tap", energy);
+  check(silent == 0, "analysis: a tap without a track is silent", silent);
+  (void)e.setAnalysis({});
+  for (int k = 0; k < 4; ++k) e.render(out.data(), nullptr, 256, 0);
+  const auto off = e.readAnalysis(0, slot);
+  for (int k = 0; k < 4; ++k) e.render(out.data(), nullptr, 256, 0);
+  check(e.readAnalysis(0, slot) == off, "analysis: turned off, nothing more is published");
+}
 // Sample-accurate device MIDI (docs/RUST_ENGINE.md 5.8): queueLiveMidi offsets on a VST3 instrument (a stand-in
 // plug-in) and a built-in synth. The shell passes the offsets through (garak_rs_engine_live_at: the built-in voices
 // split their own render, the VST3 node gets sampleOffset). Reference: the same events, each queued at offset 0 of a
@@ -589,6 +613,7 @@ int main(int argc, char** argv) {
     liveCases();
     hostNodeCases();
     liveOffsetCases();
+    analysisCase();
     metronomeCases();
     shellMetronomeCase();
     if (argc > 1 && std::string(argv[1]) == "--bench") bench();

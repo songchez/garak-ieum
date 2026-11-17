@@ -154,6 +154,13 @@ void garak_rs_engine_stop_at_end(GarakRsEngine* engine);
  * (setMasterBypass: stems, freeze). Return the ticket or -1. */
 int64_t garak_rs_engine_set_master_gain(GarakRsEngine* engine, float gain);
 int64_t garak_rs_engine_set_master_bypass(GarakRsEngine* engine, int32_t bypass);
+/* Control: the analysis taps (editor spectrum / stereo scope / guitar-rig tuner), at most GARAK_RS_MAX_ANALYSIS:
+ * `taps` holds `count` triples (graph track, insert plan index, tuner 0/1); count 0 turns them off. Ticket or -1. */
+#define GARAK_RS_MAX_ANALYSIS 4
+int64_t garak_rs_engine_set_analysis(GarakRsEngine* engine, const int32_t* taps, uint32_t count);
+/* Audio thread, after garak_rs_engine_render_host: that call's analysis signals, GARAK_RS_MAX_ANALYSIS slots of
+ * max_block interleaved stereo frames (the rendered frames from each slot's start). */
+const float* garak_rs_engine_analysis_output(GarakRsEngine* engine);
 /* Control: the metronome (C++ setMetronome). strokes: 0 keeps the current strokes, 1 replaces them with `levels`
  * (3 mono strokes of `lengths` samples at `sample_rate`, the engine rate), 2 drops them (silence). Ticket or -1. */
 int64_t garak_rs_engine_set_metronome(GarakRsEngine* engine, uint32_t strokes, uint32_t sample_rate,

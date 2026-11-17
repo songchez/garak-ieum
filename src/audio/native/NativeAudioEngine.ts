@@ -36,6 +36,10 @@ import { inputChoices, namesByIndex, parseDeviceProbe, snapshotInputNames } from
 import { countInBeats, DEFAULT_METRONOME_PREFS, type MetronomeEngineState, type PlayOptions } from '../../core/metronome'
 import { metronomeStrokes } from '../metronomeSounds'
 import { NativeLiveMidi } from './nativeLiveMidi'
+import { NATIVE_ANALYSIS_SLOTS, NativeAnalysisStream, type NativeAnalysisRead } from './nativeAnalysis'
+import { EngineAnalyser } from '../engineAnalyser'
+import { registerDeviceAnalysis, requestedDeviceAnalysis, type StereoScopeTap } from '../../devices/effects/analysis'
+import { registerGuitarTunerTap, requestedGuitarTuners, unregisterGuitarTunerTap } from '../../devices/guitar-rig/tuner'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const nonnegative = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
@@ -146,6 +150,11 @@ export class NativeAudioEngine implements AudioEngine {
   private wavePayloads = new Map<string, { params: Track['instrumentParams']; state: Track['instrumentState']; data: string }>()
   private waveNotes = new Map<string, Map<string, WaveAuditionNote>>()
   private nextWaveNoteId = 1_000_000_000
+  /** Analysis taps the open editors asked for (key: their host addresses) and how to unregister them. */
+  private analysisKey = ''
+  private analysisRelease: (() => void)[] = []
+  private lastAnalysisSync = 0
+  private readonly analysisStream = new NativeAnalysisStream(slots => this.request<NativeAnalysisRead>('analysis.read', { slots }))
 
   /** Live MIDI: the host opens devices and plays notes on its audio thread (docs/MIDI_RECORDING.md). */
   readonly liveMidi = new NativeLiveMidi((method, params) => this.request(method, params), () => this.configured, () => this.project ? tempoMapOf(this.project) : 120)
@@ -368,7 +377,57 @@ export class NativeAudioEngine implements AudioEngine {
     this.updateAudio({ status: 'error', error: text, needsReconfiguration: true })
   }
 
+  /**
+   * Analysis taps follow the editors that are open (as on the web, WebAudioEngine.syncAnalysis): the devices whose
+   * spectrum, stereo scope or tuner was looked up recently become host taps (`analysis.set`), read back through
+   * `analysis.read` while an editor reads them. Nothing is requested while no editor looks.
+   */
+  private syncAnalysis(sampleRate: number): void {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    if (now - this.lastAnalysisSync < 200) return
+    this.lastAnalysisSync = now
+    const timeline = this.configured ? this.synced?.timeline : undefined
+    const owner = (deviceId: string): string | null => timeline?.tracks.find(track => track.inserts.some(insert => insert.id === deviceId))?.id ?? null
+    const wanted: { deviceId: string; trackId: string; tuner: boolean }[] = []
+    for (const [ids, tuner] of [[requestedDeviceAnalysis(), false], [requestedGuitarTuners(), true]] as const) {
+      for (const deviceId of ids) {
+        const trackId = owner(deviceId)
+        if (trackId && wanted.length < NATIVE_ANALYSIS_SLOTS) wanted.push({ deviceId, trackId, tuner })
+      }
+    }
+    const key = wanted.map(item => `${item.trackId}:${item.deviceId}:${item.tuner ? 1 : 0}`).join(',')
+    if (key === this.analysisKey) return
+    this.releaseAnalysis()
+    if (!wanted.length) return
+    this.analysisKey = key
+    void this.request('analysis.set', { taps: wanted }).catch(() => this.releaseAnalysis())
+    this.analysisStream.reset(wanted.length)
+    wanted.forEach((item, slot) => {
+      const source = this.analysisStream.source(slot)
+      if (item.tuner) {
+        const tap = { analyser: new EngineAnalyser(source, sampleRate > 50000 ? 8192 : 4096, 'mono'), sampleRate }
+        registerGuitarTunerTap(item.deviceId, tap)
+        this.analysisRelease.push(() => unregisterGuitarTunerTap(tap))
+      } else {
+        const tap: StereoScopeTap = {
+          analyser: new EngineAnalyser(source, 4096, 'mono'), sampleRate,
+          left: new EngineAnalyser(source, 1024, 'left'), right: new EngineAnalyser(source, 1024, 'right'),
+        }
+        this.analysisRelease.push(registerDeviceAnalysis(item.deviceId, tap))
+      }
+    })
+  }
+
+  private releaseAnalysis(): void {
+    for (const release of this.analysisRelease) release()
+    this.analysisRelease = []
+    this.analysisStream.reset(0)
+    if (this.analysisKey && this.configured) void this.request('analysis.set', { taps: [] }).catch(() => undefined)
+    this.analysisKey = ''
+  }
+
   private invalidateHost(): void {
+    this.releaseAnalysis()
     this.generation++; this.transportRequest++; this.monitorRequest++
     this.pendingPlayRequest = null
     this.uploaded.clear(); this.uploadTasks.clear(); this.registeredSets.clear(); this.sampleTasks.clear(); this.sampleErrors.clear()
@@ -410,6 +469,7 @@ export class NativeAudioEngine implements AudioEngine {
     this.dynamics = new Map(Object.entries(event.dynamics && typeof event.dynamics === 'object' ? event.dynamics : {}).flatMap(([id, value]) => { const reading = dynamicsReadingFrom(value); return reading ? [[id, reading] as const] : [] }))
     this.masterLevel = Math.max(0, finite(event.masterLevel))
     const rate = finite(event.sampleRate, this.nativeDevice?.sampleRate ?? this.desiredSampleRate)
+    this.syncAnalysis(rate)
     this.liveMidi.receive(event.midi, rate)
     const beat = typeof event.frame === 'number' && Number.isFinite(event.frame) && rate > 0
       ? (this.project ? tempoMapOf(this.project).beatAtFrame(event.frame, rate) : event.frame / rate * 2) : this.snapshot.beat
@@ -1200,6 +1260,8 @@ export class NativeAudioEngine implements AudioEngine {
   }
 
   dispose(): void {
+    this.releaseAnalysis()
+    this.analysisStream.dispose()
     this.clearWaveAudition(true)
     this.startupRun++; this.startupTask = null
     this.generation++; this.transportRequest++; this.monitorRequest++
