@@ -15,7 +15,9 @@
 //      parameter automation and PDC, a latent return, track-input routes and a master resampler, monitored device
 //      input and routed/physical recording takes, live MIDI, seek, cycle, edits; frozen windows with tails; the
 //      shell's render-ahead rings: C++ engine vs Rust shell bit-identical, 0 vs N workers bit-identical;
-//   7. CPU: blocks per second of the C++ engine, the Rust shell and the Rust shell on N workers (table).
+//   7. live MIDI at sample offsets (queueLiveMidi) on a VST3 instrument and a built-in synth: C++ split blocks vs
+//      the Rust shell's offsets (garak_rs_engine_live_at, sampleOffset), same onset sample;
+//   8. CPU: blocks per second of the C++ engine, the Rust shell and the Rust shell on N workers (table).
 // Gate: residual <= -90 dBFS (bit-identical expected), equal latency; the multi-core output bit-identical.
 #include "cpp_reference_engine.hpp"
 #include "garak/dsp.hpp"
@@ -562,6 +564,53 @@ void bench() {
     std::printf("| %u | %.1fx | %.1fx | %.1fx | %.2fx |\n", tracks, cpp, one, many, many / one);
   }
 }
+// Sample-accurate device MIDI (docs/RUST_ENGINE.md 5.8): queueLiveMidi offsets on a VST3 instrument (a stand-in
+// plug-in) and a built-in synth. The C++ engine splits its blocks at each event; the Rust shell passes the offsets
+// through (garak_rs_engine_live_at: the built-in voices split their own render, the VST3 node gets sampleOffset), so
+// both start every event on the same sample.
+void liveOffsetCases() {
+  garak::ProjectTimeline p; p.projectId = "live-offsets"; p.sampleRate = 48000; p.lengthFrames = 96000; p.bpm = 120;
+  garak::TrackTimeline vst; vst.id = "vst"; vst.gain = .8f;
+  vst.source.kind = garak::TrackSource::Kind::Vst3; vst.source.plugin.instanceId = "synth"; vst.source.plugin.isInstrument = true;
+  garak::TrackTimeline keys; keys.id = "keys"; keys.gain = .7f; keys.source.kind = garak::TrackSource::Kind::BuiltinSynth; keys.source.instrumentId = "keys";
+  p.tracks = {vst, keys};
+  const auto run = [&](int mode, std::vector<std::size_t>& onsets) {
+    garak::RenderEngine e(48000, 128, 48000); e.setRustEngine(mode);
+    (void)e.update(p, {}, {}, standIns());
+    std::vector<float> all, out(512);
+    for (std::uint32_t k = 0; k < 120; ++k) {
+      if (k == 0) (void)e.play();
+      if (k == 3) { const std::array<garak::LiveMidiEvent, 1> on{garak::LiveMidiEvent{37, 0, 0x90, 60, 100, 11}}; (void)e.queueLiveMidi(on); }
+      if (k == 4) { const std::array<garak::LiveMidiEvent, 1> off{garak::LiveMidiEvent{10, 0, 0x80, 60, 0, 11}}; (void)e.queueLiveMidi(off); }
+      if (k == 5) { const std::array<garak::LiveMidiEvent, 1> on{garak::LiveMidiEvent{201, 1, 0x90, 64, 100, 12}}; (void)e.queueLiveMidi(on); }
+      if (k == 9) {
+        const std::array<garak::LiveMidiEvent, 10> more{garak::LiveMidiEvent{3, 0, 0x90, 67, 90, 13}, garak::LiveMidiEvent{5, 0, 0xE0, 0, 80, -1},
+          garak::LiveMidiEvent{60, 1, 0xD0, 100, 0, -1}, garak::LiveMidiEvent{70, 1, 0xE0, 0, 100, -1}, garak::LiveMidiEvent{80, 0, 0xD0, 50, 0, -1},
+          garak::LiveMidiEvent{90, 1, 0xB0, 64, 127, -1}, garak::LiveMidiEvent{100, 0, 0xB0, 64, 127, -1}, garak::LiveMidiEvent{130, 0, 0x80, 67, 0, 13},
+          garak::LiveMidiEvent{131, 1, 0x80, 64, 0, 12}, garak::LiveMidiEvent{250, 1, 0xB0, 64, 0, -1}};
+        (void)e.queueLiveMidi(more);
+      }
+      if (k == 11) { const std::array<garak::LiveMidiEvent, 1> up{garak::LiveMidiEvent{77, 0, 0xB0, 64, 0, -1}}; (void)e.queueLiveMidi(up); }
+      e.render(out.data(), nullptr, 256, 0);
+      if (k == 3 || k == 5) {
+        std::size_t first = 256; for (std::size_t i = 0; i < 512; ++i) if (out[i] != 0) { first = i / 2; break; }
+        onsets.push_back(first);
+      }
+      all.insert(all.end(), out.begin(), out.end());
+      if (k % 16 == 0) e.collectRetired();
+    }
+    return all;
+  };
+  std::vector<std::size_t> cppOnsets, rustOnsets;
+  const auto cpp = run(0, cppOnsets), rust = run(2, rustOnsets);
+  const double d = residual(cpp, rust);
+  std::printf("| live MIDI at sample offsets: VST3 instrument + built-in synth | 2 | 0.6 s | 48000 Hz | 128 (256 calls) | — | %s |\n", verdict(d).c_str());
+  check(peak(cpp) > .05, "live offsets: silent", peak(cpp));
+  check(dbfs(d) <= -90, "live offsets: Rust shell differs from the C++ engine's split blocks", dbfs(d));
+  // The stand-in sounds on its note-on sample; the built-in envelope starts from zero there (first sound one later).
+  check(cppOnsets.size() == 2 && cppOnsets == rustOnsets && cppOnsets[0] == 37 && cppOnsets[1] == 202,
+        "live offsets: onset sample", rustOnsets.empty() ? -1.0 : double(rustOnsets[0]));
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -572,6 +621,7 @@ int main(int argc, char** argv) {
     liveCases();
     fallbackCases();
     hostNodeCases();
+    liveOffsetCases();
     metronomeCases();
     if (argc > 1 && std::string(argv[1]) == "--bench") bench();
   } catch (const std::exception& error) {
