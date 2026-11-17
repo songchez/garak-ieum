@@ -455,7 +455,7 @@ export interface AudioEngine {
   sampleAttribution(setId: string): SampleAttribution | undefined
   getTrackLevel(trackId: string): number
   getMasterLevel(): number
-  /** Native host only: a compressor/limiter/gate insert's live input peak and lowest gain (linear). */
+  /** Native host and the web Rust engine: a compressor/limiter/gate insert's live input peak and lowest gain (linear). */
   getDeviceMeter?(deviceId: string): { input: number; gain: number } | null
   /** Routes a live input stream into the given audio tracks' chains (input monitoring). null releases it. */
   setInputMonitor(stream: MediaStream | null, trackIds: readonly string[]): void

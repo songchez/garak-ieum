@@ -1,7 +1,7 @@
 import { instrumentDef } from '../core/instruments'
 import { DEFAULT_AUDIO_SETTINGS, DEFAULT_SAMPLE_RATE, normalizeAudioSettings, projectSampleRate, type AudioSettings, type AudioState, type RenderSizeHint, type SampleRate } from '../core/audioSettings'
 import { audibleTrackIds, isTrackEnabled, trackNote } from '../core/playback'
-import type { AudioAsset, AudioEngine, InputChoice, InstrumentId, Project, RenderOptions, RenderedAudio, SampleAttribution, SampleStatus, TransportSnapshot, VintageBridge } from '../core/types'
+import type { AudioAsset, AudioEngine, ControllerKey, InputChoice, InstrumentId, Project, RenderOptions, RenderedAudio, SampleAttribution, SampleStatus, TransportSnapshot, VintageBridge } from '../core/types'
 import { playbackProject } from '../core/freeze'
 import { encodeWav } from './wavEncode'
 import { numberedInputChoices } from '../core/trackInputs'
@@ -113,7 +113,7 @@ export class WebAudioEngine implements AudioEngine {
   protected readonly metronome = new WebMetronome()
   /** Live MIDI from Web MIDI inputs and the computer keyboard (docs/MIDI_RECORDING.md). */
   readonly liveMidi = new WebLiveMidi({ startNote: (trackId, pitch, velocity) => this.startLiveNote(trackId, pitch, velocity), beatAt: time => this.heardBeatAt(time),
-    control: (trackId, key, value) => { const controls = this.graph?.tracks.get(trackId)?.controls; if (controls && this.context) applyControl(controls, key, value, this.context.currentTime) } })
+    control: (trackId, key, value) => this.liveControl(trackId, key, value) })
 
   constructor(project?: Project, settings: AudioSettings = DEFAULT_AUDIO_SETTINGS) {
     this.settings = normalizeAudioSettings(settings)
@@ -580,8 +580,14 @@ export class WebAudioEngine implements AudioEngine {
     else scheduleInstrument(this.graph, destination, instrument, live.pitch, this.context.currentTime + 0.006, duration, live.velocity, duration + 0.8, params)
   }
 
+  /** A live controller (pitch bend, modulation, CC) on the track's instrument. */
+  protected liveControl(trackId: string, key: ControllerKey, value: number): void {
+    const controls = this.graph?.tracks.get(trackId)?.controls
+    if (controls && this.context) applyControl(controls, key, value, this.context.currentTime)
+  }
+
   /** A held live note through the track's chain; released by its note-off with the instrument's release. */
-  private startLiveNote(trackId: string, pitch: number, velocity: number): LiveVoiceHandle | null {
+  protected startLiveNote(trackId: string, pitch: number, velocity: number): LiveVoiceHandle | null {
     const context = this.context, graph = this.graph
     const track = this.project?.tracks.find(item => item.id === trackId)
     if (!context || !graph || this.outputFault || !track || track.kind !== 'instrument' || !isTrackEnabled(track)) return null
@@ -605,7 +611,7 @@ export class WebAudioEngine implements AudioEngine {
   }
 
   /** Transport beat the listener heard at `timeMs` (performance.now base): the output timestamp folds in output latency. */
-  private heardBeatAt(timeMs: number): number | null {
+  protected heardBeatAt(timeMs: number): number | null {
     const context = this.context
     if (!this.playing || !context || !this.project) return null
     const stamp = typeof context.getOutputTimestamp === 'function' ? context.getOutputTimestamp() : undefined

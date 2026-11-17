@@ -5,7 +5,11 @@
 //   3. realtime: the Rust worklet plays (non-silent master, advancing transport, seek/pause/stop),
 //      a project the engine refuses falls back to Web Audio, and the export runs on the engine;
 //   4. CPU: 16/32-track projects played in realtime on both engines (worklet render time per
-//      quantum; AudioContext.renderCapacity load when the browser has it) and rendered offline.
+//      quantum; AudioContext.renderCapacity load when the browser has it) and rendered offline. On the
+//      isolated page the worklet is timed with a microsecond clock (engineBenchmark.preciseClock);
+//   5. the web host paths without a Web Audio handoff (docs/RUST_ENGINE.md 5.7): a count-in clicked by
+//      the engine, track and dynamics meters, a note preview, input monitoring of a MediaStream, route
+//      monitoring and a route recording from the engine's taps, and a pre-master (stem) render.
 // Runs twice: a plain page (postMessage channel) and a cross-origin isolated one (SharedArrayBuffer).
 // Run after `pnpm rust:wasm`: `node scripts/rust-engine-smoke.mjs`. Optional GARAK_CHROMIUM_EXECUTABLE.
 import assert from 'node:assert/strict'
@@ -44,6 +48,7 @@ async function session(browser, isolated, port) {
   }
   try {
     const result = await task('main')
+    result.host = await task('host')
     result.cpu = {}
     for (const tracks of [16, 32]) result.cpu[tracks] = { rust: await task('load', { tracks, rust: true }), web: await task('load', { tracks, rust: false }), offline: await task('offline', { tracks }) }
     return { result, errors, notes }
@@ -56,6 +61,8 @@ const TASK = async ({ name, arg }) => {
       const { WebAudioEngine } = await import('/src/audio/WebAudioEngine.ts')
       const { RustWebAudioEngine } = await import('/src/audio/rust/RustWebAudioEngine.ts')
       const { createAudioEngine } = await import('/src/audio/engineFactory.ts')
+      const { engineBenchmark } = await import('/src/audio/rust/engineHost.ts')
+      const { createTrack } = await import('/src/core/project.ts')
       const { DEFAULT_AUDIO_SETTINGS } = await import('/src/core/audioSettings.ts')
       const fixtures = await import('/src/audio/rust/engineTestProjects.ts')
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -159,8 +166,70 @@ const TASK = async ({ name, arg }) => {
       return { ab, realtime }
       }
 
+      // 5. Web host paths on the engine (no handoff to the Web Audio graph).
+      const host = async () => {
+        const test = fixtures.effectsProject()
+        const chain = test.project.tracks[0]
+        const mic = { ...createTrack('audio'), id: 'mic-track', name: 'mic', clips: [] }
+        const routed = { ...createTrack('audio'), id: 'routed-track', name: 'routed', clips: [], inputRoute: { kind: 'track', trackId: chain.id, tap: 'postFx' } }
+        test.project.tracks = [...test.project.tracks, mic, routed]
+        const engine = new RustWebAudioEngine(test.project)
+        engine.setAssets(assetsOf(test))
+        engine.setMetronome({ enabled: true, sound: 'janggu', volume: 0.8, accent: true })
+        const out = {}
+        const began = performance.now()
+        await engine.play({ countInBars: 1 })
+        out.countInMs = Math.round(performance.now() - began)
+        out.countInOn = engine.diagnostics().playing
+        out.beatAfterCountIn = engine.getSnapshot().beat
+        await sleep(700)
+        out.trackLevel = engine.getTrackLevel(chain.id)
+        out.masterLevel = engine.getMasterLevel()
+        const compressor = chain.devices.find(device => device.type === 'compressor')
+        out.deviceMeter = engine.getDeviceMeter(compressor.id)
+        await engine.previewNote('keys', 64).catch(error => { out.previewError = String(error) })
+        out.afterPreview = engine.diagnostics().playing
+        const context = engine.context
+        const osc = context.createOscillator(), stream = context.createMediaStreamDestination()
+        osc.connect(stream)
+        osc.start()
+        engine.setInputMonitor(stream.stream, ['mic-track'])
+        engine.setRouteMonitor(['routed-track'])
+        await sleep(700)
+        let d = engine.diagnostics()
+        out.monitoring = { on: d.playing, indices: d.monitoring, mic: engine.getTrackLevel('mic-track'), routed: engine.getTrackLevel('routed-track') }
+        await engine.prepareRouteRecording()
+        const takes = await new Promise((resolve, reject) => {
+          const recording = engine.createRouteRecordings(['routed-track'], { onComplete: resolve, onError: reject })
+          recording.start().then(() => sleep(900)).then(() => recording.stop()).catch(reject)
+        })
+        d = engine.diagnostics()
+        out.recording = { on: d.playing, taps: d.taps, seconds: takes[0].durationSeconds, error: takes[0].error ? String(takes[0].error) : null, rms: await wavRms(takes[0].blob) }
+        osc.stop()
+        engine.setInputMonitor(null, [])
+        engine.setRouteMonitor([])
+        out.status = { budgetMisses: d.status.budgetMisses, quanta: d.status.quanta, kernels: d.kernels }
+        engine.stop()
+        const stem = await engine.renderAudio(test.project, { bitDepth: 32, preMaster: true })
+        out.preMaster = { engine: engine.diagnostics().lastRender?.engine, frames: stem.frames }
+        engine.dispose()
+        return out
+      }
+      const wavRms = async blob => {
+        const view = new DataView(await blob.arrayBuffer())
+        let at = 12
+        while (at + 8 <= view.byteLength) {
+          const id = String.fromCharCode(...new Uint8Array(view.buffer, at, 4)), size = view.getUint32(at + 4, true)
+          if (id === 'data') { let sum = 0; const n = size / 2; for (let i = 0; i < n; i += 1) sum += (view.getInt16(at + 8 + i * 2, true) / 32768) ** 2; return Math.sqrt(sum / Math.max(1, n)) }
+          at += 8 + size + (size & 1)
+        }
+        return 0
+      }
+      if (name === 'host') return host()
+
       // 4. CPU: realtime load on both engines, then offline render speed (separate pages, see session()).
       const load = async (Engine, test) => {
+        engineBenchmark.preciseClock = globalThis.crossOriginIsolated === true
         const e = new Engine(test.project)
         e.setAssets(assetsOf(test))
         await e.play()
@@ -177,7 +246,12 @@ const TASK = async ({ name, arg }) => {
         const d = e.diagnostics?.()
         e.stop(); e.dispose()
         const status = d?.status
-        return { renderCapacity: capacity, workletUsPerQuantum: status?.quanta ? Math.round(status.renderMs * 1000 / status.quanta) : null, workletMaxUs: status ? Math.round(status.renderMaxMs * 1000) : null, budgetMisses: status?.budgetMisses ?? null, on: d?.playing ?? 'web-audio' }
+        return {
+          renderCapacity: capacity, workletUsPerQuantum: status?.quanta ? Math.round(status.renderMs * 1000 / status.quanta) : null, workletMaxUs: status ? Math.round(status.renderMaxMs * 1000) : null, budgetMisses: status?.budgetMisses ?? null,
+          // Steady playback only (no project load, staged build or edit in that quantum).
+          playing: status?.playingQuanta ? { quanta: status.playingQuanta, meanUs: Math.round(status.playingMs * 1000 / status.playingQuanta), maxUs: Math.round(status.playingMaxMs * 1000), misses: status.playingMisses } : null,
+          preciseClock: engineBenchmark.preciseClock, on: d?.playing ?? 'web-audio',
+        }
       }
       if (name === 'load') return load(arg.rust ? RustWebAudioEngine : WebAudioEngine, fixtures.benchProject(arg.tracks, 6))
       if (name === 'offline') {
@@ -220,6 +294,22 @@ try {
     assert(ab.automation.errorDb < -30, `automation: error ${ab.automation.errorDb.toFixed(1)} dB`)
     // Effects: the kernels are the same Rust code, the graphs are not (PDC, block-wise modulation): same level, not the same samples.
     assert(Math.abs(ab.effects.levelDb) < 0.5, `effects: level ${ab.effects.levelDb.toFixed(2)} dB`)
+    const h = result.host
+    assert.equal(h.countInOn, 'rust', 'a count-in plays on the engine (scheduled start), not the Web Audio graph')
+    assert(h.countInMs > 1500 && h.countInMs < 3500, `play() resolves on the downbeat after one 4/4 bar at 120 BPM (${h.countInMs} ms)`)
+    assert(h.beatAfterCountIn < 0.25, `the transport starts at the downbeat (beat ${h.beatAfterCountIn})`)
+    assert(h.trackLevel > 0.001, `track meters read the engine (${h.trackLevel})`)
+    assert(h.deviceMeter && h.deviceMeter.input > 0, 'dynamics meters read the engine')
+    assert.equal(h.previewError, undefined)
+    assert.equal(h.afterPreview, 'rust', 'a note preview does not hand the project to Web Audio')
+    assert.equal(h.monitoring.on, 'rust', 'input and route monitoring stay on the engine')
+    assert.equal(h.monitoring.indices.length, 2)
+    assert(h.monitoring.mic > 0.01, `the monitored input is heard through its track (${h.monitoring.mic})`)
+    assert(h.monitoring.routed > 0.001, `the routed track hears its source (${h.monitoring.routed})`)
+    assert.equal(h.recording.on, 'rust', 'route recording stays on the engine')
+    assert.equal(h.recording.error, null)
+    assert(h.recording.seconds > 0.5 && h.recording.rms > 0.001, `the route take records the engine's tap (${h.recording.seconds} s, rms ${h.recording.rms})`)
+    assert.equal(h.preMaster.engine, 'rust', 'pre-master stems render on the engine')
     assert.deepEqual(errors, [])
   }
 } finally {

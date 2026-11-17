@@ -31,8 +31,12 @@ const WASM_GZIP_BUDGET_BYTES = 80 * 1000
 // 282 KiB raw / 113 KB gzip; the `wasm-engine` profile (opt-level "s", garak-dsp kernels kept at 3)
 // makes it 258 KiB / 105 KB at the same render speed (docs/RUST_ENGINE.md 5). Instruments (G2) will
 // add to it: raise the budget in the same PR, with the measured reason.
-const ENGINE_BUDGET_BYTES = 272 * 1024
-const ENGINE_GZIP_BUDGET_BYTES = 110 * 1000
+// Raised from 272 KiB / 110 KB (rust/engine-web-w2): the web host's engine-side features — metronome and
+// count-in (meter map, stroke player), track-input routes with monitoring and recording taps, staged
+// project updates, reverb kernel import, meters and the live event path — measured 259 -> 289 KiB raw,
+// 105 -> 118 KB gzip ("z" for the engine crate saves only 6 KiB, so the profile stays).
+const ENGINE_BUDGET_BYTES = 304 * 1024
+const ENGINE_GZIP_BUDGET_BYTES = 124 * 1000
 
 function findCargo() {
   const exe = process.platform === 'win32' ? 'cargo.exe' : 'cargo'

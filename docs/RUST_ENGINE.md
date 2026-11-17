@@ -149,10 +149,10 @@ engine.worklet.ts (AudioWorkletProcessor 'garak-engine', 노드 1개 = 엔진 1�
 - **입력은 데스크톱과 같습니다.** `NativeTimelineCompiler`가 만든 timeline과 바이너리 프레임, `planNativeSync`의 `project.set`/`project.patch`를 그대로 보냅니다. 편집은 16 ms로 묶어 patch 한 번(페이더 드래그 = `Diff`)이 됩니다. 거부된 patch 뒤에는 다음 동기화가 `project.set`입니다.
 - **PCM 전달:** 메인 스레드는 `AudioBuffer`를 한 번 인터리브해 그 사본을 **transfer**합니다(메인 스레드에 남는 사본 없음). 워크릿은 `alloc_f32` 버퍼에 한 번 복사하고 `put_asset_owned`가 그 버퍼를 그대로 소유합니다(이전 로더는 모듈 안에서 한 번 더 `to_vec()`). 같은 `AudioBuffer`는 다시 보내지 않고(WeakRef), 더 이상 참조되지 않는 PCM은 `remove_asset`.
 - **채널:** 페이지가 cross-origin isolated면 전송 명령은 SharedArrayBuffer 링으로 다음 퀀텀에 바로 적용되고, 상태(프레임, 재생 여부, 마스터 피크, 렌더 시간 통계, 적용된 순번)는 매 퀀텀 seqlock 블록에 씁니다. 아니면 같은 명령을 postMessage로 보내고 상태는 약 37 ms마다 게시합니다. 링 명령은 "앞 메시지의 순번"을 갖고 있어 그 메시지(예: `project.set`)가 적용될 때까지 기다립니다.
-- **전송:** 재생은 `seek(frame)` + `play`. 비트 위치는 엔진이 게시한 프레임을 템포 맵으로 바꾼 값입니다(명령이 적용되기 전에는 시작 비트). 사이클은 엔진이 돌고, 사이클이 없으면 엔진이 프로젝트 끝에서 멈추고 꼬리는 울립니다. 메트로놈 클릭은 기존 `WebMetronome`을 같은 오디오 클럭에 예약합니다. 카운트인은 아직 Web Audio로 재생합니다(엔진에 예약 시작이 없음).
-- **Web Audio 그래프:** 엔진이 재생하는 동안에는 Web Audio 그래프(와 이펙트 워크릿들)를 두지 않고, 멈추면 다시 만듭니다(미리 듣기, 입력 모니터링, 대체 재생용). 입력/트랙 라우트 모니터링과 라우트 녹음은 그 그래프가 필요하므로 켜져 있는 동안 프로젝트를 Web Audio에 둡니다. 재생 중에 편집으로 엔진이 거부하게 되면 들리던 비트부터 Web Audio로 이어서 재생합니다.
-- **내보내기/바운스/프리즈/스템:** `renderAudio`는 Worker에서 엔진을 오프라인으로 렌더합니다(UI 스레드 무부담). 엔진이 거부하거나 `preMaster`(엔진에 마스터 바이패스가 아직 없음)면 Web Audio 렌더로 대체합니다.
-- **미터:** 엔진은 마스터 피크만 게시합니다. 트랙 미터는 엔진의 트랙 탭(호스트 쪽 작업)이 들어오면 `garak_engine_*` 내보내기를 하나 더해 연결합니다. 그 전까지 Rust 엔진 재생 중 트랙 미터는 0입니다.
+- **전송:** 재생은 `seek(frame)` + `play`(카운트인이 있으면 `countIn(frames)`). 비트 위치는 엔진이 게시한 프레임을 템포 맵으로 바꾼 값입니다(명령이 적용되기 전에는 시작 비트). 사이클은 엔진이 돌고, 사이클이 없으면 엔진이 프로젝트 끝에서 멈추고 꼬리는 울립니다. 메트로놈과 카운트인은 엔진이 마스터 뒤에 섞습니다([5.7](#57-웹-호스트-2차-엔진-안에서-끝나는-일)).
+- **Web Audio 그래프:** 엔진이 들리는 동안(재생 중이거나, 멈춰 있어도 트랙을 모니터링 중) Web Audio 그래프(와 이펙트 워크릿들)를 두지 않고, 그 밖에는 다시 만듭니다(멈춘 프로젝트의 미리 듣기, 대체 재생용). 재생 중에 편집으로 엔진이 거부하게 되면 들리던 비트부터 Web Audio로 이어서 재생합니다.
+- **내보내기/바운스/프리즈/스템:** `renderAudio`는 Worker에서 엔진을 오프라인으로 렌더합니다(UI 스레드 무부담). pre-master(스템·프리즈)도 엔진의 마스터 바이패스로 렌더합니다. 엔진이 거부하는 프로젝트만 Web Audio 렌더로 대체합니다.
+- **미터:** 마스터 피크는 상태 블록, 트랙 피크와 다이내믹스 미터는 미터 블록([5.7](#57-웹-호스트-2차-엔진-안에서-끝나는-일))으로 게시합니다.
 
 ### 5.4 A/B와 CPU (이 PC, Chrome, Windows x64)
 
@@ -202,10 +202,30 @@ LTO fat, `panic = "abort"`, strip, codegen-units 1은 이미 켜져 있습니다
 
 ### 5.6 남은 일 (기본값 전환 전)
 
-- 큰 `project.set`의 파싱·그래프 준비(리버브 커널 생성 포함)가 워크릿 스레드에서 돕니다(아직 따로 재지 않음). 수백 트랙/긴 오디오에서는 렌더 퀀텀을 놓칠 수 있어, 준비를 트랙 단위로 나누거나 Worker에서 준비하는 방식이 필요합니다.
-- PCM이 메인 스레드(`AudioBuffer`, 파형·편집용)와 워크릿 모듈에 두 벌 있습니다.
-- 트랙 미터, 다이내믹스 미터(엔진 탭), 마스터 바이패스(pre-master 스템/프리즈), 카운트인 예약 시작, 입력 모니터링·녹음(G3).
-- 엔진 재생 중에는 Web Audio 그래프가 없어 미리 듣기·라이브 MIDI 노트가 소리 나지 않습니다(악기가 엔진에 들어올 때 엔진의 라이브 노트 API로 옮길 일).
+- PCM이 메인 스레드(`AudioBuffer`)와 워크릿 모듈에 두 벌 있습니다. 앱 전체가 `AudioAsset.buffer`를 동기적으로 읽습니다(파형 상세 그리기, 리전 길이, 정규화, 피치/워프 편집, 녹음 채널 고르기 등 20여 곳). 엔진 쪽 경로에는 남는 사본이 없습니다([5.7](#57-웹-호스트-2차-엔진-안에서-끝나는-일)). 메인 스레드 사본을 없애려면 `AudioAsset`을 "메타데이터 + 파형 피라미드 + 필요할 때 blob 디코드"로 바꾸는 앱 단위 작업이 필요합니다.
+- 악기(G2, `rust/engine-instruments`): 들어오면 `Track::live_event`가 라이브 노트를 받고, 미리 듣기·라이브 MIDI가 같은 경로로 엔진에서 소리 납니다(웹 쪽 배선은 끝남).
+- PCM 업로드(`asset`)는 아직 한 번에 복사합니다(긴 오디오는 업로드 퀀텀에서 수 ms).
+
+### 5.7 웹 호스트 2차: 엔진 안에서 끝나는 일
+
+엔진이 프로젝트를 받아들이면 아래는 모두 **Web Audio 그래프로 넘기지 않고** 엔진에서 처리합니다(`rust/engine-web-w2`). 엔진 쪽은 `engine.cpp`의 같은 코드를 옮긴 것이고(`rust/garak-engine/tests/web.rs`), 웹 쪽은 `src/audio/rust/webHost.test.ts`(Node, WASM 경로)와 `pnpm rust:engine-smoke`의 5번(브라우저, 실제 워크릿)이 지킵니다. `garak-engine-wasm` ABI 3.
+
+| 일 | 엔진 (`garak-engine`) | 웹 호스트 |
+|---|---|---|
+| 트랙·다이내믹스 미터 | `Renderer::track_peaks`, `take_dynamics`(데스크톱 셸과 같은 탭) | 워크릿이 트랙별 최고 피크를 모아 미터 블록(SAB seqlock, 없으면 상태 메시지)에 ~21 ms마다 씀. 메인은 그래프 리비전별 트랙 순서로 `getTrackLevel`·`getDeviceMeter`(인서트 id)에 연결 |
+| 마스터 바이패스 | `set_master_bypass`: 오프라인에서 마스터 게인·프로세서 생략(C++ `setMasterBypass`) | `renderAudio({ preMaster })`가 Worker 렌더에 `masterBypass`. 스템·프리즈도 엔진 |
+| 카운트인 | `play_count_in(frames)`: 예약 시작. 카운트인 동안 전송 프레임 고정, 끝난 다음 프레임에 시작. 클릭은 시작 지점의 템포·박자(박자 맵)로 | `play({ countInBars })` → `countIn`. 박자 맵 강박·국악 소리는 `metronomeStrokes`(데스크톱과 같은 PCM)로 한 번 전달. `play()`는 다운비트에서 끝남(녹음 시작 시점) |
+| 메트로놈 | `set_metronome` + `renderClicks` 포팅(마스터 뒤, 오프라인은 안 침) | 엔진 재생 중 클릭은 엔진이 침(`WebMetronome` 예약 없음) |
+| 라이브 노트·미리 듣기 | `Controller::live(track, LiveEvent)` → `Track::live_event`(오디오 트랙은 무시·집계) | 링 명령(`RING_LIVE`, 다음 퀀텀). 엔진이 렌더하는 악기 트랙이면 노트 온/오프·CC가 엔진으로, 라이브러리 미리 듣기(트랙 없음)는 엔진이 들리는 동안 미리 듣기 전용 작은 그래프로(프로젝트 그래프 아님) |
+| 입력 모니터링 | `render_io(out, input, channels)` + `set_monitoring`: 트랙 입력 채널, 저지연 모니터는 PDC 생략, 스테레오 입력은 밸런스 팬 | MediaStream → 워크릿 입력 0. 엔진이 소유하면 Web Audio 모니터는 끔(둘 다 켜지지 않음). 캡처는 그대로 MediaRecorder |
+| 트랙 입력 라우트 | `prepareRoutes` 포팅: 레벨 순서, 루프 끊기, 마스터 피드·리샘플 트랙, pre/post-FX·post-fader 탭 | 라우트 모니터링은 같은 모니터 마스크 |
+| 라우트 녹음 | 블록마다 탭 트랙의 라우트 입력을 `tap_output`에(최대 8) | 워크릿 출력 1(16채널) → 분배기 → `RouteRecordings`. 테이크 위치는 상태의 (전송 프레임, 컨텍스트 프레임) |
+| 큰 `project.set` | `stage_json` → `step`(트랙 하나) → `commit`; 결과는 `set`과 비트 동일 | 워크릿이 렌더 뒤 남는 시간(퀀텀의 35 %)에 트랙을 지음. 그동안 뒤 메시지·전송 명령은 순서대로 기다림 |
+| 리버브 커널 | `reverb_kernel_for`(도우미) / `import_reverb_kernel`(다음 업데이트까지 보존) | `KernelHelper` Worker가 새 리버브 파라미터의 커널을 만들고 워크릿은 가져오기만 |
+
+**CPU (워크릿 렌더 경로):** 프로파일(32트랙, 128프레임)에서 2배 오버샘플 드라이브가 53 %(FIR 20 %, libm `tanh`/`expm1` 21 %), 위상기가 17 %였습니다. `garak-dsp/src/simd.rs`의 두 레인(`f64x2`, 채널당 같은 연산 순서·비융합이라 스칼라와 비트 동일), 드라이브의 이중 길이 히스토리·두 합 병렬·버리는 출력 합 생략, 위상기 올패스 6단 두 레인, WASM 전용 Cephes `tanh`(가져온 `exp`, 상대 오차 2.5e-16 이하; 네이티브는 C 라이브러리 그대로), 팬 법칙 sin/cos 재사용(같은 입력 → 같은 값). `project.set` 첫 적용 59 ms 중 51 ms가 리버브 IR 생성이었고, 이제 Worker에서 만듭니다.
+
+크기: 259 → 289 KiB raw / 105 → 118 KB gzip(예산 304 KiB / 124 KB로 올림, `scripts/rust.mjs`에 이유).
 
 ## 6. 악기·보이스 계획 (인벤토리)
 

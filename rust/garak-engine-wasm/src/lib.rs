@@ -461,6 +461,12 @@ pub extern "C" fn garak_engine_playing() -> u32 {
     .unwrap_or(0)
 }
 
+/// Revision of the running graph (published by the last render).
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_engine_revision() -> f64 {
+    with(|i| i.control.snapshot().revision as f64).unwrap_or(0.0)
+}
+
 /// 1 while a count-in runs (the transport frame stays at the start until it ends).
 #[unsafe(no_mangle)]
 pub extern "C" fn garak_engine_counting_in() -> u32 {

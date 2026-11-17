@@ -23,6 +23,8 @@ export interface EngineRenderRequest {
   tailSeconds?: number
   /** Frames dropped from the start after plug-in delay compensation. */
   startFrame?: number
+  /** Stems/freeze: render pre-master (no master gain, no master processor; C++ setMasterBypass). */
+  masterBypass?: boolean
   /** Engine block (the C++ host renders offline in 4096-frame blocks). */
   block?: number
 }
@@ -47,6 +49,7 @@ export function renderEngineOffline(module: WebAssembly.Module, request: EngineR
   try {
     for (const asset of request.assets) engine.putAsset(asset.id, asset.sampleRate, asset.channels, asset.samples)
     engine.set(request.timeline, request.binary)
+    if (request.masterBypass) engine.masterBypass(true)
     engine.transport('play')
     const latency = engine.latencyFrames
     const tail = Math.min(30, Math.max(0, request.tailSeconds ?? engine.tailSeconds))

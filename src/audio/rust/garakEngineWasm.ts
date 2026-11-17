@@ -36,13 +36,50 @@ interface EngineExports {
   garak_engine_planar_ptr(): number
   garak_engine_render(frames: number): number
   garak_engine_render_planar(frames: number): number
+  // ABI 3 (docs/RUST_ENGINE.md 5.7)
+  garak_engine_counting_in(): number
+  garak_engine_revision(): number
+  garak_engine_live_count(which: number): number
+  garak_engine_master_bypass(on: number): number
+  garak_engine_metronome(on: number, gain: number, strokes: number, len0: number, len1: number, len2: number): number
+  garak_engine_monitor(tracks: number, count: number): number
+  garak_engine_taps(tracks: number, count: number): number
+  garak_engine_tap_ptr(): number
+  garak_engine_max_taps(): number
+  garak_engine_live(track: number, kind: number, pitch: number, value: number, id: number): number
+  garak_engine_input_ptr(): number
+  garak_engine_max_input_channels(): number
+  garak_engine_peaks_ptr(): number
+  garak_engine_track_count(): number
+  garak_engine_clear_peaks(): void
+  garak_engine_take_dynamics(): number
+  garak_engine_dynamics_ptr(): number
+  garak_engine_render_planar_io(frames: number, channels: number): number
+  garak_engine_stage(patch: number, json: number, jsonLen: number, blob: number, blobLen: number): number
+  garak_engine_step(): number
+  garak_engine_commit(): number
+  garak_engine_reverb_kernel_json(json: number, len: number): number
+  garak_engine_kernel_param(which: number): number
+  garak_engine_kernel_ptr(): number
+  garak_engine_import_kernel(type: number, size: number, data: number, count: number): number
 }
 
-export const ENGINE_ABI_VERSION = 2
+/** ABI 3: count-in, metronome, meters, monitoring input, route taps, live events, staged updates, kernels. */
+export const ENGINE_ABI_VERSION = 3
 /** Applied kinds of set/patch (docs/RENDER_DIFF_PROTOCOL.md 3.3). */
 export type EngineApplied = 'none' | 'diff' | 'tracks' | 'full'
 const APPLIED: EngineApplied[] = ['none', 'diff', 'tracks', 'full']
-export const ENGINE_TRANSPORT = { play: 0, pause: 1, stop: 2, seek: 3 } as const
+/** `countIn`: play after a count-in of `frame` frames (the metronome clicks it; offline engines start at once). */
+export const ENGINE_TRANSPORT = { play: 0, pause: 1, stop: 2, seek: 3, countIn: 4 } as const
+/** Live event kinds (garak_engine_live). */
+export const LIVE_EVENT = { noteOn: 0, noteOff: 1, allNotesOff: 2, control: 3 } as const
+export type LiveEventKind = keyof typeof LIVE_EVENT
+
+/** One dynamics meter reading: graph track index, plan insert index, detector peak and lowest gain (linear). */
+export interface EngineDynamicsReading { track: number; insert: number; input: number; gain: number }
+
+/** A reverb kernel computed by a helper instance (`reverbKernel`), for `importKernel`. */
+export interface EngineKernel { type: number; size: number; data: Float32Array }
 export type EngineTransport = keyof typeof ENGINE_TRANSPORT
 
 /** A refusal of the engine itself (project.set/patch/asset.put), as opposed to a host failure. */
@@ -72,6 +109,42 @@ export interface GarakEngine {
   render(frames: number): Float32Array
   /** Renders `frames` (<= maxBlock) and returns views of the left and right output. */
   renderPlanar(frames: number): readonly [Float32Array, Float32Array]
+  /** Like renderPlanar, hearing `channels` of live input written to `inputView()` (interleaved). */
+  renderPlanarInput(frames: number, channels: number): readonly [Float32Array, Float32Array]
+  /** The live input buffer (`maxBlock` frames of `maxInputChannels` interleaved slots); valid until a control call. */
+  inputView(): Float32Array
+  readonly maxInputChannels: number
+  /** A count-in is running (`playing` is true meanwhile; the frame stays at the start). */
+  readonly countingIn: boolean
+  /** Revision of the running graph. */
+  readonly revision: number
+  /** Live events a track played / no track could play. */
+  readonly liveCounts: { played: number; ignored: number }
+  /** Offline stems/freeze: no master gain or master processor. */
+  masterBypass(on: boolean): void
+  /** Metronome on/off and gain; strokes per level (downbeat, group start, pulse) at the engine rate, or kept. */
+  setMetronome(on: boolean, gain: number, strokes?: readonly [Float32Array, Float32Array, Float32Array]): void
+  /** Monitored tracks (graph indices). */
+  monitor(tracks: readonly number[]): void
+  /** Route recording taps (graph indices, at most `maxTaps`). */
+  taps(tracks: readonly number[]): void
+  readonly maxTaps: number
+  /** The route taps of the last render: `maxTaps` slots of `maxBlock` interleaved stereo frames. */
+  tapView(): Float32Array
+  live(track: number, kind: LiveEventKind, pitch?: number, value?: number, id?: number): void
+  /** Each track's highest peak since `clearPeaks` (graph order); `count` tracks. */
+  peaks(): { values: Float32Array; count: number }
+  clearPeaks(): void
+  /** Dynamics meters since the previous call. */
+  takeDynamics(): EngineDynamicsReading[]
+  /** project.set / project.patch in stages: returns how many tracks `step` builds. */
+  stage(json: string | Uint8Array, binary: Uint8Array | undefined, patch: boolean): number
+  /** Builds the next staged track; true once all are built. */
+  step(): boolean
+  commit(): EngineApplied
+  /** The reverb kernel for a reverb insert's parameter map (a helper instance; the result is a copy). */
+  reverbKernel(params: Record<string, number>): EngineKernel
+  importKernel(kernel: EngineKernel): void
   destroy(): void
 }
 
@@ -126,6 +199,8 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
   // Output views: rebuilt when memory grew (a control call), otherwise reused every quantum.
   let viewBuffer: ArrayBuffer | null = null
   let interleaved = new Float32Array(0), left = new Float32Array(0), right = new Float32Array(0)
+  let input = new Float32Array(0), taps = new Float32Array(0), peakView = new Float32Array(0), dynamics = new DataView(new ArrayBuffer(0))
+  const maxInputChannels = x.garak_engine_max_input_channels(), maxTaps = x.garak_engine_max_taps()
   const views = () => {
     if (viewBuffer === x.memory.buffer) return
     viewBuffer = x.memory.buffer as ArrayBuffer
@@ -133,6 +208,21 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
     const planar = x.garak_engine_planar_ptr()
     left = new Float32Array(viewBuffer, planar, maxBlock)
     right = new Float32Array(viewBuffer, planar + maxBlock * 4, maxBlock)
+    input = new Float32Array(viewBuffer, x.garak_engine_input_ptr(), maxBlock * maxInputChannels)
+    taps = new Float32Array(viewBuffer, x.garak_engine_tap_ptr(), maxBlock * 2 * maxTaps)
+    peakView = new Float32Array(viewBuffer, x.garak_engine_peaks_ptr(), 256)
+    dynamics = new DataView(viewBuffer, x.garak_engine_dynamics_ptr(), 256 * 12)
+  }
+  const withIndices = (list: readonly number[], call: (ptr: number, count: number) => number, signed: boolean) => {
+    const bytes = new Uint8Array(list.length * 4)
+    const view = new DataView(bytes.buffer)
+    list.forEach((value, k) => signed ? view.setInt32(k * 4, value, true) : view.setUint32(k * 4, value, true))
+    check(withBytes(bytes, (p) => call(p, list.length)))
+  }
+  const ownedF32 = (data: Float32Array): number => {
+    const ptr = data.length ? x.garak_engine_alloc_f32(data.length) : 0
+    if (ptr) new Float32Array(x.memory.buffer, ptr, data.length).set(data)
+    return ptr
   }
   return {
     putAsset(id, rate, channels, samples) {
@@ -165,6 +255,55 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
       views()
       return n === maxBlock ? [left, right] : [left.subarray(0, n), right.subarray(0, n)]
     },
+    renderPlanarInput(frames, channels) {
+      const n = x.garak_engine_render_planar_io(frames, Math.min(channels, maxInputChannels))
+      views()
+      return n === maxBlock ? [left, right] : [left.subarray(0, n), right.subarray(0, n)]
+    },
+    inputView() { views(); return input },
+    maxInputChannels,
+    maxTaps,
+    get countingIn() { return x.garak_engine_counting_in() !== 0 },
+    get revision() { return x.garak_engine_revision() },
+    get liveCounts() { return { played: x.garak_engine_live_count(0), ignored: x.garak_engine_live_count(1) } },
+    masterBypass(on) { check(x.garak_engine_master_bypass(on ? 1 : 0)) },
+    setMetronome(on, gain, strokes) {
+      if (!strokes) { check(x.garak_engine_metronome(on ? 1 : 0, gain, 0, 0, 0, 0)); return }
+      const all = new Float32Array(strokes[0].length + strokes[1].length + strokes[2].length)
+      all.set(strokes[0], 0); all.set(strokes[1], strokes[0].length); all.set(strokes[2], strokes[0].length + strokes[1].length)
+      // The module owns the buffer from here on.
+      check(x.garak_engine_metronome(on ? 1 : 0, gain, ownedF32(all), strokes[0].length, strokes[1].length, strokes[2].length))
+    },
+    monitor(tracks) { withIndices(tracks, (p, n) => x.garak_engine_monitor(p, n), false) },
+    taps(list) { withIndices(list, (p, n) => x.garak_engine_taps(p, n), true) },
+    tapView() { views(); return taps },
+    live(track, kind, pitch = 0, value = 0, id = 0) { check(x.garak_engine_live(track, LIVE_EVENT[kind], pitch, value, id)) },
+    peaks() { views(); return { values: peakView, count: x.garak_engine_track_count() } },
+    clearPeaks() { x.garak_engine_clear_peaks() },
+    takeDynamics() {
+      const count = x.garak_engine_take_dynamics()
+      views()
+      const out: EngineDynamicsReading[] = []
+      for (let k = 0; k < count; k += 1) {
+        const at = k * 12
+        out.push({ track: dynamics.getUint16(at, true), insert: dynamics.getUint16(at + 2, true), input: dynamics.getFloat32(at + 4, true), gain: dynamics.getFloat32(at + 8, true) })
+      }
+      return out
+    },
+    stage(json, binary, patch) {
+      const text = typeof json === 'string' ? utf8Encode(json) : json
+      const blob = binary ?? new Uint8Array(0)
+      return withBytes(text, (t) => withBytes(blob, (b) => check(x.garak_engine_stage(patch ? 1 : 0, t, text.length, b, blob.length))))
+    },
+    step() { return check(x.garak_engine_step()) === 1 },
+    commit() { return APPLIED[check(x.garak_engine_commit())] },
+    reverbKernel(params) {
+      const text = utf8Encode(JSON.stringify(params))
+      const len = withBytes(text, (t) => check(x.garak_engine_reverb_kernel_json(t, text.length)))
+      const data = new Float32Array(x.memory.buffer, x.garak_engine_kernel_ptr(), len).slice()
+      return { type: x.garak_engine_kernel_param(0), size: x.garak_engine_kernel_param(1), data }
+    },
+    importKernel(kernel) { check(x.garak_engine_import_kernel(kernel.type, kernel.size, ownedF32(kernel.data), kernel.data.length)) },
     destroy() { x.garak_engine_destroy(); viewBuffer = null },
   }
 }

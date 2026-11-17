@@ -3,10 +3,10 @@
 // AudioWorkletNode bridge (PCM, project.set/patch, transport, status) and the export worker.
 
 import { packAudioBuffer } from '../native/pcmTransfer'
-import { GarakEngineError, utf8Encode, type EngineApplied, type EngineTransport, ENGINE_TRANSPORT, ENGINE_ABI_VERSION } from './garakEngineWasm'
+import { GarakEngineError, utf8Encode, type EngineApplied, type EngineKernel, type EngineTransport, ENGINE_TRANSPORT, ENGINE_ABI_VERSION, LIVE_EVENT, type LiveEventKind } from './garakEngineWasm'
 import {
-  CommandRing, createSharedChannel, emptyStatus, ENGINE_PROCESSOR, StatusReader,
-  type EngineProcessorOptions, type EngineReply, type EngineRequest, type EngineStatus, type SharedChannel,
+  CommandRing, createSharedChannel, emptyStatus, ENGINE_PROCESSOR, MeterReader, RING_LIVE, StatusReader, TAP_CHANNELS,
+  type EngineMeters, type EngineProcessorOptions, type EngineReply, type EngineRequest, type EngineStatus, type SharedChannel,
 } from './engineChannel'
 import type { EngineRenderRequest, EngineRenderResult } from './engineOffline'
 
@@ -21,10 +21,11 @@ export async function loadGarakEngineModule(base = baseUrl(), fetchImpl: typeof 
     const response = await fetchImpl(new URL(GARAK_ENGINE_WASM_PATH, new URL(base, globalThis.location?.href ?? 'http://localhost/')).href)
     if (!response.ok) return null
     const module = await WebAssembly.compile(await response.arrayBuffer())
-    // Checked without instantiating (every instance reserves its own memory): ABI 2 is the first
-    // with the planar render export. The worklet still verifies garak_engine_abi_version().
+    // Checked without instantiating (every instance reserves its own memory): ABI 3 adds the count-in,
+    // meters, monitoring input, route taps, live events and staged updates. The worklet still verifies
+    // garak_engine_abi_version().
     const exports = new Set(WebAssembly.Module.exports(module).map(entry => entry.name))
-    return ENGINE_ABI_VERSION === 2 && exports.has('garak_engine_render_planar') && exports.has('garak_engine_put_asset_owned') ? module : null
+    return ENGINE_ABI_VERSION === 3 && exports.has('garak_engine_render_planar_io') && exports.has('garak_engine_stage') ? module : null
   } catch {
     return null
   }
@@ -52,6 +53,26 @@ interface Pending { resolve(reply: { applied?: string; latency: number; tail: nu
 export interface EngineUpdateResult { applied: EngineApplied; latencyFrames: number; tailSeconds: number }
 
 /**
+ * Benchmarks only (scripts/rust-engine-smoke.mjs): a worker spins writing performance.now() into a
+ * SharedArrayBuffer the worklet reads, so render times are measured in microseconds instead of the
+ * 1 ms Date.now() steps of AudioWorkletGlobalScope. Costs one busy core; isolated pages only.
+ */
+export const engineBenchmark = { preciseClock: false }
+
+let clockWorker: { buffer: SharedArrayBuffer; worker: Worker } | null = null
+function preciseClock(): SharedArrayBuffer | null {
+  if (!engineBenchmark.preciseClock || typeof SharedArrayBuffer === 'undefined' || !(globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated) return null
+  if (!clockWorker) {
+    const buffer = new SharedArrayBuffer(8)
+    const source = 'onmessage=e=>{const v=new Float64Array(e.data);for(;;)v[0]=performance.now()}'
+    const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })))
+    worker.postMessage(buffer)
+    clockWorker = { buffer, worker }
+  }
+  return clockWorker.buffer
+}
+
+/**
  * One engine worklet node on a realtime context. Every request is ordered (sequence numbers);
  * transport commands use the shared ring when the page is cross-origin isolated.
  */
@@ -62,20 +83,28 @@ export class RustEngineNode {
   private readonly pending = new Map<number, Pending>()
   private readonly status: EngineStatus = emptyStatus()
   private readonly reader: StatusReader | null
+  private readonly meterReader: MeterReader | null
+  private meters: EngineMeters | null = null
   private readonly ring: CommandRing | null
   private fatal: string | null = null
   private disposed = false
 
   private constructor(readonly context: AudioContext, module: WebAssembly.Module, channel: SharedChannel | null) {
     const quantum = (context as AudioContext & { renderQuantumSize?: number }).renderQuantumSize
-    const options: EngineProcessorOptions = { module, maxBlock: Math.max(128, typeof quantum === 'number' ? quantum : 128), shared: channel }
-    this.node = new AudioWorkletNode(context, ENGINE_PROCESSOR, { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: options })
+    const options: EngineProcessorOptions & { clock?: SharedArrayBuffer } = { module, maxBlock: Math.max(128, typeof quantum === 'number' ? quantum : 128), shared: channel }
+    const clock = channel ? preciseClock() : null
+    if (clock) options.clock = clock
+    // Input 0: the live input monitored tracks hear. Output 0: the mix; output 1: route recording taps.
+    this.node = new AudioWorkletNode(context, ENGINE_PROCESSOR, {
+      numberOfInputs: 1, numberOfOutputs: 2, outputChannelCount: [2, TAP_CHANNELS], channelCountMode: 'max', processorOptions: options,
+    })
     this.reader = channel ? new StatusReader(channel.status) : null
+    this.meterReader = channel ? new MeterReader(channel.meters) : null
     this.ring = channel ? new CommandRing(channel.ring) : null
     this.sharedChannel = !!channel
     this.node.port.onmessage = event => this.receive(event.data as EngineReply)
     this.node.onprocessorerror = () => this.fail('The engine worklet stopped (processor error)')
-    this.node.connect(context.destination)
+    this.node.connect(context.destination, 0)
   }
 
   static async create(context: AudioContext, module: WebAssembly.Module): Promise<RustEngineNode> {
@@ -93,7 +122,10 @@ export class RustEngineNode {
 
   private receive(reply: EngineReply): void {
     switch (reply.type) {
-      case 'status': Object.assign(this.status, reply.status, { peak: Math.max(this.status.peak, reply.status.peak) }); return
+      case 'status':
+        Object.assign(this.status, reply.status, { peak: Math.max(this.status.peak, reply.status.peak) })
+        if (reply.meters) this.meters = mergeMeters(this.meters, reply.meters)
+        return
       case 'fatal': this.fail(reply.message); return
       case 'ack': case 'error': {
         const pending = this.pending.get(reply.seq)
@@ -134,6 +166,48 @@ export class RustEngineNode {
     return { applied: (reply.applied ?? 'none') as EngineApplied, latencyFrames: reply.latency, tailSeconds: reply.tail }
   }
 
+  /** Reverb kernels computed by the helper worker, so the worklet never generates one. */
+  importKernels(kernels: EngineKernel[]): Promise<void> {
+    if (!kernels.length) return Promise.resolve()
+    return this.send({ type: 'kernels', seq: ++this.seq, kernels }, kernels.map(k => k.data.buffer)).then(() => undefined)
+  }
+
+  /** Metronome on/off and gain; click strokes per level at the context rate (sent once per sound/rate). */
+  metronome(on: boolean, gain: number, strokes: Float32Array[] | null): Promise<void> {
+    return this.send({ type: 'metronome', seq: ++this.seq, on, gain, strokes }, strokes ? strokes.map(s => s.buffer) : []).then(() => undefined)
+  }
+
+  /** Monitored tracks (graph indices of the last applied project). */
+  monitor(tracks: number[]): Promise<void> {
+    return this.send({ type: 'monitor', seq: ++this.seq, tracks }).then(() => undefined)
+  }
+
+  /** Route recording taps (graph indices): slot k plays on channels 2k, 2k+1 of output 1. */
+  taps(tracks: number[]): Promise<void> {
+    return this.send({ type: 'taps', seq: ++this.seq, tracks }).then(() => undefined)
+  }
+
+  /** A live note/controller event for a track (graph index); next quantum through the shared ring. */
+  live(track: number, kind: LiveEventKind, pitch = 0, value = 0, id = 0): number {
+    const seq = ++this.seq
+    if (this.disposed || this.fatal) return seq
+    const code = LIVE_EVENT[kind]
+    if (this.ring?.push({ command: RING_LIVE, frame: id, afterSeq: seq - 1, seq, a: track, b: code, c: pitch, d: value })) return seq
+    void this.send({ type: 'live', seq, track, kind: code, pitch, value, id }).catch(() => undefined)
+    return seq
+  }
+
+  /** Track peaks and dynamics readings since the previous call (null before the first). */
+  readMeters(): EngineMeters | null {
+    if (this.meterReader) {
+      const read = this.meterReader.read()
+      if (read) this.meters = mergeMeters(this.meters, read)
+    }
+    const meters = this.meters
+    this.meters = null
+    return meters
+  }
+
   /** Returns the command's sequence number (compare with `readStatus().appliedSeq`). */
   transport(command: EngineTransport, frame = 0): number {
     const seq = ++this.seq
@@ -159,6 +233,57 @@ export class RustEngineNode {
     this.fail('The engine worklet was disposed')
     try { this.node.disconnect() } catch { /* Already disconnected. */ }
     this.node.port.onmessage = null
+  }
+}
+
+/** Unread meters: louder peaks, lower gains; a new revision replaces the old graph's. */
+function mergeMeters(old: EngineMeters | null, next: EngineMeters): EngineMeters {
+  if (!old || old.revision !== next.revision || old.peaks.length !== next.peaks.length) return next
+  const peaks = next.peaks.map((p, k) => Math.max(p, old.peaks[k]))
+  const dynamics = [...old.dynamics]
+  for (const d of next.dynamics) {
+    const at = dynamics.findIndex(o => o.track === d.track && o.insert === d.insert)
+    if (at < 0) dynamics.push(d)
+    else dynamics[at] = { ...d, input: Math.max(d.input, dynamics[at].input), gain: Math.min(d.gain, dynamics[at].gain) }
+  }
+  return { revision: next.revision, peaks, dynamics }
+}
+
+/**
+ * Reverb kernels off the audio thread (docs/RUST_ENGINE.md 5.7): a worker with its own engine instance
+ * generates them (tens of milliseconds each) and the worklet only imports the data. One per sample rate.
+ */
+export class KernelHelper {
+  private worker: Worker | null = null
+  private seq = 0
+  private readonly pending = new Map<number, { resolve(kernels: EngineKernel[]): void; reject(error: Error): void }>()
+  constructor(private readonly module: WebAssembly.Module, readonly sampleRate: number) {}
+
+  compute(params: Record<string, number>[]): Promise<EngineKernel[]> {
+    if (!params.length) return Promise.resolve([])
+    if (!this.worker) {
+      this.worker = new Worker(new URL('./engineKernel.worker.ts', import.meta.url), { type: 'module' })
+      this.worker.onmessage = (event: MessageEvent<{ seq: number; kernels?: EngineKernel[]; message?: string; engine?: boolean }>) => {
+        const pending = this.pending.get(event.data.seq)
+        if (!pending) return
+        this.pending.delete(event.data.seq)
+        if (event.data.kernels) pending.resolve(event.data.kernels)
+        else pending.reject(event.data.engine ? new GarakEngineError(event.data.message ?? '') : new Error(event.data.message ?? 'kernel worker failed'))
+      }
+      this.worker.onerror = event => { for (const [, p] of this.pending) p.reject(new Error(event.message || 'kernel worker failed')); this.pending.clear() }
+    }
+    const seq = ++this.seq
+    return new Promise((resolve, reject) => {
+      this.pending.set(seq, { resolve, reject })
+      this.worker!.postMessage({ seq, module: this.module, sampleRate: this.sampleRate, params })
+    })
+  }
+
+  dispose(): void {
+    this.worker?.terminate()
+    this.worker = null
+    for (const [, p] of this.pending) p.reject(new Error('kernel worker disposed'))
+    this.pending.clear()
   }
 }
 

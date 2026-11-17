@@ -9,7 +9,8 @@ const FRAME_SECONDS = 1 / 60
 
 /** The live reading for a device on whichever engine is running. */
 export function readDeviceMeter(engine: AudioEngine, deviceId: string): DynamicsReading | null {
-  if (engine.kind === 'native') return engine.getDeviceMeter?.(deviceId) ?? null
+  // The native host and the web Rust engine meter their own inserts; plain Web Audio binds its nodes.
+  if (engine.getDeviceMeter) return engine.getDeviceMeter(deviceId)
   return webDynamicsReading(deviceId)
 }
 
