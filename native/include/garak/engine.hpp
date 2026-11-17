@@ -77,7 +77,7 @@ struct ProcessContext {
 struct PluginEvent {
   // Controller: MIDI controller; parameterId is the controller number (ControlEvent numbering: 0..127 CC,
   // 128 channel pressure, 129 pitch bend, 130 program change) and value is normalizedControllerValue().
-  // VST3 delivers it through the plug-in's IMidiMapping; IEUM WAVE interprets it itself.
+  // VST3 delivers it through the plug-in's IMidiMapping; the vintage instruments interpret it themselves.
   enum class Type : std::uint8_t { NoteOn, NoteOff, Parameter, AllNotesOff, Controller };
   Type type = Type::NoteOn;
   std::uint32_t offset = 0;
@@ -85,7 +85,7 @@ struct PluginEvent {
   std::uint8_t pitch = 60, channel = 0;
   float value = 1;
   std::uint32_t parameterId = 0;
-  bool audition = false; // Separate WAVE live/editor note ownership from the timeline.
+  bool audition = false; // Live/editor note ownership, separate from the timeline's.
 };
 class PluginProcessor {
  public:
@@ -112,7 +112,7 @@ struct TrackSource {
   bool isKit = false;
   Parameters params;
   PluginSpec plugin;
-  std::vector<std::uint8_t> patchData; // Validated IEWAVE01 pack, decoded off the callback.
+  std::vector<std::uint8_t> patchData; // IEUM WAVE: IEWAVE01 pack, validated and rendered by the Rust engine.
   bool operator==(const TrackSource&) const = default;
 };
 struct BuiltinInsert {
@@ -464,6 +464,11 @@ struct UpdateResult {
 
 // True when this build links the Rust render engine (GARAK_RUST=ON).
 [[nodiscard]] bool rustEngineAvailable() noexcept;
+// IEUM WAVE renders only in the Rust engine (docs/IEUM_WAVE.md): true when this build links it and
+// GARAK_RUST_ENGINE does not turn it off, so the host may advertise the `wavetable` capability. Its patch
+// schema fingerprint (the renderer checks it), or 0 without a Rust engine.
+[[nodiscard]] bool wavetableAvailable() noexcept;
+[[nodiscard]] std::uint32_t wavetableSchemaFingerprint() noexcept;
 // Blocks rendered by the Rust graph in this process, all engines (diagnostics and the regression suite's report).
 [[nodiscard]] std::uint64_t rustEngineBlocks() noexcept;
 

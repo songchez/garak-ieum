@@ -55,3 +55,4 @@ pub use instrument::UNLIMITED_FRAME;
 pub use offline::{OfflineRender, render_offline};
 pub use plan::{PcmAsset, Plan, SampleSet, SampleZone};
 pub use track::LiveEvent;
+pub use wave::host as wave_host;

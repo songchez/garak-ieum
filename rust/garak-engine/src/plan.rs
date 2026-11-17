@@ -23,15 +23,15 @@ pub enum SourceKind {
     NativeWavetable,
 }
 
-/// A node the desktop host processes itself (docs/RUST_ENGINE.md 4): a VST3 instrument or insert, an IEUM WAVE
-/// instrument, or (diagnostics) a C++ built-in instrument. The engine calls the host back at that point of the
+/// A node the desktop host processes itself (docs/RUST_ENGINE.md 4): a VST3 instrument or insert, or
+/// (diagnostics) a C++ built-in instrument. The engine calls the host back at that point of the
 /// chain; the host prepared the processor and reports its plug-in delay and tail here (`"host"` in the timeline,
 /// written only by the C++ shell).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HostNode {
     pub latency: u32,
     pub tail: f64,
-    /// Sources: the host renders stereo (VST3, IEUM WAVE; a mono built-in synth is false), so the fader pans
+    /// Sources: the host renders stereo (VST3; a mono built-in synth is false), so the fader pans
     /// it as a balance instead of with the mono law.
     pub stereo: bool,
 }

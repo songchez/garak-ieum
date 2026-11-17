@@ -153,4 +153,22 @@ if(GARAK_BUILD_TESTS)
     target_compile_options(garak-rust-instrument-test PRIVATE -Wall -Wextra -Wpedantic)
   endif()
   add_test(NAME native-rust-instruments COMMAND garak-rust-instrument-test)
+
+  # IEUM WAVE (docs/IEUM_WAVE.md), rendered only by the Rust engine since 0.3.3: through RenderEngine as the shell
+  # (sample rates, onsets, partitions, live/audition notes, held-note patch edits, table crossfades, validation,
+  # callback allocations), and against golden renders of the removed C++ synth (bit-identical on Windows x86-64).
+  add_executable(garak-wavetable-host-test tests/wavetable_host_test.cpp)
+  add_executable(garak-rust-wave-golden-test tests/rust_wave_golden_test.cpp)
+  target_compile_definitions(garak-rust-wave-golden-test PRIVATE
+    "GARAK_WAVE_GOLDEN_DIR=\"${GARAK_RUST_ROOT}/garak-engine/tests/golden/ieum-wave\"")
+  foreach(target garak-wavetable-host-test garak-rust-wave-golden-test)
+    target_link_libraries(${target} PRIVATE garak_core garak_rust)
+    if(MSVC)
+      target_compile_options(${target} PRIVATE /W4 /utf-8)
+    else()
+      target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME native-wavetable-host COMMAND garak-wavetable-host-test)
+  add_test(NAME native-rust-wave-golden COMMAND garak-rust-wave-golden-test)
 endif()

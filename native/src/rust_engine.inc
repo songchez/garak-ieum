@@ -3,12 +3,13 @@
 // fallback to the C++ track path, removed in the next patch) RenderEngine construction makes every graph the Rust
 // engine accepts render its tracks through rust/garak-engine (garak_engine.h), while this C++ engine stays the
 // shell: transport, cycle, count-in, metronome, live MIDI, capture, master bus and snapshots. VST3 instruments
-// and inserts and IEUM WAVE stay C++ processors the Rust graph calls back at their place in the chain (host
-// nodes, docs/RUST_ENGINE.md 4), and so does monitored device input; routes, taps, sends, frozen windows,
-// plug-in delay compensation and the built-in instruments (synths, drums, sample sets, vintage; their live MIDI
-// is forwarded from the shell) and the guitar rig are the Rust graph's. A graph the Rust engine refuses renders
-// in C++ as before ("1"), or is refused ("strict", for the regression suite). GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1
-// (diagnostics) renders the C++ built-in instruments as host nodes instead.
+// and inserts stay C++ processors the Rust graph calls back at their place in the chain (host nodes,
+// docs/RUST_ENGINE.md 4), and so does monitored device input; routes, taps, sends, frozen windows, plug-in delay
+// compensation, the built-in instruments (synths, drums, sample sets, vintage; their live MIDI is forwarded from
+// the shell), IEUM WAVE (only there since 0.3.3: the shell validates its patches, docs/IEUM_WAVE.md) and the guitar
+// rig are the Rust graph's. A graph the Rust engine refuses renders in C++ as before ("1"; never one with IEUM
+// WAVE), or is refused ("strict", for the regression suite). GARAK_RUST_ENGINE_HOST_INSTRUMENTS=1 (diagnostics)
+// renders the C++ built-in instruments as host nodes instead.
 //
 // The plan travels as the same timeline JSON the host receives (docs/RENDER_DIFF_PROTOCOL.md), written
 // from the ProjectTimeline with round-trip exact numbers, so the Rust parser reads exactly these values.
@@ -73,8 +74,8 @@ class JsonWriter {
 
 #if GARAK_RUST
 // The reason a timeline cannot render in the Rust engine yet, or empty. Nothing is known up front any more:
-// VST3 and IEUM WAVE are host nodes, built-in instruments and the guitar rig render in the Rust graph (built-in
-// instruments as host nodes only with `hostInstruments`, a diagnostic). The Rust parser and graph builder
+// VST3 plug-ins are host nodes, built-in instruments, IEUM WAVE and the guitar rig render in the Rust graph
+// (built-in instruments as host nodes only with `hostInstruments`, a diagnostic). The Rust parser and graph builder
 // refuse what they cannot render themselves (their error is the reason then). `refuseInsert` is the test
 // diagnostic above. Checked before the C++ graph changes, so a strict refusal leaves the running graph alone
 // (RenderEngine::update).
@@ -88,12 +89,20 @@ std::string rustIneligibility(const ProjectTimeline& p, bool hostInstruments, co
   return {};
 }
 
-// An identity for an IEUM WAVE patch (the Rust graph only compares it): length and FNV-1a 64.
-std::string patchIdentity(const std::vector<std::uint8_t>& data) {
-  std::uint64_t hash = 1469598103934665603ULL;
-  for (const auto byte : data) { hash ^= byte; hash *= 1099511628211ULL; }
-  char buffer[48]; std::snprintf(buffer, sizeof buffer, "%zu:%016llx", data.size(), static_cast<unsigned long long>(hash));
-  return buffer;
+// An IEUM WAVE patch as the timeline carries it (base64 IEWAVE01; the Rust graph decodes and renders it).
+std::string patchText(const std::vector<std::uint8_t>& data) {
+  static constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((data.size() + 2) / 3 * 4);
+  for (std::size_t i = 0; i < data.size(); i += 3) {
+    const std::uint32_t n = (std::uint32_t(data[i]) << 16) | (i + 1 < data.size() ? std::uint32_t(data[i + 1]) << 8 : 0) |
+                            (i + 2 < data.size() ? std::uint32_t(data[i + 2]) : 0);
+    out.push_back(alphabet[(n >> 18) & 63]);
+    out.push_back(alphabet[(n >> 12) & 63]);
+    out.push_back(i + 1 < data.size() ? alphabet[(n >> 6) & 63] : '=');
+    out.push_back(i + 2 < data.size() ? alphabet[n & 63] : '=');
+  }
+  return out;
 }
 
 // The sample sets `p`'s enabled sampled-instrument tracks use (each once). Missing ones are left out: the Rust
@@ -200,8 +209,7 @@ std::string rustTimelineJson(const ProjectTimeline& p, const ControlRecipe* reci
         if (hosted) writeHost(w, info->sourceLatency, info->sourceTail, true);
         break;
       case TrackSource::Kind::NativeWavetable:
-        w.key("kind"); w.str("native-wavetable"); w.key("instrumentId"); w.str("wavetable"); w.key("patchData"); w.str(patchIdentity(t.source.patchData));
-        if (hosted) writeHost(w, info->sourceLatency, info->sourceTail, true);
+        w.key("kind"); w.str("native-wavetable"); w.key("instrumentId"); w.str("wavetable"); w.key("patchData"); w.str(patchText(t.source.patchData));
         break;
     }
     w.raw("}");
@@ -295,7 +303,38 @@ std::string rustTimelineJson(const ProjectTimeline& p, const ControlRecipe* reci
 }
 
 #endif
+
+// IEUM WAVE (docs/IEUM_WAVE.md) renders only in the Rust graph. Control thread, before a graph changes: refuses a
+// sample rate or patch the synth cannot play and returns the patch's export tail in seconds.
+double checkWavetablePatch(std::uint32_t sampleRate, const std::vector<std::uint8_t>& patch) {
+#if GARAK_RUST
+  if (sampleRate < 22050 || sampleRate > 192000) throw std::invalid_argument("IEUM WAVE requires a sample rate of 22050..192000 Hz");
+  double tail = 0;
+  std::string error(256, '\0');
+  std::size_t length = 0;
+  if (garak_rs_wave_check_patch(patch.data(), patch.size(), &tail, reinterpret_cast<std::uint8_t*>(error.data()), error.size(), &length) != 0) {
+    error.resize(std::min(length, error.size()));
+    throw std::invalid_argument("Invalid IEUM WAVE patch: " + error);
+  }
+  return tail;
+#else
+  (void)sampleRate; (void)patch;
+  throw std::invalid_argument("IEUM WAVE needs the Rust render engine (this build has GARAK_RUST=OFF)");
+#endif
+}
+
+bool hasWavetable(const ProjectTimeline& p) {
+  return std::any_of(p.tracks.begin(), p.tracks.end(), [](const TrackTimeline& t) { return t.enabled && t.source.kind == TrackSource::Kind::NativeWavetable; });
+}
 } // namespace
+
+std::uint32_t wavetableSchemaFingerprint() noexcept {
+#if GARAK_RUST
+  return garak_rs_wave_schema_fingerprint();
+#else
+  return 0;
+#endif
+}
 
 #if GARAK_RUST
 // Control-thread owner of the Rust engine handle. The audio thread only calls garak_rs_engine_render_block /

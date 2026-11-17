@@ -4,7 +4,6 @@
 #include "garak/device.hpp"
 #include "garak/dsp.hpp"
 #include "garak/vst3.hpp"
-#include "ieum_wave/patch.hpp"
 #include <cstdlib>
 #include <algorithm>
 #include <array>
@@ -210,7 +209,9 @@ class Host {
   }
   Json request(const std::string& method,const Json& a,std::string_view blob={}) {
     if (method=="hello") return {{"protocol",1},{"engine","garak-native"},{"testClock",test_},{"vst3",vst3Available()},{"midiInput",true},{"midiDevices",midi::MidiInputManager::supported()},{"backends",DeviceHost::availableBackends()},
-      {"wavetable",{{"protocolVersion",1},{"schemaFingerprint",ieum::wave::generated::kSchemaFingerprint},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}},
+      // IEUM WAVE renders only in the Rust engine since 0.3.3 (docs/IEUM_WAVE.md): no capability without it, so the
+      // renderer never offers a WAVE track this host cannot play.
+      {"wavetable",garak::wavetableAvailable()?Json{{"protocolVersion",1},{"schemaFingerprint",garak::wavetableSchemaFingerprint()},{"minimumSampleRate",22050},{"maximumSampleRate",192000}}:Json(nullptr)},
       // 옥구슬 EP / 한밤 106 (native/src/rust_instrument.hpp) need the Rust DSP core (GARAK_RUST=ON).
       {"vintage",{{"protocolVersion",1},{"available",garak::dsp::rustEffectsAvailable()},{"instruments",Json::array({"okgu-ep","hanbam-106"})}}},
       // The unified Rust render engine: on by default since 0.3.2, GARAK_RUST_ENGINE=0 is the hidden C++ fallback

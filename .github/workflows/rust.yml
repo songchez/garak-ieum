@@ -33,8 +33,10 @@ on:
       - 'native/include/garak/tempo.hpp'
       - 'native/tests/rust_instrument_test.cpp'
       - 'native/src/rust_instrument.hpp'
-      - 'native/src/wavetable.cpp'
-      - 'native/devices/wavetable-synth/**'
+      - 'native/src/host.cpp'
+      - 'native/tests/wavetable_host_test.cpp'
+      - 'native/tests/rust_wave_golden_test.cpp'
+      - 'src/devices/wavetable-synth/**'
       - 'src/devices/vintage/**'
       - 'src/devices/guitar-rig/**'
       - 'src/audio/rust/**'
@@ -203,6 +205,12 @@ jobs:
       # engines: offline exports and a live engine with edits, seeks, cycle wraps and live MIDI.
       - name: Run the render-engine instrument parity test (C++ vs Rust engine)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-instruments --output-on-failure
+
+      # IEUM WAVE, rendered only by the Rust engine since 0.3.3 (docs/IEUM_WAVE.md): against golden renders of the
+      # removed C++ synth (bit-identical on Windows x86-64, <= -90 dBFS elsewhere), and through RenderEngine as the
+      # shell (onsets, partitions, live/audition notes, held-note patches, table crossfades, validation, allocations).
+      - name: Run the IEUM WAVE golden and host tests
+        run: ctest --test-dir build/native-rust -C Release -R "native-rust-wave-golden|native-wavetable-host" --output-on-failure
 
       # 옥구슬 EP / 한밤 106 through garak-ffi: checksum parity with the WASM build (parity.golden),
       # 8 voices < 3 % of one core at 48 kHz, and engine use (timeline, live pedal, edits).

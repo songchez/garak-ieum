@@ -29,6 +29,12 @@ const rustEngineEnv = process.env.GARAK_RUST_ENGINE ?? ''
 const rustEngineOff = () => ['0', 'off', 'false'].includes(rustEngineEnv)
 let hostCapabilities
 const rustEngineExpected = (caps = hostCapabilities) => !rustEngineOff() && (rustEngineEnv !== '' || caps?.rustEngine?.available === true)
+// IEUM WAVE renders only in the Rust engine since 0.3.3 (docs/IEUM_WAVE.md): the hidden C++ fallback has no WAVE.
+const waveExpected = () => !rustEngineOff()
+async function waveChecked(name, operation) {
+  if (waveExpected()) return checked(name, operation)
+  console.log('SKIP ' + name + ' (GARAK_RUST_ENGINE=0 has no IEUM WAVE)')
+}
 async function within(promise, description, timeout = 5000) {
   let timer
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(description + ' timed out')), timeout) })]) }
@@ -130,10 +136,12 @@ try {
     const capabilities = await service.request('engine.capabilities')
     hostCapabilities = capabilities
     assert.equal(capabilities.protocol, 1)
-    assert.equal(capabilities.wavetable.protocolVersion, 1)
-    assert.equal(capabilities.wavetable.schemaFingerprint, wave.fingerprint)
-    assert.equal(capabilities.wavetable.minimumSampleRate, 22050)
-    assert.equal(capabilities.wavetable.maximumSampleRate, 192000)
+    if (waveExpected()) {
+      assert.equal(capabilities.wavetable.protocolVersion, 1)
+      assert.equal(capabilities.wavetable.schemaFingerprint, wave.fingerprint)
+      assert.equal(capabilities.wavetable.minimumSampleRate, 22050)
+      assert.equal(capabilities.wavetable.maximumSampleRate, 192000)
+    } else assert.equal(capabilities.wavetable ?? null, null, 'without the Rust engine the host must not offer IEUM WAVE')
     // The Rust engine is the default since 0.3.2 (docs/RUST_ENGINE.md 10): a Rust build must request it unless
     // GARAK_RUST_ENGINE=0 (the hidden C++ fallback); an explicit 1|strict also requires a Rust build.
     if (rustEngineExpected(capabilities)) assert.deepEqual(capabilities.rustEngine, { available: true, requested: true })
@@ -178,7 +186,10 @@ try {
     assert.equal(pcm24.readUInt16LE(34), 24); assert.equal(pcm24.readUInt32LE(40), full.frames * 6)
     await assert.rejects(service.request('render.wav', { timeline: project(), bitDepth: 20 }), /bit depth/i)
   })
-  await checked('native WAVE timeline and custom banks render finite stereo at 44.1/48/96 kHz', async () => {
+  if (!waveExpected()) await checked('a WAVE project is refused without the Rust engine', async () => {
+    await assert.rejects(service.request('project.set', { timeline: project([track('wave', wave.basic)]) }), /Rust/)
+  })
+  await waveChecked('native WAVE timeline and custom banks render finite stereo at 44.1/48/96 kHz', async () => {
     for (const sampleRate of [44100, 48000, 96000]) {
       const rendered = []
       for (const patch of [wave.basic, wave.custom]) {
@@ -194,7 +205,7 @@ try {
       assert.ok(rendered[0].some((sample, index) => Math.abs(sample - rendered[1][index]) > .001), 'custom bank data must reach the native oscillator')
     }
   })
-  await checked('native WAVE rejects missing, corrupt and incompatible patches before project mutation', async () => {
+  await waveChecked('native WAVE rejects missing, corrupt and incompatible patches before project mutation', async () => {
     const corrupted = Buffer.from(wave.basic.patchData, 'base64')
     corrupted.writeUInt32LE((wave.fingerprint ^ 1) >>> 0, 12)
     const { patchData: _missing, ...missingPatch } = wave.basic
@@ -205,7 +216,7 @@ try {
     assert.equal(result.revision, 100)
     assert.equal((await service.request('engine.snapshot')).revision, 100, 'patch ack must follow callback application')
   })
-  await checked('stopped WAVE audition releases only its track and applies held-voice patches', async () => {
+  await waveChecked('stopped WAVE audition releases only its track and applies held-voice patches', async () => {
     await service.request('transport.stop')
     const first = track('wave-a', wave.basic), second = track('wave-b', wave.basic)
     first.notes = []; second.notes = []
@@ -225,7 +236,7 @@ try {
     await service.request('note.off', { trackId: second.id, pitch: 67, noteId: 10002 })
     await waitForNativeState('WAVE note release', state => state.masterLevel < .0001)
   })
-  await checked('WAVE remains usable after output sample-rate reconfiguration', async () => {
+  await waveChecked('WAVE remains usable after output sample-rate reconfiguration', async () => {
     for (const sampleRate of [44100, 48000]) {
       const configured = await service.request('engine.configure', { backend: process.platform === 'darwin' ? 'coreaudio' : 'wasapi', sampleRate, bufferFrames: 128, inputChannels: 0 })
       assert.equal(configured.backend, 'test', 'this check is the explicit test clock, not a physical WASAPI endpoint')
