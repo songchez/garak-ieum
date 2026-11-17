@@ -649,3 +649,72 @@ pub fn parse_patch(current: &Plan, value: &Json, blob: &[u8]) -> Result<Plan, Er
 pub fn timeline_from_bytes(text: &[u8], blob: &[u8]) -> Result<Plan, Error> {
     parse_timeline(&Json::parse(text)?, blob)
 }
+
+/// `samples.register` params (protocol.hpp `sampleSet`): `{ id, manifest: { kind, gainDb, release,
+/// zones, releaseZones }, files: { file: assetId }, startOffset }`.
+pub fn parse_sample_set(value: &Json) -> Result<crate::plan::SampleSet, Error> {
+    use crate::plan::{SampleSet, SampleZone};
+    let id = id_string(value, "id")?;
+    let manifest = value.get("manifest").ok_or_else(|| err("Missing sample manifest"))?;
+    let files = value.get("files").ok_or_else(|| err("Missing sample files"))?;
+    let kind = match manifest.get("kind") {
+        None => String::from("pitched"),
+        Some(k) => k.as_str().ok_or_else(|| err("Invalid string: kind"))?.to_string(),
+    };
+    let mut set = SampleSet {
+        id,
+        is_kit: kind == "kit",
+        gain_db: number(manifest, "gainDb", -120.0, 36.0, 0.0)?,
+        release: number(manifest, "release", 0.001, 30.0, 0.25)?,
+        start_offset: number(value, "startOffset", 0.0, 1.0, 0.0)?,
+        zones: Vec::new(),
+        release_zones: Vec::new(),
+    };
+    let zones = |key: &str, target: &mut Vec<SampleZone>| -> Result<(), Error> {
+        let values = manifest
+            .get(key)
+            .and_then(Json::as_array)
+            .filter(|v| v.len() <= 10_000)
+            .ok_or_else(|| err("Invalid sample zones"))?;
+        for item in values {
+            let file = string(item, "file", 512, false)?;
+            let asset_id = string(files, &file, 512, false)?;
+            let root = integer(item, "root", 0, 127, 60)?;
+            let lo = integer(item, "lo", 0, 127, root)?;
+            let hi = integer(item, "hi", lo, 127, root)?;
+            let vlo = number(item, "vlo", 0.0, 1.0, 0.0)?;
+            let vhi = number(item, "vhi", vlo, 1.0, 1.0)?;
+            let mut zone = SampleZone {
+                asset_id,
+                root: root as i32,
+                lo: lo as i32,
+                hi: hi as i32,
+                vlo,
+                vhi,
+                gain_db: number(item, "gainDb", -120.0, 36.0, 0.0)?,
+                tune: number(item, "tune", -2400.0, 2400.0, 0.0)?,
+                looped: None,
+                choke: integer(item, "choke", -1, 127, -1)? as i32,
+            };
+            if let Some(l) = item.get("loop") {
+                let pair = l.as_array().filter(|l| l.len() == 2).ok_or_else(|| err("Invalid sample loop"))?;
+                let (Some(a), Some(b)) =
+                    (pair.first().and_then(Json::as_f64), pair.get(1).and_then(Json::as_f64))
+                else {
+                    return Err(err("Invalid sample loop"));
+                };
+                if !a.is_finite() || !b.is_finite() || a < 0.0 || b <= a {
+                    return Err(err("Invalid sample loop"));
+                }
+                zone.looped = Some([a, b]);
+            }
+            target.push(zone);
+        }
+        Ok(())
+    };
+    zones("zones", &mut set.zones)?;
+    if manifest.get("releaseZones").is_some() {
+        zones("releaseZones", &mut set.release_zones)?;
+    }
+    Ok(set)
+}

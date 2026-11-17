@@ -13,6 +13,7 @@
 //! Real-time contract as the rest of the crate: fixed voice pools inside the struct, no allocation,
 //! no panics; out-of-range parameters and events are clamped or ignored.
 
+pub mod builtin;
 pub mod dmath;
 use dmath::clampf;
 pub mod ep;

@@ -283,3 +283,32 @@ impl PcmAsset {
         if self.channels == 0 { 0 } else { (self.samples.len() / self.channels as usize) as u64 }
     }
 }
+
+/// One zone of a registered sample set (C++ `SampleZone`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SampleZone {
+    pub asset_id: String,
+    pub root: i32,
+    pub lo: i32,
+    pub hi: i32,
+    pub vlo: f64,
+    pub vhi: f64,
+    pub gain_db: f64,
+    pub tune: f64,
+    /// Loop in seconds, before the codec start offset.
+    pub looped: Option<[f64; 2]>,
+    pub choke: i32,
+}
+
+/// A registered sample instrument or kit (C++ `SampleSet`, the host's `samples.register`):
+/// zones and release ("damper") zones over PCM registered with `put_asset`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SampleSet {
+    pub id: String,
+    pub is_kit: bool,
+    pub gain_db: f64,
+    pub release: f64,
+    pub start_offset: f64,
+    pub zones: Vec<SampleZone>,
+    pub release_zones: Vec<SampleZone>,
+}

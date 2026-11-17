@@ -29,6 +29,7 @@ mod delay;
 pub mod engine;
 pub mod error;
 mod insert;
+mod instrument;
 pub mod json;
 mod master;
 pub mod math;
@@ -42,5 +43,6 @@ mod track;
 
 pub use engine::{Applied, Controller, EngineConfig, Renderer, Snapshot, engine};
 pub use error::Error;
+pub use instrument::UNLIMITED_FRAME;
 pub use offline::{OfflineRender, render_offline};
-pub use plan::{PcmAsset, Plan};
+pub use plan::{PcmAsset, Plan, SampleSet, SampleZone};

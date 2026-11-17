@@ -125,6 +125,19 @@ if(GARAK_BUILD_TESTS)
   endforeach()
   add_test(NAME native-rust-engine-parity COMMAND garak-rust-engine-parity-test)
 
+  # Instruments (docs/RUST_ENGINE.md 6, gate G2): built-in synths, samples and the vintage instruments
+  # through both engines (offline + live edits/cycle/live MIDI); `... bench` prints the CPU comparison.
+  add_executable(garak-rust-engine-instrument-parity-test tests/rust_engine_instrument_parity_test.cpp)
+  target_link_libraries(garak-rust-engine-instrument-parity-test PRIVATE garak_core garak_rust)
+  target_include_directories(garak-rust-engine-instrument-parity-test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src")
+  target_include_directories(garak-rust-engine-instrument-parity-test SYSTEM PRIVATE "${GARAK_NLOHMANN_INCLUDE_DIR}")
+  if(MSVC)
+    target_compile_options(garak-rust-engine-instrument-parity-test PRIVATE /W4 /utf-8)
+  else()
+    target_compile_options(garak-rust-engine-instrument-parity-test PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME native-rust-engine-instruments COMMAND garak-rust-engine-instrument-parity-test)
+
   # 옥구슬 EP / 한밤 106: checksum parity with the WASM build (parity.golden), CPU budget, engine use.
   add_executable(garak-rust-instrument-test tests/rust_instrument_test.cpp)
   target_link_libraries(garak-rust-instrument-test PRIVATE garak_core garak_rust)

@@ -16,6 +16,8 @@ use garak_engine::{Applied, Controller, EngineConfig, PcmAsset, Renderer, engine
 
 pub const GARAK_RS_ENGINE_ERROR: i32 = -1;
 
+mod instruments;
+
 /// Opaque engine handle (`GarakRsEngine*`).
 #[derive(Debug)]
 pub struct GarakRsEngine {

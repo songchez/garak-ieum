@@ -30,6 +30,7 @@ mod imp {
     #[cfg_attr(target_os = "linux", link(name = "m"))]
     unsafe extern "C" {
         pub safe fn exp(x: f64) -> f64;
+        pub safe fn exp2(x: f64) -> f64;
         pub safe fn log(x: f64) -> f64;
         pub safe fn log10(x: f64) -> f64;
         pub safe fn pow(x: f64, y: f64) -> f64;
@@ -49,7 +50,7 @@ mod imp {
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod imp {
     use core::arch::wasm32::{f64x2_ceil, f64x2_extract_lane, f64x2_floor, f64x2_splat, f64x2_sqrt};
-    pub use libm::{cos, cosf, log10, round, sin, sinf, tanh};
+    pub use libm::{cos, cosf, exp2, log10, round, sin, sinf, tanh};
 
     // Host `Math` functions (garakWasm.ts `MATH_IMPORTS`). Only builtins V8 lowers to a direct call
     // of its own C implementation when imported (`tanh` and `log10` are not on that list, so they
@@ -93,10 +94,10 @@ mod imp {
     all(target_arch = "wasm32", target_feature = "simd128")
 )))]
 mod imp {
-    pub use libm::{ceil, cos, cosf, exp, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
+    pub use libm::{ceil, cos, cosf, exp, exp2, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
 }
 
-pub use imp::{ceil, cos, cosf, exp, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
+pub use imp::{ceil, cos, cosf, exp, exp2, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
 
 /// `a * b + c` the way the native C++ build evaluates that expression. AppleClang contracts it into
 /// one fused multiply-add by default (`-ffp-contract=on`), so on Apple arm64 this is `fmadd`
@@ -108,6 +109,19 @@ pub fn mul_add(a: f64, b: f64, c: f64) -> f64 {
     #[cfg(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple"))]
     {
         libm::fma(a, b, c)
+    }
+    #[cfg(not(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple")))]
+    {
+        a * b + c
+    }
+}
+
+/// `a * b + c` in float, contracted like AppleClang on Apple arm64 (see [`mul_add`]).
+#[inline(always)]
+pub fn mul_add_f32(a: f32, b: f32, c: f32) -> f32 {
+    #[cfg(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple"))]
+    {
+        libm::fmaf(a, b, c)
     }
     #[cfg(not(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple")))]
     {
