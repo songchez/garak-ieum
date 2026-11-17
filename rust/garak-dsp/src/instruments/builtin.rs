@@ -728,10 +728,17 @@ impl Voices {
     }
 
     /// engine.cpp `spawnRelease`: the release-noise sample of `source` (once, at its note-off).
-    fn spawn_release<B: SampleBank>(&mut self, sr: f64, bank: &B, source: usize, overflows: &mut u64) {
-        let Some(v) = self.voices.get_mut(source) else { return };
+    /// Returns the voice slot it started, if any.
+    fn spawn_release<B: SampleBank>(
+        &mut self,
+        sr: f64,
+        bank: &B,
+        source: usize,
+        overflows: &mut u64,
+    ) -> Option<usize> {
+        let v = self.voices.get_mut(source)?;
         if v.release_zone == NONE || v.release_spawned {
-            return;
+            return None;
         }
         v.release_spawned = true;
         let noise = release_noise_gain(
@@ -742,14 +749,14 @@ impl Voices {
             v.cut,
         );
         if noise <= 0.0 {
-            return;
+            return None;
         }
         let (zone, pitch, synth) = (v.release_zone, v.pitch, v.synth);
         let (Some(z), Some(pcm)) = (bank.releases().get(zone as usize), bank.pcm(true, zone as usize)) else {
-            return;
+            return None;
         };
         let slot = self.available(overflows);
-        let Some(r) = self.voices.get_mut(slot) else { return };
+        let r = self.voices.get_mut(slot)?;
         *r = Voice::default();
         r.synth = synth;
         r.active = true;
@@ -763,6 +770,7 @@ impl Voices {
         r.sample_step = math::pow(2.0, f64::from(pitch - z.root) / 12.0 + z.tune / 1200.0) * asset_rate / sr;
         r.peak = db_to_gain(bank.gain_db() + z.gain_db - 6.0) * noise * synth.level;
         r.end_frames = std_max(0.0, (pcm.frames() as f64 - r.sample_position) / r.sample_step) as i64;
+        Some(slot)
     }
 
     /// engine.cpp `retriggerSustained` (voice half): re-striking a key that only rings because of the
@@ -887,6 +895,10 @@ impl Voices {
         };
         let kit_bank = bank.is_kit();
         let start_offset = bank.start_offset();
+        // Voices past the last active one contribute nothing: skipping them keeps the summation
+        // order (and so the samples) of the C++ loop over every voice.
+        let mut limit = self.voices.iter().rposition(|v| v.active).map_or(0, |i| i + 1);
+        let releases = !bank.releases().is_empty();
         for frame in out.as_chunks_mut::<2>().0 {
             glide(&mut self.bend_cents, bend_goal, 1e-4);
             glide(&mut self.vibrato_cents, vibrato_goal, 1e-4);
@@ -902,14 +914,17 @@ impl Voices {
             // Pitch bend and vibrato scale every pitched voice's frequency (samples: playback rate).
             let ratio = if pitched && cents != 0.0 { math::exp2(cents / 1200.0) } else { 1.0 };
             let level = self.control_gain;
-            for i in 0..MAX_VOICES {
-                if self.voices.get(i).is_some_and(|v| {
-                    v.active && v.release_zone != NONE && !v.release_spawned && v.age >= v.note_frames
-                }) {
-                    self.spawn_release(sr, bank, i, overflows);
+            if releases {
+                for i in 0..limit {
+                    if self.voices.get(i).is_some_and(|v| {
+                        v.active && v.release_zone != NONE && !v.release_spawned && v.age >= v.note_frames
+                    }) && let Some(slot) = self.spawn_release(sr, bank, i, overflows)
+                    {
+                        limit = limit.max(slot + 1);
+                    }
                 }
             }
-            for v in &mut self.voices {
+            for v in self.voices.iter_mut().take(limit) {
                 if !v.active {
                     continue;
                 }
