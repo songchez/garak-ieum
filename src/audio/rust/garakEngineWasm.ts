@@ -106,6 +106,8 @@ export interface GarakEngine {
   writeAsset(buffer: number, offset: number, samples: Float32Array): void
   finishAsset(id: string, sampleRate: number, channels: number, buffer: number, count: number): void
   removeAsset(id: string): void
+  /** samples.register params as JSON (`{ id, manifest, files, startOffset }`); the zones' PCM is registered first. */
+  registerSamples(json: string | Uint8Array): void
   /** project.set: the timeline JSON (text or UTF-8 bytes) and the optional binary frame. */
   set(timelineJson: string | Uint8Array, binary?: Uint8Array): EngineApplied
   /** project.patch against the current project. */
@@ -256,6 +258,10 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
     removeAsset(id) {
       const name = utf8Encode(id)
       withBytes(name, (n) => x.garak_engine_remove_asset(n, name.length))
+    },
+    registerSamples(json) {
+      const text = typeof json === 'string' ? utf8Encode(json) : json
+      withBytes(text, (t) => check(x.garak_engine_register_samples(t, text.length)))
     },
     set: (json, binary) => update('garak_engine_set', json, binary),
     patch: (json, binary) => update('garak_engine_patch', json, binary),

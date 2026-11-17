@@ -252,6 +252,7 @@ export class CommandRing {
 export type EngineRequest =
   | { type: 'asset'; seq: number; id: string; sampleRate: number; channels: number; samples: Float32Array }
   | { type: 'remove-asset'; seq: number; id: string }
+  | { type: 'samples'; seq: number; json: Uint8Array }
   | { type: 'set' | 'patch'; seq: number; json: Uint8Array; binary: Uint8Array | null }
   | { type: 'transport'; seq: number; command: number; frame: number }
   | { type: 'live'; seq: number; track: number; kind: number; pitch: number; value: number; id: number }

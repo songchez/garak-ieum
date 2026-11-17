@@ -153,6 +153,12 @@ export class RustEngineNode {
     return this.send({ type: 'asset', seq: ++this.seq, id, sampleRate: pcm.sampleRate, channels: pcm.channels, samples }, [samples.buffer]).then(() => undefined)
   }
 
+  /** A sample set (`samples.register` JSON, as the desktop host sends it); its zone PCM goes first with putAsset. */
+  registerSamples(json: string): Promise<void> {
+    const bytes = utf8Encode(json)
+    return this.send({ type: 'samples', seq: ++this.seq, json: bytes }, [bytes.buffer]).then(() => undefined)
+  }
+
   removeAsset(id: string): Promise<void> {
     return this.send({ type: 'remove-asset', seq: ++this.seq, id }).then(() => undefined)
   }

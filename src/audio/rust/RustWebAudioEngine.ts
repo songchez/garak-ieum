@@ -23,6 +23,8 @@ import { emptyStatus, TAP_CHANNELS, type EngineMeters, type EngineStatus } from 
 import { KernelHelper, renderInEngineWorker, RustEngineNode, sharedGarakEngineModule } from './engineHost'
 import type { EngineRenderAsset } from './engineOffline'
 import { GarakEngineError, utf8Encode } from './garakEngineWasm'
+import { rustEngineRefusedInsert } from './flag'
+import type { LoadedSet } from '../samples'
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 /** Library previews (no track) while the engine plays: this long, like the Web Audio engine's. */
@@ -55,6 +57,23 @@ function referencedAssets(project: Project): Set<string> {
 }
 
 const pcmMetadata = (id: string, buffer: AudioBuffer): NativePcmAsset => ({ id, sampleRate: buffer.sampleRate, frames: buffer.length, channels: buffer.numberOfChannels })
+
+/** The engine asset id of one decoded sample file (the desktop host uses the same scheme). */
+const sampleAssetId = (setId: string, file: string): string => `sample:${setId}:${file}`
+
+/** A decoded sample set as the `samples.register` params the desktop host sends (protocol::parse_sample_set). */
+function sampleSetJson(setId: string, loaded: LoadedSet): string {
+  const files: Record<string, string> = {}
+  for (const file of loaded.buffers.keys()) files[file] = sampleAssetId(setId, file)
+  return JSON.stringify({ id: setId, manifest: loaded.set, startOffset: loaded.startOffset, files })
+}
+
+/** The test refusal (flag.ts `rustEngineRefusedInsert`), or null. */
+function testRefusal(project: Project): string | null {
+  const type = rustEngineRefusedInsert()
+  if (!type || !project.tracks.some(track => track.devices.some(device => device.type === type))) return null
+  return `${type} 장치가 있는 프로젝트를 거부합니다 (테스트용 garak.rustEngineRefuseInsert).`
+}
 
 /** Reverb insert parameter maps of a timeline (enabled tracks and inserts), keyed for the kernel cache. */
 function reverbParams(timeline: NativeProjectTimeline): Map<string, Record<string, number>> {
@@ -107,6 +126,8 @@ export class RustWebAudioEngine extends WebAudioEngine {
   private syncTimer: ReturnType<typeof setTimeout> | null = null
   private verdict = { accepted: false, reason: '아직 Rust 엔진에 프로젝트를 보내지 않았습니다.' }
   private uploaded = new Map<string, WeakRef<AudioBuffer>>()
+  /** Sample sets registered with the engine on this bridge (the decoded set each was built from). */
+  private readonly registeredSets = new Map<string, LoadedSet>()
   private rustPlaying = false
   /** Sequence number of the last play/seek command; status before it is stale. */
   private transportSeq = 0
@@ -185,6 +206,7 @@ export class RustWebAudioEngine extends WebAudioEngine {
       this.synced = null
       this.orders.clear()
       this.uploaded.clear()
+      this.registeredSets.clear()
       this.syncedRevision = -1
       this.metronomeSent = ''
       this.monitoringKey = ''
@@ -238,6 +260,8 @@ export class RustWebAudioEngine extends WebAudioEngine {
     const reject = (reason: string) => { this.synced = null; this.setVerdict(false, reason) }
     if (bridge.error) return reject(bridge.error)
     if (project.sampleRate !== bridge.context.sampleRate) return reject(`프로젝트 ${project.sampleRate} Hz와 오디오 장치 ${bridge.context.sampleRate} Hz가 다릅니다.`)
+    const refusal = testRefusal(project)
+    if (refusal) return reject(refusal)
     const metadata = new Map<string, NativePcmAsset>()
     const referenced = referencedAssets(project)
     try {
@@ -250,6 +274,28 @@ export class RustWebAudioEngine extends WebAudioEngine {
         }
         metadata.set(id, pcmMetadata(id, asset.buffer))
       }
+      // Sampled instruments: the decoded sets' PCM (chunked into the worklet like any asset), then each set as the
+      // same samples.register JSON the desktop host sends. The Web Audio engine's library decodes them.
+      const sets = this.sampleSets(project)
+      for (const setId of sets) {
+        await this.preloadSamples(setId)
+        if (bridge !== this.bridge) return
+        const loaded = this.samples.get(setId)
+        if (!loaded) return reject(`샘플 세트를 불러오지 못했습니다: ${setId}`)
+        for (const [file, buffer] of loaded.buffers) {
+          const id = sampleAssetId(setId, file)
+          referenced.add(id)
+          if (this.uploaded.get(id)?.deref() !== buffer) {
+            await bridge.putAsset(id, buffer)
+            this.uploaded.set(id, new WeakRef(buffer))
+          }
+        }
+        if (this.registeredSets.get(setId) !== loaded) {
+          await bridge.registerSamples(sampleSetJson(setId, loaded))
+          this.registeredSets.set(setId, loaded)
+        }
+      }
+      for (const setId of [...this.registeredSets.keys()]) if (!sets.includes(setId)) this.registeredSets.delete(setId)
       // PCM nothing references any more leaves the worklet (graphs still using it keep it until rebuilt).
       for (const id of [...this.uploaded.keys()]) if (!referenced.has(id)) { this.uploaded.delete(id); void bridge.removeAsset(id).catch(() => undefined) }
     } catch (error) {
@@ -684,9 +730,22 @@ export class RustWebAudioEngine extends WebAudioEngine {
     const module = await sharedGarakEngineModule()
     if (!module) return fallback('garak-engine.wasm이 없습니다.')
     const project = playbackProject(source, this.assets)
+    const refusal = testRefusal(project)
+    if (refusal) return fallback(refusal)
     const sampleRate = projectSampleRate(project.sampleRate)
     const metadata = new Map<string, NativePcmAsset>()
     const assets: EngineRenderAsset[] = []
+    const sampleSets: string[] = []
+    for (const setId of this.sampleSets(project)) {
+      try { await this.preloadSamples(setId) } catch (error) { return fallback(`샘플 세트를 불러오지 못했습니다: ${setId} (${message(error)})`) }
+      const loaded = this.samples.get(setId)
+      if (!loaded) return fallback(`샘플 세트를 불러오지 못했습니다: ${setId}`)
+      for (const [file, buffer] of loaded.buffers) {
+        const pcm = packAudioBuffer(buffer)
+        assets.push({ id: sampleAssetId(setId, file), sampleRate: pcm.sampleRate, channels: pcm.channels, samples: new Float32Array(pcm.data.buffer, pcm.data.byteOffset, pcm.frames * pcm.channels) })
+      }
+      sampleSets.push(sampleSetJson(setId, loaded))
+    }
     for (const id of referencedAssets(project)) {
       const asset = this.assets.get(id)
       if (!asset) return fallback(`오디오 자산을 찾을 수 없습니다: ${id}`)
@@ -703,7 +762,7 @@ export class RustWebAudioEngine extends WebAudioEngine {
     try {
       result = await renderInEngineWorker(module, {
         timeline: utf8Encode(JSON.stringify({ ...timeline, tracks: encoded.tracks })), binary: encoded.binary ?? undefined,
-        sampleRate, lengthFrames: timeline.lengthFrames, assets,
+        sampleRate, lengthFrames: timeline.lengthFrames, assets, sampleSets,
         tailSeconds: options.tailSeconds === undefined ? undefined : Math.min(30, Math.max(0, options.tailSeconds)),
         startFrame: options.startFrame,
         // Stems and freeze: pre-master, like the C++ host's setMasterBypass.
@@ -733,6 +792,7 @@ export class RustWebAudioEngine extends WebAudioEngine {
     this.bridge = null
     this.synced = null
     this.uploaded.clear()
+    this.registeredSets.clear()
     super.dispose()
   }
 }

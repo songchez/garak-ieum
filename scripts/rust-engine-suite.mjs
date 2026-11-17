@@ -3,6 +3,7 @@
 //
 //   node scripts/rust-engine-suite.mjs <garak-engine-test executable>
 //
+// 0. GARAK_RUST_ENGINE=0: the C++ track path. Every case must pass and none may reach the Rust graph.
 // 1. GARAK_RUST_ENGINE=1: graphs the Rust engine refuses fall back to C++. Every case must pass.
 // 2. GARAK_RUST_ENGINE=strict: refused graphs throw. A case may fail only when it is listed in
 //    native/tests/rust_engine_expected_failures.txt (with its blocker); a listed case that passes is reported so
@@ -27,6 +28,7 @@ function run(mode, extra = {}) {
   if (result.error) throw result.error
   const cases = new Map()
   for (const line of (result.stdout + '\n' + result.stderr).split(/\r?\n/)) {
+    // engine_test prints the block count whenever GARAK_RUST_ENGINE is set (0 included).
     const match = /^(PASS|FAIL) (.+?) \[rust blocks: (\d+)\](?:: (.*))?$/.exec(line)
     if (match) cases.set(match[2], { pass: match[1] === 'PASS', blocks: Number(match[3]), error: match[4] ?? '' })
   }
@@ -38,18 +40,20 @@ const expected = new Map(readFileSync(path.join(root, 'native/tests/rust_engine_
   .split(/\r?\n/).filter(line => line.trim() && !line.startsWith('#'))
   .map(line => { const [name, blocker] = line.split(' | '); return [name.trim(), (blocker ?? '').trim()] }))
 
-const fallback = run('1'), strict = run('strict'), hosted = run('strict', { GARAK_RUST_ENGINE_HOST_INSTRUMENTS: '1' })
+const cpp = run('0'), fallback = run('1'), strict = run('strict'), hosted = run('strict', { GARAK_RUST_ENGINE_HOST_INSTRUMENTS: '1' })
 const problems = [], shrink = []
 const rows = []
 for (const [name, s] of strict.cases) {
-  const f = fallback.cases.get(name), h = hosted.cases.get(name)
+  const c = cpp.cases.get(name), f = fallback.cases.get(name), h = hosted.cases.get(name)
+  if (!c?.pass) problems.push(`GARAK_RUST_ENGINE=0 (C++ tracks): ${name} failed: ${c?.error ?? 'missing'}`)
+  if (c?.blocks) problems.push(`GARAK_RUST_ENGINE=0 (C++ tracks): ${name} rendered ${c.blocks} blocks in the Rust graph`)
   if (!f?.pass) problems.push(`GARAK_RUST_ENGINE=1: ${name} failed: ${f?.error ?? 'missing'}`)
   if (!h?.pass) problems.push(`GARAK_RUST_ENGINE=strict + host instruments: ${name} failed: ${h?.error ?? 'missing'}`)
   const listed = expected.has(name)
   if (!s.pass && !listed) problems.push(`GARAK_RUST_ENGINE=strict: unexpected failure: ${name}: ${s.error}`)
   if (s.pass && listed) shrink.push(name)
   const strictCell = s.pass ? (s.blocks ? 'pass (Rust)' : 'pass (no engine render)') : `expected fail: ${expected.get(name) || s.error}`
-  rows.push(`| ${name} | ${f?.pass ? 'pass' : 'FAIL'} (${f?.blocks ?? 0}) | ${strictCell} (${s.blocks}) | ${h?.pass ? 'pass' : 'FAIL'} (${h?.blocks ?? 0}) |`)
+  rows.push(`| ${name} | ${c?.pass ? 'pass' : 'FAIL'} | ${f?.pass ? 'pass' : 'FAIL'} (${f?.blocks ?? 0}) | ${strictCell} (${s.blocks}) | ${h?.pass ? 'pass' : 'FAIL'} (${h?.blocks ?? 0}) |`)
 }
 for (const name of expected.keys()) if (!strict.cases.has(name)) problems.push(`expected-failure list names an unknown case: ${name}`)
 
@@ -58,13 +62,14 @@ const passedOther = [...strict.cases.values()].filter(c => c.pass && !c.blocks).
 const summary = [
   '### engine_test.cpp with the Rust render engine (GARAK_RUST_ENGINE)',
   '',
-  `Fallback mode: ${[...fallback.cases.values()].filter(c => c.pass).length}/${fallback.cases.size} pass. ` +
+  `C++ tracks (GARAK_RUST_ENGINE=0): ${[...cpp.cases.values()].filter(c => c.pass).length}/${cpp.cases.size} pass. ` +
+    `Fallback mode (GARAK_RUST_ENGINE=1): ${[...fallback.cases.values()].filter(c => c.pass).length}/${fallback.cases.size} pass. ` +
     `Strict mode: ${passedRust} pass through the Rust graph, ${passedOther} pass without rendering a graph, ` +
     `${[...strict.cases.values()].filter(c => !c.pass).length} expected failures (native/tests/rust_engine_expected_failures.txt). ` +
     `Strict with the built-in instruments as host nodes: ${[...hosted.cases.values()].filter(c => c.pass).length}/${hosted.cases.size} pass.`,
   '',
-  '| Case | GARAK_RUST_ENGINE=1 (Rust blocks) | strict (Rust blocks) | strict + host instruments (Rust blocks) |',
-  '|---|---|---|---|',
+  '| Case | GARAK_RUST_ENGINE=0 (C++) | GARAK_RUST_ENGINE=1 (Rust blocks) | strict (Rust blocks) | strict + host instruments (Rust blocks) |',
+  '|---|---|---|---|---|',
   ...rows,
   '',
   ...(shrink.length ? ['Now passing in strict mode — remove from native/tests/rust_engine_expected_failures.txt:', ...shrink.map(n => `- ${n}`), ''] : []),

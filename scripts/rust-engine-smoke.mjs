@@ -25,7 +25,7 @@ async function openPage(browser, url) {
   page.on('console', message => { logs.push(`${message.type()}: ${message.text()}`); if (message.type() === 'error') errors.push(message.text()) })
   // The first load of a cold Vite server pre-bundles dependencies.
   await page.goto(url, { timeout: 180000 })
-  await page.evaluate(() => localStorage.setItem('garak.rustEngine', '1'))
+  await page.evaluate(() => { localStorage.setItem('garak.rustEngine', '1'); localStorage.removeItem('garak.rustEngineRefuseInsert') })
   await page.reload()
   await page.getByRole('button', { name: '새 빈 프로젝트', exact: true }).click({ timeout: 15000 }).catch(() => undefined)
   await page.getByRole('button', { name: '트랙 추가', exact: true }).waitFor()
@@ -142,14 +142,25 @@ const TASK = async ({ name, arg }) => {
       engine.stop()
       const exported = await engine.renderAudio(playTest.project, { bitDepth: 16 })
       const exportInfo = engine.diagnostics().lastRender
-      // A project the engine refuses: plays on Web Audio, with a console note.
-      const refused = fixtures.unsupportedProject()
-      engine.setProject(refused.project)
+      // A sampled instrument (kit): its decoded sample set goes to the engine, which plays it (no fallback).
+      const sampled = fixtures.sampledProject()
+      engine.setProject(sampled.project)
       engine.setAssets(new Map())
+      await engine.play()
+      let sampledMaster = 0
+      for (let i = 0; i < 16; i += 1) { await sleep(50); sampledMaster = Math.max(sampledMaster, engine.getMasterLevel()) }
+      const sampledOn = engine.diagnostics()
+      engine.stop()
+      // A project the engine refuses (the test-only refusal, garak.rustEngineRefuseInsert): plays on Web Audio,
+      // with a console note.
+      const refusedType = playTest.project.tracks.flatMap(track => track.devices)[0].type
+      localStorage.setItem('garak.rustEngineRefuseInsert', refusedType)
+      engine.setProject({ ...playTest.project })
       await engine.play()
       await sleep(300)
       const fallback = engine.diagnostics()
       engine.stop()
+      localStorage.removeItem('garak.rustEngineRefuseInsert')
       // Back to a supported project: the engine takes over again on its own.
       engine.setProject(playTest.project)
       engine.setAssets(assetsOf(playTest))
@@ -162,6 +173,7 @@ const TASK = async ({ name, arg }) => {
         master, beatsAdvance: beats[beats.length - 1] - beats[0], playingOn: playing.playing, sharedChannel: playing.sharedChannel, accepted: playing.accepted,
         quanta: playing.status.quanta, afterSeek, paused: paused.playing, pausedBeat: paused.beat, pausedLater, exportEngine: exportInfo?.engine, exportBytes: exported.blob.size,
         fallback: { playingOn: fallback.playing, accepted: fallback.accepted, reason: fallback.reason }, resumed,
+        sampled: { playingOn: sampledOn.playing, accepted: sampledOn.accepted, reason: sampledOn.reason, master: sampledMaster },
       }
       return { ab, realtime }
       }
@@ -283,6 +295,8 @@ try {
     assert(Math.abs(r.pausedLater - r.pausedBeat) < 0.01, 'pause must hold the transport')
     assert.equal(r.exportEngine, 'rust', 'the export must run on the Rust engine')
     assert.equal(r.fallback.playingOn, 'web-audio', 'a refused project must fall back to Web Audio')
+    assert.equal(r.sampled.playingOn, 'rust', `a sampled-instrument project stays on the Rust engine (${r.sampled.reason})`)
+    assert(r.sampled.master > 0.01, `the sampled kit is audible on the engine (master ${r.sampled.master})`)
     assert.equal(r.resumed, 'rust', 'a supported project must return to the Rust engine')
     for (const [name, entry] of Object.entries(result.ab)) {
       assert.equal(entry.rustEngine, 'rust', `${name}: exported on the Rust engine`)

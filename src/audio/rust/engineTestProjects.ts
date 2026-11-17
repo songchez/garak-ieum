@@ -119,15 +119,16 @@ export function instrumentProject(): TestProject {
 }
 
 /**
- * What the web engine refuses: a sampled instrument whose sample set was never registered with it (the web
- * host does not send `samples.register` to the engine yet), so the app falls back to Web Audio.
+ * A sampled instrument (the 808 kit): the web host decodes its sample set and sends it to the engine
+ * (`samples.register`, like the desktop host), so it plays on the engine.
  */
-export function unsupportedProject(): TestProject {
-  const project = base('A/B unsupported')
-  const track = { ...createTrack('instrument', 'grand'), id: id('track') }
-  track.clips = [{ id: id('clip'), name: 'notes', kind: 'midi', startBeat: 0, lengthBeats: 4, gain: 1, notes: [{ id: id('note'), pitch: 60, start: 0, duration: 2, velocity: 0.8 }] } as unknown as Track['clips'][number]]
+export function sampledProject(): TestProject {
+  const project = base('A/B sampled kit')
+  const track = { ...createTrack('instrument', 'kit-808'), id: id('track') }
+  const notes = [36, 38, 42, 38].map((pitch, k) => ({ id: id('note'), pitch, start: k, duration: 0.5, velocity: 0.9 }))
+  track.clips = [{ id: id('clip'), name: 'beat', kind: 'midi', startBeat: 0, lengthBeats: 4, gain: 1, notes } as unknown as Track['clips'][number]]
   project.tracks = [track]
-  return { name: 'unsupported', project, pcm: new Map(), note: 'sampled instrument without a registered sample set' }
+  return { name: 'sampled', project, pcm: new Map(), note: 'sampled kit (sample set registered with the engine)' }
 }
 
 /**

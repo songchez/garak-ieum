@@ -19,6 +19,8 @@ export interface EngineRenderRequest {
   sampleRate: number
   lengthFrames: number
   assets: EngineRenderAsset[]
+  /** Sample sets as `samples.register` JSON (their zone PCM is in `assets`). */
+  sampleSets?: string[]
   /** Replaces the graph's own tail (0…30 s), like render.wav `tailSeconds`. */
   tailSeconds?: number
   /** Frames dropped from the start after plug-in delay compensation. */
@@ -48,6 +50,7 @@ export function renderEngineOffline(module: WebAssembly.Module, request: EngineR
   const engine = instantiateGarakEngine(module, rate, block, true)
   try {
     for (const asset of request.assets) engine.putAsset(asset.id, asset.sampleRate, asset.channels, asset.samples)
+    for (const set of request.sampleSets ?? []) engine.registerSamples(set)
     engine.set(request.timeline, request.binary)
     if (request.masterBypass) engine.masterBypass(true)
     engine.transport('play')

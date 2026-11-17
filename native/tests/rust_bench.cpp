@@ -90,18 +90,25 @@ int main(int argc, char** argv) {
   for (const auto& c : cases) {
     if (!only.empty() && std::find(only.begin(), only.end(), c.type) == only.end()) continue;
     double cpp = 0, rust = 0, cppAuto = 0, rustAuto = 0;
-    for (int round = 0; round < rounds; ++round) {
-      cpp = std::max(cpp, run(c, EffectBackend::Cpp, totalFrames, input, false));
-      rust = std::max(rust, run(c, EffectBackend::Rust, totalFrames, input, false));
-      if (!c.glide) continue;
-      cppAuto = std::max(cppAuto, run(c, EffectBackend::Cpp, totalFrames, input, true));
-      rustAuto = std::max(rustAuto, run(c, EffectBackend::Rust, totalFrames, input, true));
-    }
+    const auto measure = [&] {
+      for (int round = 0; round < rounds; ++round) {
+        cpp = std::max(cpp, run(c, EffectBackend::Cpp, totalFrames, input, false));
+        rust = std::max(rust, run(c, EffectBackend::Rust, totalFrames, input, false));
+        if (!c.glide) continue;
+        cppAuto = std::max(cppAuto, run(c, EffectBackend::Cpp, totalFrames, input, true));
+        rustAuto = std::max(rustAuto, run(c, EffectBackend::Rust, totalFrames, input, true));
+      }
+    };
+    const auto failsGate = [&] { return gate > 0 && (rust / cpp < 1 / gate || (c.glide && rustAuto / cppAuto < 1 / gate)); };
+    measure();
+    // A shared CI runner can stall one backend for a round: before failing the gate, measure up to two more sets
+    // of alternating rounds (best of all of them). A real regression stays below the gate every time.
+    for (int retry = 0; retry < 2 && failsGate(); ++retry) measure();
     char automated[32] = "-";
     if (c.glide) std::snprintf(automated, sizeof automated, "%.2f", rustAuto / cppAuto);
     std::printf("| %s | %.2f | %.2f | %.2f | %s | %.0f |\n", c.label ? c.label : c.type, cpp / 1e6, rust / 1e6, rust / cpp, automated, cpp / 48000);
     // --gate=R: fail when Rust takes more than R times the C++ time (static or automated).
-    if (gate > 0 && (rust / cpp < 1 / gate || (c.glide && rustAuto / cppAuto < 1 / gate))) gateFailed = true;
+    if (failsGate()) gateFailed = true;
   }
   if (gateFailed) { std::fprintf(stderr, "CPU gate: Rust took more than %.2fx the C++ time\n", gate); return EXIT_FAILURE; }
   return EXIT_SUCCESS;

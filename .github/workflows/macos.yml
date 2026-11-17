@@ -49,6 +49,9 @@ jobs:
     env:
       CI: 'true'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # The native build's ctest includes the vintage instruments' CPU budget (8 voices < 3 % of one core). On
+      # shared installer runners it is reported, not enforced; rust.yml enforces it. Parity is always enforced.
+      GARAK_CPU_GATES: report
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

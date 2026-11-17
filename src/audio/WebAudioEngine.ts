@@ -371,7 +371,7 @@ export class WebAudioEngine implements AudioEngine {
     }
   }
 
-  private sampleSets(project: Project): string[] {
+  protected sampleSets(project: Project): string[] {
     return [...new Set(project.tracks.flatMap(track => {
       const def = instrumentDef(track.instrument)
       return track.kind === 'instrument' && def.set ? [def.set] : []

@@ -11,6 +11,7 @@
 // engine, at 48 and 44.1 kHz; then a live engine applies mid-play diffs (mix, send, insert
 // parameter, master, a track rebuild) on both. The same runs with a guitar rig insert (withGuitarRig):
 // offline exports and a live knob diff + rack reorder. Gate: residual <= -90 dBFS, equal latency/length.
+#include "cpp_reference_engine.hpp"
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_engine.h"
@@ -269,6 +270,7 @@ void liveCase(bool rustEffects) {
 } // namespace
 
 int main() {
+  pinCppReferenceEngine();
   std::printf("| Case | Tracks | Length | Rate | Block | Effects in C++ engine | Latency C++ / Rust | Peak dBFS | Residual |\n");
   std::printf("|---|---|---|---|---|---|---|---|---|\n");
   try {

@@ -17,6 +17,7 @@
 //      shell's render-ahead rings: C++ engine vs Rust shell bit-identical, 0 vs N workers bit-identical;
 //   7. CPU: blocks per second of the C++ engine, the Rust shell and the Rust shell on N workers (table).
 // Gate: residual <= -90 dBFS (bit-identical expected), equal latency; the multi-core output bit-identical.
+#include "cpp_reference_engine.hpp"
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_engine.h"
@@ -564,6 +565,7 @@ void bench() {
 } // namespace
 
 int main(int argc, char** argv) {
+  pinCppReferenceEngine();
   std::printf("| Case | Tracks | Length | Rate | Block | Latency C++ / Rust | Residual |\n|---|---|---|---|---|---|---|\n");
   try {
     offlineCases();

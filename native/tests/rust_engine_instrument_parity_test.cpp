@@ -14,6 +14,7 @@
 //
 // `garak-rust-engine-instrument-parity-test bench [seconds] [repeats] [block]` prints the CPU
 // comparison for the instrument-heavy project instead.
+#include "cpp_reference_engine.hpp"
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_engine_instruments.h"
@@ -408,6 +409,7 @@ int bench(double seconds, int repeats, std::uint32_t block) {
 } // namespace
 
 int main(int argc, char** argv) {
+  pinCppReferenceEngine();
   if (argc > 1 && std::string(argv[1]) == "bench")
     return bench(argc > 2 ? std::atof(argv[2]) : 10, argc > 3 ? std::atoi(argv[3]) : 3, argc > 4 ? std::uint32_t(std::atoi(argv[4])) : 128);
   std::printf("| Case | Length | Rate | Block | Effects in C++ engine | Latency C++ / Rust | Peak dBFS | Residual |\n");

@@ -103,6 +103,7 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
             engine.putAsset(message.id, message.sampleRate, message.channels, message.samples)
             break
           case 'remove-asset': engine.removeAsset(message.id); this.collectIn = COLLECT_AFTER; break
+          case 'samples': engine.registerSamples(message.json); break
           case 'set': case 'patch': {
             const todo = engine.stage(message.json, message.binary ?? undefined, message.type === 'patch')
             if (todo > 0) { this.stage = { seq: message.seq }; this.status.staging = todo; return }
