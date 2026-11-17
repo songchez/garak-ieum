@@ -696,8 +696,8 @@ pub unsafe extern "C" fn garak_rs_engine_set_analysis(
     if n > 0 {
         // SAFETY: caller contract.
         let raw = unsafe { core::slice::from_raw_parts(taps, n * 3) };
-        for (slot, t) in list.iter_mut().zip(raw.chunks_exact(3)) {
-            *slot = AnalysisTap { track: t[0], insert: t[1], tuner: t[2] != 0 };
+        for (slot, &[track, insert, tuner]) in list.iter_mut().zip(raw.as_chunks::<3>().0) {
+            *slot = AnalysisTap { track, insert, tuner: tuner != 0 };
         }
     }
     ticket(c.set_analysis(list.get(..n).unwrap_or(&[])), error)
