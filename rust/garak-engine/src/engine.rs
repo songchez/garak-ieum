@@ -161,6 +161,8 @@ enum Command {
     MasterBypass(bool),
     Metronome {
         clicks: Option<Arc<Clicks>>,
+        /// Drop the current strokes (silence; `clicks` is None).
+        clear: bool,
         on: bool,
         gain: f32,
     },
@@ -212,6 +214,8 @@ pub struct Controller {
     staged: Option<Staged>,
     /// Tracks of the staged plan built by `step`, by plan index (consumed by the commit).
     prebuilt: Vec<Option<(Track, TrackInfo)>>,
+    /// Tracks the last update rebuilt and swapped in (C++ `UpdateResult::replacedTracks`).
+    replaced: u32,
 }
 
 impl core::fmt::Debug for Controller {
@@ -292,6 +296,7 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             ticket: 0,
             staged: None,
             prebuilt: Vec::new(),
+            replaced: 0,
         },
         Renderer {
             config,
@@ -514,6 +519,19 @@ impl Controller {
         self.recipe.as_ref().map(|r| (r.sender_latency + r.return_latency, r.sender_latency, r.tail))
     }
 
+    /// The longest own tail of a non-return track of the last submitted graph (instrument release plus insert
+    /// tails, without the render floor; C++ `PreparedProject::trackTailSeconds`, used for freeze renders).
+    pub fn track_tail(&self) -> f64 {
+        self.recipe.as_ref().map_or(0.0, |r| {
+            r.plan
+                .tracks
+                .iter()
+                .zip(&r.tracks)
+                .filter(|(t, _)| !t.is_return)
+                .fold(0.0, |tail, (_, info)| math::std_max(tail, info.tail))
+        })
+    }
+
     /// The host's current project (after the last accepted set/patch).
     pub fn current(&self) -> Option<&Plan> {
         self.current.as_ref()
@@ -595,7 +613,26 @@ impl Controller {
             }
         }
         self.collect();
-        self.enqueue(Command::Metronome { clicks: strokes.map(Arc::new), on, gain })
+        self.enqueue(Command::Metronome { clicks: strokes.map(Arc::new), clear: false, on, gain })
+    }
+
+    /// The metronome without strokes (C++ `setMetronome` with no or unusable strokes): silence until a later
+    /// `set_metronome` brings strokes; ringing strokes stop.
+    pub fn clear_metronome(&mut self, on: bool, gain: f32) -> Result<u64, Error> {
+        require(gain.is_finite() && (0.0..=4.0).contains(&gain), "Invalid metronome gain")?;
+        self.collect();
+        self.enqueue(Command::Metronome { clicks: None, clear: true, on, gain })
+    }
+
+    /// The master gain (C++ `setMasterGain`; the output glides to it like a project `masterGain` change).
+    pub fn set_master_gain(&mut self, gain: f32) -> Result<u64, Error> {
+        checked(f64::from(gain), 0.0, 2.0, "Invalid master gain")?;
+        self.enqueue(Command::Master(gain))
+    }
+
+    /// Tracks the last `update` / `set_json` rebuilt and swapped into the running graph (0 for a new graph).
+    pub fn replaced_tracks(&self) -> u32 {
+        self.replaced
     }
 
     /// Monitored tracks by graph index (C++ `setMonitoring`): their live input (routed tracks: their route
@@ -1001,6 +1038,7 @@ impl Controller {
     /// Brings the running graph to `p` with the least work (engine.cpp `update`, audio tracks).
     pub fn update(&mut self, p: Plan) -> Result<Applied, Error> {
         self.collect();
+        self.replaced = 0;
         let result = match self.classify(&p) {
             Ok(None) => self.full(p),
             Ok(Some(edits)) => self.apply_edits(p, edits),
@@ -1257,6 +1295,7 @@ impl Controller {
             recipe.plan.revision = p.revision;
         }
         self.current = Some(p);
+        self.replaced = replaced as u32;
         Ok(if replaced > 0 {
             Applied::Tracks
         } else if count > 1 {
@@ -1442,13 +1481,18 @@ impl Renderer {
                 }
                 Command::Master(gain) => self.target_master_gain = gain,
                 Command::MasterBypass(on) => self.master_bypass = on,
-                Command::Metronome { clicks, on, gain } => {
+                Command::Metronome { clicks, clear, on, gain } => {
                     self.metronome_on = on;
                     self.metronome_gain = gain;
                     if let Some(next) = clicks {
                         // Ringing strokes index the old set: they stop with it.
                         self.metronome.player.clear();
                         if let Some(old) = self.metronome.clicks.replace(next) {
+                            self.retire(Retired::Clicks(old));
+                        }
+                    } else if clear {
+                        self.metronome.player.clear();
+                        if let Some(old) = self.metronome.clicks.take() {
                             self.retire(Retired::Clicks(old));
                         }
                     }

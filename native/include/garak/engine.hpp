@@ -338,10 +338,8 @@ struct EngineSnapshot {
   // ring had to be dropped mid-playback because it lost sync (never expected).
   std::uint32_t workerThreads = 0, renderAheadTracks = 0;
   std::uint64_t renderAheadResyncs = 0;
-  // GARAK_RUST_ENGINE (docs/RUST_ENGINE.md 10): the last block's tracks rendered in the Rust engine, and how many
-  // graphs/updates the Rust engine refused (they render in C++; RenderEngine::lastRustRefusal has the reason).
+  // The Rust render engine (docs/RUST_ENGINE.md 10) has rendered this engine's graph (diagnostics).
   bool rustEngine = false;
-  std::uint64_t rustRefusals = 0;
 };
 
 // Multi-core track processing (Logic "Processing Threads") and render-ahead of
@@ -462,11 +460,13 @@ struct UpdateResult {
   std::uint32_t replacedTracks = 0, commands = 0;
 };
 
-// True when this build links the Rust render engine (GARAK_RUST=ON).
-[[nodiscard]] bool rustEngineAvailable() noexcept;
 // Blocks rendered by the Rust graph in this process, all engines (diagnostics and the regression suite's report).
 [[nodiscard]] std::uint64_t rustEngineBlocks() noexcept;
 
+// The desktop host's real-time engine: a shell around the unified Rust render engine (rust/garak-engine,
+// docs/RUST_ENGINE.md 10). The Rust graph renders every track, the master bus and the metronome; this class keeps
+// transport, count-in timing, live MIDI forwarding, monitored input and capture, render-ahead rings, the worker pool,
+// snapshots, and the VST3 / IEUM WAVE processors the Rust graph calls back (host nodes).
 class RenderEngine {
  public:
   explicit RenderEngine(std::uint32_t sampleRate = 48000, std::uint32_t maxBlockFrames = 4096,
@@ -474,6 +474,9 @@ class RenderEngine {
   ~RenderEngine(); // Device must be stopped before destruction.
   RenderEngine(const RenderEngine&) = delete;
   RenderEngine& operator=(const RenderEngine&) = delete;
+  // Control thread: builds the host nodes (VST3, IEUM WAVE) and hands the plan to this engine's Rust graph, queued
+  // until submit() (its latency and tails come from there). Throws on invalid input or when the Rust engine refuses
+  // the plan. Submit the result to the same engine.
   [[nodiscard]] std::unique_ptr<PreparedProject> prepare(const ProjectTimeline&, const AssetStore&,
       const SampleSetStore& = {}, const PluginResolver& = {}) const;
   // Control-thread only; throws if the bounded graph queue is full. Ownership is
@@ -484,7 +487,8 @@ class RenderEngine {
   // whose events, chain or source changed is rebuilt alone and swapped in at a block boundary, keeping its
   // voices, effect tails and controllers; tempo/length/cycle, track order and routing changes submit a new
   // graph whose tracks continue their predecessors by id. Notes equal to running ones keep their ids.
-  // Throws like prepare() on invalid input; the running graph is then unchanged.
+  // Throws like prepare() on invalid input or when the Rust engine refuses the plan; the running graph is then
+  // unchanged.
   UpdateResult update(const ProjectTimeline& project, const AssetStore& assets, const SampleSetStore& sets = {},
                       const PluginResolver& resolver = {});
   void collectRetired();
@@ -553,17 +557,9 @@ class RenderEngine {
   // creates the worker pool (threads > 0, or 1 when only rendering ahead).
   // Graphs prepared afterwards carry render-ahead rings within a memory budget.
   void setProcessing(const ProcessingOptions& options);
-  // Rust render engine (docs/RUST_ENGINE.md 10). The environment variable GARAK_RUST_ENGINE ("1" or "strict")
-  // sets the mode at construction; setRustEngine overrides it before the first submit (0 off, 1 Rust with C++
-  // fallback for graphs it refuses, 2 strict: a refused graph throws). This engine stays the shell: transport,
-  // count-in, metronome, live MIDI, monitoring, capture, master bus, snapshots.
-  void setRustEngine(int mode);
-  [[nodiscard]] bool rustEngineRequested() const noexcept;
-  // Control thread: why the Rust engine refused the last graph or update (empty when it accepted it).
-  [[nodiscard]] std::string lastRustRefusal() const;
  private:
-  UpdateResult updateGraph(const ProjectTimeline& project, const AssetStore& assets, const SampleSetStore& sets,
-                           const PluginResolver& resolver);
+  std::unique_ptr<PreparedProject> prepareGraph(const ProjectTimeline& project, const ProjectTimeline& plan, const AssetStore& assets,
+                                                const SampleSetStore& sets, const PluginResolver& resolver) const;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

@@ -1,8 +1,9 @@
-//! Host-driven rendering for the desktop C++ shell (`GARAK_RUST_ENGINE=1`, docs/RUST_ENGINE.md 10).
+//! Host-driven rendering for the desktop C++ shell (docs/RUST_ENGINE.md 10).
 //!
-//! The C++ `RenderEngine` keeps the transport (play/stop/seek, cycle wrap, count-in), metronome,
-//! live MIDI, input capture, master bus and snapshot; for a graph the Rust engine accepted it asks
-//! this renderer for the track mix of each block at the shell's position. Commands are applied up
+//! The C++ `RenderEngine` keeps the transport (play/stop/seek, cycle wrap, count-in), live MIDI, input
+//! capture and snapshot; it asks this renderer for each block at the shell's position: the track mix and
+//! the master bus (master gain and processor, [`BlockInfo::master`]), then the metronome and count-in
+//! clicks after the shell's meters ([`Renderer::host_clicks`]). Commands are applied up
 //! to a ticket the shell names, so a Rust graph swap lands in the same block as the shell's own
 //! graph command. The tracks of one processing level may render on the host's worker pool
 //! ([`Parallel`]): they are independent, so each renders on one worker; the next level (routed tracks,
@@ -16,6 +17,7 @@ use core::ffi::c_void;
 
 use super::{Graph, Renderer};
 use crate::external::{HostCallbacks, Io, Stage};
+use crate::math;
 
 /// One task of a parallel job: render item `index` of `job`.
 pub type HostTask = unsafe extern "C" fn(job: *mut c_void, index: u32);
@@ -48,10 +50,11 @@ pub struct BlockInfo<'a> {
     pub playing: bool,
     /// Apply queued commands up to this ticket first.
     pub allowed: u64,
-    /// The shell's master gain at the block start and its target: master-resampling routes hear the tracks
-    /// through it (the shell applies the same smoothing to the output afterwards).
-    pub master_gain: f32,
-    pub target_master_gain: f32,
+    /// Apply the master bus after the mix: the master gain (smoothed towards its target, which project
+    /// updates and [`Controller::set_master_gain`](super::Controller::set_master_gain) set) and the master
+    /// processor; skipped for offline renders with the master bypass (stems, freeze). False: the bare track
+    /// mix (`render_block`). Master-resampling routes hear the tracks through the same gain either way.
+    pub master: bool,
     /// Monitored tracks (bit `i` of word `i / 64`).
     pub monitor: [u64; 4],
     /// VST3 / IEUM WAVE processors and device input; None renders host nodes as silence (sources) or
@@ -132,20 +135,12 @@ impl Renderer {
         peaks: &mut [f32],
         parallel: Option<&Parallel>,
     ) {
-        let info = BlockInfo {
-            position,
-            playing,
-            allowed,
-            master_gain: self.master_gain,
-            target_master_gain: self.target_master_gain,
-            monitor: [0; 4],
-            host: None,
-            ahead: &[],
-        };
+        let info =
+            BlockInfo { position, playing, allowed, master: false, monitor: [0; 4], host: None, ahead: &[] };
         self.render_host(out, &info, peaks, parallel);
     }
 
-    /// [`render_block`](Self::render_block) with the shell's master gain, monitoring and host callbacks.
+    /// [`render_block`](Self::render_block) with the master bus, monitoring and host callbacks.
     pub fn render_host(
         &mut self,
         out: &mut [f32],
@@ -169,12 +164,14 @@ impl Renderer {
         let playing = info.playing;
         let mut at = info.position;
         let mut peak = 0.0f32;
+        let master = info.master && !(self.config.offline && self.master_bypass);
+        let smoothing = math::smoothing(rate, 0.012) as f32;
         for block in out.chunks_mut(step) {
             block.fill(0.0);
             let count = (block.len() / 2) as u32;
             if let Some(g) = &mut self.active {
                 let audible = playing && at < g.length_frames;
-                let gain = (info.master_gain, info.target_master_gain);
+                let gain = (self.master_gain, self.target_master_gain);
                 Self::render_tracks(
                     g,
                     block,
@@ -195,6 +192,20 @@ impl Renderer {
                 if peak < x.abs() {
                     peak = x.abs();
                 }
+            }
+            // The master bus (engine.cpp before 0.3.3 applied it in the shell): gain, then the processor.
+            if master && let Some(g) = &mut self.active {
+                for pair in block.as_chunks_mut::<2>().0 {
+                    self.master_gain = math::mul_add_f32(
+                        self.target_master_gain - self.master_gain,
+                        smoothing,
+                        self.master_gain,
+                    );
+                    for x in pair {
+                        *x *= self.master_gain;
+                    }
+                }
+                g.master.process(block);
             }
             if playing {
                 at += i64::from(count);
@@ -264,6 +275,34 @@ impl Renderer {
             }
         }
         n
+    }
+
+    /// The metronome and count-in clicks of one shell block (audio thread, after `render_host`, the shell's
+    /// meters and its recording), added to `out` (`count` stereo frames): monitor only, never offline
+    /// (engine.cpp `renderClicks`, now this engine's `render_clicks`). The shell owns the transport: `position`
+    /// and `playing` as it rendered the block; `counting_in` with `elapsed` frames of a count-in of `length`
+    /// frames already clicked. Strokes, the enable switch and the gain come from
+    /// [`Controller::set_metronome`](super::Controller::set_metronome), applied up to the shell's ticket.
+    #[allow(clippy::too_many_arguments)]
+    pub fn host_clicks(
+        &mut self,
+        out: &mut [f32],
+        count: u32,
+        position: i64,
+        playing: bool,
+        counting_in: bool,
+        elapsed: i64,
+        length: i64,
+    ) {
+        let Some(block) = out.get_mut(..count as usize * 2) else { return };
+        let (saved_position, saved_playing) = (self.position, self.playing);
+        self.position = position;
+        self.playing = playing;
+        self.count_in_elapsed = elapsed;
+        self.count_in_length = length;
+        self.render_clicks(block, count, counting_in);
+        self.position = saved_position;
+        self.playing = saved_playing;
     }
 
     /// Applies queued commands up to `allowed` without rendering.

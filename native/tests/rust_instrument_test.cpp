@@ -6,7 +6,6 @@
 // 2. CPU: 8 sustained voices of each instrument at 48 kHz must stay under 3 % of one core.
 // 3. Engine: a timeline track and live notes (sustain pedal deferral, automation, param edits that
 //    keep voices ringing) through RenderEngine.
-#include "cpp_reference_engine.hpp"
 #include "garak/engine.hpp"
 #include "garak_rust.h"
 
@@ -271,7 +270,6 @@ void engine() {
 } // namespace
 
 int main(int argc, char** argv) {
-  pinCppReferenceEngine();
   std::printf("| instrument | checksum | parity | blocks |\n|---|---|---|---|\n");
   parity();
   if (argc < 2 || std::string(argv[1]) != "--no-cpu") {
