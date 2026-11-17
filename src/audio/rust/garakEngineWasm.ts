@@ -16,6 +16,7 @@ interface EngineExports {
   garak_engine_alloc(len: number): number
   garak_engine_free(ptr: number, len: number): void
   garak_engine_alloc_f32(count: number): number
+  garak_engine_alloc_f32_uninit(count: number): number
   garak_engine_free_f32(ptr: number, count: number): void
   garak_engine_create(sampleRate: number, maxBlock: number, offline: number): number
   garak_engine_destroy(): void
@@ -90,6 +91,10 @@ export class GarakEngineError extends Error {
 export interface GarakEngine {
   /** Registers interleaved PCM under `id` (replaces an asset with the same id). One copy into the module. */
   putAsset(id: string, sampleRate: number, channels: number, samples: Float32Array): void
+  /** The same in pieces (long PCM across render quanta): a module buffer, writes at sample offsets, then the handover. */
+  beginAsset(count: number): number
+  writeAsset(buffer: number, offset: number, samples: Float32Array): void
+  finishAsset(id: string, sampleRate: number, channels: number, buffer: number, count: number): void
   removeAsset(id: string): void
   /** project.set: the timeline JSON (text or UTF-8 bytes) and the optional binary frame. */
   set(timelineJson: string | Uint8Array, binary?: Uint8Array): EngineApplied
@@ -231,6 +236,12 @@ export function instantiateGarakEngine(module: WebAssembly.Module, sampleRate: n
       if (ptr) new Float32Array(x.memory.buffer, ptr, samples.length).set(samples)
       // The module owns the buffer from here on (also when it refuses the asset).
       withBytes(name, (n) => check(x.garak_engine_put_asset_owned(n, name.length, rate, channels, ptr, samples.length)))
+    },
+    beginAsset(count) { return count ? x.garak_engine_alloc_f32_uninit(count) : 0 },
+    writeAsset(buffer, offset, samples) { new Float32Array(x.memory.buffer, buffer + offset * 4, samples.length).set(samples) },
+    finishAsset(id, rate, channels, buffer, count) {
+      const name = utf8Encode(id)
+      withBytes(name, (n) => check(x.garak_engine_put_asset_owned(n, name.length, rate, channels, buffer, count)))
     },
     removeAsset(id) {
       const name = utf8Encode(id)

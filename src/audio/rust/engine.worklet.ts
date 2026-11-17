@@ -22,6 +22,8 @@ const METERS_EVERY = 8
 const COLLECT_AFTER = 8
 /** A staged update builds tracks after the render until this much of the quantum is used (fraction). */
 const STAGE_BUDGET = 0.35
+/** PCM uploads copy this many samples per quantum (2 MiB): a long file never stalls the audio thread. */
+const ASSET_CHUNK = 1 << 19
 
 /**
  * The unified Rust render engine (garak-engine.wasm) as one AudioWorklet node: the whole project —
@@ -40,6 +42,7 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
   private readonly status = emptyStatus()
   private readonly queue: EngineRequest[] = []
   private stage: { seq: number } | null = null
+  private upload: { seq: number; id: string; sampleRate: number; channels: number; samples: Float32Array; buffer: number; offset: number } | null = null
   private appliedSeq = 0
   private pendingPeak = 0
   private sinceStatus = 0
@@ -84,14 +87,19 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
 
   /** Runs queued messages in order until one starts a staged update. */
   private pump(): void {
-    while (!this.stage && this.queue.length) {
+    while (!this.stage && !this.upload && this.queue.length) {
       const message = this.queue.shift()!
       const engine = this.engine
       if (!engine) { this.post({ type: 'error', seq: message.seq, message: 'garak-engine.wasm is not running', engine: false }); this.appliedSeq = Math.max(this.appliedSeq, message.seq); continue }
       try {
         switch (message.type) {
           case 'asset':
-            // One copy into the module; the transferred buffer is dropped with this message.
+            // One copy into the module, in pieces after the render when long; the transferred buffer is
+            // dropped with this message.
+            if (message.samples.length > ASSET_CHUNK) {
+              this.upload = { seq: message.seq, id: message.id, sampleRate: message.sampleRate, channels: message.channels, samples: message.samples, buffer: engine.beginAsset(message.samples.length), offset: 0 }
+              return
+            }
             engine.putAsset(message.id, message.sampleRate, message.channels, message.samples)
             break
           case 'remove-asset': engine.removeAsset(message.id); this.collectIn = COLLECT_AFTER; break
@@ -147,6 +155,25 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
     this.pump()
   }
 
+  /** One piece of a long PCM upload after the render; hands the buffer over when it is full. */
+  private advanceUpload(): void {
+    const engine = this.engine, upload = this.upload
+    if (!engine || !upload) return
+    try {
+      const end = Math.min(upload.samples.length, upload.offset + ASSET_CHUNK)
+      engine.writeAsset(upload.buffer, upload.offset, upload.samples.subarray(upload.offset, end))
+      upload.offset = end
+      if (end < upload.samples.length) return
+      engine.finishAsset(upload.id, upload.sampleRate, upload.channels, upload.buffer, upload.samples.length)
+      this.ack(upload.seq)
+    } catch (error) {
+      this.refuse(upload.seq, error)
+    }
+    this.appliedSeq = Math.max(this.appliedSeq, upload.seq)
+    this.upload = null
+    this.pump()
+  }
+
   private transport(command: number, frame: number): void {
     const name = TRANSPORT[command]
     if (name) this.engine?.transport(name, frame)
@@ -178,7 +205,7 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
     if (!engine || !out?.length) return this.alive
     const began = this.clock()
     // Steady playback: the transport plays and no update is being built or applied around this quantum.
-    const steady = engine.playing && !engine.countingIn && !this.stage && !this.controlled
+    const steady = engine.playing && !engine.countingIn && !this.stage && !this.upload && !this.controlled
     this.controlled = false
     this.ring?.drain(this.appliedSeq, this.applyRing)
     const frames = out[0].length
@@ -211,7 +238,8 @@ class GarakEngineProcessor extends AudioWorkletProcessor {
     }
     const s = this.status
     const quantumMs = frames / sampleRate * 1000
-    if (this.stage) this.advanceStage(began, quantumMs)
+    if (this.upload) this.advanceUpload()
+    else if (this.stage) this.advanceStage(began, quantumMs)
     this.pendingPeak = Math.max(this.pendingPeak, engine.masterPeak)
     if (this.collectIn >= 0 && this.collectIn-- === 0) engine.collect()
     s.frame = engine.frame

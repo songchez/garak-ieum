@@ -156,6 +156,19 @@ pub extern "C" fn garak_engine_alloc_f32(count: usize) -> *mut f32 {
     p
 }
 
+/// Like `garak_engine_alloc_f32` without zeroing (the host writes every sample before handing it to
+/// `garak_engine_put_asset_owned`, in pieces across render quanta for long PCM). Null when `count` is 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn garak_engine_alloc_f32_uninit(count: usize) -> *mut f32 {
+    if count == 0 {
+        return core::ptr::null_mut();
+    }
+    let mut v: Vec<f32> = Vec::with_capacity(count);
+    let p = v.as_mut_ptr();
+    core::mem::forget(v);
+    p
+}
+
 /// # Safety
 /// `p` came from `garak_engine_alloc_f32(count)` and is not used afterwards.
 #[unsafe(no_mangle)]

@@ -124,6 +124,29 @@ describe.skipIf(!wasm)('web Rust engine host paths', () => {
     engine.destroy()
   })
 
+  it('takes long PCM in pieces (the worklet copies one piece per quantum) exactly like one copy', () => {
+    const test = dryMixProject()
+    const render = (pieces: boolean) => {
+      const engine = instantiateGarakEngine(wasm!, RATE, BLOCK, false)
+      for (const a of assetsOf(test)) {
+        if (!pieces) { engine.putAsset(a.id, a.sampleRate, a.channels, a.samples); continue }
+        const buffer = engine.beginAsset(a.samples.length)
+        for (let at = 0; at < a.samples.length; at += 10_007) engine.writeAsset(buffer, at, a.samples.subarray(at, Math.min(a.samples.length, at + 10_007)))
+        engine.finishAsset(a.id, a.sampleRate, a.channels, buffer, a.samples.length)
+      }
+      const { json, binary } = wire(test)
+      engine.set(json, binary)
+      engine.transport('play')
+      const out = new Float32Array(BLOCK * 400)
+      for (let q = 0; q < 400; q += 1) out.set(engine.renderPlanar(BLOCK)[0], q * BLOCK)
+      engine.destroy()
+      return out
+    }
+    const whole = render(false)
+    expect(energy(whole)).toBeGreaterThan(0)
+    expect(render(true)).toEqual(whole)
+  })
+
   it('routes live note events to the track (audio tracks ignore them until instruments are ported)', () => {
     const { engine } = realtime(dryMixProject())
     engine.live(0, 'noteOn', 60, 0.8, 1)
