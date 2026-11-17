@@ -3,8 +3,8 @@
 2026-11-16 · 0.2.0 이후 0단계(아키텍처 리뷰 R1–R4) 구현
 
 - 범위: 렌더러(TS)가 만든 렌더 계획을 네이티브 엔진에 보내고, 편집이 생길 때 **바뀐 만큼만** 적용하는 규칙입니다. 편집 1회마다 프로젝트 전체를 다시 만들던 구조(리뷰 병목 1·2)를 대체합니다.
-- 이 문서는 **앞으로 만들 Rust 엔진의 입력 계약**이기도 합니다. Rust 코어는 같은 RenderPlan을 받고 같은 Diff 종류를 같은 규칙으로 적용해야 합니다(8장).
-- 구현: [timeline.ts](../src/audio/native/timeline.ts)(계획 컴파일) · [timelineSync.ts](../src/audio/native/timelineSync.ts)(차분 계획·바이너리 인코딩) · [native-audio.ts](../desktop/native-audio.ts)(Electron 전달) · [protocol.hpp](../native/src/protocol.hpp)·[host.cpp](../native/src/host.cpp)(호스트 파싱·병합) · [engine.cpp](../native/src/engine.cpp) `RenderEngine::update`(엔진 적용) · [dsp.cpp](../native/src/dsp.cpp)(임펄스 응답 캐시).
+- 이 문서는 **통합 Rust 엔진(`rust/garak-engine`)의 입력 계약**이기도 합니다. 0.3.2부터 데스크톱(C ABI `garak-ffi`)과 웹(AudioWorklet의 `garak-engine-wasm`) 모두 같은 RenderPlan을 이 엔진에 보내고, 엔진은 같은 Diff 종류를 같은 규칙으로 적용합니다(8장). 엔진은 제어 스레드의 `Controller`가 파싱·준비·분류를 하고, 오디오 스레드의 `Renderer`가 lock-free SPSC 큐로 받은 명령을 블록 경계에서 적용합니다([RUST_ENGINE 3장](RUST_ENGINE.md#3-데이터-모델과-실시간-규칙)).
+- 구현: [timeline.ts](../src/audio/native/timeline.ts)(계획 컴파일) · [timelineSync.ts](../src/audio/native/timelineSync.ts)(차분 계획·바이너리 인코딩) · [native-audio.ts](../desktop/native-audio.ts)(Electron 전달) · [protocol.hpp](../native/src/protocol.hpp)·[host.cpp](../native/src/host.cpp)(호스트 파싱·병합) · [engine.cpp](../native/src/engine.cpp) `RenderEngine::update`(셸, Rust 그래프에 같은 계획 전달) · Rust 엔진 [protocol.rs](../rust/garak-engine/src/protocol.rs)(파서·patch 병합)·[engine.rs](../rust/garak-engine/src/engine.rs) `Controller::update`(분류·적용)·[queue.rs](../rust/garak-engine/src/queue.rs)(명령/반환 큐) · 웹 [RustWebAudioEngine.ts](../src/audio/rust/RustWebAudioEngine.ts)(같은 `project.set`/`project.patch`를 워크릿에 전달).
 
 ---
 
@@ -178,7 +178,7 @@ flowchart LR
 
 ## 8. Rust 엔진이 지켜야 할 계약
 
-Rust 코어(`garak-engine`)는 이 프로토콜의 엔진 쪽 절반을 그대로 구현합니다.
+Rust 코어(`garak-engine`)는 이 프로토콜의 엔진 쪽 절반을 그대로 구현합니다(구현됨: C ABI `garak_rs_engine_set`/`_patch`, WASM `garak_engine_set`/`_patch`. C++ 엔진과의 패리티와 무할당 검사는 [RUST_ENGINE 3·7장](RUST_ENGINE.md#7-패리티-전략과-결과)).
 
 1. **입력**: `apply_plan(RenderPlan)`(= 4.3의 새 그래프)과 `push_diff`(Mix, Send, Param, Replace, Master, Revision). 바이너리 레코드 형식(3.4)은 그대로 씁니다.
 2. **분류 규칙**: 4장의 표와 `liveEffectParameter` 예외 목록이 같아야 합니다. 같은 입력이면 같은 경로(`applied`)를 고릅니다.

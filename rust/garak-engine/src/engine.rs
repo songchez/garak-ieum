@@ -1,6 +1,7 @@
 //! The engine: a control half ([`Controller`]) that prepares graphs and classifies diffs, and an
 //! audio half ([`Renderer`]) that applies commands at block boundaries and renders. Mirrors
-//! native/src/engine.cpp `RenderEngine` (prepare / submit / update / render) for audio tracks.
+//! native/src/engine.cpp `RenderEngine` (prepare / submit / update / render): audio and built-in
+//! instrument tracks, live MIDI to built-in instruments.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -8,19 +9,28 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::delay::CompensationDelay;
 use crate::error::{Error, require};
-use crate::insert::{KernelCache, live_parameter, validated_values};
+use crate::external::{DeviceInput, Io, Stage};
+use crate::insert::{KernelCache, catalog, live_parameter, validated, validated_values};
+use crate::instrument::{self, removed_notes, renumber_notes, same_notes};
 use crate::json::Json;
 use crate::master::Master;
 use crate::math;
-use crate::plan::{LaneTarget, PcmAsset, Plan, TrackPlan};
+use crate::metronome::{Clicks, MeterEvent, MeterMap, Metronome, clicks, grid, meter_clicks};
+use crate::plan::{LaneTarget, PcmAsset, Plan, RouteKind, RouteTap, SampleSet, SourceKind, TrackPlan};
 use crate::protocol;
 use crate::queue::{Consumer, Producer, channel};
+use crate::routes::{self, Levels};
 use crate::tempo::TempoMap;
-use crate::track::{Feed, Track, TrackInfo};
+use crate::track::{Feed, LiveEvent, Track, TrackInfo};
+
+/// Route recording taps the renderer copies out per block (docs/RUST_ENGINE.md 5.7).
+pub const MAX_TAPS: usize = 8;
+/// Longest metronome stroke (C++ `setMetronome`: 4 s at the engine rate).
+const MAX_STROKE_SECONDS: usize = 4;
 
 const MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 const COMMAND_CAPACITY: usize = 1024;
@@ -65,6 +75,11 @@ pub struct Snapshot {
     pub ready: bool,
     pub master_peak: f32,
     pub leaked: u64,
+    /// A count-in is running (the transport starts when it ends).
+    pub counting_in: bool,
+    /// Live events a track played, and events no track could play (audio tracks, unknown index).
+    pub live_played: u64,
+    pub live_ignored: u64,
 }
 
 #[derive(Debug, Default)]
@@ -76,6 +91,9 @@ struct Published {
     ready: AtomicBool,
     peak: AtomicU32,
     leaked: AtomicU64,
+    counting_in: AtomicBool,
+    live_played: AtomicU64,
+    live_ignored: AtomicU64,
 }
 
 /// A prepared graph (C++ `PreparedProject::Impl`).
@@ -90,33 +108,74 @@ pub(crate) struct Graph {
     /// Boxed: a track replacement is a pointer swap and a retired track never moves.
     #[allow(clippy::vec_box)]
     tracks: Vec<Box<Track>>,
-    /// Render order: senders first, then returns (the C++ processing levels without routes).
-    order: Vec<usize>,
+    /// Metronome grid inputs (C++ `PreparedProject::Impl::meters` + timeline header).
+    meters: MeterMap,
+    meter_mapped: bool,
+    bpm: f64,
+    meter: (i32, i32),
+    /// Processing levels: route sources and senders before the tracks that read them (engine.cpp
+    /// `levelOrder`/`levelStart`/`masterLevel`).
+    levels: Levels,
     master: Master,
     latency: u32,
     sender_latency: u32,
     tail: f64,
     /// Continues the running graph (same project): tracks adopt their predecessors.
     continues: bool,
+    /// Tempo / length / cycle changed: every continuing track recomputes its cursors.
+    header_changed: bool,
 }
 
 enum Command {
     Graph(Box<Graph>),
-    Play,
+    /// Play after a count-in of this many frames (0: now).
+    Play(i64),
     Pause,
     Stop,
     Seek(i64),
-    Mix { track: u32, gain: f32, pan: f32, audible: bool, unmuted_audible: bool },
-    Send { ret: u32, sender: u32, pre: bool, gain: f32 },
-    Param { track: u32, insert: u32, index: u32, value: f64 },
-    Replace { track: u32, runtime: Box<Track> },
+    Mix {
+        track: u32,
+        gain: f32,
+        pan: f32,
+        audible: bool,
+        unmuted_audible: bool,
+    },
+    Send {
+        ret: u32,
+        sender: u32,
+        pre: bool,
+        gain: f32,
+    },
+    Param {
+        track: u32,
+        insert: u32,
+        index: u32,
+        value: f64,
+    },
+    Replace {
+        track: u32,
+        runtime: Box<Track>,
+    },
     Master(f32),
     Revision(u64),
+    MasterBypass(bool),
+    Metronome {
+        clicks: Option<Arc<Clicks>>,
+        on: bool,
+        gain: f32,
+    },
+    Monitor([u64; 4]),
+    Taps([i32; MAX_TAPS]),
+    Live {
+        track: u32,
+        event: LiveEvent,
+    },
 }
 
 enum Retired {
     Graph(#[allow(dead_code)] Box<Graph>),
     Track(#[allow(dead_code)] Box<Track>),
+    Clicks(#[allow(dead_code)] Arc<Clicks>),
 }
 
 struct Ticketed {
@@ -124,7 +183,8 @@ struct Ticketed {
     command: Command,
 }
 
-/// Control-thread record of the running graph (C++ `ControlRecipe`).
+/// Control-thread record of the running graph (C++ `ControlRecipe`). `plan` holds the notes as
+/// renumbered against the running graph (unchanged notes keep their ids).
 #[derive(Debug, Clone)]
 struct Recipe {
     plan: Plan,
@@ -138,7 +198,10 @@ struct Recipe {
 pub struct Controller {
     config: EngineConfig,
     assets: BTreeMap<String, Arc<PcmAsset>>,
+    sets: BTreeMap<String, Arc<SampleSet>>,
     cache: KernelCache,
+    /// Prepared IEUM WAVE table sets, shared by patches with the same user banks.
+    wave: crate::wave::WaveCache,
     recipe: Option<Recipe>,
     /// The host's merged copy of the project (what `project.patch` applies to).
     current: Option<Plan>,
@@ -146,6 +209,9 @@ pub struct Controller {
     retired: Consumer<Retired>,
     published: Arc<Published>,
     ticket: u64,
+    staged: Option<Staged>,
+    /// Tracks of the staged plan built by `step`, by plan index (consumed by the commit).
+    prebuilt: Vec<Option<(Track, TrackInfo)>>,
 }
 
 impl core::fmt::Debug for Controller {
@@ -161,12 +227,35 @@ pub struct Renderer {
     retired: Producer<Retired>,
     published: Arc<Published>,
     active: Option<Box<Graph>>,
+    /// A graph swap waiting for an IEUM WAVE table crossfade of the running graph (engine.cpp
+    /// `deferred`): retried at the next render, before any later command.
+    deferred: Option<Ticketed>,
     playing: bool,
     position: i64,
     master_gain: f32,
     target_master_gain: f32,
     last_ticket: u64,
     leaked: u64,
+    /// Offline stems/freeze (C++ `setMasterBypass`): no master gain, no master processor.
+    master_bypass: bool,
+    metronome: Metronome,
+    metronome_on: bool,
+    metronome_gain: f32,
+    count_in_remaining: i64,
+    count_in_elapsed: i64,
+    count_in_length: i64,
+    /// Monitored tracks by graph index (C++ `monitor`).
+    monitor: [u64; 4],
+    /// Route recording taps: graph indices (-1 none) and their route inputs of the last render call,
+    /// `MAX_TAPS` interleaved stereo slots of `max_block` frames.
+    taps: [i32; MAX_TAPS],
+    tap_out: Vec<f32>,
+    live_played: u64,
+    live_ignored: u64,
+    /// The master feed of the current block for master-resampling routes.
+    master_feed: Vec<f32>,
+    /// The active graph for render-ahead producers on the host's workers (`ahead.rs`).
+    shared: Arc<AtomicPtr<Graph>>,
 }
 
 impl core::fmt::Debug for Renderer {
@@ -192,13 +281,17 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
         Controller {
             config,
             assets: BTreeMap::new(),
+            sets: BTreeMap::new(),
             cache: KernelCache::default(),
+            wave: crate::wave::WaveCache::default(),
             recipe: None,
             current: None,
             commands: cp,
             retired: rc,
             published: published.clone(),
             ticket: 0,
+            staged: None,
+            prebuilt: Vec::new(),
         },
         Renderer {
             config,
@@ -206,12 +299,27 @@ pub fn engine(config: EngineConfig) -> Result<(Controller, Renderer), Error> {
             retired: rp,
             published,
             active: None,
+            deferred: None,
             playing: false,
             position: 0,
             master_gain: 1.0,
             target_master_gain: 1.0,
             last_ticket: 0,
             leaked: 0,
+            master_bypass: false,
+            metronome: Metronome::default(),
+            metronome_on: false,
+            metronome_gain: 0.0,
+            count_in_remaining: 0,
+            count_in_elapsed: 0,
+            count_in_length: 0,
+            monitor: [0; 4],
+            taps: [-1; MAX_TAPS],
+            tap_out: vec![0.0; config.max_block as usize * 2 * MAX_TAPS],
+            live_played: 0,
+            live_ignored: 0,
+            master_feed: vec![0.0; config.max_block as usize * 2],
+            shared: Arc::new(AtomicPtr::new(core::ptr::null_mut())),
         },
     ))
 }
@@ -242,6 +350,20 @@ fn runtime_inserts(t: &TrackPlan) -> Vec<Option<usize>> {
         .collect()
 }
 
+/// Instrument identity (engine.cpp `sameSourceIdentity` + the resolved set and PCM objects): equal
+/// sources keep their voices across an edit, parameters may differ.
+fn same_source(old: &TrackPlan, neu: &TrackPlan, old_info: &TrackInfo, new_info: &TrackInfo) -> bool {
+    old.enabled
+        && neu.enabled
+        && old.source.kind == neu.source.kind
+        && old.source.instrument_id == neu.source.instrument_id
+        && old.source.sample_set_id == neu.source.sample_set_id
+        && old.source.is_kit == neu.source.is_kit
+        && old.source.plugin_instance == neu.source.plugin_instance
+        && old_info.set == new_info.set
+        && (neu.source.kind != SourceKind::BuiltinSampled || old_info.assets == new_info.assets)
+}
+
 /// Per runtime insert of `next`: the runtime insert of `old` with the same id and type.
 fn insert_origins(old: &TrackPlan, next: &TrackPlan) -> Vec<Option<usize>> {
     let from = runtime_inserts(old);
@@ -259,6 +381,43 @@ fn insert_origins(old: &TrackPlan, next: &TrackPlan) -> Vec<Option<usize>> {
                 .and_then(|(_, f)| *f)
         })
         .collect()
+}
+
+/// One track's classified edit (engine.cpp `update`).
+#[derive(Default)]
+struct Edit {
+    replace: bool,
+    mix: bool,
+    sends: Vec<usize>,
+    params: Vec<(u32, u32, f64)>,
+}
+
+/// A staged update (`Controller::stage_json`): the parsed plan and the tracks it will build.
+struct Staged {
+    plan: Plan,
+    todo: Vec<usize>,
+    next: usize,
+}
+
+/// Track `i` of `p`: the one `Controller::step` built for this plan, else built now.
+#[allow(clippy::too_many_arguments)]
+fn take_built(
+    prebuilt: &mut [Option<(Track, TrackInfo)>],
+    i: usize,
+    p: &Plan,
+    t: &TrackPlan,
+    assets: &BTreeMap<String, Arc<PcmAsset>>,
+    max_block: u32,
+    sets: &BTreeMap<String, Arc<SampleSet>>,
+    cache: &mut KernelCache,
+    wave: &mut crate::wave::WaveCache,
+    reuse: Option<f64>,
+) -> Result<(Track, TrackInfo), Error> {
+    match prebuilt.get_mut(i).and_then(Option::take) {
+        // A track that keeps its IEUM WAVE processor is built here (the prebuilt one made its own).
+        Some(built) if reuse.is_none() => Ok(built),
+        _ => Track::build(p, t, assets, max_block, sets, cache, wave, reuse),
+    }
 }
 
 impl Controller {
@@ -285,6 +444,71 @@ impl Controller {
         self.assets.remove(id);
     }
 
+    /// Registers (or replaces) a sample instrument / kit (the host's `samples.register`). Every
+    /// zone's PCM must already be registered. Tracks using a replaced set rebuild on the next update.
+    pub fn put_sample_set(&mut self, set: SampleSet) -> Result<(), Error> {
+        require(!set.id.is_empty() && set.id.len() <= 512, "Invalid sample set id")?;
+        for z in &set.zones {
+            require(self.assets.contains_key(&z.asset_id), "Sample asset is missing")?;
+        }
+        for z in &set.release_zones {
+            require(self.assets.contains_key(&z.asset_id), "Release sample asset is missing")?;
+        }
+        self.sets.insert(set.id.clone(), Arc::new(set));
+        Ok(())
+    }
+
+    /// `samples.register` params as JSON text (see [`protocol::parse_sample_set`]).
+    pub fn register_samples_json(&mut self, text: &[u8]) -> Result<(), Error> {
+        let set = protocol::parse_sample_set(&Json::parse(text)?)?;
+        self.put_sample_set(set)
+    }
+
+    pub fn remove_sample_set(&mut self, id: &str) {
+        self.sets.remove(id);
+    }
+
+    /// Live note-on to an instrument track (C++ `noteOn`): rings until its note-off.
+    pub fn note_on(&mut self, track: u32, pitch: i32, velocity: f32, id: i32) -> Result<u64, Error> {
+        require((0..=127).contains(&pitch), "Invalid live MIDI note")?;
+        checked(f64::from(velocity), 0.0, 2.0, "Invalid MIDI velocity")?;
+        self.live(track, LiveEvent::NoteOn { pitch: pitch as u8, velocity, id })
+    }
+
+    /// An editor audition note of `duration` frames (C++ `previewNote`).
+    pub fn preview_note(
+        &mut self,
+        track: u32,
+        pitch: i32,
+        velocity: f32,
+        duration: u32,
+    ) -> Result<u64, Error> {
+        require(
+            (0..=127).contains(&pitch) && duration > 0 && duration <= self.config.sample_rate * 30,
+            "Invalid preview note",
+        )?;
+        checked(f64::from(velocity), 0.0, 2.0, "Invalid preview velocity")?;
+        self.live(track, LiveEvent::Preview { pitch: pitch as u8, velocity, frames: duration })
+    }
+
+    /// Live note-off (`id` >= 0 matches that note-on's id, else every live note of `pitch`).
+    pub fn note_off(&mut self, track: u32, pitch: i32, id: i32) -> Result<u64, Error> {
+        require((0..=127).contains(&pitch), "Invalid live MIDI note")?;
+        self.live(track, LiveEvent::NoteOff { pitch: pitch as u8, id })
+    }
+
+    /// Live controller (ControlEvent numbering: 0..127 CC, 128 pressure, 129 bend, 130 program,
+    /// 131 bend range). CC64 defers live note-offs of built-in instruments.
+    pub fn control_change(&mut self, track: u32, controller: i32, value: i32) -> Result<u64, Error> {
+        require(instrument::valid_controller_value(controller, value), "Invalid live MIDI controller")?;
+        self.live(track, LiveEvent::Control { controller: controller as u16, value })
+    }
+
+    /// Live panic on one track: lifts the live pedal, releases live notes, centres bend / modulation.
+    pub fn all_notes_off(&mut self, track: u32) -> Result<u64, Error> {
+        self.live(track, LiveEvent::AllNotesOff)
+    }
+
     /// Latency (frames), sender latency and tail (seconds) of the last submitted graph.
     pub fn graph_info(&self) -> Option<(u32, u32, f64)> {
         self.recipe.as_ref().map(|r| (r.sender_latency + r.return_latency, r.sender_latency, r.tail))
@@ -305,6 +529,9 @@ impl Controller {
             ready: p.ready.load(Ordering::Relaxed),
             master_peak: f32::from_bits(p.peak.load(Ordering::Relaxed)),
             leaked: p.leaked.load(Ordering::Relaxed),
+            counting_in: p.counting_in.load(Ordering::Relaxed),
+            live_played: p.live_played.load(Ordering::Relaxed),
+            live_ignored: p.live_ignored.load(Ordering::Relaxed),
         }
     }
 
@@ -331,7 +558,75 @@ impl Controller {
     }
 
     pub fn play(&mut self) -> Result<u64, Error> {
-        self.enqueue(Command::Play)
+        self.enqueue(Command::Play(0))
+    }
+
+    /// Plays after a count-in of `frames` (C++ `RenderEngine::play(countIn)`): the metronome clicks it at the
+    /// tempo and meter where the transport starts, then the transport starts on the next frame. Offline
+    /// engines start at once.
+    pub fn play_count_in(&mut self, frames: i64) -> Result<u64, Error> {
+        require(
+            frames >= 0 && frames <= i64::from(self.config.sample_rate) * 120,
+            "Invalid count-in length",
+        )?;
+        self.enqueue(Command::Play(frames))
+    }
+
+    /// Offline stems/freeze render pre-master (C++ `setMasterBypass`; realtime engines ignore it).
+    pub fn set_master_bypass(&mut self, on: bool) -> Result<u64, Error> {
+        self.enqueue(Command::MasterBypass(on))
+    }
+
+    /// The metronome (C++ `setMetronome`): click strokes per level (bar downbeat, group start, pulse) at the
+    /// engine rate, synthesized by the host (docs/METRONOME.md); `None` keeps the current strokes.
+    pub fn set_metronome(&mut self, strokes: Option<Clicks>, on: bool, gain: f32) -> Result<u64, Error> {
+        require(gain.is_finite() && (0.0..=4.0).contains(&gain), "Invalid metronome gain")?;
+        if let Some(c) = &strokes {
+            require(c.sample_rate == self.config.sample_rate, "Metronome strokes must use the engine rate")?;
+            for level in &c.levels {
+                require(
+                    level.len() <= self.config.sample_rate as usize * MAX_STROKE_SECONDS,
+                    "Metronome stroke is too long",
+                )?;
+                require(
+                    level.iter().all(|v| v.is_finite() && v.abs() <= 4.0),
+                    "Invalid metronome stroke sample",
+                )?;
+            }
+        }
+        self.collect();
+        self.enqueue(Command::Metronome { clicks: strokes.map(Arc::new), on, gain })
+    }
+
+    /// Monitored tracks by graph index (C++ `setMonitoring`): their live input (routed tracks: their route
+    /// input) plays through their chain.
+    pub fn set_monitoring(&mut self, tracks: &[u32]) -> Result<u64, Error> {
+        let mut mask = [0u64; 4];
+        for &t in tracks {
+            require(t < 256, "Invalid monitor track index")?;
+            if let Some(word) = mask.get_mut(t as usize / 64) {
+                *word |= 1u64 << (t % 64);
+            }
+        }
+        self.enqueue(Command::Monitor(mask))
+    }
+
+    /// Route recording taps: the route input of these graph indices is copied out every block.
+    pub fn set_taps(&mut self, tracks: &[i32]) -> Result<u64, Error> {
+        require(tracks.len() <= MAX_TAPS, "Too many route taps")?;
+        let mut taps = [-1i32; MAX_TAPS];
+        for (slot, &t) in taps.iter_mut().zip(tracks) {
+            *slot = t;
+        }
+        self.enqueue(Command::Taps(taps))
+    }
+
+    /// A live note / controller event for the track at graph index `track` (applied at the next block):
+    /// what live MIDI, the computer keyboard and note previews send. Built-in instruments play it
+    /// (`Track::live_event`); other tracks count it as ignored.
+    pub fn live(&mut self, track: u32, event: LiveEvent) -> Result<u64, Error> {
+        require(track < 256 && event.is_valid(), "Invalid live MIDI event")?;
+        self.enqueue(Command::Live { track, event })
     }
 
     pub fn pause(&mut self) -> Result<u64, Error> {
@@ -358,6 +653,122 @@ impl Controller {
             self.current.as_ref().ok_or_else(|| Error::new("No project to patch; send project.set"))?;
         let plan = protocol::parse_patch(current, &Json::parse(text)?, blob)?;
         self.update(plan)
+    }
+
+    /// The first part of a `project.set` (`patch` false) or `project.patch` spread over several control
+    /// calls (docs/RUST_ENGINE.md 5.7: the worklet does one per render quantum, so a large project never
+    /// stalls the audio thread): parses and classifies it and returns how many tracks `step` will build.
+    /// Nothing changes until `commit`; a new stage replaces an unfinished one.
+    pub fn stage_json(&mut self, patch: bool, text: &[u8], blob: &[u8]) -> Result<usize, Error> {
+        self.staged = None;
+        self.prebuilt.clear();
+        self.collect();
+        let json = Json::parse(text)?;
+        let plan = if patch {
+            let current =
+                self.current.as_ref().ok_or_else(|| Error::new("No project to patch; send project.set"))?;
+            protocol::parse_patch(current, &json, blob)?
+        } else {
+            protocol::parse_timeline(&json, blob)?
+        };
+        let todo: Vec<usize> = match self.classify(&plan)? {
+            None => (0..plan.tracks.len()).collect(),
+            Some(edits) => edits.iter().enumerate().filter(|(_, e)| e.replace).map(|(i, _)| i).collect(),
+        };
+        let count = todo.len();
+        self.prebuilt = (0..plan.tracks.len()).map(|_| None).collect();
+        self.staged = Some(Staged { plan, todo, next: 0 });
+        Ok(count)
+    }
+
+    /// Builds the next track of the staged update. `Ok(true)` once every track is built (or nothing is
+    /// staged); an error drops the stage (the update is refused, as `update` would refuse it).
+    pub fn step(&mut self) -> Result<bool, Error> {
+        let Some(st) = &mut self.staged else { return Ok(true) };
+        let Some(&i) = st.todo.get(st.next) else { return Ok(true) };
+        st.next += 1;
+        let done = st.next >= st.todo.len();
+        let Some(t) = st.plan.tracks.get(i) else { return Ok(done) };
+        // Unchanged notes keep their running ids (`full` and the replacement path renumber the same way).
+        let mut t = t.clone();
+        if let Some(last) = &self.recipe
+            && last.plan.project_id == st.plan.project_id
+            && let Some(old) = last.plan.tracks.iter().find(|o| o.id == t.id)
+        {
+            let _ = renumber_notes(&old.notes, &mut t.notes);
+        }
+        match Track::build(
+            &st.plan,
+            &t,
+            &self.assets,
+            self.config.max_block,
+            &self.sets,
+            &mut self.cache,
+            &mut self.wave,
+            None,
+        ) {
+            Ok(built) => {
+                if let Some(slot) = self.prebuilt.get_mut(i) {
+                    *slot = Some(built);
+                }
+                Ok(done)
+            }
+            Err(e) => {
+                self.staged = None;
+                self.prebuilt.clear();
+                Err(e)
+            }
+        }
+    }
+
+    /// Applies the staged update (tracks `step` did not build are built now).
+    pub fn commit(&mut self) -> Result<Applied, Error> {
+        let st = self.staged.take().ok_or_else(|| Error::new("No staged update"))?;
+        let result = self.update(st.plan);
+        self.prebuilt.clear();
+        result
+    }
+
+    /// A reverb kernel (FFT partitions of the generated impulse) for the insert parameters `type` and
+    /// `size`, from the cache or generated now: what a helper worker computes so the worklet never
+    /// generates one (`import_reverb_kernel`). Returns the kernel data and the impulse length.
+    pub fn reverb_kernel(&mut self, type_param: f64, size: f64) -> Result<(Arc<[f32]>, usize), Error> {
+        self.cache.reverb(f64::from(self.config.sample_rate), type_param, size)
+    }
+
+    /// `reverb_kernel` for a reverb insert's parameter map as the timeline carries it (`{"type":..,
+    /// "size":..}`, defaults filled in and validated like the insert): returns the `type` and `size` the
+    /// kernel was made for, and the kernel.
+    pub fn reverb_kernel_for(&mut self, params_json: &[u8]) -> Result<(f64, f64, Arc<[f32]>), Error> {
+        let json = Json::parse(params_json)?;
+        let members = json.as_object().ok_or_else(|| Error::new("Invalid parameter map"))?;
+        let mut params = Vec::with_capacity(members.len());
+        for (k, v) in members {
+            params.push((k.clone(), v.as_f64().ok_or_else(|| Error::new("Invalid parameter"))?));
+        }
+        let plan = crate::plan::InsertPlan {
+            id: String::from("kernel"),
+            kind: String::from("reverb"),
+            enabled: true,
+            params,
+            plugin_instance: String::new(),
+            host: None,
+        };
+        let kind = garak_dsp::EffectKind::Reverb;
+        let values = validated_values(kind, &plan)?;
+        let value = |id: &str| {
+            let index = kind.params().iter().position(|d| d.id == id).unwrap_or(0);
+            values.get(index).copied().unwrap_or(0.0)
+        };
+        let (type_param, size) = (value("type"), value("size"));
+        let (kernel, _) = self.reverb_kernel(type_param, size)?;
+        Ok((type_param, size, kernel))
+    }
+
+    /// Adds a kernel computed elsewhere (`reverb_kernel` of another instance at this rate). It is kept
+    /// through the next update, then while an insert uses it.
+    pub fn import_reverb_kernel(&mut self, type_param: f64, size: f64, data: Vec<f32>) -> Result<(), Error> {
+        self.cache.import(f64::from(self.config.sample_rate), type_param, size, data)
     }
 
     /// engine.cpp `prepare`: validates `p` and builds a graph (control thread).
@@ -404,8 +815,19 @@ impl Controller {
         )?;
         let mut tracks = Vec::with_capacity(p.tracks.len());
         let mut infos = Vec::with_capacity(p.tracks.len());
-        for t in &p.tracks {
-            let (track, info) = Track::build(p, t, &self.assets, self.config.max_block, &mut self.cache)?;
+        for (i, t) in p.tracks.iter().enumerate() {
+            let (track, info) = take_built(
+                &mut self.prebuilt,
+                i,
+                p,
+                t,
+                &self.assets,
+                self.config.max_block,
+                &self.sets,
+                &mut self.cache,
+                &mut self.wave,
+                None,
+            )?;
             tracks.push(Box::new(track));
             infos.push(info);
         }
@@ -438,12 +860,14 @@ impl Controller {
         }
         estimated += (sender_latency + return_latency) as usize * p.tracks.len() * 16;
         require(estimated <= MEMORY_LIMIT, "Plugin compensation exceeds native memory budget")?;
-        for t in &mut tracks {
+        for (i, t) in tracks.iter_mut().enumerate() {
+            t.index = i;
             if t.is_return {
                 t.compensation = CompensationDelay::new(return_latency.saturating_sub(t.latency));
             } else {
                 t.compensation = CompensationDelay::new(sender_latency - t.latency);
                 t.output_delay = CompensationDelay::new(return_latency);
+                t.output_delay_frames = return_latency;
             }
         }
         // Sends: each feeds an existing return (never itself; returns never send).
@@ -486,9 +910,7 @@ impl Controller {
                 t.return_input = vec![0.0; block];
             }
         }
-        let mut order: Vec<usize> =
-            (0..tracks.len()).filter(|&i| !p.tracks.get(i).is_some_and(|t| t.is_return)).collect();
-        order.extend((0..tracks.len()).filter(|&i| p.tracks.get(i).is_some_and(|t| t.is_return)));
+        let levels = routes::prepare(&mut tracks, self.config.max_block);
         let graph = Graph {
             project_id: p.project_id.clone(),
             revision: p.revision,
@@ -497,30 +919,69 @@ impl Controller {
             master_gain: p.master_gain,
             tempo: if p.tempo_map.is_empty() { None } else { Some(TempoMap::new(p.bpm, &p.tempo_map)) },
             tracks,
-            order,
+            meters: MeterMap::new(p.time_sig_numerator, p.time_sig_denominator, &p.meter_map),
+            meter_mapped: !p.meter_map.is_empty(),
+            bpm: p.bpm,
+            meter: (p.time_sig_numerator, p.time_sig_denominator),
+            levels,
             master: Master::new(sr),
             latency: sender_latency + return_latency,
             sender_latency,
             tail,
             continues: false,
+            header_changed: false,
         };
         let recipe = Recipe { plan: p.clone(), tracks: infos, sender_latency, return_latency, tail };
         Ok((Box::new(graph), recipe))
     }
 
-    /// Submits a new graph that continues the running one by track id (engine.cpp `submit`).
+    /// Submits a new graph that continues the running one by track id (engine.cpp `update`'s full
+    /// path + `submit` + `linkGraph`). Unchanged notes keep their ids.
     fn full(&mut self, p: Plan) -> Result<Applied, Error> {
-        let (mut graph, recipe) = self.prepare(&p)?;
+        let mut staged = p.clone();
         if let Some(last) = &self.recipe
             && last.plan.project_id == p.project_id
         {
+            for t in &mut staged.tracks {
+                if let Some(old) = last.plan.tracks.iter().find(|o| o.id == t.id) {
+                    let _ = renumber_notes(&old.notes, &mut t.notes);
+                }
+            }
+        }
+        let (mut graph, recipe) = self.prepare(&staged)?;
+        if let Some(last) = &self.recipe
+            && last.plan.project_id == p.project_id
+            && last.plan.sample_rate == p.sample_rate
+        {
             graph.continues = true;
-            for (t, plan) in graph.tracks.iter_mut().zip(&p.tracks) {
-                if let Some(prev) = last.plan.tracks.iter().position(|o| o.id == plan.id) {
-                    t.predecessor = Some(prev);
-                    if let Some(old) = last.plan.tracks.get(prev) {
-                        t.insert_origin = insert_origins(old, plan);
-                    }
+            graph.header_changed = !staged.same_timing(&last.plan);
+            for (i, (t, neu)) in graph.tracks.iter_mut().zip(&staged.tracks).enumerate() {
+                let Some(prev) = last.plan.tracks.iter().position(|o| o.id == neu.id) else { continue };
+                let (Some(old), Some(old_info), Some(new_info)) =
+                    (last.plan.tracks.get(prev), last.tracks.get(prev), recipe.tracks.get(i))
+                else {
+                    continue;
+                };
+                t.predecessor = Some(prev);
+                t.same_source = same_source(old, neu, old_info, new_info);
+                let same_events = old.notes == neu.notes
+                    && old.controls == neu.controls
+                    && old.audio == neu.audio
+                    && old.automation == neu.automation
+                    && old_info.assets == new_info.assets
+                    && old.inserts.len() == neu.inserts.len()
+                    && old
+                        .inserts
+                        .iter()
+                        .zip(&neu.inserts)
+                        .all(|(a, b)| a.id == b.id && a.kind == b.kind && a.enabled == b.enabled);
+                t.identical = same_events
+                    && old.enabled == neu.enabled
+                    && (t.same_source || !neu.enabled)
+                    && old.is_return == neu.is_return;
+                t.insert_origin = insert_origins(old, neu);
+                if !t.identical && old.notes != neu.notes {
+                    t.removed = removed_notes(&old.notes, &neu.notes);
                 }
             }
         }
@@ -540,7 +1001,20 @@ impl Controller {
     /// Brings the running graph to `p` with the least work (engine.cpp `update`, audio tracks).
     pub fn update(&mut self, p: Plan) -> Result<Applied, Error> {
         self.collect();
-        let Some(last) = &self.recipe else { return self.full(p) };
+        let result = match self.classify(&p) {
+            Ok(None) => self.full(p),
+            Ok(Some(edits)) => self.apply_edits(p, edits),
+            Err(e) => Err(e),
+        };
+        // Imported kernels were kept for this update; from now on live inserts hold the ones in use.
+        self.cache.unpin();
+        result
+    }
+
+    /// The update's classification (engine.cpp `update`): `None` for a new graph, else each track's edit.
+    /// Builds nothing; validation errors refuse the update like `update` does.
+    fn classify(&self, p: &Plan) -> Result<Option<Vec<Edit>>, Error> {
+        let Some(last) = &self.recipe else { return Ok(None) };
         if p.project_id != last.plan.project_id
             || p.sample_rate != last.plan.sample_rate
             || !p.same_timing(&last.plan)
@@ -548,29 +1022,22 @@ impl Controller {
             || p.tracks.len() != last.plan.tracks.len()
             || p.tracks.iter().zip(&last.plan.tracks).any(|(a, b)| a.id != b.id)
         {
-            return self.full(p);
+            return Ok(None);
         }
         checked(f64::from(p.master_gain), 0.0, 2.0, "Invalid native master gain")?;
-        #[derive(Default)]
-        struct Edit {
-            replace: bool,
-            mix: bool,
-            sends: Vec<usize>,
-            params: Vec<(u32, u32, f64)>,
-        }
         let mut edits: Vec<Edit> = Vec::with_capacity(p.tracks.len());
         for (neu, (old, info)) in p.tracks.iter().zip(last.plan.tracks.iter().zip(&last.tracks)) {
             let mut e = Edit::default();
             if neu.is_return != old.is_return || neu.route != old.route || neu.sends.len() != old.sends.len()
             {
-                return self.full(p);
+                return Ok(None);
             }
             for (s, (a, b)) in neu.sends.iter().zip(&old.sends).enumerate() {
                 if a.return_id != b.return_id
                     || a.pre != b.pre
                     || send_lane(neu, &a.return_id) != send_lane(old, &b.return_id)
                 {
-                    return self.full(p);
+                    return Ok(None);
                 }
                 if a.gain != b.gain {
                     checked(f64::from(a.gain), 0.0, 4.0, "Invalid native send gain")?;
@@ -590,7 +1057,7 @@ impl Controller {
             }
             let mut replace = neu.enabled != old.enabled
                 || neu.input != old.input
-                || neu.notes != old.notes
+                || !same_notes(&neu.notes, &old.notes)
                 || neu.controls != old.controls
                 || neu.audio != old.audio
                 || neu.automation != old.automation
@@ -605,6 +1072,7 @@ impl Controller {
                     || a.kind != b.kind
                     || a.enabled != b.enabled
                     || a.plugin_instance != b.plugin_instance
+                    || a.host != b.host
                 {
                     replace = true;
                     break;
@@ -613,11 +1081,11 @@ impl Controller {
                     continue;
                 }
                 let Some(Some(insert)) = runtime.get(k) else { continue }; // disabled: recipe only
-                let Some(kind) = garak_dsp::EffectKind::from_id(a.kind.as_bytes()) else {
+                let Some(defs) = catalog(&a.kind) else {
                     replace = true;
                     break;
                 };
-                validated_values(kind, a)?;
+                validated(defs, a)?;
                 let mut names: Vec<&str> = a.params.iter().map(|(k, _)| k.as_str()).collect();
                 names.extend(b.params.iter().map(|(k, _)| k.as_str()));
                 names.sort_unstable();
@@ -631,18 +1099,26 @@ impl Controller {
                         replace = true;
                         break;
                     };
-                    let index = kind.params().iter().position(|d| d.id == name).unwrap_or(0);
+                    let index = defs.iter().position(|d| d.id == name).unwrap_or(0);
                     e.params.push((*insert as u32, index as u32, value));
                 }
             }
             if !replace && neu.enabled {
-                // A re-registered PCM asset under the same id: the track resolves it again.
-                let resolved: Vec<usize> = neu
-                    .audio
-                    .iter()
-                    .map(|w| self.assets.get(&w.asset_id).map_or(0, |a| Arc::as_ptr(a) as usize))
-                    .collect();
-                replace = resolved != info.assets;
+                // A re-registered PCM asset or sample set under the same id: the track resolves it
+                // again (same order as the build: sample zones, release zones, windows).
+                let ptr = |id: &str| self.assets.get(id).map_or(0, |a| Arc::as_ptr(a) as usize);
+                let mut resolved: Vec<usize> = Vec::new();
+                if neu.source.kind == SourceKind::BuiltinSampled {
+                    match (self.sets.get(&neu.source.sample_set_id), &info.set) {
+                        (Some(set), Some(old)) if set == old => {
+                            resolved.extend(set.zones.iter().map(|z| ptr(&z.asset_id)));
+                            resolved.extend(set.release_zones.iter().map(|z| ptr(&z.asset_id)));
+                        }
+                        _ => replace = true,
+                    }
+                }
+                resolved.extend(neu.audio.iter().map(|w| ptr(&w.asset_id)));
+                replace |= resolved != info.assets;
             }
             e.replace = replace;
             if replace {
@@ -651,9 +1127,15 @@ impl Controller {
             }
             edits.push(e);
         }
+        Ok(Some(edits))
+    }
+
+    /// Applies classified edits: replacements, then diff commands (engine.cpp `update`, second half).
+    fn apply_edits(&mut self, p: Plan, edits: Vec<Edit>) -> Result<Applied, Error> {
+        let Some(last) = &self.recipe else { return self.full(p) };
         // Replacements (control thread); a latency change falls back to a full graph.
         let (sender_latency, return_latency) = (last.sender_latency, last.return_latency);
-        let mut replacements: Vec<(usize, Box<Track>, TrackInfo)> = Vec::new();
+        let mut replacements: Vec<(usize, Box<Track>, TrackInfo, TrackPlan)> = Vec::new();
         for (i, e) in edits.iter().enumerate() {
             if !e.replace {
                 continue;
@@ -663,26 +1145,50 @@ impl Controller {
             else {
                 continue;
             };
-            let (mut t, new_info) =
-                Track::build(&p, neu, &self.assets, self.config.max_block, &mut self.cache)?;
+            // IEUM WAVE patch changes keep their table crossfade on the graph path; the same patch
+            // keeps the running processor (engine.cpp `update`).
+            let wave = neu.source.kind == SourceKind::NativeWavetable
+                || old.source.kind == SourceKind::NativeWavetable;
+            let same_wave = neu.source == old.source && neu.enabled && old.enabled;
+            if wave && !same_wave {
+                return self.full(p);
+            }
+            let reuse = if wave { Some(info.instrument_tail) } else { None };
+            let mut neu = neu.clone();
+            let removed = renumber_notes(&old.notes, &mut neu.notes);
+            let (mut t, new_info) = take_built(
+                &mut self.prebuilt,
+                i,
+                &p,
+                &neu,
+                &self.assets,
+                self.config.max_block,
+                &self.sets,
+                &mut self.cache,
+                &mut self.wave,
+                reuse,
+            )?;
             if new_info.latency != info.latency {
                 return self.full(p);
             }
             t.predecessor = Some(i);
-            t.insert_origin = insert_origins(old, neu);
+            t.index = i;
+            t.same_source = same_source(old, &neu, info, &new_info);
+            t.removed = removed;
+            t.insert_origin = insert_origins(old, &neu);
             if old.is_return {
                 t.compensation = CompensationDelay::new(return_latency.saturating_sub(t.latency));
             } else {
                 t.compensation = CompensationDelay::new(sender_latency - t.latency);
                 t.output_delay = CompensationDelay::new(return_latency);
             }
-            replacements.push((i, Box::new(t), new_info));
+            replacements.push((i, Box::new(t), new_info, neu));
         }
         let mut commands: Vec<Command> = Vec::new();
-        let mut infos: Vec<(usize, TrackInfo)> = Vec::new();
-        for (i, runtime, info) in replacements {
+        let mut infos: Vec<(usize, TrackInfo, TrackPlan)> = Vec::new();
+        for (i, runtime, info, plan) in replacements {
             commands.push(Command::Replace { track: i as u32, runtime });
-            infos.push((i, info));
+            infos.push((i, info, plan));
         }
         let replaced = infos.len();
         for (i, (neu, e)) in p.tracks.iter().zip(&edits).enumerate() {
@@ -722,11 +1228,11 @@ impl Controller {
         }
         // The recipe follows the running graph.
         if let Some(recipe) = &mut self.recipe {
-            for (i, info) in infos {
-                if let (Some(slot), Some(t)) = (recipe.tracks.get_mut(i), p.tracks.get(i)) {
+            for (i, info, plan) in infos {
+                if let Some(slot) = recipe.tracks.get_mut(i) {
                     *slot = info;
                     if let Some(pt) = recipe.plan.tracks.get_mut(i) {
-                        *pt = t.clone();
+                        *pt = plan;
                     }
                 }
             }
@@ -775,10 +1281,11 @@ impl Renderer {
         }
     }
 
-    fn reset(&mut self, effects: bool) {
+    fn reset(&mut self, chase: bool, effects: bool) {
+        let position = self.position;
         if let Some(g) = &mut self.active {
             for t in &mut g.tracks {
-                t.reset(effects);
+                t.reset(position, chase, effects);
             }
             if effects {
                 g.master.reset();
@@ -800,19 +1307,49 @@ impl Renderer {
     }
 
     fn consume(&mut self) {
-        while let Some(Ticketed { ticket, command }) = self.commands.pop() {
+        self.consume_until(u64::MAX);
+    }
+
+    /// Applies queued commands up to ticket `limit` (a host shell keeps later ones for the block in
+    /// which its own matching command applies; see `host.rs`). A graph swap deferred for an IEUM WAVE
+    /// table crossfade goes first.
+    fn consume_until(&mut self, limit: u64) {
+        loop {
+            let next = match self.deferred.take() {
+                Some(d) => d,
+                None if self.commands.peek().is_some_and(|c| c.ticket <= limit) => {
+                    let Some(c) = self.commands.pop() else { break };
+                    c
+                }
+                None => break,
+            };
+            let Ticketed { ticket, command } = next;
             match command {
                 Command::Graph(mut next) => {
+                    let continues = next.continues
+                        && self.active.as_ref().is_some_and(|p| p.project_id == next.project_id);
+                    if continues
+                        && let Some(prev) = &mut self.active
+                        && !prev.tracks.iter_mut().all(|t| t.source.ready_to_transfer())
+                    {
+                        self.deferred = Some(Ticketed { ticket, command: Command::Graph(next) });
+                        break;
+                    }
                     let previous = self.active.take();
                     let project_changed = previous.as_ref().is_none_or(|p| p.project_id != next.project_id);
                     let preserve = next.continues && !project_changed;
                     self.target_master_gain = next.master_gain;
                     let mut previous = previous;
                     if preserve && let Some(prev) = &mut previous {
+                        let (position, playing) = (self.position, self.playing);
+                        let header_changed = next.header_changed;
                         for t in &mut next.tracks {
                             match t.predecessor.and_then(|i| prev.tracks.get_mut(i)) {
-                                Some(old) => t.adopt(old, false),
-                                None => t.reset(true),
+                                Some(old) => {
+                                    let same_events = t.identical && !header_changed;
+                                    t.adopt(old, position, same_events, false);
+                                }
+                                None => t.reset(position, playing, true),
                             }
                         }
                         next.master.take_state_from(&prev.master);
@@ -823,35 +1360,45 @@ impl Renderer {
                     if project_changed {
                         self.position = 0;
                         self.playing = false;
+                        self.monitor = [0; 4];
+                        self.count_in_remaining = 0;
                     }
                     self.normalize(false);
                     if !preserve {
-                        self.reset(true);
+                        self.reset(self.playing, true);
                     }
                     if let Some(prev) = previous {
                         self.retire(Retired::Graph(prev));
                     }
                 }
-                Command::Play => {
-                    if !self.playing {
+                Command::Play(count_in) => {
+                    if !self.playing && self.count_in_remaining == 0 {
                         self.normalize(true);
-                        self.playing = self.active.is_some();
-                        self.reset(false);
+                        if count_in > 0 && self.active.is_some() && !self.config.offline {
+                            self.count_in_remaining = count_in;
+                            self.count_in_length = count_in;
+                            self.count_in_elapsed = 0;
+                        } else {
+                            self.playing = self.active.is_some();
+                            self.reset(self.playing, false);
+                        }
                     }
                 }
                 Command::Pause => {
+                    self.count_in_remaining = 0;
                     self.playing = false;
-                    self.reset(false);
+                    self.reset(false, false);
                 }
                 Command::Stop => {
+                    self.count_in_remaining = 0;
                     self.playing = false;
                     self.position = 0;
-                    self.reset(true);
+                    self.reset(false, true);
                 }
                 Command::Seek(frame) => {
                     self.position = frame;
                     self.normalize(false);
-                    self.reset(true);
+                    self.reset(self.playing, true);
                 }
                 Command::Mix { track, gain, pan, audible, unmuted_audible } => {
                     if let Some(t) = self.active.as_mut().and_then(|g| g.tracks.get_mut(track as usize)) {
@@ -875,6 +1422,7 @@ impl Renderer {
                         .as_mut()
                         .and_then(|g| g.tracks.get_mut(track as usize))
                         .and_then(|t| t.inserts.get_mut(insert as usize))
+                        .and_then(Stage::fx_mut)
                     {
                         i.set_param(index as usize, value);
                         i.commit();
@@ -882,9 +1430,10 @@ impl Renderer {
                 }
                 Command::Replace { track, mut runtime } => {
                     let slot = self.active.as_mut().and_then(|g| g.tracks.get_mut(track as usize));
+                    let position = self.position;
                     match slot {
                         Some(old) => {
-                            runtime.adopt(old, true);
+                            runtime.adopt(old, position, false, true);
                             core::mem::swap(old, &mut runtime);
                             self.retire(Retired::Track(runtime));
                         }
@@ -892,6 +1441,35 @@ impl Renderer {
                     }
                 }
                 Command::Master(gain) => self.target_master_gain = gain,
+                Command::MasterBypass(on) => self.master_bypass = on,
+                Command::Metronome { clicks, on, gain } => {
+                    self.metronome_on = on;
+                    self.metronome_gain = gain;
+                    if let Some(next) = clicks {
+                        // Ringing strokes index the old set: they stop with it.
+                        self.metronome.player.clear();
+                        if let Some(old) = self.metronome.clicks.replace(next) {
+                            self.retire(Retired::Clicks(old));
+                        }
+                    }
+                }
+                Command::Monitor(mask) => self.monitor = mask,
+                Command::Taps(taps) => {
+                    self.taps = taps;
+                    self.tap_out.fill(0.0);
+                }
+                Command::Live { track, event } => {
+                    let played = self
+                        .active
+                        .as_mut()
+                        .and_then(|g| g.tracks.get_mut(track as usize))
+                        .is_some_and(|t| t.live_event(event));
+                    if played {
+                        self.live_played += 1;
+                    } else {
+                        self.live_ignored += 1;
+                    }
+                }
                 Command::Revision(revision) => {
                     if let Some(g) = &mut self.active {
                         g.revision = revision;
@@ -900,6 +1478,8 @@ impl Renderer {
             }
             self.last_ticket = ticket;
         }
+        let active = self.active.as_deref_mut().map_or(core::ptr::null_mut(), |g| g as *mut Graph);
+        self.shared.store(active, Ordering::Release);
     }
 
     /// A return's input for this block: every feeding send's tap times its gain, smoothed like
@@ -954,16 +1534,132 @@ impl Renderer {
         }
     }
 
+    /// A routed track's input for this block (engine.cpp `fillRouteInput`): its source's tap (rendered in an
+    /// earlier level) or the master feed. Same frames as the source: an internal route adds no latency.
+    fn fill_route_input(g: &mut Graph, i: usize, count: u32, feed: &[f32], io: &Io) {
+        let n = count as usize * 2;
+        let Some(t) = g.tracks.get_mut(i) else { return };
+        let mut input = core::mem::take(&mut t.route_input);
+        let (kind, tap, src) = (t.route_kind, t.route_tap, t.route_source);
+        if let Some(dst) = input.get_mut(..n) {
+            let from: Option<&[f32]> = match kind {
+                RouteKind::Track => {
+                    src.and_then(|x| g.tracks.get(x).map(|s| (x, s))).map(|(x, s)| match tap {
+                        RouteTap::PreFx => s.pre_tap.as_slice(),
+                        RouteTap::PostFx => s.post_tap.as_slice(),
+                        // Without a return delay the output is the tap (a track rendering ahead: its ring's).
+                        RouteTap::PostFader if s.fader_tap.is_empty() => {
+                            io.ahead_mix(x, count).unwrap_or(&s.buffer)
+                        }
+                        RouteTap::PostFader => s.fader_tap.as_slice(),
+                    })
+                }
+                RouteKind::Master => Some(feed),
+                RouteKind::None => None,
+            };
+            match from.and_then(|f| f.get(..n)) {
+                Some(f) => dst.copy_from_slice(f),
+                None => dst.fill(0.0),
+            }
+        }
+        if let Some(t) = g.tracks.get_mut(i) {
+            t.route_input = input;
+        }
+    }
+
+    /// The master feed before the master-resampling level (engine.cpp `fillMasterFeed`): the master gain over
+    /// the tracks in the feed (before the master processor), smoothed exactly as the output mix of this block.
+    fn fill_master_feed(g: &Graph, feed: &mut [f32], count: u32, rate: f64, gain: (f32, f32), io: &Io) {
+        let Some(feed) = feed.get_mut(..count as usize * 2) else { return };
+        feed.fill(0.0);
+        for (i, t) in g.tracks.iter().enumerate().filter(|(_, t)| t.in_master_feed) {
+            for (f, x) in feed.iter_mut().zip(io.ahead_mix(i, count).unwrap_or(t.mix(count))) {
+                *f += *x;
+            }
+        }
+        let s = math::smoothing(rate, 0.012) as f32;
+        let (mut current, target) = gain;
+        for pair in feed.as_chunks_mut::<2>().0 {
+            current = math::mul_add_f32(target - current, s, current);
+            for x in pair {
+                *x *= current;
+            }
+        }
+    }
+
+    /// Every track of one block level by level, summed into `block` in track order (the master is applied by
+    /// the caller). With `parallel`, the tracks of a level render on the host's workers (`host.rs`); the sum
+    /// is the same either way. `gain`: the shell's master gain (current, target) for the master feed.
+    #[allow(clippy::too_many_arguments)]
+    fn render_tracks(
+        g: &mut Graph,
+        block: &mut [f32],
+        position: i64,
+        count: u32,
+        playing: bool,
+        rate: f64,
+        parallel: Option<&host::Parallel>,
+        io: &Io,
+        feed: &mut [f32],
+        gain: (f32, f32),
+    ) {
+        let tempo = g.tempo.as_ref().map(|t| t.bpm_at(t.beat_at_frame(position as f64, rate)));
+        let smoothing = math::smoothing(rate, 0.012);
+        for level in 0..g.levels.count() {
+            if g.levels.master == Some(level) {
+                Self::fill_master_feed(g, feed, count, rate, gain, io);
+            }
+            let size = g.levels.level(level).len();
+            for k in 0..size {
+                let Some(&index) = g.levels.level(level).get(k) else { continue };
+                match g.tracks.get(index) {
+                    Some(t) if t.is_return => Self::fill_return_input(g, index, position, count, smoothing),
+                    Some(t) if t.routed => Self::fill_route_input(g, index, count, feed, io),
+                    _ => {}
+                }
+            }
+            if parallel.is_some_and(|p| host::render_level(g, p, level, position, count, playing, tempo, io))
+            {
+                continue;
+            }
+            for k in 0..size {
+                let Some(&index) = g.levels.level(level).get(k) else { continue };
+                if io.ahead_mix(index, count).is_some() {
+                    continue; // The host renders it ahead.
+                }
+                if let Some(t) = g.tracks.get_mut(index) {
+                    t.render(position, count, playing, tempo, io);
+                }
+            }
+        }
+        for (i, t) in g.tracks.iter().enumerate().filter(|(_, t)| t.direct_out()) {
+            for (o, x) in block.iter_mut().zip(io.ahead_mix(i, count).unwrap_or(t.mix(count))) {
+                *o += *x;
+            }
+        }
+    }
+
     /// Renders `out.len() / 2` stereo frames (interleaved). Real-time safe.
     pub fn render(&mut self, out: &mut [f32]) {
+        self.render_io(out, &[], 0);
+    }
+
+    /// Like `render`, with the live input block (`channels` interleaved, `out.len() / 2` frames) that
+    /// monitored tracks hear (engine.cpp `render(output, input, frames, channels)`). Real-time safe.
+    pub fn render_io(&mut self, out: &mut [f32], input: &[f32], channels: usize) {
         self.consume();
         let frames = (out.len() / 2) as u32;
         let rate = f64::from(self.config.sample_rate);
         let offline = self.config.offline;
         let mut cursor = 0u32;
         let mut master_peak = 0.0f32;
+        let mut master_feed = core::mem::take(&mut self.master_feed);
         while cursor < frames {
             let mut count = self.config.max_block.min(frames - cursor);
+            let counting_in = self.count_in_remaining > 0;
+            if counting_in {
+                count = count.min(self.count_in_remaining.min(i64::from(u32::MAX)) as u32);
+            }
             if let Some(g) = &self.active
                 && self.playing
             {
@@ -975,9 +1671,9 @@ impl Renderer {
                     match g.cycle {
                         Some((start, _)) => {
                             self.position = start;
-                            self.reset(false);
+                            self.reset(true, false);
                         }
-                        None => self.playing = false,
+                        None => self.stop_at_end(),
                     }
                 }
                 if self.playing && self.position < boundary {
@@ -987,33 +1683,43 @@ impl Renderer {
             let Some(block) = out.get_mut(cursor as usize * 2..(cursor + count) as usize * 2) else { break };
             block.fill(0.0);
             let position = self.position;
+            let bypass = offline && self.master_bypass;
             if let Some(g) = &mut self.active {
                 let playing = self.playing && position < g.length_frames;
-                let tempo = g.tempo.as_ref().map(|t| t.bpm_at(t.beat_at_frame(position as f64, rate)));
-                let smoothing = math::smoothing(rate, 0.012);
-                for k in 0..g.order.len() {
-                    let Some(&index) = g.order.get(k) else { continue };
-                    if g.tracks.get(index).is_some_and(|t| t.is_return) {
-                        Self::fill_return_input(g, index, position, count, smoothing);
+                let io = Io {
+                    monitor: self.monitor,
+                    offline,
+                    input: Some(DeviceInput { data: input, channels, cursor: cursor as usize }),
+                    ..Io::default()
+                };
+                let gain = (self.master_gain, self.target_master_gain);
+                Self::render_tracks(
+                    g,
+                    block,
+                    position,
+                    count,
+                    playing,
+                    rate,
+                    None,
+                    &io,
+                    &mut master_feed,
+                    gain,
+                );
+                if !bypass {
+                    let s = math::smoothing(rate, 0.012) as f32;
+                    for pair in block.as_chunks_mut::<2>().0 {
+                        self.master_gain = math::mul_add_f32(
+                            self.target_master_gain - self.master_gain,
+                            s,
+                            self.master_gain,
+                        );
+                        for x in pair {
+                            *x *= self.master_gain;
+                        }
                     }
-                    if let Some(t) = g.tracks.get_mut(index) {
-                        t.render(position, count, playing, tempo);
-                    }
+                    g.master.process(block);
                 }
-                for t in &g.tracks {
-                    for (o, x) in block.iter_mut().zip(t.mix(count)) {
-                        *o += *x;
-                    }
-                }
-                let s = math::smoothing(rate, 0.012) as f32;
-                for pair in block.as_chunks_mut::<2>().0 {
-                    self.master_gain =
-                        math::mul_add_f32(self.target_master_gain - self.master_gain, s, self.master_gain);
-                    for x in pair {
-                        *x *= self.master_gain;
-                    }
-                }
-                g.master.process(block);
+                Self::copy_taps(g, &self.taps, &mut self.tap_out, self.config.max_block, cursor, count);
             }
             for x in block.iter_mut() {
                 if !x.is_finite() {
@@ -1023,11 +1729,22 @@ impl Renderer {
                     master_peak = x.abs();
                 }
             }
+            self.render_clicks(block, count, counting_in);
             if self.playing {
                 self.position += i64::from(count);
             }
+            if counting_in {
+                self.count_in_remaining -= i64::from(count);
+                if self.count_in_remaining <= 0 {
+                    // The transport starts on the frame right after the count-in.
+                    self.count_in_remaining = 0;
+                    self.playing = self.active.is_some();
+                    self.reset(self.playing, false);
+                }
+            }
             cursor += count;
         }
+        self.master_feed = master_feed;
         if let Some(g) = &self.active
             && self.playing
             && !offline
@@ -1035,13 +1752,129 @@ impl Renderer {
             match g.cycle {
                 Some((start, end)) if self.position >= end => {
                     self.position = start;
-                    self.reset(false);
+                    self.reset(true, false);
                 }
-                None if self.position >= g.length_frames => self.playing = false,
+                None if self.position >= g.length_frames => self.stop_at_end(),
                 _ => {}
             }
         }
         self.publish(master_peak);
+    }
+
+    /// The route inputs of the tapped tracks for frames `[cursor, cursor + count)` of this call.
+    fn copy_taps(
+        g: &Graph,
+        taps: &[i32; MAX_TAPS],
+        out: &mut [f32],
+        max_block: u32,
+        cursor: u32,
+        count: u32,
+    ) {
+        let slot = max_block as usize * 2;
+        for (k, &t) in taps.iter().enumerate() {
+            if t < 0 {
+                continue;
+            }
+            let from = k * slot + cursor as usize * 2;
+            let Some(dst) = out.get_mut(from..from + count as usize * 2) else { continue };
+            match g
+                .tracks
+                .get(t as usize)
+                .filter(|x| x.routed)
+                .and_then(|x| x.route_input.get(..count as usize * 2))
+            {
+                Some(src) => dst.copy_from_slice(src),
+                None => dst.fill(0.0),
+            }
+        }
+    }
+
+    /// The transport reached the project end (no cycle): plug-in style instruments release their
+    /// notes next block, built-in voices ring out (engine.cpp `render`).
+    fn stop_at_end(&mut self) {
+        self.playing = false;
+        if let Some(g) = &mut self.active {
+            for t in &mut g.tracks {
+                t.request_instrument_reset();
+            }
+        }
+    }
+
+    /// engine.cpp `renderClicks`: clicks after the master bus and meters, monitor only (offline engines
+    /// never click). The count-in clicks evenly at the tempo and in the meter where the transport starts;
+    /// the transport follows the tempo map and accents each bar's first pulse across meter changes.
+    fn render_clicks(&mut self, out: &mut [f32], count: u32, counting_in: bool) {
+        if self.config.offline {
+            return;
+        }
+        let rate = f64::from(self.config.sample_rate);
+        let Renderer { metronome, active, .. } = self;
+        let gain = match &metronome.clicks {
+            Some(c) if c.sample_rate == self.config.sample_rate => self.metronome_gain,
+            _ => 0.0,
+        };
+        if gain <= 0.0 {
+            if counting_in {
+                self.count_in_elapsed += i64::from(count);
+            }
+            return;
+        }
+        let Metronome { clicks: Some(set), player } = metronome else { return };
+        player.mix(set, out, count, gain);
+        if let Some(g) = active {
+            let position = self.position;
+            if counting_in {
+                let start = match &g.tempo {
+                    Some(t) => t.beat_at_frame(position as f64, rate),
+                    None => position as f64 * g.bpm / (60.0 * rate),
+                };
+                let meter = if g.meter_mapped {
+                    g.meters.at(start)
+                } else {
+                    MeterEvent { bar: 0, numerator: g.meter.0, denominator: g.meter.1, beat: 0.0 }
+                };
+                let bpm = g.tempo.as_ref().map_or(g.bpm, |t| t.bpm_at(start));
+                let pulses = grid(rate, bpm, meter.numerator, meter.denominator, None);
+                clicks(&pulses, set, player, out, self.count_in_elapsed, count, gain, self.count_in_length);
+            } else if self.metronome_on && self.playing && position < g.length_frames {
+                if g.meter_mapped {
+                    meter_clicks(
+                        &g.meters,
+                        rate,
+                        g.bpm,
+                        g.tempo.as_ref(),
+                        set,
+                        player,
+                        out,
+                        position,
+                        count,
+                        gain,
+                    );
+                } else {
+                    let pulses = grid(rate, g.bpm, g.meter.0, g.meter.1, g.tempo.as_ref());
+                    clicks(&pulses, set, player, out, position, count, gain, -1);
+                }
+            }
+        }
+        if counting_in {
+            self.count_in_elapsed += i64::from(count);
+        }
+    }
+
+    /// Each track's peak of the last block (graph order); returns how many it wrote.
+    pub fn track_peaks(&self, out: &mut [f32]) -> usize {
+        let Some(g) = &self.active else { return 0 };
+        let mut n = 0;
+        for (o, t) in out.iter_mut().zip(&g.tracks) {
+            *o = t.peak;
+            n += 1;
+        }
+        n
+    }
+
+    /// The route recording taps of the last render call (`MAX_TAPS` stereo slots of `max_block` frames).
+    pub fn tap_output(&self) -> &[f32] {
+        &self.tap_out
     }
 
     fn publish(&self, peak: f32) {
@@ -1052,6 +1885,9 @@ impl Renderer {
         p.revision.store(self.active.as_ref().map_or(0, |g| g.revision), Ordering::Relaxed);
         p.peak.store(peak.to_bits(), Ordering::Relaxed);
         p.leaked.store(self.leaked, Ordering::Relaxed);
+        p.counting_in.store(self.count_in_remaining > 0, Ordering::Relaxed);
+        p.live_played.store(self.live_played, Ordering::Relaxed);
+        p.live_ignored.store(self.live_ignored, Ordering::Relaxed);
         p.ticket.store(self.last_ticket, Ordering::Release);
     }
 
@@ -1075,4 +1911,14 @@ impl Renderer {
     pub fn position(&self) -> i64 {
         self.position
     }
+
+    /// Voices sounding on track `index` of the running graph (diagnostics and tests).
+    pub fn active_voices(&self, index: usize) -> usize {
+        self.active.as_ref().and_then(|g| g.tracks.get(index)).map_or(0, |t| t.source.active_voices())
+    }
 }
+
+mod ahead;
+mod host;
+pub use ahead::Ahead;
+pub use host::{BlockInfo, DynamicsReading, HostTask, Parallel};

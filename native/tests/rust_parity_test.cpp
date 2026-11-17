@@ -6,6 +6,7 @@
 // StereoProcessor interface (makeEffect(..., EffectBackend::Cpp / ::Rust)) with identical input,
 // block sizes, EffectControl automation, tempo changes, resets and takeStateFrom hand-overs. The
 // gate is a residual <= -90 dBFS per effect plus identical latency, tail and dynamics-meter values.
+// The guitar rig (garak_rs_rig_*) runs through the same comparison in groups (rigParity).
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_rust.h"
@@ -201,12 +202,15 @@ struct EffectStats {
 };
 std::map<std::string, EffectStats> stats;
 std::vector<std::string> order;
+// Row of the parity table the next renders count towards (default: the effect type).
+std::string statsGroup;
 
 // Renders `input` through the C++ and the Rust backend with the same programme of blocks/actions.
 void compare(const std::string& type, const std::string& name, const garak::Parameters& init, const std::vector<float>& input,
              const std::vector<Block>& blocks, double sr = rate, double bpm = 120) {
-  if (!stats.count(type)) order.push_back(type);
-  auto& st = stats[type];
+  const std::string key = statsGroup.empty() ? type : statsGroup;
+  if (!stats.count(key)) order.push_back(key);
+  auto& st = stats[key];
   std::unique_ptr<StereoProcessor> fx[2];
   std::unique_ptr<garak::dsp::EffectControl> control[2];
   std::vector<float> out[2] = {input, input};
@@ -345,16 +349,186 @@ void effectParity(const std::string& type) {
   }
 }
 
+// ---- Guitar rig ---------------------------------------------------------------------------------
+// makeEffect("guitar-rig") through both backends: every amp model, every cabinet x microphone, every
+// pedal alone and in a full rack (copies included), edge values and automation sweeps of every
+// parameter, rack reorder / bypass / duplicate / removal and reverb rebuilds as hand-overs, random racks,
+// 44.1 / 96 kHz. Each group is one row of the table.
+
+std::vector<Def> rigCatalog() {
+  std::vector<Def> defs;
+  for (std::uint32_t i = 0; i < garak_rs_rig_param_count(); ++i) {
+    char id[64];
+    const auto n = garak_rs_rig_param_id(i, id, sizeof id);
+    Def d{std::string(id, std::min(n, sizeof id)), 0, 0, 0};
+    garak_rs_rig_param_range(i, &d.fallback, &d.minimum, &d.maximum);
+    defs.push_back(d);
+  }
+  return defs;
+}
+
+// Rack slots (module code + 16 x instance) in signal order; the rest of the 18 slots empty.
+garak::Parameters rack(std::initializer_list<int> modules, garak::Parameters extra = {}) {
+  garak::Parameters p = std::move(extra);
+  int slot = 0;
+  for (const int m : modules) p["rackSlot" + std::to_string(slot++)] = m;
+  for (; slot < 18; ++slot) p["rackSlot" + std::to_string(slot)] = 0;
+  return p;
+}
+garak::Parameters merged(garak::Parameters a, const garak::Parameters& b) { for (const auto& [k, v] : b) a[k] = v; return a; }
+
+// Every module and a copy of the clipping / modulation pedals, everything switched on (18 slots).
+garak::Parameters fullRack(bool reverb = true) {
+  garak::Parameters on;
+  for (const char* base : {"comp", "drive", "fuzz", "amp", "cabinet", "chorus", "delay", "phaser", "tremolo", "reverb"})
+    for (const char* suffix : {"", "_2"}) on[std::string(base) + "Enabled" + suffix] = 1;
+  on["reverbEnabled"] = reverb ? 1 : 0; on["reverbEnabled_2"] = 0;
+  on["delayTime"] = 140; on["delayTime_2"] = 75; on["fuzzLevel_2"] = -24; on["ampModel_2"] = 2; on["cabinet_2"] = 3;
+  // comp, drive, fuzz, phaser, amp, cabinet, chorus, delay, tremolo, reverb, then copies and the tuner.
+  return rack({1, 2, 7, 8, 3, 4, 5, 6, 9, 10, 17, 18, 23, 24, 25, 22, 19, 20}, on);
+}
+
+std::vector<Block> sweepBlocks(std::size_t frameCount, std::uint32_t seed, const Def& def) {
+  std::vector<Block> blocks = plainBlocks(frameCount, seed, false);
+  const std::size_t steps = blocks.size();
+  for (std::size_t i = 0; i < steps; i += std::max<std::size_t>(1, steps / 24)) {
+    const double x = static_cast<double>(i) / static_cast<double>(steps);
+    const double tri = x < .5 ? 2 * x : 2 - 2 * x;
+    double v = def.minimum + tri * (def.maximum - def.minimum);
+    if (i == steps / 3) v = def.maximum + 10;
+    if (i == steps / 2) v = def.minimum - 10;
+    blocks[i].actions.push_back({Action::Automate, def.id, v, {}});
+  }
+  return blocks;
+}
+
+void rigParity() {
+  const std::string type = "guitar-rig";
+  const auto defs = rigCatalog();
+  check(defs.size() == 154, "guitar rig catalog size", static_cast<double>(defs.size()));
+  const auto input = programme(48000, rate, 11);
+  const std::vector<float> shortInput(input.begin(), input.begin() + 2 * 12000);
+  const std::vector<float> mediumInput(input.begin(), input.begin() + 2 * 24000);
+  auto find = [&](const std::string& id) { return *std::find_if(defs.begin(), defs.end(), [&](const Def& d) { return d.id == id; }); };
+
+  statsGroup = "guitar-rig (default rack)";
+  compare(type, "defaults", {}, input, plainBlocks(48000, 3, true));
+  compare(type, "empty rack", rack({}), shortInput, plainBlocks(12000, 4, false));
+
+  // Amp heads: every model, each knob swept, hot and quiet input gain.
+  statsGroup = "guitar-rig amp models";
+  for (int model = 0; model <= 4; ++model) {
+    const auto amp = rack({3}, {{"ampModel", model}});
+    compare(type, "amp model " + std::to_string(model), amp, mediumInput, plainBlocks(24000, 5 + model, false));
+    compare(type, "amp model " + std::to_string(model) + " max gain", merged(amp, {{"ampGain", 36}, {"ampBass", 12}, {"ampTreble", -12}}), shortInput, plainBlocks(12000, 6, false));
+    for (const char* id : {"ampGain", "ampBass", "ampMid", "ampTreble", "ampPresence", "ampLevel", "ampModel", "ampEnabled"})
+      compare(type, "amp model " + std::to_string(model) + " sweep " + id, amp, shortInput, sweepBlocks(12000, 7, find(id)));
+  }
+
+  // Cabinets x microphones, then position and distance sweeps.
+  statsGroup = "guitar-rig cabinets x mics";
+  for (int cab = 0; cab <= 4; ++cab) for (int mic = 0; mic <= 4; ++mic)
+    compare(type, "cabinet " + std::to_string(cab) + " mic " + std::to_string(mic), rack({3, 4}, {{"cabinet", cab}, {"micType", mic}, {"micPosition", cab * .25}, {"micDistance", mic * .25}}),
+            shortInput, plainBlocks(12000, 10 + cab * 5 + mic, false));
+  for (const char* id : {"cabinet", "micType", "micPosition", "micDistance", "cabinetEnabled"})
+    compare(type, std::string("cabinet sweep ") + id, rack({4}), mediumInput, sweepBlocks(24000, 8, find(id)));
+
+  // Each pedal alone (switched on), every knob at its edges and swept, the switch toggled.
+  statsGroup = "guitar-rig pedals";
+  const std::pair<int, const char*> pedals[] = {{1, "comp"}, {2, "drive"}, {5, "chorus"}, {6, "delay"}, {7, "fuzz"}, {8, "phaser"}, {9, "tremolo"}, {10, "reverb"}, {11, "tuner"}};
+  for (const auto& [code, base] : pedals) {
+    const auto alone = rack({code}, {{std::string(base) + "Enabled", 1}});
+    compare(type, std::string(base) + " alone", alone, mediumInput, plainBlocks(24000, 12 + code, false));
+    for (const auto& def : defs) {
+      if (def.id.rfind(base, 0) != 0 || def.id.find('_') != std::string::npos) continue;
+      for (const double v : {def.minimum, def.maximum})
+        compare(type, def.id + "=" + std::to_string(v), merged(alone, {{def.id, v}}), shortInput, plainBlocks(12000, 13, false));
+      compare(type, "sweep " + def.id, alone, mediumInput, sweepBlocks(24000, 14 + code, def));
+    }
+  }
+
+  // Full rack (every module, copies): construction edges and automation sweeps of every parameter.
+  statsGroup = "guitar-rig full rack";
+  const auto full = fullRack();
+  compare(type, "full rack", full, input, plainBlocks(48000, 15, true));
+  for (const auto& def : defs) {
+    if (def.id.rfind("rackSlot", 0) == 0) continue;
+    for (const double v : {def.minimum, def.maximum})
+      compare(type, "full " + def.id + "=" + std::to_string(v), merged(full, {{def.id, v}}), shortInput, plainBlocks(12000, 16, false));
+  }
+  for (const auto& def : defs) compare(type, "full sweep " + def.id, full, shortInput, sweepBlocks(12000, 17, def));
+
+  // Structural edits as hand-overs: reorder, bypass, duplicate, remove, reverb rebuilds, tuner.
+  statsGroup = "guitar-rig reorder/duplicate/hand-over";
+  {
+    const auto base = rack({1, 2, 3, 4, 5, 6, 10}, {{"driveEnabled", 1}, {"chorusEnabled", 1}, {"delayEnabled", 1}, {"reverbEnabled", 1}});
+    const std::vector<garak::Parameters> steps = {
+      rack({1, 2, 3, 4, 6, 5, 10}, base),                       // reorder (chorus <-> delay): O(1) swap
+      rack({2, 1, 3, 4, 6, 5, 10, 18}, merged(base, {{"driveEnabled_2", 1}})),  // reorder + duplicate drive
+      merged(rack({2, 1, 3, 4, 6, 5, 10, 18}, base), {{"driveEnabled", 0}}),     // bypass
+      rack({3, 4, 6, 10, 22, 21}, merged(base, {{"delayEnabled_2", 1}, {"chorusEnabled_2", 1}})),  // remove, copies of delay/chorus
+      rack({3, 4, 6, 10, 22, 21}, merged(base, {{"reverbDecay", .9}})),          // reverb rebuild (new decay)
+      rack({3, 4, 6, 10, 22, 21}, merged(base, {{"reverbEnabled", 0}})),         // reverb off: convolvers dropped
+      rack({11, 3, 4, 6, 10, 26}, merged(base, {{"reverbEnabled_2", 1}, {"tunerEnabled", 1}})),  // tuner engaged, reverb copy
+      rack({11, 3, 4, 6, 10, 26}, merged(base, {{"reverbEnabled_2", 1}})),       // tuner off again
+    };
+    std::vector<Block> blocks = plainBlocks(48000, 18, false);
+    for (std::size_t i = 0; i < steps.size(); ++i) blocks[(i + 1) * blocks.size() / (steps.size() + 1)].actions.push_back({Action::Handover, "", 0, steps[i]});
+    compare(type, "structural edits", base, input, blocks);
+    std::vector<Block> resets = plainBlocks(24000, 19, false);
+    resets[resets.size() / 2].actions.push_back({Action::Reset, "", 0, {}});
+    compare(type, "reset", full, mediumInput, resets);
+  }
+
+  // Random racks (random layouts, copies), random automation, a reset and a hand-over to another rack.
+  statsGroup = "guitar-rig random racks";
+  for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+    Rng rng{seed * 104729};
+    auto randomParams = [&] {
+      garak::Parameters p;
+      for (const auto& def : defs) {
+        if (def.id.rfind("rackSlot", 0) == 0) p[def.id] = rng.unit() < 0.3 ? 0 : static_cast<double>(rng.next() % 44);
+        else if (rng.unit() < 0.7) p[def.id] = def.id.find("Enabled") != std::string::npos ? (rng.unit() < .6 ? 1 : 0) : rng.range(def.minimum, def.maximum);
+      }
+      return p;
+    };
+    const auto init = randomParams();
+    std::vector<Block> blocks = plainBlocks(24000, seed, true);
+    for (std::size_t i = 0; i < blocks.size(); ++i) {
+      if (rng.unit() < 0.3) {
+        const auto& def = defs[rng.next() % defs.size()];
+        blocks[i].actions.push_back({Action::Automate, def.id, rng.range(def.minimum, def.maximum), {}});
+      }
+      if (i == blocks.size() / 3) blocks[i].actions.push_back({Action::Reset, "", 0, {}});
+      if (i == blocks.size() * 2 / 3) blocks[i].actions.push_back({Action::Handover, "", 0, randomParams()});
+    }
+    compare(type, "random " + std::to_string(seed), init, mediumInput, blocks);
+  }
+
+  // Other sample rates: the full rack (delay lines, IR lengths, coefficient designs, oversamplers).
+  statsGroup = "guitar-rig 44.1/96 kHz";
+  for (const double sr : {44100.0, 96000.0}) {
+    const std::size_t n = static_cast<std::size_t>(sr * 0.5);
+    compare(type, "rate " + std::to_string(static_cast<int>(sr)), full, programme(n, sr, 23), plainBlocks(n, 9, true), sr);
+    compare(type, "rate " + std::to_string(static_cast<int>(sr)) + " defaults", {}, programme(n, sr, 24), plainBlocks(n, 10, false), sr);
+  }
+  statsGroup.clear();
+}
+
 void ffiContract() {
   // Null handles are ignored, unknown kinds refused, every effect reports a catalog.
   garak_rs_fx_process(nullptr, nullptr, 128);
   garak_rs_fx_automate(nullptr, nullptr, 0);
-  check(garak_rs_fx_kind("guitar-rig", 10) < 0, "guitar rig has no Rust port yet");
+  // The guitar rig has its own entry points (garak_rs_rig_*), not a garak_rs_fx kind.
+  check(garak_rs_fx_kind("guitar-rig", 10) < 0, "guitar rig is not a garak_rs_fx kind");
+  check(garak::dsp::rustEffectSupported("guitar-rig"), "guitar rig has a Rust port");
+  garak_rs_rig_process(nullptr, nullptr, 128);
+  garak_rs_rig_automate(nullptr, nullptr, 0);
   check(garak_rs_fx_param_count(99) == 0, "unknown kind");
   check(garak::dsp::rustEffectsAvailable(), "rustEffectsAvailable");
   bool threw = false;
-  try { (void)garak::dsp::makeEffect("guitar-rig", {}, rate, 120, EffectBackend::Rust); } catch (const std::exception&) { threw = true; }
-  check(threw, "Rust guitar rig must throw");
+  try { (void)garak::dsp::makeEffect("guitar-rig", {{"ampGain", 99}}, rate, 120, EffectBackend::Rust); } catch (const std::exception&) { threw = true; }
+  check(threw, "Rust guitar rig validates parameters like the C++ path");
   threw = false;
   try { (void)garak::dsp::makeEffect("chorus", {{"rate", 99}}, rate, 120, EffectBackend::Rust); } catch (const std::exception&) { threw = true; }
   check(threw, "Rust path validates parameters like the C++ path");
@@ -363,7 +537,7 @@ void ffiContract() {
   if (env && std::string(env) == "all") check(garak::dsp::effectBackend("reverb") == EffectBackend::Rust, "GARAK_RUST_EFFECTS=all selects Rust");
   else if (env && (std::string(env) == "none" || std::string(env) == "cpp")) check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "GARAK_RUST_EFFECTS=none selects C++");
 #ifdef GARAK_RUST_EFFECTS_DEFAULT
-  else if (!env && std::string(GARAK_RUST_EFFECTS_DEFAULT) == "all") check(garak::dsp::effectBackend("delay") == EffectBackend::Rust, "build default (all) selects Rust");
+  else if (!env && std::string(GARAK_RUST_EFFECTS_DEFAULT) == "all") check(garak::dsp::effectBackend("delay") == EffectBackend::Rust && garak::dsp::effectBackend("guitar-rig") == EffectBackend::Rust, "build default (all) selects Rust, the rig included");
 #else
   else if (!env) check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "default backend is C++");
 #endif
@@ -371,7 +545,11 @@ void ffiContract() {
   check(garak::dsp::effectBackend("delay") == EffectBackend::Rust, "setEffectBackend(delay)");
   garak::dsp::setEffectBackend("all", EffectBackend::Cpp);
   check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "setEffectBackend(all, Cpp)");
-  check(garak::dsp::effectBackend("guitar-rig") == EffectBackend::Cpp, "guitar rig stays C++");
+  check(garak::dsp::effectBackend("guitar-rig") == EffectBackend::Cpp, "setEffectBackend(all, Cpp) includes the rig");
+  garak::dsp::setEffectBackend("guitar-rig", EffectBackend::Rust);
+  check(garak::dsp::effectBackend("guitar-rig") == EffectBackend::Rust, "setEffectBackend(guitar-rig)");
+  check(garak::dsp::effectBackend("delay") == EffectBackend::Cpp, "the rig switch leaves the other effects alone");
+  garak::dsp::setEffectBackend("all", EffectBackend::Cpp);
 }
 } // namespace
 
@@ -390,6 +568,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) != type) continue;
     effectParity(type);
   }
+  if (argc == 1 || std::string(argv[1]) == "guitar-rig") rigParity();
   std::printf("| effect | renders | max residual (dBFS) | worst case | latency/tail | meter |\n|---|---:|---:|---|---|---|\n");
   for (const auto& type : order) {
     const auto& s = stats[type];

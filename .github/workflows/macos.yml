@@ -49,6 +49,9 @@ jobs:
     env:
       CI: 'true'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # The native build's ctest includes the vintage instruments' CPU budget (8 voices < 3 % of one core). On
+      # shared installer runners it is reported, not enforced; rust.yml enforces it. Parity is always enforced.
+      GARAK_CPU_GATES: report
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,6 +110,13 @@ jobs:
 
       - name: Verify native audio and actual VST3 host
         run: pnpm native:test
+
+      # The default run above uses the unified Rust render engine (on by default since 0.3.2, docs/RUST_ENGINE.md 10).
+      # The hidden emergency fallback, the C++ track path, must keep working for this release.
+      - name: Verify native audio on the C++ fallback (GARAK_RUST_ENGINE=0)
+        env:
+          GARAK_RUST_ENGINE: '0'
+        run: node scripts/native-test.mjs
 
       - name: Install DMG and verify bundle metadata
         run: pnpm desktop:install:mac:test

@@ -30,6 +30,7 @@ mod imp {
     #[cfg_attr(target_os = "linux", link(name = "m"))]
     unsafe extern "C" {
         pub safe fn exp(x: f64) -> f64;
+        pub safe fn exp2(x: f64) -> f64;
         pub safe fn log(x: f64) -> f64;
         pub safe fn log10(x: f64) -> f64;
         pub safe fn pow(x: f64, y: f64) -> f64;
@@ -49,7 +50,7 @@ mod imp {
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod imp {
     use core::arch::wasm32::{f64x2_ceil, f64x2_extract_lane, f64x2_floor, f64x2_splat, f64x2_sqrt};
-    pub use libm::{cos, cosf, log10, round, sin, sinf, tanh};
+    pub use libm::{cos, cosf, exp2, log10, round, sin, sinf};
 
     // Host `Math` functions (garakWasm.ts `MATH_IMPORTS`). Only builtins V8 lowers to a direct call
     // of its own C implementation when imported (`tanh` and `log10` are not on that list, so they
@@ -66,6 +67,31 @@ mod imp {
         pub safe fn log(x: f64) -> f64;
         #[link_name = "garak_pow"]
         pub safe fn pow(x: f64, y: f64) -> f64;
+    }
+
+    /// Cephes `tanh` (S. Moshier; relative error <= 2.5e-16 in IEEE double): `1 - 2 / (e^2|x| + 1)`
+    /// with the imported `exp` above 0.625, a rational approximation below. `libm::tanh` goes
+    /// through a software `expm1` and was ~40 % of the 2x-oversampled drive in the worklet (two
+    /// calls per sample and channel); this is the drive's hot path on the web. Native builds keep
+    /// the C library's `tanh` (what the C++ kernels call), so only the WASM build changes, by
+    /// rounding-level amounts (the WASM-vs-native gates are -90 dBFS).
+    #[inline]
+    pub fn tanh(x: f64) -> f64 {
+        const P: [f64; 3] = [-9.643_991_794_250_522e-1, -9.928_772_310_019_186e1, -1.614_687_684_417_084_5e3];
+        const Q: [f64; 3] = [1.128_116_784_916_329_3e2, 2.235_488_390_601_004_5e3, 4.844_063_053_251_255e3];
+        let z = x.abs();
+        if z > 0.625 {
+            // tanh(22) rounds to 1; exp(2|x|) stays finite there.
+            let r = if z > 22.0 { 1.0 } else { 1.0 - 2.0 / (exp(2.0 * z) + 1.0) };
+            r.copysign(x)
+        } else if z == 0.0 {
+            x
+        } else {
+            let s = x * x;
+            let p = (P[0] * s + P[1]) * s + P[2];
+            let q = ((s + Q[0]) * s + Q[1]) * s + Q[2];
+            x + x * s * (p / q)
+        }
     }
 
     // The exact operations wasm has as instructions. `libm` only uses them behind a nightly-only
@@ -93,10 +119,10 @@ mod imp {
     all(target_arch = "wasm32", target_feature = "simd128")
 )))]
 mod imp {
-    pub use libm::{ceil, cos, cosf, exp, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
+    pub use libm::{ceil, cos, cosf, exp, exp2, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
 }
 
-pub use imp::{ceil, cos, cosf, exp, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
+pub use imp::{ceil, cos, cosf, exp, exp2, floor, log, log10, pow, round, sin, sinf, sqrt, tan, tanh};
 
 /// `a * b + c` the way the native C++ build evaluates that expression. AppleClang contracts it into
 /// one fused multiply-add by default (`-ffp-contract=on`), so on Apple arm64 this is `fmadd`
@@ -108,6 +134,19 @@ pub fn mul_add(a: f64, b: f64, c: f64) -> f64 {
     #[cfg(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple"))]
     {
         libm::fma(a, b, c)
+    }
+    #[cfg(not(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple")))]
+    {
+        a * b + c
+    }
+}
+
+/// `a * b + c` in float, contracted like AppleClang on Apple arm64 (see [`mul_add`]).
+#[inline(always)]
+pub fn mul_add_f32(a: f32, b: f32, c: f32) -> f32 {
+    #[cfg(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple"))]
+    {
+        libm::fmaf(a, b, c)
     }
     #[cfg(not(all(feature = "platform-math", target_arch = "aarch64", target_vendor = "apple")))]
     {

@@ -7,6 +7,7 @@ use crate::gain::db_to_gain;
 use crate::lines::{Carver, DelayLine};
 use crate::math;
 use crate::params::{BITCRUSHER, DRIVE, ParamSet, TAPE, index_of};
+use crate::simd::F2;
 use crate::smooth::{Smooth, smoothing_coefficient};
 use crate::{PI, std_clamp};
 
@@ -218,32 +219,70 @@ impl SettledFrame for Bitcrusher {
 
 /// 17-tap half-band interpolator and decimator around a tanh shaper (2x oversampling). Together
 /// they delay the signal by eight base-rate frames, which the drive reports as latency.
+///
+/// Both channels run in the two lanes of [`F2`] (they are independent and identical chains), and
+/// each filter keeps its 17-sample history twice in a row so the taps are one contiguous slice: the
+/// sums are the C++ `Saturator`'s, term for term and in the same order, per channel.
 #[derive(Clone, Debug)]
 pub struct Saturator {
     amount: f64,
     bias: f64,
     origin: f64,
     normal: f64,
-    coefficients: [f64; 17],
-    up: [[f64; 17]; 2],
-    down: [[f64; 17]; 2],
-    up_write: [usize; 2],
-    down_write: [usize; 2],
+    coefficients: [F2; 17],
+    up: [F2; 34],
+    down: [F2; 34],
+    up_write: usize,
+    down_write: usize,
 }
 
-fn fir(coefficients: &[f64; 17], x: f64, state: &mut [f64; 17], write: &mut usize) -> f64 {
+/// Writes `x` as the newest history sample (both copies).
+#[inline(always)]
+fn push(x: F2, state: &mut [F2; 34], write: &mut usize) -> usize {
     let w = *write % 17;
     if let Some(slot) = state.get_mut(w) {
         *slot = x;
     }
-    // state[(write + 17 - i) % 17] for i = 0..17: newest first, walking backwards and wrapping.
-    let (upto, after) = state.split_at(w + 1);
-    let mut output = 0.0;
-    for (c, s) in coefficients.iter().zip(upto.iter().rev().chain(after.iter().rev())) {
-        output += c * s;
+    if let Some(slot) = state.get_mut(w + 17) {
+        *slot = x;
     }
     *write = (w + 1) % 17;
+    w
+}
+
+/// `sum(c[i] * history[newest - i])`, newest first (C++ `fir`): `state[w + 17 - i]` for i = 0..17.
+#[inline(always)]
+fn fir(coefficients: &[F2; 17], state: &[F2; 34], w: usize) -> F2 {
+    let mut output = F2::splat(0.0);
+    if let Some(taps) = state.get(w + 1..w + 18) {
+        for (c, s) in coefficients.iter().zip(taps.iter().rev()) {
+            output = output.add(c.mul(*s));
+        }
+    }
     output
+}
+
+/// The interpolator's two sums of one base frame, after `x` was pushed at `w`: A (newest `x`) and
+/// B, the sum after a zero is pushed next (`c[0] * 0`, then A's taps shifted by one). Each sum
+/// keeps the C++ order term for term; computing them side by side lets the two independent add
+/// chains overlap. B starts from `0.0 + c[0] * 0.0` = +0.0 (`c[0]` is exactly 0, the window's edge).
+#[inline(always)]
+fn fir_pair(coefficients: &[F2; 17], state: &[F2; 34], w: usize) -> (F2, F2) {
+    let zero = F2::splat(0.0);
+    let (mut a, mut b) = (zero, zero);
+    let Some(taps) = state.get(w + 1..w + 18) else { return (a, b) };
+    if let (Some(c0), Some(newest)) = (coefficients.first(), taps.last()) {
+        a = a.add(c0.mul(*newest));
+        b = b.add(c0.mul(zero));
+    }
+    for i in 1..17 {
+        let (Some(c), Some(sa), Some(sb)) = (coefficients.get(i), taps.get(16 - i), taps.get(17 - i)) else {
+            continue;
+        };
+        a = a.add(c.mul(*sa));
+        b = b.add(c.mul(*sb));
+    }
+    (a, b)
 }
 
 impl Saturator {
@@ -258,15 +297,103 @@ impl Saturator {
             *c = sinc * (0.5 - 0.5 * math::cos(2.0 * PI * i as f64 / 16.0));
             sum += *c;
         }
-        for c in &mut coefficients {
-            *c /= sum;
-        }
         Self {
             amount,
             bias,
             origin,
             normal,
-            coefficients,
+            coefficients: coefficients.map(|c| F2::splat(c / sum)),
+            up: [F2::splat(0.0); 34],
+            down: [F2::splat(0.0); 34],
+            up_write: 0,
+            down_write: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn shape2(&self, x: F2) -> F2 {
+        let [l, r] = x.lanes();
+        F2::new(
+            shape(self.amount, self.bias, self.origin, self.normal, l),
+            shape(self.amount, self.bias, self.origin, self.normal, r),
+        )
+    }
+
+    /// One base-rate frame of both channels.
+    #[inline(always)]
+    pub fn sample_pair(&mut self, left: f32, right: f32) -> (f32, f32) {
+        let w =
+            push(F2::new(2.0 * f64::from(left), 2.0 * f64::from(right)), &mut self.up, &mut self.up_write);
+        let (up_a, up_b) = fir_pair(&self.coefficients, &self.up, w);
+        push(F2::splat(0.0), &mut self.up, &mut self.up_write);
+        let w = push(self.shape2(up_a), &mut self.down, &mut self.down_write);
+        let a = fir(&self.coefficients, &self.down, w);
+        // The decimator drops every second output: only its history is needed.
+        push(self.shape2(up_b), &mut self.down, &mut self.down_write);
+        let [l, r] = a.lanes();
+        (l as f32, r as f32)
+    }
+
+    pub fn reset(&mut self) {
+        self.up = [F2::splat(0.0); 34];
+        self.down = [F2::splat(0.0); 34];
+        self.up_write = 0;
+        self.down_write = 0;
+    }
+
+    pub fn take_state_from(&mut self, previous: &Saturator) {
+        self.up = previous.up;
+        self.down = previous.down;
+        self.up_write = previous.up_write;
+        self.down_write = previous.down_write;
+    }
+
+    /// The shaping curve (for tests and plots).
+    pub fn curve(&self, x: f64) -> f64 {
+        shape(self.amount, self.bias, self.origin, self.normal, x)
+    }
+}
+
+/// [`Saturator`] one channel at a time (the guitar rig's pedals and amp run their chain per channel):
+/// the same 17-tap interpolator, shaper and decimator with a history per channel, summed term for term
+/// in the C++ order. The drive insert uses the paired form.
+#[derive(Clone, Debug)]
+pub struct ChannelSaturator {
+    amount: f64,
+    bias: f64,
+    origin: f64,
+    normal: f64,
+    coefficients: [f64; 17],
+    up: [[f64; 17]; 2],
+    down: [[f64; 17]; 2],
+    up_write: [usize; 2],
+    down_write: [usize; 2],
+}
+
+fn fir_channel(coefficients: &[f64; 17], x: f64, state: &mut [f64; 17], write: &mut usize) -> f64 {
+    let w = *write % 17;
+    if let Some(slot) = state.get_mut(w) {
+        *slot = x;
+    }
+    // state[(write + 17 - i) % 17] for i = 0..17: newest first, walking backwards and wrapping.
+    let (upto, after) = state.split_at(w + 1);
+    let mut output = 0.0;
+    for (c, s) in coefficients.iter().zip(upto.iter().rev().chain(after.iter().rev())) {
+        output += c * s;
+    }
+    *write = (w + 1) % 17;
+    output
+}
+
+impl ChannelSaturator {
+    pub fn new(amount: f64, bias: f64) -> Self {
+        let paired = Saturator::new(amount, bias);
+        Self {
+            amount,
+            bias,
+            origin: paired.origin,
+            normal: paired.normal,
+            coefficients: paired.coefficients.map(|c| c.lanes()[0]),
             up: [[0.0; 17]; 2],
             down: [[0.0; 17]; 2],
             up_write: [0; 2],
@@ -282,12 +409,20 @@ impl Saturator {
         else {
             return 0.0;
         };
-        let up_a = fir(&self.coefficients, 2.0 * f64::from(input), up, uw);
-        let a =
-            fir(&self.coefficients, shape(self.amount, self.bias, self.origin, self.normal, up_a), down, dw);
-        let up_b = fir(&self.coefficients, 0.0, up, uw);
-        let _ =
-            fir(&self.coefficients, shape(self.amount, self.bias, self.origin, self.normal, up_b), down, dw);
+        let up_a = fir_channel(&self.coefficients, 2.0 * f64::from(input), up, uw);
+        let a = fir_channel(
+            &self.coefficients,
+            shape(self.amount, self.bias, self.origin, self.normal, up_a),
+            down,
+            dw,
+        );
+        let up_b = fir_channel(&self.coefficients, 0.0, up, uw);
+        let _ = fir_channel(
+            &self.coefficients,
+            shape(self.amount, self.bias, self.origin, self.normal, up_b),
+            down,
+            dw,
+        );
         a as f32
     }
 
@@ -298,16 +433,11 @@ impl Saturator {
         self.down_write = [0; 2];
     }
 
-    pub fn take_state_from(&mut self, previous: &Saturator) {
+    pub fn take_state_from(&mut self, previous: &ChannelSaturator) {
         self.up = previous.up;
         self.down = previous.down;
         self.up_write = previous.up_write;
         self.down_write = previous.down_write;
-    }
-
-    /// The shaping curve (for tests and plots).
-    pub fn curve(&self, x: f64) -> f64 {
-        shape(self.amount, self.bias, self.origin, self.normal, x)
     }
 }
 
@@ -383,8 +513,10 @@ impl Kernel for Drive<'_> {
     fn frame(&mut self, l: f32, r: f32) -> (f32, f32) {
         self.dry.put(l, r);
         let mut io = [l, r];
-        for (c, s) in io.iter_mut().enumerate() {
-            let wet = self.tone.sample(self.shaper.sample((f64::from(*s) * self.pre) as f32, c), c);
+        let (sl, sr) =
+            self.shaper.sample_pair((f64::from(l) * self.pre) as f32, (f64::from(r) * self.pre) as f32);
+        for (c, (s, shaped)) in io.iter_mut().zip([sl, sr]).enumerate() {
+            let wet = self.tone.sample(shaped, c);
             *s = (f64::from(self.dry.read(DRIVE_LATENCY as f64, c)) * (1.0 - self.wet) * self.output
                 + f64::from(wet) * self.wet * self.post) as f32;
         }
@@ -400,5 +532,92 @@ impl Kernel for Drive<'_> {
 
     fn latency_frames(&self) -> u32 {
         DRIVE_LATENCY as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Saturator, shape};
+    use crate::PI;
+    use crate::math;
+
+    /// The scalar `Saturator` this file had before the two-lane rewrite (= native/src/dsp.cpp),
+    /// one channel at a time.
+    struct Reference {
+        coefficients: [f64; 17],
+        up: [[f64; 17]; 2],
+        down: [[f64; 17]; 2],
+        up_write: [usize; 2],
+        down_write: [usize; 2],
+        s: Saturator,
+    }
+
+    fn fir(c: &[f64; 17], x: f64, state: &mut [f64; 17], write: &mut usize) -> f64 {
+        let w = *write % 17;
+        state[w] = x;
+        let mut output = 0.0;
+        for (i, k) in c.iter().enumerate() {
+            output += k * state[(w + 17 - i) % 17];
+        }
+        *write = (w + 1) % 17;
+        output
+    }
+
+    impl Reference {
+        fn sample(&mut self, input: f32, c: usize) -> f32 {
+            let s = &self.s;
+            let up_a =
+                fir(&self.coefficients, 2.0 * f64::from(input), &mut self.up[c], &mut self.up_write[c]);
+            let a = fir(
+                &self.coefficients,
+                shape(s.amount, s.bias, s.origin, s.normal, up_a),
+                &mut self.down[c],
+                &mut self.down_write[c],
+            );
+            let up_b = fir(&self.coefficients, 0.0, &mut self.up[c], &mut self.up_write[c]);
+            let _ = fir(
+                &self.coefficients,
+                shape(s.amount, s.bias, s.origin, s.normal, up_b),
+                &mut self.down[c],
+                &mut self.down_write[c],
+            );
+            a as f32
+        }
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn two_lane_saturator_is_bit_identical_to_the_scalar_one() {
+        let mut coefficients = [0.0; 17];
+        let mut sum = 0.0;
+        for (i, c) in coefficients.iter_mut().enumerate() {
+            let x = i as f64 - 8.0;
+            let sinc = if x == 0.0 { 0.5 } else { math::sin(PI * 0.5 * x) / (PI * x) };
+            *c = sinc * (0.5 - 0.5 * math::cos(2.0 * PI * i as f64 / 16.0));
+            sum += *c;
+        }
+        for c in &mut coefficients {
+            *c /= sum;
+        }
+        let mut reference = Reference {
+            coefficients,
+            up: [[0.0; 17]; 2],
+            down: [[0.0; 17]; 2],
+            up_write: [0; 2],
+            down_write: [0; 2],
+            s: Saturator::new(2.5, 0.1),
+        };
+        let mut lanes = Saturator::new(2.5, 0.1);
+        let mut seed = 12345u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (f64::from(seed) / 4_294_967_296.0 * 2.0 - 1.0) as f32
+        };
+        for _ in 0..20_000 {
+            let (l, r) = (noise() * 1.3, noise() * 0.4);
+            let (a, b) = lanes.sample_pair(l, r);
+            assert_eq!(a.to_bits(), reference.sample(l, 0).to_bits());
+            assert_eq!(b.to_bits(), reference.sample(r, 1).to_bits());
+        }
     }
 }

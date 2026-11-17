@@ -6,10 +6,11 @@ import { instantiateGarakEngine } from './garakEngineWasm'
 // The Rust render engine's WASM build (rust/garak-engine-wasm) against the native Rust engine on the
 // same project (docs/RUST_ENGINE.md 7). `cargo test -p garak-engine` writes the parity project
 // (timeline JSON + PCM) and its native offline render to rust/target/engine-parity/; the module
-// comes from `cargo build -p garak-engine-wasm --target wasm32-unknown-unknown --profile wasm`.
+// comes from `pnpm rust:wasm` (public/wasm/garak-engine.wasm).
 // Without either the suite is skipped (CI's rust.yml always builds both and runs it).
 const root = new URL('../../../rust/target/', import.meta.url)
-const wasmPath = fileURLToPath(new URL('wasm32-unknown-unknown/wasm/garak_engine_wasm.wasm', root))
+// `pnpm rust:wasm` (scripts/rust.mjs) builds it with the `wasm-engine` profile and copies it to public/wasm.
+const wasmPath = fileURLToPath(new URL('../../../public/wasm/garak-engine.wasm', import.meta.url))
 const dir = new URL('engine-parity/', root)
 const files = ['project.json', 'assets.json', 'assets.f32', 'native.f32'].map((f) => fileURLToPath(new URL(f, dir)))
 const ready = existsSync(wasmPath) && files.every((f) => existsSync(f))

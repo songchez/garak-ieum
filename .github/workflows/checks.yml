@@ -47,12 +47,13 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      # The web build ships the Rust DSP module (docs/RUST.md); with it built first, `pnpm test`
-      # also runs the WASM parity suites instead of skipping them.
+      # The web build ships the Rust DSP module (docs/RUST.md) and the render engine module behind the
+      # `garak.rustEngine` flag (docs/RUST_ENGINE.md 5), each under a size budget; with them built
+      # first, `pnpm test` also runs the WASM parity and engine A/B suites instead of skipping them.
       - name: Install the pinned Rust toolchain
         run: sh scripts/setup-rust.sh --skip-verify
 
-      - name: Build the WASM DSP module
+      - name: Build the WASM DSP and engine modules
         run: pnpm rust:wasm
 
       - name: Run tests

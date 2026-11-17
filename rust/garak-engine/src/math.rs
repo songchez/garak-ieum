@@ -2,7 +2,13 @@
 //! `platform-math`, the `libm` crate on wasm32) plus the two functions the tempo map needs, and
 //! the `a * b + c` helpers that mirror where AppleClang contracts the C++ expression into an FMA.
 
-pub use garak_dsp::math::{cos, exp, log10, mul_add, pow, round, sin, tanh};
+pub use garak_dsp::math::{cos, exp, floor, log10, mul_add, pow, round, sin, tanh};
+
+/// C `llround` (half away from zero, like `round`) for frames in range.
+#[inline]
+pub fn llround(x: f64) -> i64 {
+    round(x) as i64
+}
 
 #[cfg(all(feature = "platform-math", not(target_arch = "wasm32")))]
 mod imp {

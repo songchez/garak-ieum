@@ -40,7 +40,7 @@
 
 ## Rust 렌더 엔진(stage 4)이 지원해야 할 것
 
-C++ `RenderEngine`과 같은 의미로:
+C++ `RenderEngine`과 같은 의미로 (2026-11-17: 1~3 모두 `rust/garak-engine`에 구현, 데스크톱 `GARAK_RUST_ENGINE`에서 C++ 대비 비트 동일 — [RUST_ENGINE.md 10장](RUST_ENGINE.md#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계)):
 
 1. `AudioWindow.freeze`/`tailSeconds`: 클릭 가드 없음, `endFrame > lengthFrames` 허용(꼬리 31초까지), 오프라인 렌더에서 프로젝트 끝 뒤에도 재생, 트랙 꼬리 = `max(기존, tailSeconds)`.
 2. `TrackTimeline.preFader`: 팬·페이더·뮤트 생략, 비스테레오 소스는 R=0. `TrackTimeline.directOut=false`: 마스터 합에서 제외(센드는 유지).

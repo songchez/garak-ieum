@@ -4,7 +4,7 @@
 // `web-build` step below; `pnpm dev` never needs this script (the app falls back to the TypeScript
 // kernels without the Rust artifact).
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'
 import { gzipSync } from 'node:zlib'
 import path from 'node:path'
@@ -15,12 +15,36 @@ const workspace = path.join(root, 'rust')
 const wasmTarget = 'wasm32-unknown-unknown'
 const wasmBuilt = path.join(workspace, 'target', wasmTarget, 'wasm', 'garak_wasm.wasm')
 export const wasmOutput = path.join(root, 'public', 'wasm', 'garak-dsp.wasm')
+// The unified render engine for the web (docs/RUST_ENGINE.md 5): loaded only with the
+// `garak.rustEngine` flag, by one AudioWorklet node and the export worker.
+const ENGINE_PROFILE = 'wasm-engine'
+const engineBuilt = path.join(workspace, 'target', wasmTarget, ENGINE_PROFILE, 'garak_engine_wasm.wasm')
+export const engineOutput = path.join(root, 'public', 'wasm', 'garak-engine.wasm')
 // Budgets for the worklet module; CI fails above them (docs/RUST.md: stage 1 is ~101 KiB raw /
 // ~36 KiB gzip with every built-in effect; the architecture review allows 80 KB gzip). The raw
 // budget went from 128 to 160 KiB with the vintage instruments (~38 KiB of code; gzip ~55 KB, still
-// well inside the 80 KB transfer budget that matters for loading).
-const WASM_BUDGET_BYTES = 160 * 1024
+// well inside the 80 KB transfer budget that matters for loading), and from 160 to 208 KiB with the
+// guitar rig (~43 KiB of code: eleven module types, the rack and its hand-over; ~5 KiB of catalog;
+// ~146 -> ~196 KiB raw, gzip ~53 -> ~69 KB). The gzip budget stays at 80 KB.
+const WASM_BUDGET_BYTES = 208 * 1024
 const WASM_GZIP_BUDGET_BYTES = 80 * 1000
+// The engine module carries the whole render engine (JSON/protocol parser, graph preparation, diff
+// classification, clips, automation, tempo map) on top of every garak-dsp effect. At opt-level 3 it is
+// 282 KiB raw / 113 KB gzip; the `wasm-engine` profile (opt-level "s", garak-dsp kernels kept at 3)
+// makes it 258 KiB / 105 KB at the same render speed (docs/RUST_ENGINE.md 5). Instruments (G2) will
+// add to it: raise the budget in the same PR, with the measured reason.
+// Raised from 272 KiB / 110 KB (rust/engine-web-w2): the web host's engine-side features — metronome and
+// count-in (meter map, stroke player), track-input routes with monitoring and recording taps, staged
+// project updates, reverb kernel import, meters and the live event path — measured 259 -> 289 KiB raw,
+// 105 -> 118 KB gzip ("z" for the engine crate saves only 6 KiB, so the profile stays).
+// Raised from 304 KiB / 124 KB (rust/engine-integrate): the built-in instruments (rust/engine-instruments: the
+// five synths and drum kit, sample-set zones with release zones, the vintage EP / 106 and IEUM WAVE with its
+// table generator and patch schema) measured 291 -> 460 KiB raw, 119 -> 189 KB gzip. That is still far below
+// the worklet's practical limit; the module is fetched once and compiled off the audio thread. The guitar rig
+// insert (rust/guitar-rig: eleven module types, the rack, its catalog and hand-over) then measured 460 -> 512 KiB
+// raw, 189 -> 207 KB gzip, hence 528 KiB / 212 KB.
+const ENGINE_BUDGET_BYTES = 528 * 1024
+const ENGINE_GZIP_BUDGET_BYTES = 212 * 1000
 
 function findCargo() {
   const exe = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
@@ -51,17 +75,28 @@ function run(args) {
   if (result.status !== 0) process.exit(result.status ?? 1)
 }
 
-function wasm() {
-  run(['build', '-p', 'garak-wasm', '--target', wasmTarget, '--profile', 'wasm'])
-  mkdirSync(path.dirname(wasmOutput), { recursive: true })
-  copyFileSync(wasmBuilt, wasmOutput)
-  const size = statSync(wasmOutput).size
-  const gzip = gzipSync(readFileSync(wasmOutput), { level: 9 }).length
-  console.log(`garak-dsp.wasm: ${size} bytes (${(size / 1024).toFixed(1)} KiB, budget ${WASM_BUDGET_BYTES / 1024} KiB), gzip ${gzip} bytes (budget ${WASM_GZIP_BUDGET_BYTES}) -> ${path.relative(root, wasmOutput)}`)
-  if (size > WASM_BUDGET_BYTES || gzip > WASM_GZIP_BUDGET_BYTES) {
-    console.error('The WASM module exceeds its size budget (docs/RUST.md).')
+/** Copies a built module to public/wasm, prints its size report and fails above its budgets. */
+function publish(name, built, output, budget, gzipBudget, doc) {
+  mkdirSync(path.dirname(output), { recursive: true })
+  copyFileSync(built, output)
+  const size = statSync(output).size
+  const gzip = gzipSync(readFileSync(output), { level: 9 }).length
+  console.log(`${name}: ${size} bytes (${(size / 1024).toFixed(1)} KiB, budget ${budget / 1024} KiB), gzip ${gzip} bytes (budget ${gzipBudget}) -> ${path.relative(root, output)}`)
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### ${name}: ${size} bytes (${(size / 1024).toFixed(1)} KiB), gzip ${gzip} bytes (budgets ${budget / 1024} KiB / ${gzipBudget / 1000} KB)
+`)
+  }
+  if (size > budget || gzip > gzipBudget) {
+    console.error(`${name} exceeds its size budget (${doc}).`)
     process.exit(1)
   }
+}
+
+function wasm() {
+  run(['build', '-p', 'garak-wasm', '--target', wasmTarget, '--profile', 'wasm'])
+  publish('garak-dsp.wasm', wasmBuilt, wasmOutput, WASM_BUDGET_BYTES, WASM_GZIP_BUDGET_BYTES, 'docs/RUST.md')
+  run(['build', '-p', 'garak-engine-wasm', '--target', wasmTarget, '--profile', ENGINE_PROFILE])
+  publish('garak-engine.wasm', engineBuilt, engineOutput, ENGINE_BUDGET_BYTES, ENGINE_GZIP_BUDGET_BYTES, 'docs/RUST_ENGINE.md 5')
 }
 
 /**
@@ -113,7 +148,7 @@ switch (command) {
   case 'check':
     run(['fmt', '--all', '--check'])
     run(['clippy', '--workspace', '--all-targets', '--', '-D', 'warnings'])
-    run(['clippy', '-p', 'garak-dsp', '-p', 'garak-wasm', '--target', wasmTarget, '--', '-D', 'warnings'])
+    run(['clippy', '-p', 'garak-dsp', '-p', 'garak-wasm', '-p', 'garak-engine', '-p', 'garak-engine-wasm', '--target', wasmTarget, '--', '-D', 'warnings'])
     break
   case 'fmt': run(['fmt', '--all']); break
   default:

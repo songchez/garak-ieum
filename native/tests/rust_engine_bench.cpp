@@ -4,6 +4,7 @@
 // (no render-ahead / worker threads), in device-sized blocks. Rounds alternate engines; the best
 // of `rounds` counts. Prints a Markdown table: realtime factor (audio seconds per CPU second) and
 // microseconds per 128-frame block. Usage: garak-rust-engine-bench [seconds] [rounds] [block].
+#include "cpp_reference_engine.hpp"
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_engine.h"
@@ -73,6 +74,7 @@ double timeRust(const Project& p, std::uint32_t rate, std::uint32_t block, std::
 } // namespace
 
 int main(int argc, char** argv) {
+  pinCppReferenceEngine();
   const double seconds = argc > 1 ? std::atof(argv[1]) : 10;
   const int rounds = argc > 2 ? std::atoi(argv[2]) : 3;
   const std::uint32_t block = argc > 3 ? std::uint32_t(std::atoi(argv[3])) : 128;

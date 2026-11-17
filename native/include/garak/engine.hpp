@@ -338,6 +338,10 @@ struct EngineSnapshot {
   // ring had to be dropped mid-playback because it lost sync (never expected).
   std::uint32_t workerThreads = 0, renderAheadTracks = 0;
   std::uint64_t renderAheadResyncs = 0;
+  // GARAK_RUST_ENGINE (docs/RUST_ENGINE.md 10): the last block's tracks rendered in the Rust engine, and how many
+  // graphs/updates the Rust engine refused (they render in C++; RenderEngine::lastRustRefusal has the reason).
+  bool rustEngine = false;
+  std::uint64_t rustRefusals = 0;
 };
 
 // Multi-core track processing (Logic "Processing Threads") and render-ahead of
@@ -458,6 +462,11 @@ struct UpdateResult {
   std::uint32_t replacedTracks = 0, commands = 0;
 };
 
+// True when this build links the Rust render engine (GARAK_RUST=ON).
+[[nodiscard]] bool rustEngineAvailable() noexcept;
+// Blocks rendered by the Rust graph in this process, all engines (diagnostics and the regression suite's report).
+[[nodiscard]] std::uint64_t rustEngineBlocks() noexcept;
+
 class RenderEngine {
  public:
   explicit RenderEngine(std::uint32_t sampleRate = 48000, std::uint32_t maxBlockFrames = 4096,
@@ -544,7 +553,17 @@ class RenderEngine {
   // creates the worker pool (threads > 0, or 1 when only rendering ahead).
   // Graphs prepared afterwards carry render-ahead rings within a memory budget.
   void setProcessing(const ProcessingOptions& options);
+  // Rust render engine (docs/RUST_ENGINE.md 10). The environment variable GARAK_RUST_ENGINE ("1" or "strict")
+  // sets the mode at construction; setRustEngine overrides it before the first submit (0 off, 1 Rust with C++
+  // fallback for graphs it refuses, 2 strict: a refused graph throws). This engine stays the shell: transport,
+  // count-in, metronome, live MIDI, monitoring, capture, master bus, snapshots.
+  void setRustEngine(int mode);
+  [[nodiscard]] bool rustEngineRequested() const noexcept;
+  // Control thread: why the Rust engine refused the last graph or update (empty when it accepted it).
+  [[nodiscard]] std::string lastRustRefusal() const;
  private:
+  UpdateResult updateGraph(const ProjectTimeline& project, const AssetStore& assets, const SampleSetStore& sets,
+                           const PluginResolver& resolver);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

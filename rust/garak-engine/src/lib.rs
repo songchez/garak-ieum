@@ -28,19 +28,30 @@ mod clip;
 mod delay;
 pub mod engine;
 pub mod error;
+pub mod external;
 mod insert;
+mod instrument;
 pub mod json;
 mod master;
 pub mod math;
+pub mod metronome;
 pub mod offline;
 pub mod plan;
 pub mod protocol;
 pub mod queue;
+mod routes;
 pub mod tempo;
 pub mod testkit;
 mod track;
+pub(crate) mod wave;
 
-pub use engine::{Applied, Controller, EngineConfig, Renderer, Snapshot, engine};
+pub use engine::{
+    Ahead, Applied, BlockInfo, Controller, DynamicsReading, EngineConfig, HostTask, MAX_TAPS, Parallel,
+    Renderer, Snapshot, engine,
+};
 pub use error::Error;
+pub use external::HostCallbacks;
+pub use instrument::UNLIMITED_FRAME;
 pub use offline::{OfflineRender, render_offline};
-pub use plan::{PcmAsset, Plan};
+pub use plan::{PcmAsset, Plan, SampleSet, SampleZone};
+pub use track::LiveEvent;

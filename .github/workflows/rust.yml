@@ -22,14 +22,24 @@ on:
       - 'native/tests/rust_parity_test.cpp'
       - 'native/tests/rust_engine_parity_test.cpp'
       - 'native/tests/rust_engine_bench.cpp'
+      - 'native/tests/rust_engine_host_test.cpp'
+      - 'native/tests/rust_engine_expected_failures.txt'
+      - 'native/src/rust_engine.inc'
+      - 'scripts/rust-engine-suite.mjs'
+      - 'native/tests/rust_engine_instrument_parity_test.cpp'
       - 'native/src/engine.cpp'
       - 'native/src/protocol.hpp'
       - 'native/include/garak/engine.hpp'
       - 'native/include/garak/tempo.hpp'
       - 'native/tests/rust_instrument_test.cpp'
       - 'native/src/rust_instrument.hpp'
+      - 'native/src/wavetable.cpp'
+      - 'native/devices/wavetable-synth/**'
       - 'src/devices/vintage/**'
+      - 'src/devices/guitar-rig/**'
       - 'src/audio/rust/**'
+      - 'src/audio/native/timeline.ts'
+      - 'src/audio/native/timelineSync.ts'
       - 'src/devices/effects/kernels.ts'
       - 'src/devices/effects/sigimsae.ts'
       - 'src/devices/effects/sigimsae.worklet.ts'
@@ -93,28 +103,19 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      - name: Build the WASM module (fails above its size budget)
-        run: |
-          node scripts/rust.mjs wasm
-          size=$(stat -c %s public/wasm/garak-dsp.wasm)
-          gzip=$(gzip -9 -c public/wasm/garak-dsp.wasm | wc -c)
-          echo "### garak-dsp.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes (budgets 160 KiB / 80 KB)" >> "$GITHUB_STEP_SUMMARY"
+      # garak-dsp.wasm (effect/instrument worklets) and garak-engine.wasm (the render engine for the
+      # web worklet and export worker, docs/RUST_ENGINE.md 5). scripts/rust.mjs writes both size
+      # reports to the step summary and fails above either budget.
+      - name: Build the WASM modules (fail above their size budgets)
+        run: node scripts/rust.mjs wasm
 
-      # The render engine for the worklet (docs/RUST_ENGINE.md 5): not shipped yet, size reported.
-      - name: Build the engine WASM module
-        working-directory: rust
-        run: |
-          cargo build --locked -p garak-engine-wasm --target wasm32-unknown-unknown --profile wasm
-          file=target/wasm32-unknown-unknown/wasm/garak_engine_wasm.wasm
-          size=$(stat -c %s "$file")
-          gzip=$(gzip -9 -c "$file" | wc -c)
-          echo "### garak_engine_wasm.wasm: ${size} bytes ($((size / 1024)) KiB), gzip ${gzip} bytes" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload the WASM module
+      - name: Upload the WASM modules
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: garak-dsp-wasm
-          path: public/wasm/garak-dsp.wasm
+          path: |
+            public/wasm/garak-dsp.wasm
+            public/wasm/garak-engine.wasm
           if-no-files-found: error
           retention-days: 14
 
@@ -127,7 +128,8 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      # Kernel parity (WASM vs TS) and the render engine (WASM vs the native Rust render).
+      # Kernel parity (WASM vs TS), the render engine (WASM vs the native Rust render) and the web
+      # engine path A/B (Project -> timeline compiler -> garak-engine.wasm vs the Web Audio semantics).
       - name: TypeScript parity against the built WASM modules
         run: pnpm exec vitest run src/audio/rust
 
@@ -184,7 +186,8 @@ jobs:
         run: >
           cmake --build build/native-rust --config Release --parallel 4
           --target garak-rust-parity-test garak-rust-bench garak-engine-test garak-rust-instrument-test
-          garak-rust-engine-parity-test garak-rust-engine-bench
+          garak-rust-engine-parity-test garak-rust-engine-bench garak-rust-engine-host-test
+          garak-rust-engine-instrument-parity-test
 
       # Every ported effect through C++ and Rust (param sweeps, automation, tempo, resets,
       # hand-overs, other sample rates): residual <= -90 dBFS, identical latency / tail / meters.
@@ -196,16 +199,44 @@ jobs:
       - name: Run the render-engine parity test (C++ vs Rust engine)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-parity --output-on-failure
 
+      # Built-in instruments (synths, drums, sample instruments, 옥구슬 EP / 한밤 106) through both
+      # engines: offline exports and a live engine with edits, seeks, cycle wraps and live MIDI.
+      - name: Run the render-engine instrument parity test (C++ vs Rust engine)
+        run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-instruments --output-on-failure
+
       # 옥구슬 EP / 한밤 106 through garak-ffi: checksum parity with the WASM build (parity.golden),
       # 8 voices < 3 % of one core at 48 kHz, and engine use (timeline, live pedal, edits).
       - name: Run the vintage instrument test (parity, CPU budget, engine)
         run: ctest --test-dir build/native-rust -C Release -R native-rust-instruments --output-on-failure
+
+      # GARAK_RUST_ENGINE host path (docs/RUST_ENGINE.md 10): RenderEngine as the shell around the Rust graph —
+      # C++ vs Rust shell (offline, live diffs/seek/cycle/master), multi-core bit-identity, C++ fallback.
+      - name: Run the Rust engine host test
+        run: ctest --test-dir build/native-rust -C Release -R native-rust-engine-host --output-on-failure
+
+      # The whole engine regression suite through the Rust engine: GARAK_RUST_ENGINE=1 (refused graphs fall back
+      # to C++) must pass entirely; strict (no fallback) may fail only the cases listed with their blocker in
+      # native/tests/rust_engine_expected_failures.txt. The per-case table goes to the job summary.
+      - name: Engine tests through the Rust engine (GARAK_RUST_ENGINE=1 and strict)
+        shell: bash
+        run: |
+          dir=build/native-rust
+          [ -d "$dir/Release" ] && dir="$dir/Release"
+          node scripts/rust-engine-suite.mjs "$dir/garak-engine-test"
 
       # The whole engine regression suite with every built-in effect switched to Rust.
       - name: Engine tests with the Rust effects (GARAK_RUST_EFFECTS=all)
         env:
           GARAK_RUST_EFFECTS: all
         run: ctest --test-dir build/native-rust -C Release -R native-engine --output-on-failure
+
+      # The guitar rig's CPU gate: the Rust rig may take at most 1.15x the C++ rig's time.
+      - name: Guitar rig CPU gate (Rust <= 1.15x C++)
+        shell: bash
+        run: |
+          dir=build/native-rust
+          [ -d "$dir/Release" ] && dir="$dir/Release"
+          "$dir/garak-rust-bench" 3 --gate=1.15 guitar-rig
 
       - name: Parity table and CPU baseline (C++ vs Rust)
         shell: bash
@@ -224,6 +255,15 @@ jobs:
             echo
             echo "### Render engine CPU, 16/32 tracks (${{ matrix.name }})"
             "$dir/garak-rust-engine-bench" 10 3 128
+            echo
+            echo "### Rust engine host path (${{ matrix.name }})"
+            "$dir/garak-rust-engine-host-test" --bench | grep '^|'
+            echo
+            echo "### Render engine instrument parity (${{ matrix.name }})"
+            "$dir/garak-rust-engine-instrument-parity-test" | grep -E '^\||^Live edits'
+            echo
+            echo "### Render engine CPU, instrument-heavy project (${{ matrix.name }})"
+            "$dir/garak-rust-engine-instrument-parity-test" bench 10 3 128
             echo
             echo "### Vintage instruments (${{ matrix.name }})"
             "$dir/garak-rust-instrument-test" | grep '^|'

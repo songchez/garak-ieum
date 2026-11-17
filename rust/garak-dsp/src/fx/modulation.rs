@@ -7,6 +7,7 @@ use super::{
 use crate::lines::{Carver, Ring};
 use crate::math;
 use crate::params::{CHORUS, FLANGER, PHASER, ParamSet, TREMOLO, index_of};
+use crate::simd::F2;
 use crate::smooth::{Smooth, smoothing_coefficient};
 use crate::{PI, std_min};
 
@@ -269,8 +270,9 @@ pub struct Phaser {
     depth: Smooth,
     feedback: Smooth,
     mix: Smooth,
-    state: [[f64; 6]; 2],
-    last: [f64; 2],
+    /// All-pass states and the feedback sample, left and right in the two lanes ([`F2`]).
+    state: [F2; 6],
+    last: F2,
 }
 
 impl Phaser {
@@ -285,8 +287,8 @@ impl Phaser {
             depth: Smooth::default(),
             feedback: Smooth::default(),
             mix: Smooth::default(),
-            state: [[0.0; 6]; 2],
-            last: [0.0; 2],
+            state: [F2::splat(0.0); 6],
+            last: F2::splat(0.0),
         };
         s.depth.set(p.get(P_DEPTH));
         s.feedback.set(p.get(P_FEEDBACK));
@@ -320,34 +322,31 @@ impl Kernel for Phaser {
         let feedback = self.feedback.next(self.k);
         let mix = self.mix.next(self.k);
         let sr = self.sample_rate;
-        let mut out = [xl, xr];
-        for (c, ((o, z), last)) in
-            out.iter_mut().zip(self.state.iter_mut()).zip(self.last.iter_mut()).enumerate()
-        {
-            let x = f64::from(*o);
-            let lfo = 0.5 + 0.5 * math::sin(self.phase + if c != 0 { PI / 2.0 } else { 0.0 });
+        // Per channel (lane): the LFO-swept coefficient, then the same six-stage all-pass ladder.
+        let coefficient = |offset: f64| {
+            let lfo = 0.5 + 0.5 * math::sin(self.phase + offset);
             let frequency = 200.0 * math::pow(16.0, 0.5 + (lfo - 0.5) * depth);
             let t = math::tan(PI * std_min(frequency, sr * 0.45) / sr);
-            let a = (t - 1.0) / (t + 1.0);
-            let mut y = x + feedback * *last;
-            for zs in z.iter_mut() {
-                let output = a * y + *zs;
-                *zs = y - a * output;
-                if zs.abs() < 1e-30 {
-                    *zs = 0.0;
-                }
-                y = output;
-            }
-            *last = y;
-            *o = (x * (1.0 - 0.5 * mix) + 0.5 * mix * y) as f32;
+            (t - 1.0) / (t + 1.0)
+        };
+        let a = F2::new(coefficient(0.0), coefficient(PI / 2.0));
+        let x = F2::new(f64::from(xl), f64::from(xr));
+        let mut y = x.add(F2::splat(feedback).mul(self.last));
+        for zs in &mut self.state {
+            let output = a.mul(y).add(*zs);
+            *zs = y.sub(a.mul(output)).flush_below(1e-30);
+            y = output;
         }
+        self.last = y;
+        let [l, r] = x.mul(F2::splat(1.0 - 0.5 * mix)).add(F2::splat(0.5 * mix).mul(y)).lanes();
+        let out = [l as f32, r as f32];
         advance(&mut self.phase, self.step);
         (out[0], out[1])
     }
 
     fn reset(&mut self) {
-        self.state = [[0.0; 6]; 2];
-        self.last = [0.0; 2];
+        self.state = [F2::splat(0.0); 6];
+        self.last = F2::splat(0.0);
         self.phase = 0.0;
     }
 

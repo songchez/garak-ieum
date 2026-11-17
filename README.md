@@ -7,14 +7,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/songchez/garak-ieum/releases"><img src="https://img.shields.io/badge/version-0.1.6_Preview-DF5435?style=flat-square" alt="0.1.6 개발 프리뷰"></a>
+  <a href="https://github.com/songchez/garak-ieum/releases"><img src="https://img.shields.io/badge/version-0.3.2_Preview-DF5435?style=flat-square" alt="0.3.2 개발 프리뷰"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-3D7865?style=flat-square" alt="GPL-3.0-only"></a>
   <img src="https://img.shields.io/badge/platform-Windows_x64_·_macOS_Apple_Silicon-285973?style=flat-square" alt="Windows x64 · macOS Apple Silicon">
 </p>
 
 <h1 align="center">가락이음 · Garak Ieum</h1>
 
-**가락이음**은 한국에서 만드는 오픈소스 DAW입니다. MIDI 작곡과 피아노롤, 오디오 녹음과 단선율 피치 편집, 내장 악기·이펙트·기타 앰프, 믹싱과 WAV 출력을 하나의 작업실에서 다룹니다. 데스크톱 앱은 자체 C++20 오디오 엔진으로 Windows의 ASIO·WASAPI, macOS의 Core Audio에서 동작하며 VST3 플러그인을 불러올 수 있습니다. 현재는 **개발 프리뷰** 단계입니다.
+**가락이음**은 한국에서 만드는 오픈소스 DAW입니다. MIDI 작곡과 피아노롤, 오디오 녹음과 단선율 피치 편집, 내장 악기·이펙트·기타 앰프, 믹싱과 WAV 출력을 하나의 작업실에서 다룹니다. 소리는 데스크톱과 브라우저가 함께 쓰는 **하나의 Rust 오디오 엔진**이 만듭니다. 데스크톱 앱은 Windows의 ASIO·WASAPI, macOS의 Core Audio에서 동작하며 VST3 플러그인을 불러올 수 있습니다. 현재는 **개발 프리뷰** 단계입니다.
 
 <!-- TODO: 홈페이지 주소가 확정되면 아래 "홈페이지" 문구를 링크로 바꾸세요. 예: [홈페이지](https://...) -->
 기능 소개와 자세한 설치·사용 안내는 **홈페이지**에서 확인할 수 있습니다.
@@ -37,34 +37,55 @@ OS별 상세 안내: [Windows](docs/DESKTOP.md) · [macOS](docs/MACOS.md) · [AI
 
 ## 소스에서 빌드하기
 
-**Node.js 24.x**, **pnpm 11.25.0**, **CMake 3.25 이상**이 필요합니다. Windows는 Visual Studio 2022(또는 Build Tools)의 C++ 데스크톱 개발 도구와 Windows SDK, macOS는 Apple Silicon Mac과 Xcode Command Line Tools를 준비합니다.
+**Node.js 24.x**, **pnpm 11.25.0**, **CMake 3.25 이상**, 그리고 `rust/rust-toolchain.toml`에 고정된 **Rust 툴체인**이 필요합니다. Windows는 Visual Studio 2022(또는 Build Tools)의 C++ 데스크톱 개발 도구와 Windows SDK, macOS는 Apple Silicon Mac과 Xcode Command Line Tools를 준비합니다. Rust는 스크립트 하나로 설치합니다(이미 있으면 고정 버전만 추가).
 
 ```bash
 git clone https://github.com/songchez/garak-ieum.git
 cd garak-ieum
 pnpm install --frozen-lockfile
 
-pnpm desktop:dev          # 네이티브 엔진·앱을 빌드하고 Electron 창 실행
+# Rust 툴체인 (한 번만)
+powershell -ExecutionPolicy Bypass -File scripts/setup-rust.ps1   # Windows
+sh scripts/setup-rust.sh                                          # macOS / Linux
+
+pnpm desktop:dev          # Rust 엔진·C++ 호스트·앱을 빌드하고 Electron 창 실행
 pnpm desktop:build        # Windows x64 설치 파일(.exe)
 pnpm desktop:build:mac    # macOS arm64 DMG
-pnpm dev                  # 브라우저 데모만 실행 (Web Audio)
+pnpm dev                  # 브라우저에서 실행 (AudioWorklet의 Rust 엔진)
+pnpm build                # 웹 빌드 (garak-dsp.wasm·garak-engine.wasm 포함)
 ```
+
+- `pnpm dev`는 Rust 없이도 돕니다. WASM 모듈이 없으면 콘솔에 안내를 남기고 Web Audio 그래프로 재생합니다. 만들려면 `pnpm rust:wasm` 후 새로고침합니다.
+- 데스크톱 빌드는 Rust 엔진을 링크합니다(`GARAK_RUST=ON`). Rust 없이 C++ 전용 호스트를 빌드하려면 `GARAK_RUST=0 pnpm native:build`.
+- Rust 명령(`pnpm rust:test`, `rust:check`, `rust:wasm`, `rust:build`)과 툴체인 표는 [Rust 오디오 코어](docs/RUST.md)에 있습니다.
 
 검사 명령과 서명·배포 절차는 [데스크톱 안내](docs/DESKTOP.md#4-소스에서-실행하고-빌드하기)와 [릴리스 절차](docs/RELEASING.md)를 참고하세요.
 
 ## 아키텍처
 
-<p align="center">
-  <img src="docs/assets/architecture.svg" alt="가락이음 핵심 구조: React UI와 MCP 서버가 ProjectSession을 통해 프로젝트를 편집하고, 오디오 엔진 인터페이스가 브라우저에서는 WebAudioEngine, 데스크톱에서는 Electron IPC를 거쳐 C++ garak-audio-host를 사용합니다." width="900">
-</p>
+```mermaid
+flowchart TD
+  UI["React 편집기 · MCP"] --> S["ProjectSession (src/core)"]
+  S --> C["렌더러: NativeTimelineCompiler<br/>RenderPlan → project.set / project.patch"]
+  C -->|"Electron IPC"| H["데스크톱: garak-audio-host (C++ 셸)<br/>장치 I/O · VST3·IEUM WAVE 호스트 노드<br/>전송·마스터 · render-ahead 링 · 녹음"]
+  C -->|"메시지 · SharedArrayBuffer 링"| W["웹: AudioWorklet<br/>garak-engine.wasm"]
+  H -->|"C ABI (garak-ffi)"| E["Rust 엔진 rust/garak-engine<br/>트랙 · 내장 악기 · 기타 랙 · 믹스 · 센드/리턴 · 라우트"]
+  W -->|"WASM (garak-engine-wasm)"| E
+  E --> D["rust/garak-dsp (no_std)<br/>시김새 · 악기 보이스"]
+  C -.->|"엔진이 거부하거나 모듈이 없을 때만"| F["Web Audio 그래프 (웹 대체 경로)"]
+```
 
 - **하나의 프로젝트 모델** — 화면(React)과 AI(MCP) 편집 모두 `src/core`의 `ProjectSession`과 검증된 명령을 거칩니다. 프로젝트는 직렬화 가능한 데이터이며 Undo/Redo 이력을 공유합니다.
 - **로컬 저장** — 프로젝트와 원본 오디오는 IndexedDB에 자동 저장되고, `.garak` 파일로 내보내 다른 기기에서 이어서 편집할 수 있습니다. 계정·클라우드 백엔드는 없습니다.
-- **두 개의 오디오 백엔드** — `engineFactory`가 데스크톱에서는 `NativeAudioEngine`, 브라우저에서는 `WebAudioEngine`을 선택합니다. 데스크톱에서 네이티브 엔진을 쓸 수 없으면 오류를 표시하며 Web Audio로 조용히 대체하지 않습니다.
-- **별도 프로세스의 C++ 엔진** — `garak-audio-host`가 장치 callback, 악기·이펙트·기타 앰프·VST3, 지연 보상, 녹음과 WAV 출력을 맡습니다. 타임라인은 미리 샘플 프레임으로 변환되어 매 버퍼가 JavaScript나 IPC 응답을 기다리지 않습니다.
+- **하나의 Rust 엔진, 두 호스트** — `rust/garak-engine`이 타임라인부터 트랙·내장 악기·기타 랙·시김새·센드/리턴·트랙 라우트·마스터 앞 합까지 렌더합니다. 데스크톱은 C ABI(`rust/garak-ffi`, 헤더는 `rust/garak-ffi/include`)로, 브라우저는 WASM(`rust/garak-engine-wasm`)으로 같은 코드를 씁니다. 이펙트와 악기 보이스는 `rust/garak-dsp`(`no_std`, 웹용 `garak-dsp.wasm`으로도 빌드)에 있습니다.
+- **데스크톱: 얇은 C++ 셸** — `garak-audio-host`의 `RenderEngine`은 장치 I/O(ASIO·WASAPI·Core Audio), VST3·IEUM WAVE(엔진이 콜백으로 부르는 호스트 노드), 전송·마스터 버스·메트로놈, render-ahead 링, 녹음을 맡고 트랙 렌더는 Rust 엔진에 맡깁니다. 트랙은 처리 레벨마다 워커 스레드에서 병렬로 렌더되며 결과는 1스레드와 비트 단위로 같습니다. 네이티브 엔진을 쓸 수 없으면 오류를 표시하며 Web Audio로 조용히 대체하지 않습니다.
+- **웹: AudioWorklet** — `garak-engine.wasm`이 AudioWorklet에서 돌며 미터 블록·라이브 이벤트 링(SharedArrayBuffer), 입력 모니터링, 녹음 탭을 처리합니다. 내보내기는 Worker에서 같은 엔진으로 오프라인 렌더합니다. 엔진이 프로젝트를 거부하거나 모듈이 없을 때만 Web Audio 그래프로 자동 대체합니다.
+- **렌더-diff 프로토콜** — 렌더러가 처음에 전체 계획(`project.set`)을, 그 뒤에는 바뀐 트랙만(`project.patch`) 보냅니다. 엔진은 제어 스레드의 `Controller`와 오디오 스레드의 `Renderer`로 나뉘고 lock-free 큐로만 통신하므로, 오디오 스레드는 할당·잠금 없이 돌고 매 버퍼가 JavaScript나 IPC 응답을 기다리지 않습니다.
 - **오프라인 처리** — 피치 편집(Signalsmith WASM)과 오디오 워프는 Worker에서 새 PCM 자산을 렌더링하고, 원본은 그대로 보존합니다.
 
-자세한 설명: [아키텍처](docs/ARCHITECTURE.md) · [네이티브 오디오](docs/NATIVE_AUDIO.md)
+> **이번 릴리스(0.3.2)에 한한 숨은 대체 경로:** 데스크톱은 환경 변수 `GARAK_RUST_ENGINE=0`(트랙을 C++ 엔진으로)과 `GARAK_RUST_EFFECTS=none`(그 C++ 경로의 이펙트도 C++ 커널로), 웹은 `localStorage.setItem('garak.rustEngine', '0')`(Web Audio 엔진)과 `localStorage.setItem('garak.rustDsp', '0')`(TS 커널). 이전 TS·C++ 엔진은 다음 패치에서 삭제할 예정입니다.
+
+자세한 설명: [아키텍처](docs/ARCHITECTURE.md) · [Rust 렌더 엔진](docs/RUST_ENGINE.md) · [Rust 오디오 코어](docs/RUST.md) · [렌더-diff 프로토콜](docs/RENDER_DIFF_PROTOCOL.md) · [네이티브 오디오](docs/NATIVE_AUDIO.md)
 
 ## 문서
 
@@ -73,7 +94,7 @@ pnpm dev                  # 브라우저 데모만 실행 (Web Audio)
 | 시작하기와 기본 사용법 | [GETTING_STARTED](docs/GETTING_STARTED.md) · [단축키](docs/SHORTCUTS.md) |
 | 기능별 안내 | [피치 편집기](docs/PITCH_EDITOR.md) · [기타 앰프](docs/GUITAR_RIG.md) · [이음 웨이브](docs/IEUM_WAVE.md) · [MIDI 가져오기](docs/MIDI_IMPORT.md) · [서스테인 페달](docs/SUSTAIN_PEDAL.md) · [MIDI 컨트롤러](docs/MIDI_CONTROLLERS.md) |
 | AI 연결 | [MCP](docs/MCP.md) |
-| 구조와 구현 상태 | [아키텍처](docs/ARCHITECTURE.md) · [네이티브 오디오](docs/NATIVE_AUDIO.md) · [구현 상태](docs/IMPLEMENTATION_STATUS.md) · [로드맵](docs/ROADMAP.md) |
+| 구조와 구현 상태 | [아키텍처](docs/ARCHITECTURE.md) · [Rust 렌더 엔진](docs/RUST_ENGINE.md) · [Rust 오디오 코어](docs/RUST.md) · [네이티브 오디오](docs/NATIVE_AUDIO.md) · [구현 상태](docs/IMPLEMENTATION_STATUS.md) · [로드맵](docs/ROADMAP.md) |
 | 배포와 라이선스 | [릴리스 절차](docs/RELEASING.md) · [GPL 배포 안내](docs/LICENSING.md) |
 
 전체 문서는 [`docs/`](docs/) 폴더에 있습니다. 오류 제보와 의견은 [이슈](https://github.com/songchez/garak-ieum/issues)에 남겨 주세요.

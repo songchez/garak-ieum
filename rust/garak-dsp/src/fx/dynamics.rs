@@ -74,7 +74,33 @@ impl Compressor {
         s
     }
 
-    fn set(&mut self, threshold: f64, ratio: f64, attack: f64, release: f64, makeup: f64) {
+    /// dsp.cpp `Compressor(rate, threshold, ratio, attack, release, makeup)` with the 6 dB knee
+    /// (attack / release in seconds, makeup linear): the guitar rig's compressor pedal.
+    pub(crate) fn with_settings(
+        sample_rate: f64,
+        threshold: f64,
+        ratio: f64,
+        attack: f64,
+        release: f64,
+        makeup: f64,
+    ) -> Self {
+        let mut s = Self {
+            rate: sample_rate,
+            threshold: 0.0,
+            strength: 0.0,
+            attack: 0.0,
+            release: 0.0,
+            makeup: 1.0,
+            knee: 6.0,
+            envelope: 0.0,
+            meter: Meter::default(),
+        };
+        s.set(threshold, ratio, attack, release, makeup);
+        s
+    }
+
+    /// `Compressor::set` (seconds, linear makeup).
+    pub(crate) fn set(&mut self, threshold: f64, ratio: f64, attack: f64, release: f64, makeup: f64) {
         self.threshold = threshold;
         self.strength = 1.0 - 1.0 / ratio;
         self.attack = math::exp(-1.0 / (attack.max(0.00001) * self.rate));

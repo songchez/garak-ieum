@@ -90,6 +90,28 @@ fn render_never_touches_the_heap() {
     render(&mut r, &mut out);
     c.stop().unwrap();
     render(&mut r, &mut out);
+    // Web host paths (docs/RUST_ENGINE.md 5.7): metronome strokes replaced while clicking, a count-in,
+    // monitored input, route taps, live events, track peaks.
+    let strokes = |v: f32| garak_engine::metronome::Clicks {
+        sample_rate: 48_000,
+        levels: [vec![v; 64], vec![v; 32], vec![v; 16]],
+    };
+    c.set_metronome(Some(strokes(0.5)), true, 0.8).unwrap();
+    c.play_count_in(24_000).unwrap();
+    c.set_monitoring(&[0, 3]).unwrap();
+    c.set_taps(&[1]).unwrap();
+    c.live(0, garak_engine::LiveEvent::NoteOn { pitch: 60, velocity: 1.0, id: 1 }).unwrap();
+    let input = vec![0.1f32; 512 * 2];
+    let mut peaks = [0.0f32; 16];
+    for k in 0..80 {
+        if k == 20 {
+            c.set_metronome(Some(strokes(0.25)), true, 0.8).unwrap();
+        }
+        ARMED.store(true, Ordering::SeqCst);
+        r.render_io(&mut out, &input, 2);
+        r.track_peaks(&mut peaks);
+        ARMED.store(false, Ordering::SeqCst);
+    }
     assert_eq!(EVENTS.load(Ordering::SeqCst), 0, "the renderer touched the heap");
     // The retired graph and track are freed here, on the control thread.
     c.collect();

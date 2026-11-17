@@ -12,9 +12,11 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
 use garak_engine::testkit::{TestProject, project};
-use garak_engine::{Applied, Controller, EngineConfig, PcmAsset, Renderer, engine};
+use garak_engine::{Ahead, Applied, Controller, EngineConfig, PcmAsset, Renderer, engine};
 
 pub const GARAK_RS_ENGINE_ERROR: i32 = -1;
+
+mod instruments;
 
 /// Opaque engine handle (`GarakRsEngine*`).
 #[derive(Debug)]
@@ -22,6 +24,8 @@ pub struct GarakRsEngine {
     control: UnsafeCell<Controller>,
     render: UnsafeCell<Renderer>,
     error: UnsafeCell<String>,
+    /// Render-ahead producers (any thread, garak_rs_engine_render_ahead).
+    ahead: Ahead,
 }
 
 /// Opaque test project (`GarakRsTestProject*`): garak_engine::testkit for the parity harness.
@@ -83,6 +87,7 @@ pub extern "C" fn garak_rs_engine_create(
     match engine(EngineConfig { sample_rate, max_block, offline: offline != 0 }) {
         Ok((c, r)) => Box::into_raw(Box::new(GarakRsEngine {
             control: UnsafeCell::new(c),
+            ahead: r.ahead(),
             render: UnsafeCell::new(r),
             error: UnsafeCell::new(String::new()),
         })),
@@ -286,6 +291,305 @@ pub unsafe extern "C" fn garak_rs_engine_render(e: *mut GarakRsEngine, out: *mut
     // SAFETY: caller contract.
     let out = unsafe { core::slice::from_raw_parts_mut(out, frames as usize * 2) };
     r.render(out);
+}
+
+/// The last command ticket the control half queued (`Controller::ticket`): what a host shell passes
+/// to `garak_rs_engine_render_block` once its own matching command applies.
+///
+/// # Safety
+/// `e` is null or live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_ticket(e: *mut GarakRsEngine) -> u64 {
+    // SAFETY: caller contract.
+    unsafe { control(e) }.map_or(0, |(c, _)| c.ticket())
+}
+
+/// The host's worker pool for `garak_rs_engine_render_block` (garak_engine.h `GarakRsParallelRun`).
+pub type GarakRsParallelRun = unsafe extern "C" fn(
+    host: *mut core::ffi::c_void,
+    count: u32,
+    task: garak_engine::HostTask,
+    job: *mut core::ffi::c_void,
+);
+
+/// Audio thread, host-driven (the C++ shell owns the transport and master bus): applies commands
+/// up to `allowed`, then writes the track mix of `frames` frames at project frame `position` into
+/// `out`. `peaks` (null or `peak_capacity` floats) receives per-track block peaks. `run` (nullable)
+/// renders independent tracks on the host's worker pool; the output is bit-identical without it.
+///
+/// # Safety
+/// As `garak_rs_engine_render`; `peaks` is null or valid for `peak_capacity` writes; `run`, when
+/// set, honours the `Parallel` contract (every task called once, returns after all completed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_render_block(
+    e: *mut GarakRsEngine,
+    out: *mut f32,
+    frames: u32,
+    position: i64,
+    playing: i32,
+    allowed: u64,
+    peaks: *mut f32,
+    peak_capacity: u32,
+    run: Option<GarakRsParallelRun>,
+    host: *mut core::ffi::c_void,
+) {
+    // SAFETY: caller contract: the render half is only touched by the audio thread.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return };
+    if out.is_null() || frames == 0 {
+        r.host_consume(allowed);
+        return;
+    }
+    // SAFETY: caller contract.
+    let (out, peaks) = unsafe {
+        let peaks: &mut [f32] = if peaks.is_null() || peak_capacity == 0 {
+            &mut []
+        } else {
+            core::slice::from_raw_parts_mut(peaks, peak_capacity as usize)
+        };
+        (core::slice::from_raw_parts_mut(out, frames as usize * 2), peaks)
+    };
+    let parallel = run.map(|run| garak_engine::Parallel { run, host });
+    r.render_block(out, position, playing != 0, allowed, peaks, parallel.as_ref());
+}
+
+/// The shell's block (garak_engine.h `GarakRsBlock`).
+#[repr(C)]
+#[derive(Debug)]
+pub struct GarakRsBlock {
+    pub position: i64,
+    pub playing: i32,
+    pub allowed: u64,
+    pub master_gain: f32,
+    pub target_master_gain: f32,
+    pub monitor: [u64; 4],
+    /// Null: host nodes render silence (sources) or pass through (inserts).
+    pub nodes: *const garak_engine::HostCallbacks,
+    /// `ahead_count` per-track pointers (null entries allowed): the block's output of tracks the shell renders
+    /// ahead (garak_rs_engine_render_ahead); the graph skips those tracks.
+    pub ahead: *const *const f32,
+    pub ahead_count: u32,
+}
+
+/// Audio thread: `garak_rs_engine_render_block` with the shell's master gain (master-resampling routes),
+/// monitored tracks (device input through `nodes->input`, route inputs) and the host's VST3 / IEUM WAVE
+/// callbacks (docs/RUST_ENGINE.md 4).
+///
+/// # Safety
+/// As `garak_rs_engine_render_block`; `block` is valid; `block->nodes` is null or valid for the call, and its
+/// callbacks honour the `HostCallbacks` contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_render_host(
+    e: *mut GarakRsEngine,
+    out: *mut f32,
+    frames: u32,
+    block: *const GarakRsBlock,
+    peaks: *mut f32,
+    peak_capacity: u32,
+    run: Option<GarakRsParallelRun>,
+    host: *mut core::ffi::c_void,
+) {
+    // SAFETY: caller contract: the render half is only touched by the audio thread.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return };
+    // SAFETY: caller contract.
+    let Some(b) = (unsafe { block.as_ref() }) else { return };
+    if out.is_null() || frames == 0 {
+        r.host_consume(b.allowed);
+        return;
+    }
+    // SAFETY: caller contract.
+    let (out, peaks, nodes, ahead) = unsafe {
+        let peaks: &mut [f32] = if peaks.is_null() || peak_capacity == 0 {
+            &mut []
+        } else {
+            core::slice::from_raw_parts_mut(peaks, peak_capacity as usize)
+        };
+        let ahead: &[*const f32] = if b.ahead.is_null() || b.ahead_count == 0 {
+            &[]
+        } else {
+            core::slice::from_raw_parts(b.ahead, b.ahead_count as usize)
+        };
+        (core::slice::from_raw_parts_mut(out, frames as usize * 2), peaks, b.nodes.as_ref(), ahead)
+    };
+    let info = garak_engine::BlockInfo {
+        position: b.position,
+        playing: b.playing != 0,
+        allowed: b.allowed,
+        master_gain: b.master_gain,
+        target_master_gain: b.target_master_gain,
+        monitor: b.monitor,
+        host: nodes,
+        ahead,
+    };
+    let parallel = run.map(|run| garak_engine::Parallel { run, host });
+    r.render_host(out, &info, peaks, parallel.as_ref());
+}
+
+/// Audio thread, at a block boundary: a live event for track `track` that the shell applies itself (its live
+/// MIDI ring and live commands). `kind`: 0 note on (`a` = note id), 1 note off (`a` = note id), 2 all notes off,
+/// 3 controller (`pitch` = controller number, `a` = value), 4 preview (`a` = frames). Returns 1 when a built-in
+/// instrument played it, 0 when no track did, -1 for an invalid event.
+///
+/// # Safety
+/// As `garak_rs_engine_render`; the track is not rendering ahead.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_live(
+    e: *mut GarakRsEngine,
+    track: u32,
+    kind: u32,
+    pitch: i32,
+    a: i32,
+    velocity: f32,
+) -> i32 {
+    use garak_engine::LiveEvent;
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return -1 };
+    let note = u8::try_from(pitch).unwrap_or(u8::MAX);
+    let event = match kind {
+        0 => LiveEvent::NoteOn { pitch: note, velocity, id: a },
+        1 => LiveEvent::NoteOff { pitch: note, id: a },
+        2 => LiveEvent::AllNotesOff,
+        3 => LiveEvent::Control { controller: u16::try_from(pitch).unwrap_or(u16::MAX), value: a },
+        4 => LiveEvent::Preview { pitch: note, velocity, frames: u32::try_from(a).unwrap_or(0) },
+        _ => return -1,
+    };
+    if !event.is_valid() {
+        return -1;
+    }
+    i32::from(r.host_live(track as usize, event))
+}
+
+/// Audio thread, after `garak_rs_engine_render_host`: the last block's input of routed track `track`
+/// (interleaved stereo, `max_block` frames of storage), or null when it has no internal route.
+///
+/// # Safety
+/// As `garak_rs_engine_render`. The pointer is valid until the next render or reset call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_route_input(e: *mut GarakRsEngine, track: u32) -> *const f32 {
+    // SAFETY: caller contract.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &*h.render.get() }) else {
+        return core::ptr::null();
+    };
+    r.route_input(track as usize).map_or(core::ptr::null(), <[f32]>::as_ptr)
+}
+
+/// Render-ahead producer (a host worker, or the callback helping): renders `frames` frames of track `track` of
+/// the active graph at project frame `frame` exactly as the graph would and returns its output (interleaved
+/// stereo, valid until the track renders again; null when there is no such track). `peak` (nullable) gets the
+/// block peak.
+///
+/// # Safety
+/// `e` is live; the render-ahead contract of `garak_engine::Ahead`: the shell keeps this track out of
+/// `garak_rs_engine_render_host` (in `ahead`) and its resets, renders it on one thread at a time, and keeps its
+/// workers out while the renderer applies commands. `nodes` is null or valid (callbacks for this track may run on
+/// this thread).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_render_ahead(
+    e: *mut GarakRsEngine,
+    track: u32,
+    frame: i64,
+    frames: u32,
+    playing: i32,
+    nodes: *const garak_engine::HostCallbacks,
+    peak: *mut f32,
+) -> *const f32 {
+    // SAFETY: caller contract (`ahead` is immutable and shared; no `&mut` to the renderer is formed).
+    let Some(h) = (unsafe { e.as_ref() }) else { return core::ptr::null() };
+    // SAFETY: caller contract.
+    let result = unsafe { h.ahead.render_track(track as usize, frame, frames, playing != 0, nodes.as_ref()) };
+    let Some((mix, p)) = result else { return core::ptr::null() };
+    if !peak.is_null() {
+        // SAFETY: caller contract.
+        unsafe { *peak = p };
+    }
+    mix.as_ptr()
+}
+
+/// The shell's reset of one track it takes back from a render-ahead ring out of sync (`effects != 0`: tails
+/// and delay lines). Callback thread.
+///
+/// # Safety
+/// As `garak_rs_engine_render_ahead` (the caller owns the track now).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_reset_track(
+    e: *mut GarakRsEngine,
+    track: u32,
+    frame: i64,
+    chase: i32,
+    effects: i32,
+) {
+    // SAFETY: caller contract.
+    if let Some(h) = unsafe { e.as_ref() } {
+        // SAFETY: caller contract.
+        unsafe { h.ahead.reset_track(track as usize, frame, chase != 0, effects != 0) };
+    }
+}
+
+/// Audio thread: `garak_rs_engine_reset` leaving the tracks the shell renders ahead alone (`skip`: 4 words, bit
+/// `i` of word `i / 64`).
+///
+/// # Safety
+/// As `garak_rs_engine_render`; `skip` is valid for 4 reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_reset_skip(
+    e: *mut GarakRsEngine,
+    frame: i64,
+    chase: i32,
+    effects: i32,
+    skip: *const u64,
+) {
+    // SAFETY: caller contract.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return };
+    let mut mask = [0u64; 4];
+    if !skip.is_null() {
+        // SAFETY: caller contract.
+        mask.copy_from_slice(unsafe { core::slice::from_raw_parts(skip, 4) });
+    }
+    r.host_reset_skip(frame, chase != 0, effects != 0, &mask);
+}
+
+/// Audio thread, after `garak_rs_engine_render_block`: dynamics meter readings (compressor, limiter,
+/// gate) since the last call into `out` (`capacity` entries). Returns how many were written.
+///
+/// # Safety
+/// As `garak_rs_engine_render`; `out` is null or valid for `capacity` writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_take_dynamics(
+    e: *mut GarakRsEngine,
+    out: *mut garak_engine::DynamicsReading,
+    capacity: u32,
+) -> u32 {
+    // SAFETY: caller contract.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return 0 };
+    if out.is_null() || capacity == 0 {
+        return 0;
+    }
+    // SAFETY: caller contract.
+    let out = unsafe { core::slice::from_raw_parts_mut(out, capacity as usize) };
+    r.take_dynamics(out) as u32
+}
+
+/// Audio thread: the host shell's transport reset (`effects != 0` also clears tails).
+///
+/// # Safety
+/// As `garak_rs_engine_render`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_reset(e: *mut GarakRsEngine, frame: i64, chase: i32, effects: i32) {
+    // SAFETY: caller contract.
+    if let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) {
+        r.host_reset(frame, chase != 0, effects != 0);
+    }
+}
+
+/// Audio thread: the shell's transport stopped at the project end (no cycle). Plug-in style Rust instruments
+/// release their notes next block (C++ `requestReset`).
+///
+/// # Safety
+/// As `garak_rs_engine_render`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_stop_at_end(e: *mut GarakRsEngine) {
+    // SAFETY: caller contract.
+    if let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) {
+        r.host_stop_at_end();
+    }
 }
 
 /// The parity test project (`garak_engine::testkit::project`), or null.

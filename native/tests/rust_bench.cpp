@@ -1,6 +1,7 @@
 // CPU baseline: frames per second of every ported effect, C++ vs Rust, through the same
 // StereoProcessor interface (128-frame blocks, 48 kHz, a busy parameter set). Not a test: prints a
-// Markdown table for docs/RUST.md and CI logs. Usage: garak-rust-bench [seconds] [effect ...]
+// Markdown table for docs/RUST.md and CI logs. Usage: garak-rust-bench [seconds] [--gate=R] [effect ...]
+// (--gate=R exits non-zero when a selected effect's Rust time exceeds R x the C++ time.)
 // Each backend gets `seconds` of audio in total, split into rounds that alternate C++ and Rust; the
 // best round counts. Alternating cancels clock ramps and noisy neighbours on shared CI runners.
 // "automated" re-runs the effects that have parameter glides with one parameter flipped through
@@ -20,7 +21,7 @@
 namespace {
 using garak::dsp::EffectBackend;
 
-struct Case { const char* type; garak::Parameters params; const char* glide = nullptr; double a = 0, b = 0; };
+struct Case { const char* type; garak::Parameters params; const char* glide = nullptr; double a = 0, b = 0; const char* label = nullptr; };
 
 double run(const Case& c, EffectBackend backend, std::size_t totalFrames, const std::vector<float>& input, bool automated) {
   auto fx = garak::dsp::makeEffect(c.type, c.params, 48000, 120, backend);
@@ -59,7 +60,13 @@ int main(int argc, char** argv) {
   const double seconds = argc > 1 ? std::max(0.5, std::atof(argv[1])) : 10.0;
   constexpr int rounds = 5;
   const auto totalFrames = static_cast<std::size_t>(48000 * seconds / rounds);
-  std::vector<std::string> only(argv + std::min(argc, 2), argv + argc);
+  std::vector<std::string> only;
+  double gate = 0;
+  bool gateFailed = false;
+  for (int i = 2; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg.rfind("--gate=", 0) == 0) gate = std::atof(arg.c_str() + 7); else only.push_back(arg);
+  }
   std::vector<float> input(48000 * 2);
   std::uint32_t seed = 1;
   for (auto& x : input) { seed = seed * 1664525u + 1013904223u; x = static_cast<float>((seed / 4294967296.0 * 2 - 1) * 0.5); }
@@ -70,6 +77,12 @@ int main(int argc, char** argv) {
     {"utility", {{"width", 1.4}, {"pan", .3}}, "gain", 0, -1}, {"delay", {{"age", .5}, {"lowcut", 200}, {"mode", 1}}, "age", .5, .6},
     {"eq", {{"b4On", 1}, {"b5On", 1}, {"b6On", 1}, {"b7On", 1}, {"b8On", 1}, {"b8Slope", 3}}},
     {"filter", {{"slope", 2}}}, {"compressor", {}}, {"drive", {}}, {"reverb", {{"amount", .5}, {"lowcut", 120}}},
+    // Guitar rig: the default rack with the drive and chorus on, and a full pedalboard (every module
+    // switched on, plate reverb included).
+    {"guitar-rig", {{"driveEnabled", 1}, {"chorusEnabled", 1}, {"delayEnabled", 1}}, "ampGain", 10, 11, "guitar-rig (default rack)"},
+    {"guitar-rig", {{"driveEnabled", 1}, {"fuzzEnabled", 1}, {"chorusEnabled", 1}, {"delayEnabled", 1}, {"phaserEnabled", 1}, {"tremoloEnabled", 1},
+                    {"reverbEnabled", 1}, {"rackSlot0", 1}, {"rackSlot1", 2}, {"rackSlot2", 7}, {"rackSlot3", 8}, {"rackSlot4", 3}, {"rackSlot5", 4},
+                    {"rackSlot6", 5}, {"rackSlot7", 6}, {"rackSlot8", 9}, {"rackSlot9", 10}}, "ampGain", 10, 11, "guitar-rig (full rack)"},
   };
   std::printf("%.1f s of 48 kHz stereo per backend (best of %d alternating rounds), 128-frame blocks.\n\n", seconds, rounds);
   std::printf("| effect | C++ (Mframes/s) | Rust (Mframes/s) | Rust / C++ | automated Rust / C++ | C++ x realtime |\n"
@@ -77,16 +90,26 @@ int main(int argc, char** argv) {
   for (const auto& c : cases) {
     if (!only.empty() && std::find(only.begin(), only.end(), c.type) == only.end()) continue;
     double cpp = 0, rust = 0, cppAuto = 0, rustAuto = 0;
-    for (int round = 0; round < rounds; ++round) {
-      cpp = std::max(cpp, run(c, EffectBackend::Cpp, totalFrames, input, false));
-      rust = std::max(rust, run(c, EffectBackend::Rust, totalFrames, input, false));
-      if (!c.glide) continue;
-      cppAuto = std::max(cppAuto, run(c, EffectBackend::Cpp, totalFrames, input, true));
-      rustAuto = std::max(rustAuto, run(c, EffectBackend::Rust, totalFrames, input, true));
-    }
+    const auto measure = [&] {
+      for (int round = 0; round < rounds; ++round) {
+        cpp = std::max(cpp, run(c, EffectBackend::Cpp, totalFrames, input, false));
+        rust = std::max(rust, run(c, EffectBackend::Rust, totalFrames, input, false));
+        if (!c.glide) continue;
+        cppAuto = std::max(cppAuto, run(c, EffectBackend::Cpp, totalFrames, input, true));
+        rustAuto = std::max(rustAuto, run(c, EffectBackend::Rust, totalFrames, input, true));
+      }
+    };
+    const auto failsGate = [&] { return gate > 0 && (rust / cpp < 1 / gate || (c.glide && rustAuto / cppAuto < 1 / gate)); };
+    measure();
+    // A shared CI runner can stall one backend for a round: before failing the gate, measure up to two more sets
+    // of alternating rounds (best of all of them). A real regression stays below the gate every time.
+    for (int retry = 0; retry < 2 && failsGate(); ++retry) measure();
     char automated[32] = "-";
     if (c.glide) std::snprintf(automated, sizeof automated, "%.2f", rustAuto / cppAuto);
-    std::printf("| %s | %.2f | %.2f | %.2f | %s | %.0f |\n", c.type, cpp / 1e6, rust / 1e6, rust / cpp, automated, cpp / 48000);
+    std::printf("| %s | %.2f | %.2f | %.2f | %s | %.0f |\n", c.label ? c.label : c.type, cpp / 1e6, rust / 1e6, rust / cpp, automated, cpp / 48000);
+    // --gate=R: fail when Rust takes more than R times the C++ time (static or automated).
+    if (failsGate()) gateFailed = true;
   }
+  if (gateFailed) { std::fprintf(stderr, "CPU gate: Rust took more than %.2fx the C++ time\n", gate); return EXIT_FAILURE; }
   return EXIT_SUCCESS;
 }

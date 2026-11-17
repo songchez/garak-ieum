@@ -9,8 +9,9 @@ use alloc::vec::Vec;
 
 use crate::error::Error;
 use crate::json::Json;
+use crate::metronome::{MeterEvent, MeterMap};
 use crate::plan::{
-    AudioWindow, AutomationLane, AutomationPoint, ControlEvent, InsertPlan, LaneTarget, Note, Plan,
+    AudioWindow, AutomationLane, AutomationPoint, ControlEvent, HostNode, InsertPlan, LaneTarget, Note, Plan,
     RouteKind, RoutePlan, RouteTap, SendPlan, Source, SourceKind, TempoPoint, TrackPlan,
 };
 
@@ -91,6 +92,20 @@ fn plugin_instance(value: &Json) -> Result<String, Error> {
     string(plugin, "instanceId", 512, false)
 }
 
+/// `"host": {"latencyFrames", "tailSeconds"}`: a node the desktop host processes (docs/RUST_ENGINE.md 4). Only
+/// the C++ shell writes it; the limits are its own (30 s of latency, an hour of tail).
+fn host_node(value: &Json) -> Result<Option<HostNode>, Error> {
+    let Some(host) = value.get("host").filter(|v| !v.is_null()) else { return Ok(None) };
+    if host.as_object().is_none() {
+        return Err(err("Invalid host node"));
+    }
+    Ok(Some(HostNode {
+        latency: integer(host, "latencyFrames", 0, 192_000 * 30, 0)? as u32,
+        tail: number(host, "tailSeconds", 0.0, 3600.0, 0.0)?,
+        stereo: boolean(host, "stereo", true)?,
+    }))
+}
+
 fn source(value: &Json) -> Result<Source, Error> {
     let kind = string(value, "kind", 32, false)?;
     let mut s = Source::default();
@@ -119,6 +134,9 @@ fn source(value: &Json) -> Result<Source, Error> {
         if s.kind == SourceKind::BuiltinSampled {
             s.sample_set_id = id_string(value, "sampleSetId")?;
         }
+    }
+    if s.kind != SourceKind::Audio {
+        s.host = host_node(value)?;
     }
     Ok(s)
 }
@@ -268,6 +286,41 @@ pub fn parse_header(value: &Json) -> Result<Plan, Error> {
     if ![2, 4, 8, 16].contains(&p.time_sig_denominator) {
         return Err(err("Invalid meter denominator"));
     }
+    if let Some(events) = value.get("meterMap").filter(|v| !v.is_null()) {
+        // protocol.hpp: bars decide every downbeat; beats that disagree with the bar walk are rejected.
+        let events = events.as_array().filter(|e| e.len() <= 1024).ok_or_else(|| err("Invalid meter map"))?;
+        let mut parsed: Vec<MeterEvent> = Vec::with_capacity(events.len());
+        for item in events {
+            let e = MeterEvent {
+                bar: integer(item, "bar", 0, 1_000_000, 0)?,
+                numerator: integer(item, "numerator", 1, 32, 4)? as i32,
+                denominator: integer(item, "denominator", 2, 16, 4)? as i32,
+                beat: number(item, "beat", 0.0, 1e9, 0.0)?,
+            };
+            if ![2, 4, 8, 16].contains(&e.denominator) {
+                return Err(err("Invalid meter denominator"));
+            }
+            let bad = match parsed.last() {
+                None => {
+                    e.bar != 0
+                        || e.numerator != p.time_sig_numerator
+                        || e.denominator != p.time_sig_denominator
+                }
+                Some(last) => e.bar <= last.bar,
+            };
+            if bad {
+                return Err(err("Invalid meter map order"));
+            }
+            parsed.push(e);
+        }
+        let compiled = MeterMap::new(p.time_sig_numerator, p.time_sig_denominator, &parsed);
+        if compiled.events().iter().zip(&parsed).any(|(c, e)| (c.beat - e.beat).abs() > 1e-6) {
+            return Err(err("Meter map beats disagree with its bars"));
+        }
+        if compiled.events().len() > 1 {
+            p.meter_map = compiled.events().to_vec();
+        }
+    }
     if let Some(cycle) = value.get("cycle").filter(|v| !v.is_null()) {
         let start = integer(cycle, "startFrame", 0, p.length_frames - 1, 0)?;
         let end = integer(cycle, "endFrame", start + 1, p.length_frames, p.length_frames)?;
@@ -364,11 +417,9 @@ pub fn parse_track(
     t.solo = boolean(item, "solo", false)?;
     t.solo_safe = boolean(item, "soloSafe", false)?;
     t.audible = boolean(item, "audible", true)?;
-    // Offline render taps for freeze/bounce/stems (docs/BOUNCE_FREEZE_STEMS.md) are not ported yet: refuse them
-    // instead of rendering the track post-fader into the master sum.
-    if item.get("preFader").is_some() || item.get("directOut").is_some() {
-        return Err(err("Unsupported render tap (preFader/directOut)"));
-    }
+    // Offline render taps for stems, freeze and bounce (docs/BOUNCE_FREEZE_STEMS.md).
+    t.direct_out = boolean(item, "directOut", true)?;
+    t.pre_fader = boolean(item, "preFader", false)?;
     if let Some(input) = item.get("input").filter(|v| !v.is_null()) {
         let channels = input
             .get("channels")
@@ -438,9 +489,11 @@ pub fn parse_track(
             enabled: boolean(insert, "enabled", true)?,
             params: Vec::new(),
             plugin_instance: String::new(),
+            host: None,
         };
         if b.kind == "vst3" {
             b.plugin_instance = plugin_instance(insert)?;
+            b.host = host_node(insert)?;
         } else {
             b.params = parameters(insert.get("params"))?;
         }
@@ -526,12 +579,12 @@ pub fn parse_track(
     };
     let rate = i64::from(p.sample_rate);
     for a in audio {
-        // Frozen windows (no click guard, may run into the export tail) are not ported yet.
-        if a.get("freeze").is_some() {
-            return Err(err("Unsupported frozen audio window"));
-        }
+        // Frozen windows: no click guard, and they may run 31 s into the export tail (protocol.hpp).
+        let freeze = boolean(a, "freeze", false)?;
+        let tail_seconds = if freeze { number(a, "tailSeconds", 0.0, 3600.0, 0.0)? } else { 0.0 };
         let start = integer(a, "startFrame", 0, length, 0)?;
-        let end = integer(a, "endFrame", start + 1, length, start + 1)?;
+        let end_limit = if freeze { length + rate * 31 } else { length };
+        let end = integer(a, "endFrame", start + 1, end_limit, start + 1)?;
         let clip_length = integer(a, "clipLengthFrames", 1, rate * 3600, end - start)?;
         // Same fields, ranges and defaults as protocol.hpp (the clip length bounds the fades).
         let id = integer(a, "id", 0, 2_000_000_000, 0)?;
@@ -553,6 +606,8 @@ pub fn parse_track(
             fade_out_frames: integer(a, "fadeOutFrames", 0, clip_length, 0)?,
             fade_in_curve: integer(a, "fadeInCurve", 0, 4, 0)? as i32,
             fade_out_curve: integer(a, "fadeOutCurve", 0, 4, 0)? as i32,
+            freeze,
+            tail_seconds,
         });
     }
     Ok(t)
@@ -648,4 +703,73 @@ pub fn parse_patch(current: &Plan, value: &Json, blob: &[u8]) -> Result<Plan, Er
 /// Parses `text` as JSON and then as a timeline (convenience for hosts).
 pub fn timeline_from_bytes(text: &[u8], blob: &[u8]) -> Result<Plan, Error> {
     parse_timeline(&Json::parse(text)?, blob)
+}
+
+/// `samples.register` params (protocol.hpp `sampleSet`): `{ id, manifest: { kind, gainDb, release,
+/// zones, releaseZones }, files: { file: assetId }, startOffset }`.
+pub fn parse_sample_set(value: &Json) -> Result<crate::plan::SampleSet, Error> {
+    use crate::plan::{SampleSet, SampleZone};
+    let id = id_string(value, "id")?;
+    let manifest = value.get("manifest").ok_or_else(|| err("Missing sample manifest"))?;
+    let files = value.get("files").ok_or_else(|| err("Missing sample files"))?;
+    let kind = match manifest.get("kind") {
+        None => String::from("pitched"),
+        Some(k) => k.as_str().ok_or_else(|| err("Invalid string: kind"))?.to_string(),
+    };
+    let mut set = SampleSet {
+        id,
+        is_kit: kind == "kit",
+        gain_db: number(manifest, "gainDb", -120.0, 36.0, 0.0)?,
+        release: number(manifest, "release", 0.001, 30.0, 0.25)?,
+        start_offset: number(value, "startOffset", 0.0, 1.0, 0.0)?,
+        zones: Vec::new(),
+        release_zones: Vec::new(),
+    };
+    let zones = |key: &str, target: &mut Vec<SampleZone>| -> Result<(), Error> {
+        let values = manifest
+            .get(key)
+            .and_then(Json::as_array)
+            .filter(|v| v.len() <= 10_000)
+            .ok_or_else(|| err("Invalid sample zones"))?;
+        for item in values {
+            let file = string(item, "file", 512, false)?;
+            let asset_id = string(files, &file, 512, false)?;
+            let root = integer(item, "root", 0, 127, 60)?;
+            let lo = integer(item, "lo", 0, 127, root)?;
+            let hi = integer(item, "hi", lo, 127, root)?;
+            let vlo = number(item, "vlo", 0.0, 1.0, 0.0)?;
+            let vhi = number(item, "vhi", vlo, 1.0, 1.0)?;
+            let mut zone = SampleZone {
+                asset_id,
+                root: root as i32,
+                lo: lo as i32,
+                hi: hi as i32,
+                vlo,
+                vhi,
+                gain_db: number(item, "gainDb", -120.0, 36.0, 0.0)?,
+                tune: number(item, "tune", -2400.0, 2400.0, 0.0)?,
+                looped: None,
+                choke: integer(item, "choke", -1, 127, -1)? as i32,
+            };
+            if let Some(l) = item.get("loop") {
+                let pair = l.as_array().filter(|l| l.len() == 2).ok_or_else(|| err("Invalid sample loop"))?;
+                let (Some(a), Some(b)) =
+                    (pair.first().and_then(Json::as_f64), pair.get(1).and_then(Json::as_f64))
+                else {
+                    return Err(err("Invalid sample loop"));
+                };
+                if !a.is_finite() || !b.is_finite() || a < 0.0 || b <= a {
+                    return Err(err("Invalid sample loop"));
+                }
+                zone.looped = Some([a, b]);
+            }
+            target.push(zone);
+        }
+        Ok(())
+    };
+    zones("zones", &mut set.zones)?;
+    if manifest.get("releaseZones").is_some() {
+        zones("releaseZones", &mut set.release_zones)?;
+    }
+    Ok(set)
 }
