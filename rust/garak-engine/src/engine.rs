@@ -800,7 +800,14 @@ impl Renderer {
     }
 
     fn consume(&mut self) {
-        while let Some(Ticketed { ticket, command }) = self.commands.pop() {
+        self.consume_until(u64::MAX);
+    }
+
+    /// Applies queued commands up to ticket `limit` (a host shell keeps later ones for the block in
+    /// which its own matching command applies; see `host.rs`).
+    fn consume_until(&mut self, limit: u64) {
+        while self.commands.peek().is_some_and(|c| c.ticket <= limit) {
+            let Some(Ticketed { ticket, command }) = self.commands.pop() else { break };
             match command {
                 Command::Graph(mut next) => {
                     let previous = self.active.take();
@@ -954,6 +961,39 @@ impl Renderer {
         }
     }
 
+    /// Every track of one block in render order, summed into `block` in track order (the master
+    /// is applied by the caller). With `parallel`, independent tracks render on the host's workers
+    /// (`host.rs`); the sum is the same either way.
+    fn render_tracks(
+        g: &mut Graph,
+        block: &mut [f32],
+        position: i64,
+        count: u32,
+        playing: bool,
+        rate: f64,
+        parallel: Option<&host::Parallel>,
+    ) {
+        let tempo = g.tempo.as_ref().map(|t| t.bpm_at(t.beat_at_frame(position as f64, rate)));
+        let smoothing = math::smoothing(rate, 0.012);
+        let senders = parallel.map_or(0, |p| host::render_parallel(g, p, position, count, playing, tempo));
+        {
+            for k in senders..g.order.len() {
+                let Some(&index) = g.order.get(k) else { continue };
+                if g.tracks.get(index).is_some_and(|t| t.is_return) {
+                    Self::fill_return_input(g, index, position, count, smoothing);
+                }
+                if let Some(t) = g.tracks.get_mut(index) {
+                    t.render(position, count, playing, tempo);
+                }
+            }
+        }
+        for t in g.tracks.iter().filter(|t| t.direct_out()) {
+            for (o, x) in block.iter_mut().zip(t.mix(count)) {
+                *o += *x;
+            }
+        }
+    }
+
     /// Renders `out.len() / 2` stereo frames (interleaved). Real-time safe.
     pub fn render(&mut self, out: &mut [f32]) {
         self.consume();
@@ -989,22 +1029,7 @@ impl Renderer {
             let position = self.position;
             if let Some(g) = &mut self.active {
                 let playing = self.playing && position < g.length_frames;
-                let tempo = g.tempo.as_ref().map(|t| t.bpm_at(t.beat_at_frame(position as f64, rate)));
-                let smoothing = math::smoothing(rate, 0.012);
-                for k in 0..g.order.len() {
-                    let Some(&index) = g.order.get(k) else { continue };
-                    if g.tracks.get(index).is_some_and(|t| t.is_return) {
-                        Self::fill_return_input(g, index, position, count, smoothing);
-                    }
-                    if let Some(t) = g.tracks.get_mut(index) {
-                        t.render(position, count, playing, tempo);
-                    }
-                }
-                for t in &g.tracks {
-                    for (o, x) in block.iter_mut().zip(t.mix(count)) {
-                        *o += *x;
-                    }
-                }
+                Self::render_tracks(g, block, position, count, playing, rate, None);
                 let s = math::smoothing(rate, 0.012) as f32;
                 for pair in block.as_chunks_mut::<2>().0 {
                     self.master_gain =
@@ -1076,3 +1101,6 @@ impl Renderer {
         self.position
     }
 }
+
+mod host;
+pub use host::{DynamicsReading, HostTask, Parallel};

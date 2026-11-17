@@ -1625,6 +1625,10 @@ int main(){
     {"update: track add/remove keeps other tracks",graphChangesKeepOtherTracks},{"update: 32 reverbs share impulse responses",manyReverbsShareImpulses},
     {"update: render-ahead tracks take diffs",updatesWithRenderAhead},
     {"freeze: a frozen track renders like the live track",freezeMatchesLive},{"stems: pre-master stems sum to the mix",stemsSumToMix}};
-  unsigned failed=0;for(const auto&[name,test]:tests){try{test();std::cout<<"PASS "<<name<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<": "<<error.what()<<'\n';}}
+  // GARAK_RUST_ENGINE=1|strict runs the suite with the Rust graph inside RenderEngine (docs/RUST_ENGINE.md 10);
+  // each line then says how many blocks the Rust graph rendered (0: the test never reached it).
+  const bool rust=std::getenv("GARAK_RUST_ENGINE")&&*std::getenv("GARAK_RUST_ENGINE");
+  const auto via=[&](std::uint64_t before){if(!rust)return std::string();return " [rust blocks: "+std::to_string(rustEngineBlocks()-before)+"]";};
+  unsigned failed=0;for(const auto&[name,test]:tests){const auto before=rustEngineBlocks();try{test();std::cout<<"PASS "<<name<<via(before)<<'\n';}catch(const std::exception&error){watchAllocations=false;++failed;std::cerr<<"FAIL "<<name<<via(before)<<": "<<error.what()<<'\n';}}
   return failed?1:0;
 }

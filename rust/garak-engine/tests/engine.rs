@@ -177,7 +177,8 @@ fn transport_and_refusals() {
     let a = assets(&p);
     let plan = timeline_from_bytes(p.json.as_bytes(), &[]).unwrap();
     // Schema 18/19 timelines: a meter map only drives the metronome (not ported) and is accepted; frozen
-    // windows and offline render taps (docs/BOUNCE_FREEZE_STEMS.md) are refused until the engine ports them.
+    // windows (docs/BOUNCE_FREEZE_STEMS.md) are refused until the engine ports them; the offline render taps
+    // (preFader / directOut) are parsed.
     let metered = p.json.replacen(
         r#""tracks":["#,
         r#""meterMap":[{"bar":0,"beat":0,"numerator":4,"denominator":4},{"bar":2,"beat":8,"numerator":3,"denominator":4}],"tracks":["#,
@@ -186,8 +187,10 @@ fn transport_and_refusals() {
     assert_eq!(timeline_from_bytes(metered.as_bytes(), &[]).unwrap().tracks.len(), plan.tracks.len());
     let frozen = p.json.replacen(r#""startFrame":"#, r#""freeze":true,"tailSeconds":1,"startFrame":"#, 1);
     assert!(timeline_from_bytes(frozen.as_bytes(), &[]).is_err());
-    let tapped = p.json.replacen(r#""gain":"#, r#""preFader":true,"gain":"#, 1);
-    assert!(timeline_from_bytes(tapped.as_bytes(), &[]).is_err());
+    let tapped = p.json.replacen(r#""gain":"#, r#""preFader":true,"directOut":false,"gain":"#, 1);
+    let tapped = timeline_from_bytes(tapped.as_bytes(), &[]).unwrap();
+    assert!(tapped.tracks[0].pre_fader && !tapped.tracks[0].direct_out);
+    assert!(!plan.tracks[0].pre_fader && plan.tracks[0].direct_out);
     let (mut c, mut r) =
         engine(EngineConfig { sample_rate: 48_000, max_block: 512, offline: false }).unwrap();
     // Unknown PCM is refused and the engine stays empty.

@@ -288,6 +288,98 @@ pub unsafe extern "C" fn garak_rs_engine_render(e: *mut GarakRsEngine, out: *mut
     r.render(out);
 }
 
+/// The last command ticket the control half queued (`Controller::ticket`): what a host shell passes
+/// to `garak_rs_engine_render_block` once its own matching command applies.
+///
+/// # Safety
+/// `e` is null or live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_ticket(e: *mut GarakRsEngine) -> u64 {
+    // SAFETY: caller contract.
+    unsafe { control(e) }.map_or(0, |(c, _)| c.ticket())
+}
+
+/// The host's worker pool for `garak_rs_engine_render_block` (garak_engine.h `GarakRsParallelRun`).
+pub type GarakRsParallelRun = unsafe extern "C" fn(
+    host: *mut core::ffi::c_void,
+    count: u32,
+    task: garak_engine::HostTask,
+    job: *mut core::ffi::c_void,
+);
+
+/// Audio thread, host-driven (the C++ shell owns the transport and master bus): applies commands
+/// up to `allowed`, then writes the track mix of `frames` frames at project frame `position` into
+/// `out`. `peaks` (null or `peak_capacity` floats) receives per-track block peaks. `run` (nullable)
+/// renders independent tracks on the host's worker pool; the output is bit-identical without it.
+///
+/// # Safety
+/// As `garak_rs_engine_render`; `peaks` is null or valid for `peak_capacity` writes; `run`, when
+/// set, honours the `Parallel` contract (every task called once, returns after all completed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_render_block(
+    e: *mut GarakRsEngine,
+    out: *mut f32,
+    frames: u32,
+    position: i64,
+    playing: i32,
+    allowed: u64,
+    peaks: *mut f32,
+    peak_capacity: u32,
+    run: Option<GarakRsParallelRun>,
+    host: *mut core::ffi::c_void,
+) {
+    // SAFETY: caller contract: the render half is only touched by the audio thread.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return };
+    if out.is_null() || frames == 0 {
+        r.host_consume(allowed);
+        return;
+    }
+    // SAFETY: caller contract.
+    let (out, peaks) = unsafe {
+        let peaks: &mut [f32] = if peaks.is_null() || peak_capacity == 0 {
+            &mut []
+        } else {
+            core::slice::from_raw_parts_mut(peaks, peak_capacity as usize)
+        };
+        (core::slice::from_raw_parts_mut(out, frames as usize * 2), peaks)
+    };
+    let parallel = run.map(|run| garak_engine::Parallel { run, host });
+    r.render_block(out, position, playing != 0, allowed, peaks, parallel.as_ref());
+}
+
+/// Audio thread, after `garak_rs_engine_render_block`: dynamics meter readings (compressor, limiter,
+/// gate) since the last call into `out` (`capacity` entries). Returns how many were written.
+///
+/// # Safety
+/// As `garak_rs_engine_render`; `out` is null or valid for `capacity` writes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_take_dynamics(
+    e: *mut GarakRsEngine,
+    out: *mut garak_engine::DynamicsReading,
+    capacity: u32,
+) -> u32 {
+    // SAFETY: caller contract.
+    let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) else { return 0 };
+    if out.is_null() || capacity == 0 {
+        return 0;
+    }
+    // SAFETY: caller contract.
+    let out = unsafe { core::slice::from_raw_parts_mut(out, capacity as usize) };
+    r.take_dynamics(out) as u32
+}
+
+/// Audio thread: the host shell's transport reset (`effects != 0` also clears tails).
+///
+/// # Safety
+/// As `garak_rs_engine_render`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn garak_rs_engine_reset(e: *mut GarakRsEngine, effects: i32) {
+    // SAFETY: caller contract.
+    if let Some(r) = (unsafe { e.as_ref() }).map(|h| unsafe { &mut *h.render.get() }) {
+        r.host_reset(effects != 0);
+    }
+}
+
 /// The parity test project (`garak_engine::testkit::project`), or null.
 #[unsafe(no_mangle)]
 pub extern "C" fn garak_rs_testkit_create(

@@ -113,7 +113,10 @@ if(GARAK_BUILD_TESTS)
   add_executable(garak-rust-engine-parity-test tests/rust_engine_parity_test.cpp)
   # CPU comparison of the two engines (16/32 tracks); prints a table, not part of ctest.
   add_executable(garak-rust-engine-bench tests/rust_engine_bench.cpp)
-  foreach(target garak-rust-engine-parity-test garak-rust-engine-bench)
+  # GARAK_RUST_ENGINE host path (docs/RUST_ENGINE.md 10): RenderEngine as the shell around the Rust graph,
+  # C++ vs Rust shell parity, multi-core determinism, fallback; `--bench` prints the CPU table.
+  add_executable(garak-rust-engine-host-test tests/rust_engine_host_test.cpp)
+  foreach(target garak-rust-engine-parity-test garak-rust-engine-bench garak-rust-engine-host-test)
     target_link_libraries(${target} PRIVATE garak_core garak_rust)
     target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src")
     target_include_directories(${target} SYSTEM PRIVATE "${GARAK_NLOHMANN_INCLUDE_DIR}")
@@ -124,6 +127,7 @@ if(GARAK_BUILD_TESTS)
     endif()
   endforeach()
   add_test(NAME native-rust-engine-parity COMMAND garak-rust-engine-parity-test)
+  add_test(NAME native-rust-engine-host COMMAND garak-rust-engine-host-test)
 
   # 옥구슬 EP / 한밤 106: checksum parity with the WASM build (parity.golden), CPU budget, engine use.
   add_executable(garak-rust-instrument-test tests/rust_instrument_test.cpp)

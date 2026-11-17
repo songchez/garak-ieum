@@ -32,6 +32,7 @@ mod insert;
 pub mod json;
 mod master;
 pub mod math;
+pub mod metronome;
 pub mod offline;
 pub mod plan;
 pub mod protocol;
@@ -40,7 +41,9 @@ pub mod tempo;
 pub mod testkit;
 mod track;
 
-pub use engine::{Applied, Controller, EngineConfig, Renderer, Snapshot, engine};
+pub use engine::{
+    Applied, Controller, DynamicsReading, EngineConfig, HostTask, Parallel, Renderer, Snapshot, engine,
+};
 pub use error::Error;
 pub use offline::{OfflineRender, render_offline};
 pub use plan::{PcmAsset, Plan};
