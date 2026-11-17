@@ -8,12 +8,15 @@
 //   3. multi-core: the Rust shell with 0 and N worker threads must be bit-identical;
 //   4. fallback: a project the Rust engine refuses (guitar rig insert) renders in C++ in mode 1 (counted in
 //      EngineSnapshot::rustRefusals) and throws in strict mode;
-//   5. CPU: blocks per second of the C++ engine, the Rust shell and the Rust shell on N workers (table).
+//   5. metronome: the garak-engine port vs native/src/metronome.hpp (grids, compound meters, tempo and meter
+//      maps, count-in), driven the way RenderEngine::renderClicks drives it;
+//   6. CPU: blocks per second of the C++ engine, the Rust shell and the Rust shell on N workers (table).
 // Gate: residual <= -90 dBFS (bit-identical expected), equal latency; the multi-core output bit-identical.
 #include "garak/dsp.hpp"
 #include "garak/engine.hpp"
 #include "garak_engine.h"
 #include "protocol.hpp"
+#include "metronome.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -228,6 +231,82 @@ void fallbackCases() {
   check(garak::rustEngineAvailable(), "rustEngineAvailable");
 }
 
+struct MetronomeCase {
+  const char* name; double bpm; int numerator, denominator;
+  std::vector<garak::TempoPoint> tempo; std::vector<garak::MeterEvent> meters;
+  std::int64_t start, countIn; std::uint32_t block;
+};
+// native/src/engine.cpp renderClicks (count-in, one meter, meter map) over metronome.hpp.
+std::vector<float> clicksCpp(const MetronomeCase& c, const garak::MetronomeClicks& set, std::uint32_t total) {
+  constexpr double rate = 48000;
+  const garak::TempoMap tempo(c.bpm, c.tempo);
+  const garak::MeterMap meters(c.numerator, c.denominator, c.meters);
+  const bool mapped = c.tempo.size() >= 2, metered = c.meters.size() >= 2;
+  garak::metronome::Player player;
+  std::vector<float> out(std::size_t(total) * 2);
+  std::int64_t position = c.start, elapsed = 0;
+  for (std::uint32_t done = 0; done < total;) {
+    const auto frames = std::min(c.block, total - done);
+    float* chunk = out.data() + std::size_t(done) * 2;
+    player.mix(chunk, frames, .7f);
+    if (c.countIn > 0) {
+      const double startBeat = mapped ? tempo.beatAtFrame(double(position), rate) : double(position) * c.bpm / (60.0 * rate);
+      const auto meter = metered ? meters.at(startBeat) : garak::MeterEvent{0, c.numerator, c.denominator, 0};
+      garak::metronome::clicks(garak::metronome::grid(rate, mapped ? tempo.bpmAt(startBeat) : c.bpm, meter.numerator, meter.denominator), set, player, chunk, elapsed, frames, .7f, c.countIn);
+      elapsed += frames;
+    } else if (!metered) {
+      garak::metronome::clicks(garak::metronome::grid(rate, c.bpm, c.numerator, c.denominator, mapped ? &tempo : nullptr), set, player, chunk, position, frames, .7f);
+      position += frames;
+    } else {
+      garak::metronome::meterClicks(meters, rate, c.bpm, mapped ? &tempo : nullptr, set, player, chunk, position, frames, .7f);
+      position += frames;
+    }
+    done += frames;
+  }
+  return out;
+}
+std::vector<float> clicksRust(const MetronomeCase& c, const garak::MetronomeClicks& set, std::uint32_t total) {
+  std::vector<double> beats, bpms; std::vector<std::uint8_t> ramps;
+  for (const auto& p : c.tempo) { beats.push_back(p.beat); bpms.push_back(p.bpm); ramps.push_back(p.ramp ? 1 : 0); }
+  std::vector<std::int64_t> bars; std::vector<std::int32_t> numerators, denominators;
+  for (const auto& m : c.meters) { bars.push_back(m.bar); numerators.push_back(m.numerator); denominators.push_back(m.denominator); }
+  const float* levels[3] = {set.levels[0].data(), set.levels[1].data(), set.levels[2].data()};
+  const std::size_t lengths[3] = {set.levels[0].size(), set.levels[1].size(), set.levels[2].size()};
+  std::vector<float> out(std::size_t(total) * 2);
+  const auto status = garak_rs_metronome_render(48000, c.bpm, c.numerator, c.denominator, beats.data(), bpms.data(), ramps.data(), std::uint32_t(beats.size()),
+                                                bars.data(), numerators.data(), denominators.data(), std::uint32_t(bars.size()), levels, lengths,
+                                                c.start, c.countIn, c.block, total, .7f, out.data());
+  check(status == 0, std::string(c.name) + ": rust metronome refused the arguments");
+  return out;
+}
+void metronomeCases() {
+  // Three distinct strokes, long enough to overlap blocks and each other (the gugak set's shapes do not matter here).
+  garak::MetronomeClicks set; set.sampleRate = 48000;
+  for (int level = 0; level < 3; ++level) {
+    const int length = 2400 + 1700 * level;
+    for (int i = 0; i < length; ++i) set.levels[std::size_t(level)].push_back(float(std::sin(i * (.05 + .03 * level)) * std::exp(-i / (300.0 + 200 * level))));
+  }
+  const std::vector<garak::TempoPoint> ramp{{0, 96, true}, {8, 150, false}, {20, 70, false}};
+  const std::vector<garak::MeterEvent> changes{{0, 4, 4, 0}, {2, 7, 8, 0}, {5, 6, 8, 0}, {7, 3, 4, 0}};
+  const std::vector<garak::MeterEvent> changes12{{0, 12, 8, 0}, {1, 5, 4, 0}, {3, 9, 16, 0}};
+  const MetronomeCase cases[] = {
+      {"4/4, 120 bpm", 120, 4, 4, {}, {}, 0, 0, 128},
+      {"6/8 compound, tempo ramp", 110, 6, 8, ramp, {}, 0, 0, 1000},
+      {"meter map 4/4-7/8-6/8-3/4 + tempo map", 96, 4, 4, ramp, changes, 0, 0, 128},
+      {"meter map 12/8-5/4-9/16 from mid-song", 132, 12, 8, {}, changes12, 123457, 0, 333},
+      {"count-in at a mapped position", 96, 4, 4, ramp, changes, 200000, 96000, 256},
+      {"count-in, constant 3/4", 140, 3, 4, {}, {}, 0, 41143, 128},
+  };
+  for (const auto& c : cases) {
+    const std::uint32_t total = 48000 * 12;
+    const auto a = clicksCpp(c, set, total), b = clicksRust(c, set, total);
+    const double d = residual(a, b);
+    std::printf("| metronome: %s | — | 12 s | 48000 Hz | %u | — | %s |\n", c.name, c.block, verdict(d).c_str());
+    check(peak(a) > .1, std::string(c.name) + ": no clicks", peak(a));
+    check(dbfs(d) <= -90, std::string(c.name) + ": metronome residual", dbfs(d));
+  }
+}
+
 void bench() {
   using Clock = std::chrono::steady_clock;
   const auto workers = std::max(2u, std::min(8u, std::thread::hardware_concurrency() > 1 ? std::thread::hardware_concurrency() - 1 : 1u));
@@ -260,6 +339,7 @@ int main(int argc, char** argv) {
     offlineCases();
     liveCases();
     fallbackCases();
+    metronomeCases();
     if (argc > 1 && std::string(argv[1]) == "--bench") bench();
   } catch (const std::exception& error) {
     check(false, std::string("exception: ") + error.what());

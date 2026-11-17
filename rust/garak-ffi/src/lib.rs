@@ -28,6 +28,7 @@ pub mod engine;
 /// Built-in effects (`garak_rs_fx_*`, `garak_rs_reverb_*`).
 pub mod fx;
 mod heap;
+pub mod metronome;
 
 // The engine's control half allocates; the staticlib uses the C runtime heap (tests use std's).
 #[cfg(not(test))]

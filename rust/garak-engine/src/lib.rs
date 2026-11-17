@@ -32,6 +32,7 @@ mod insert;
 pub mod json;
 mod master;
 pub mod math;
+pub mod metronome;
 pub mod offline;
 pub mod plan;
 pub mod protocol;

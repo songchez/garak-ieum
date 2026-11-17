@@ -71,6 +71,17 @@ uint32_t garak_rs_engine_take_dynamics(GarakRsEngine* engine, GarakRsDynamicsRea
 /* Audio thread: transport reset; effects != 0 also clears tails and delay lines. */
 void garak_rs_engine_reset(GarakRsEngine* engine, int32_t effects);
 
+/* Metronome port (rust/garak-engine/src/metronome.rs) for the parity harness: adds `total` frames of clicks to
+ * `out` (interleaved stereo) in blocks of `block`, like RenderEngine: a count-in of `count_in` frames at the tempo
+ * and meter of transport frame `start`, else the transport from `start` (tempo map: tempo_* arrays, >= 2 points;
+ * meter map: meter_* arrays, the first at bar 0). `levels`: 3 mono strokes (downbeat, group, pulse). 0 or -1. */
+int32_t garak_rs_metronome_render(uint32_t sample_rate, double bpm, int32_t numerator, int32_t denominator,
+                                  const double* tempo_beats, const double* tempo_bpms, const uint8_t* tempo_ramps,
+                                  uint32_t tempo_count, const int64_t* meter_bars, const int32_t* meter_numerators,
+                                  const int32_t* meter_denominators, uint32_t meter_count, const float* const* levels,
+                                  const size_t* level_lengths, int64_t start, int64_t count_in, uint32_t block,
+                                  uint32_t total, float gain, float* out);
+
 /* The deterministic parity project (rust/garak-engine/src/testkit.rs): timeline JSON + PCM. */
 GarakRsTestProject* garak_rs_testkit_create(uint32_t tracks, double seconds, uint32_t sample_rate);
 void garak_rs_testkit_destroy(GarakRsTestProject* project);
