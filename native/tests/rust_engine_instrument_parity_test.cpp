@@ -299,12 +299,20 @@ void liveCase(bool rustEffects) {
       (void)cpp.noteOff(0, 72, 77); garak_rs_engine_note_off(rust, 0, 72, 77);
       (void)cpp.noteOff(9, 60, 5); garak_rs_engine_note_off(rust, 9, 60, 5);
       (void)cpp.noteOn(10, 48, .6f, 6); garak_rs_engine_note_on(rust, 10, 48, .6f, 6); // 한밤 106
+      (void)cpp.noteOn(11, 62, 1.5f, 8); garak_rs_engine_note_on(rust, 11, 62, 1.5f, 8); // IEUM WAVE (velocity above 1)
+      (void)cpp.controlChange(11, 7, 90); garak_rs_engine_control_change(rust, 11, 7, 90);
+      (void)cpp.controlChange(11, 129, -4000); garak_rs_engine_control_change(rust, 11, 129, -4000);
+      (void)cpp.controlChange(11, 64, 127); garak_rs_engine_control_change(rust, 11, 64, 127);
       ++stage;
     } else if (stage == 5 && seconds >= 3.4) {
       (void)cpp.controlChange(0, 64, 0); garak_rs_engine_control_change(rust, 0, 64, 0);
       (void)cpp.controlChange(9, 64, 0); garak_rs_engine_control_change(rust, 9, 64, 0);
       (void)cpp.controlChange(10, 1, 100); garak_rs_engine_control_change(rust, 10, 1, 100);
       (void)cpp.noteOff(10, 48, 6); garak_rs_engine_note_off(rust, 10, 48, 6);
+      (void)cpp.noteOff(11, 62, 8); garak_rs_engine_note_off(rust, 11, 62, 8);
+      (void)cpp.previewNote(11, 70, .7f, 3000); garak_rs_engine_preview_note(rust, 11, 70, .7f, 3000);
+      (void)cpp.controlChange(11, 1, 80); garak_rs_engine_control_change(rust, 11, 1, 80);
+      (void)cpp.allNotesOff(11); garak_rs_engine_all_notes_off(rust, 11);
       (void)cpp.previewNote(1, 40, .9f, 6000); garak_rs_engine_preview_note(rust, 1, 40, .9f, 6000);
       // A track change: new instrument on the bass track (different source: fresh voices).
       auto next = withRevision(current, revision, revision + 1); ++revision;
