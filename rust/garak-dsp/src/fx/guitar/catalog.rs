@@ -226,6 +226,33 @@ const fn index_table() -> [[[u16; MODULE_PARAMS_MAX]; MAX_INSTANCES]; MODULE_COD
 /// `INDEX[code][instance][k]`: the catalog index behind `RigParams(base)` for that instance.
 pub(crate) static INDEX: [[[u16; MODULE_PARAMS_MAX]; MAX_INSTANCES]; MODULE_CODES] = index_table();
 
+/// No module reads the parameter (the rack slots).
+pub(crate) const NO_OWNER: u8 = u8::MAX;
+
+#[allow(clippy::indexing_slicing)]
+const fn owner_table() -> [u8; PARAM_COUNT] {
+    let index = index_table();
+    let mut t = [NO_OWNER; PARAM_COUNT];
+    let mut code = 1;
+    while code < MODULE_CODES {
+        let mut instance = 0;
+        while instance < max_instances(code) {
+            let mut k = 0;
+            while k < MODULE_PARAMS[code].len() {
+                t[index[code][instance][k] as usize] = (code * MAX_INSTANCES + instance) as u8;
+                k += 1;
+            }
+            instance += 1;
+        }
+        code += 1;
+    }
+    t
+}
+
+/// `OWNER[i]`: `code * MAX_INSTANCES + instance` of the module that reads parameter `i`, or
+/// [`NO_OWNER`].
+pub(crate) static OWNER: [u8; PARAM_COUNT] = owner_table();
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -231,6 +231,8 @@ impl Insert {
     /// C++ `makeEffect("guitar-rig", ...)`. Plate kernels per switched-on reverb come from the
     /// cache: the same hall impulse a type-0 reverb of that size uses, so the two share entries
     /// (as C++ `blendedKernel` does).
+    // Out of line: inlined, its locals would sit in every `Insert::new` frame (the WASM stack is small).
+    #[inline(never)]
     fn rig(plan: &InsertPlan, source: u16, sample_rate: f64, cache: &mut KernelCache) -> Result<Self, Error> {
         let values = validated(guitar::PARAMS, plan)?;
         let mut kernels: [Option<Arc<[f32]>>; guitar::MAX_REVERBS] = [None, None, None];
@@ -254,7 +256,9 @@ impl Insert {
                 *view = unsafe { core::slice::from_raw_parts(k.as_ptr(), k.len()) };
             }
         }
-        let mut rig = GuitarRig::new(sample_rate, &values, storage_view, views, ir_len)
+        // Built in place on the heap: the rig is ~40 KiB, more than the WASM build's stack should carry.
+        let mut rig = Box::new(GuitarRig::empty(sample_rate));
+        rig.build(&values, storage_view, views, ir_len)
             .map_err(|e| Error::new(format!("Effect initialisation failed ({e:?}): {}", plan.kind)))?;
         rig.reset();
         Ok(Self {
@@ -262,7 +266,7 @@ impl Insert {
             kind: GUITAR_RIG,
             source,
             automated: false,
-            unit: Unit::Rig(Box::new(rig)),
+            unit: Unit::Rig(rig),
             defs: guitar::PARAMS,
             storage,
             _kernels: kernels,

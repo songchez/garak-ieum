@@ -20,7 +20,9 @@
 pub mod catalog;
 mod modules;
 
-use catalog::{CABINET, CHORUS, DELAY, FIRST_SLOT, INDEX, INSTANCE_STRIDE, MODULE_CODES, REVERB, SLOTS};
+use catalog::{
+    CABINET, CHORUS, DELAY, FIRST_SLOT, INDEX, INSTANCE_STRIDE, MODULE_CODES, NO_OWNER, OWNER, REVERB, SLOTS,
+};
 pub use catalog::{MAX_INSTANCES, PARAM_COUNT, PARAMS};
 use modules::{
     Amp, Cabinet, Clipper, Comp, P, RigChorus, RigDelay, RigPhaser, RigReverb, RigTremolo, run_interleaved,
@@ -172,7 +174,8 @@ struct Slot<'a> {
 pub struct GuitarRig<'a> {
     sample_rate: f64,
     values: [f64; PARAM_COUNT],
-    dirty: bool,
+    /// Modules (bit `code * MAX_INSTANCES + instance`) with staged parameter changes.
+    stale: u64,
     slots: [Slot<'a>; SLOTS],
     count: usize,
     storage_used: usize,
@@ -223,7 +226,7 @@ impl<'a> GuitarRig<'a> {
         Self {
             sample_rate,
             values: sanitize(&[]),
-            dirty: false,
+            stale: 0,
             slots: core::array::from_fn(|_| Slot { code: 0, instance: 0, module: Module::Empty }),
             count: 0,
             storage_used: 0,
@@ -308,7 +311,7 @@ impl<'a> GuitarRig<'a> {
         }
         self.storage_used = carver.used();
         self.values = v;
-        self.dirty = false;
+        self.stale = 0;
         self.count = layout.len;
         Ok(())
     }
@@ -334,14 +337,19 @@ impl<'a> GuitarRig<'a> {
             return;
         }
         let v = clamp(value, def.min, def.max);
-        self.dirty |= *slot != v;
-        *slot = v;
+        if *slot != v {
+            *slot = v;
+            if let Some(&owner) = OWNER.get(index)
+                && owner != NO_OWNER
+            {
+                self.stale |= 1 << owner;
+            }
+        }
     }
 
-    /// EffectControl::apply: re-reads every module's parameters when something changed.
+    /// EffectControl::apply: re-reads the parameters of the modules whose values changed.
     pub fn commit(&mut self) {
-        if self.dirty {
-            self.dirty = false;
+        if self.stale != 0 {
             self.automate_modules();
         }
     }
@@ -351,14 +359,20 @@ impl<'a> GuitarRig<'a> {
         for (i, &v) in values.iter().enumerate().take(PARAM_COUNT) {
             self.set_param(i, v);
         }
-        self.dirty = false;
         self.automate_modules();
     }
 
+    /// C++ `GuitarRig::automate` re-reads every module; re-reading a module whose values did not
+    /// change is a no-op there (same targets, same coefficients), so only stale ones are visited.
     fn automate_modules(&mut self) {
-        let values = &self.values;
+        let (values, stale) = (&self.values, self.stale);
+        self.stale = 0;
         for slot in self.slots.iter_mut().take(self.count) {
-            let p = params(values, usize::from(slot.code), usize::from(slot.instance));
+            let (code, instance) = (usize::from(slot.code), usize::from(slot.instance));
+            if stale >> (code * MAX_INSTANCES + instance) & 1 == 0 {
+                continue;
+            }
+            let p = params(values, code, instance);
             match &mut slot.module {
                 Module::Comp(m) => m.automate(&p),
                 Module::Drive(m) | Module::Fuzz(m) => m.automate(&p),
