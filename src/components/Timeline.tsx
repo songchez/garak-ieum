@@ -192,6 +192,8 @@ export function Timeline(props:TimelineProps){
   const scrollRef=useRef<HTMLDivElement>(null)
   const sheetRef=useRef<HTMLDivElement>(null)
   const rulerPlayhead=useRef<HTMLDivElement>(null)
+  /** Where the playhead is being dragged to while playing; the seek waits for release so the drag is silent. */
+  const scrubBeat=useRef<number|null>(null)
   const latest=useRef(props);latest.current=props
   const viewMenuButton=useRef<HTMLButtonElement>(null)
   const [fileOver,setFileOver]=useState(false)
@@ -594,9 +596,11 @@ export function Timeline(props:TimelineProps){
     cancelGesture.current?.()
     if(scrub||y>=CYCLE_BAND){
       e.preventDefault();e.stopPropagation()
-      const seek=(event:{clientX:number;shiftKey:boolean;altKey:boolean;ctrlKey:boolean;metaKey:boolean})=>{let beat=beatAt(event.clientX);const noSnap=dragModifiers(event).noSnap||event.shiftKey;if(!noSnap)beat=snapBeat(beat);latest.current.onSeek(Math.min(latest.current.project.lengthBeats,beat))}
-      seek(e)
-      cancelGesture.current=trackPointer(ruler,e.pointerId,'seek',{move:seek,end:()=>{cancelGesture.current=null}})
+      const target=(event:{clientX:number;shiftKey:boolean;altKey:boolean;ctrlKey:boolean;metaKey:boolean})=>{let beat=beatAt(event.clientX);const noSnap=dragModifiers(event).noSnap||event.shiftKey;if(!noSnap)beat=snapBeat(beat);return Math.min(latest.current.project.lengthBeats,beat)}
+      latest.current.onSeek(target(e))
+      // While playing, dragging only moves the playhead; one seek on release keeps the drag from stuttering audio.
+      const move=(event:PointerEvent)=>{const beat=target(event);if(engine.getSnapshot().playing)scrubBeat.current=beat;else latest.current.onSeek(beat)}
+      cancelGesture.current=trackPointer(ruler,e.pointerId,'seek',{move,end:commit=>{const beat=scrubBeat.current;scrubBeat.current=null;cancelGesture.current=null;if(commit&&beat!==null)latest.current.onSeek(beat)}})
       return
     }
     const loop=project.loop,down=beatAt(e.clientX),x=down*ppb
@@ -840,7 +844,7 @@ export function Timeline(props:TimelineProps){
         {marquee&&<div className="marquee" style={{left:marquee.x,top:marquee.y,width:marquee.w,height:marquee.h}}/>}
         {trackDrop&&<div className="track-drop-indicator" style={{top:trackDrop.y-1}}/>}
         {alignmentBeat!==null&&<div className="region-alignment-guide" style={{left:headerWidth+alignmentBeat*ppb}} aria-hidden="true"><span>경계 맞춤</span></div>}
-        <Playhead engine={engine} ppb={ppb} scrollRef={scrollRef} uiRef={playheadUi} expectedScroll={expectedScroll} markerRef={rulerPlayhead}/>
+        <Playhead engine={engine} ppb={ppb} scrollRef={scrollRef} uiRef={playheadUi} expectedScroll={expectedScroll} markerRef={rulerPlayhead} scrubBeat={scrubBeat}/>
       </div>
     </div>
     <div className="header-resize-handle" role="separator" aria-orientation="vertical" aria-label="헤더 너비" title="드래그하여 헤더 너비 조절" onPointerDown={beginHeaderResize} onDoubleClick={()=>props.onUiChange({headerWidth:DEFAULT_HEADER_WIDTH})}/>
@@ -850,9 +854,9 @@ export function Timeline(props:TimelineProps){
   </div>
 }
 
-function Playhead({engine,ppb,scrollRef,uiRef,expectedScroll,markerRef}:{engine:AudioEngine;ppb:number;scrollRef:React.RefObject<HTMLDivElement|null>;uiRef:React.RefObject<{catch:boolean;scrollInPlay:boolean;headerWidth:number}>;expectedScroll:React.RefObject<number|null>;markerRef:React.RefObject<HTMLDivElement|null>}){
+function Playhead({engine,ppb,scrollRef,uiRef,expectedScroll,markerRef,scrubBeat}:{engine:AudioEngine;ppb:number;scrollRef:React.RefObject<HTMLDivElement|null>;uiRef:React.RefObject<{catch:boolean;scrollInPlay:boolean;headerWidth:number}>;expectedScroll:React.RefObject<number|null>;markerRef:React.RefObject<HTMLDivElement|null>;scrubBeat:React.RefObject<number|null>}){
   const ref=useRef<HTMLDivElement>(null)
-  useEffect(()=>{let raf=0,lastBeat=NaN,seeked=false;const frame=()=>{const s=engine.getSnapshot(),x=s.beat*ppb;if(ref.current)ref.current.style.transform=`translateX(${x}px)`;if(markerRef.current)markerRef.current.style.transform=`translateX(${x}px)`
+  useEffect(()=>{let raf=0,lastBeat=NaN,seeked=false;const frame=()=>{const s=engine.getSnapshot(),x=(scrubBeat.current??s.beat)*ppb;if(ref.current)ref.current.style.transform=`translateX(${x}px)`;if(markerRef.current)markerRef.current.style.transform=`translateX(${x}px)`
     // Catch: with "scroll in play" the playhead stays centred; otherwise the view flips when the playhead leaves it.
     // A seek (also one made during a gesture) catches once no gesture is active.
     if(Number.isFinite(lastBeat)&&s.beat!==lastBeat)seeked=true
@@ -868,7 +872,7 @@ function Playhead({engine,ppb,scrollRef,uiRef,expectedScroll,markerRef}:{engine:
       }
       seeked=false
     }
-    raf=requestAnimationFrame(frame)};frame();return()=>cancelAnimationFrame(raf)},[engine,ppb,scrollRef,uiRef,expectedScroll,markerRef])
+    raf=requestAnimationFrame(frame)};frame();return()=>cancelAnimationFrame(raf)},[engine,ppb,scrollRef,uiRef,expectedScroll,markerRef,scrubBeat])
   return <div className="playhead" ref={ref}><i/></div>
 }
 export function MiniMeter({engine,trackId,color='var(--meter-low)',vertical=false}:{engine:AudioEngine;trackId?:string;color?:string;vertical?:boolean}){

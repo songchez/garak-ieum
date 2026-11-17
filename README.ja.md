@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/songchez/garak-ieum/releases"><img src="https://img.shields.io/badge/version-0.3.3_Preview-DF5435?style=flat-square" alt="0.3.3 開発プレビュー"></a>
+  <a href="https://github.com/songchez/garak-ieum/releases"><img src="https://img.shields.io/badge/version-0.3.4_Preview-DF5435?style=flat-square" alt="0.3.4 開発プレビュー"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-3D7865?style=flat-square" alt="GPL-3.0-only"></a>
   <img src="https://img.shields.io/badge/platform-Windows_x64_·_macOS_Apple_Silicon-285973?style=flat-square" alt="Windows x64 · macOS Apple Silicon">
 </p>
