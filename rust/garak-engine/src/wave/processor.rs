@@ -99,6 +99,7 @@ pub struct Processor {
 }
 
 impl Processor {
+    #[inline(never)]
     pub fn new(
         patch: Patch,
         tables: Arc<PreparedWavetableSet>,

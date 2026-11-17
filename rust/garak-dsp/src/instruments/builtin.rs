@@ -472,6 +472,29 @@ impl Voices {
         }
     }
 
+    /// Initialises a pool in place, without the 70 KB stack temporary of [`Voices::new`] (hosts
+    /// with small stacks, such as the 64 KiB WASM worklet stack, box a pool this way).
+    ///
+    /// # Safety
+    /// `dst` is valid for writes of one `Voices` and properly aligned; its previous contents (if
+    /// any) are overwritten without being dropped.
+    pub unsafe fn init_in_place(dst: *mut Voices) {
+        // SAFETY: caller contract; every field is written once through a raw field pointer, and
+        // `Voice` / the scalar fields have no drop glue.
+        unsafe {
+            let voices = core::ptr::addr_of_mut!((*dst).voices).cast::<Voice>();
+            for i in 0..MAX_VOICES {
+                voices.add(i).write(Voice::default());
+            }
+            core::ptr::addr_of_mut!((*dst).controllers).write(Controllers::default());
+            core::ptr::addr_of_mut!((*dst).bend_cents).write(0.0);
+            core::ptr::addr_of_mut!((*dst).vibrato_cents).write(0.0);
+            core::ptr::addr_of_mut!((*dst).control_gain).write(1.0);
+            core::ptr::addr_of_mut!((*dst).vibrato_phase).write(0.0);
+            core::ptr::addr_of_mut!((*dst).live_pedal).write(false);
+        }
+    }
+
     /// Voices currently sounding.
     pub fn active(&self) -> usize {
         self.voices.iter().filter(|v| v.active).count()

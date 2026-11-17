@@ -538,39 +538,51 @@ impl Core {
 
 impl Synth {
     /// `Synth()` + `prepare(rate, tables)` (control thread).
+    #[inline(never)]
     pub fn new(rate: f64, tables: Arc<PreparedWavetableSet>) -> Result<Box<Self>, Error> {
         if !rate.is_finite() || !(22_050.0..=192_000.0).contains(&rate) {
             return Err(Error::new("Sample rate must be 22050..192000 Hz"));
         }
-        let mut s = Box::new(Self {
-            core: Core {
-                rate: 48_000.0,
-                prepared: false,
-                tables: None,
-                previous_tables: None,
-                retired_tables: None,
-                table_fade: LinearSmoother::default(),
-                curve_fade: LinearSmoother::default(),
-                patch: Patch::default(),
-                previous_curves: [[0.0; g::LFO_POINTS]; 4],
-                parameters: [LinearSmoother::default(); g::PARAM_COUNT],
-                values: g::DEFAULTS,
-                route_exponent: [0.0; g::MAX_MOD_ROUTES],
-                active_routes: [0; g::MAX_MOD_ROUTES],
-                route_count: 0,
-                pitch_bend: [LinearSmoother::default(); 16],
-                sustain: [false; 16],
-                global_lfo_phase: [0.0; 4],
-                lfo_increment: [0.0; 4],
-                control_remaining: 0,
-                random_state: 0x49e1_27ad,
-                voice_age: 0,
-                processed_frames: 0,
-            },
-            voices: [Voice::default(); g::MAX_POLYPHONY],
-            tails: [Voice::default(); g::MAX_POLYPHONY],
-            effects: Effects::new(rate),
-        });
+        let core = Core {
+            rate: 48_000.0,
+            prepared: false,
+            tables: None,
+            previous_tables: None,
+            retired_tables: None,
+            table_fade: LinearSmoother::default(),
+            curve_fade: LinearSmoother::default(),
+            patch: Patch::default(),
+            previous_curves: [[0.0; g::LFO_POINTS]; 4],
+            parameters: [LinearSmoother::default(); g::PARAM_COUNT],
+            values: g::DEFAULTS,
+            route_exponent: [0.0; g::MAX_MOD_ROUTES],
+            active_routes: [0; g::MAX_MOD_ROUTES],
+            route_count: 0,
+            pitch_bend: [LinearSmoother::default(); 16],
+            sustain: [false; 16],
+            global_lfo_phase: [0.0; 4],
+            lfo_increment: [0.0; 4],
+            control_remaining: 0,
+            random_state: 0x49e1_27ad,
+            voice_age: 0,
+            processed_frames: 0,
+        };
+        // Built in place: the voices are ~74 KB, larger than the 64 KiB WASM stack.
+        let mut uninit = Box::<Self>::new_uninit();
+        let dst = uninit.as_mut_ptr();
+        // SAFETY: every field of the fresh, aligned allocation is written exactly once below
+        // (the voice arrays element by element) before `assume_init`.
+        let mut s = unsafe {
+            core::ptr::addr_of_mut!((*dst).core).write(core);
+            for array in [core::ptr::addr_of_mut!((*dst).voices), core::ptr::addr_of_mut!((*dst).tails)] {
+                let first = array.cast::<Voice>();
+                for i in 0..g::MAX_POLYPHONY {
+                    first.add(i).write(Voice::default());
+                }
+            }
+            core::ptr::addr_of_mut!((*dst).effects).write(Effects::new(rate));
+            uninit.assume_init()
+        };
         s.apply_patch(&Patch::default(), true);
         if !has_selected_banks(&s.core.patch, &tables) {
             return Err(Error::new("Prepared set is missing a selected wavetable bank"));
@@ -589,8 +601,10 @@ impl Synth {
     pub fn reset(&mut self, seed: u32) {
         let c = &mut self.core;
         c.random_state = if seed == 0 { 1 } else { seed };
-        self.voices = [Voice::default(); g::MAX_POLYPHONY];
-        self.tails = [Voice::default(); g::MAX_POLYPHONY];
+        // Element by element: no 74 KB temporary on the (small) audio-thread stack.
+        for v in self.voices.iter_mut().chain(self.tails.iter_mut()) {
+            *v = Voice::default();
+        }
         for b in &mut c.pitch_bend {
             b.reset(0.0);
         }

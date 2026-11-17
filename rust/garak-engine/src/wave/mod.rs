@@ -17,6 +17,14 @@ mod tests {
     use alloc::format;
     use alloc::vec::Vec;
 
+    /// Control-path values stay small: the WASM worklet stack is 64 KiB (rust/.cargo/config.toml),
+    /// so pools and synths are built in place on the heap and tracks keep their sources boxed.
+    #[test]
+    fn values_fit_a_small_stack() {
+        assert!(core::mem::size_of::<crate::instrument::Source>() <= 64);
+        assert!(core::mem::size_of::<crate::track::Track>() <= 4096);
+    }
+
     /// schema.rs is generated from the C++ header: both must describe the same schema.
     #[test]
     fn schema_matches_the_cpp_header() {

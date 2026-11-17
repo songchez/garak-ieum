@@ -212,8 +212,8 @@ pub(crate) struct Vintage {
 pub(crate) enum Source {
     #[default]
     Audio,
-    Builtin(Builtin),
-    Vintage(Vintage),
+    Builtin(Box<Builtin>),
+    Vintage(Box<Vintage>),
 }
 
 /// Event cursors into the track's notes, controls and (vintage) plug-in events.
@@ -420,12 +420,12 @@ pub(crate) fn build(
     // A disabled source needs neither its samples nor its instrument.
     if !t.enabled {
         if let Some(synth) = synth {
-            built.source = Source::Builtin(Builtin {
+            built.source = Source::Builtin(Box::new(Builtin {
                 synth,
                 sampled: kind == SourceKind::BuiltinSampled,
                 samples: ResolvedSet::default(),
-                voices: Box::new(Voices::new()),
-            });
+                voices: boxed_voices(),
+            }));
         }
         return Ok(built);
     }
@@ -457,7 +457,7 @@ pub(crate) fn build(
     }
     if let Some(k) = vintage {
         require(!t.source.is_kit, "Invalid built-in instrument source")?;
-        let mut inst = Box::new(Instrument::new(k, rate));
+        let mut inst = boxed_instrument(k, rate);
         let mut values: Vec<f64> = k.params().iter().map(|d| d.default).collect();
         for (name, value) in &t.source.params {
             let index = k
@@ -597,7 +597,7 @@ pub(crate) fn build(
     }
     built.tail = tail;
     built.source = match (engine, synth) {
-        (Some(engine), _) => Source::Vintage(Vintage {
+        (Some(engine), _) => Source::Vintage(Box::new(Vintage {
             engine,
             events,
             pending: [PluginEvent::new(EventType::NoteOn, -1, 60, 0.0, 0, false); MAX_VOICES],
@@ -609,16 +609,33 @@ pub(crate) fn build(
             reset: false,
             release_audition: false,
             block: Vec::with_capacity(MAX_PLUGIN_EVENTS),
-        }),
-        (None, Some(synth)) => Source::Builtin(Builtin {
+        })),
+        (None, Some(synth)) => Source::Builtin(Box::new(Builtin {
             synth,
             sampled: kind == SourceKind::BuiltinSampled,
             samples,
-            voices: Box::new(Voices::new()),
-        }),
+            voices: boxed_voices(),
+        })),
         (None, None) => Source::Audio,
     };
     Ok(built)
+}
+
+/// The voice pool on the heap. Not inlined: the pool (tens of KiB) is built in this frame only,
+/// never in the caller's (the WASM stack is 1 MiB, and `build` serves every track).
+#[inline(never)]
+fn boxed_voices() -> Box<Voices> {
+    let mut pool = Box::<Voices>::new_uninit();
+    // SAFETY: `init_in_place` writes every field of the fresh, aligned allocation.
+    unsafe {
+        Voices::init_in_place(pool.as_mut_ptr());
+        pool.assume_init()
+    }
+}
+
+#[inline(never)]
+fn boxed_instrument(kind: InstrumentKind, rate: f64) -> Box<Instrument> {
+    Box::new(Instrument::new(kind, rate))
 }
 
 fn lower_bound_notes(notes: &[Note], frame: i64) -> usize {
@@ -941,7 +958,9 @@ impl Source {
 
     /// Instrument parameter automation of a vintage instrument (glides inside the instrument).
     pub fn set_vintage_param(&mut self, index: usize, value: f64) {
-        if let Source::Vintage(Vintage { engine: PluginEngine::Vintage { instrument, .. }, .. }) = self {
+        if let Source::Vintage(v) = self
+            && let PluginEngine::Vintage { instrument, .. } = &mut v.engine
+        {
             instrument.set_param(index, value);
         }
     }
@@ -949,9 +968,10 @@ impl Source {
     /// Catalog index of a vintage instrument parameter.
     pub fn vintage_param(&self, name: &str) -> Option<usize> {
         match self {
-            Source::Vintage(Vintage { engine: PluginEngine::Vintage { instrument, .. }, .. }) => {
-                instrument.kind().param_index(name.as_bytes())
-            }
+            Source::Vintage(v) => match &v.engine {
+                PluginEngine::Vintage { instrument, .. } => instrument.kind().param_index(name.as_bytes()),
+                PluginEngine::Wave { .. } => None,
+            },
             _ => None,
         }
     }
@@ -970,9 +990,10 @@ impl Source {
     /// crossfade still reads its previous set (engine.cpp `readyToPreserve`).
     pub fn ready_to_transfer(&mut self) -> bool {
         match self {
-            Source::Vintage(Vintage { engine: PluginEngine::Wave { processor: Some(p), .. }, .. }) => {
-                p.ready_to_transfer()
-            }
+            Source::Vintage(v) => match &mut v.engine {
+                PluginEngine::Wave { processor: Some(p), .. } => p.ready_to_transfer(),
+                _ => true,
+            },
             _ => true,
         }
     }
@@ -982,7 +1003,8 @@ impl Source {
     pub fn take_from(&mut self, previous: &mut Source) {
         match (self, previous) {
             (Source::Builtin(a), Source::Builtin(b)) => {
-                a.voices.take_from(&mut b.voices);
+                // The pool moves as a whole (voices, controllers, live pedal): a pointer swap.
+                core::mem::swap(&mut a.voices, &mut b.voices);
                 core::mem::swap(&mut a.samples, &mut b.samples);
             }
             (Source::Vintage(a), Source::Vintage(b)) => {
@@ -1386,10 +1408,10 @@ impl Source {
         match self {
             Source::Audio => 0,
             Source::Builtin(b) => b.voices.active(),
-            Source::Vintage(Vintage { engine: PluginEngine::Vintage { instrument, .. }, .. }) => {
-                instrument.active_voices()
-            }
-            Source::Vintage(_) => 0,
+            Source::Vintage(v) => match &v.engine {
+                PluginEngine::Vintage { instrument, .. } => instrument.active_voices(),
+                PluginEngine::Wave { .. } => 0,
+            },
         }
     }
 }

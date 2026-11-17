@@ -890,3 +890,55 @@ fn ieum_wave_renders_live_and_refuses_bad_patches() {
     low.sample_rate = 16_000;
     assert!(eng(16_000, 256).0.update(low).is_err(), "IEUM WAVE accepted 16 kHz");
 }
+
+/// Writes the all-instruments project (timeline JSON, `samples.register` JSON, PCM) and its native
+/// offline render to `target/engine-parity/instruments/`, in the format of the audio parity
+/// project (tests/engine.rs), for a WASM-vs-native comparison of the instruments.
+#[test]
+fn writes_the_instrument_parity_project() {
+    use garak_engine::testkit::instruments::{ALL, instrument_project};
+    let p = instrument_project(ALL, 2.0, 48_000);
+    let (mut c, mut r) =
+        engine(EngineConfig { sample_rate: 48_000, max_block: 4096, offline: true }).unwrap();
+    for (id, a) in &p.assets {
+        c.put_asset(id, a.clone()).unwrap();
+    }
+    for s in &p.sample_sets {
+        c.register_samples_json(s.as_bytes()).unwrap();
+    }
+    assert_eq!(c.set_json(p.json.as_bytes(), &[]).unwrap(), Applied::Full);
+    c.play().unwrap();
+    let (latency, _, tail) = c.graph_info().unwrap();
+    let total = 2 * 48_000 + (tail.min(30.0) * 48_000.0).ceil() as usize;
+    let mut native = vec![0.0f32; (total + latency as usize) * 2];
+    let mut done = 0;
+    while done < total + latency as usize {
+        let n = 4096.min(total + latency as usize - done);
+        r.render(&mut native[done * 2..(done + n) * 2]);
+        done += n;
+    }
+    let native = &native[latency as usize * 2..];
+    assert!(native.iter().all(|x| x.is_finite()) && native.iter().any(|x| x.abs() > 0.05));
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/engine-parity/instruments");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("project.json"), &p.json).unwrap();
+    std::fs::write(dir.join("sample-sets.json"), format!("[{}]", p.sample_sets.join(","))).unwrap();
+    let mut manifest = String::from("[");
+    let mut blob: Vec<u8> = Vec::new();
+    for (i, (id, a)) in p.assets.iter().enumerate() {
+        manifest += &format!(
+            "{}{{\"id\":\"{id}\",\"sampleRate\":{},\"channels\":{},\"offset\":{},\"count\":{}}}",
+            if i == 0 { "" } else { "," },
+            a.sample_rate,
+            a.channels,
+            blob.len(),
+            a.samples.len()
+        );
+        blob.extend(a.samples.iter().flat_map(|x| x.to_le_bytes()));
+    }
+    manifest += "]";
+    std::fs::write(dir.join("assets.json"), manifest).unwrap();
+    std::fs::write(dir.join("assets.f32"), blob).unwrap();
+    std::fs::write(dir.join("native.f32"), native.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
+        .unwrap();
+}

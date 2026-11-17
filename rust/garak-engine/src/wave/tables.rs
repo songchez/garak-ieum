@@ -255,6 +255,7 @@ pub struct PreparedWavetableSet {
 
 impl PreparedWavetableSet {
     /// The factory banks from their harmonic tables, and the sine / triangle sub (wavetable.cpp).
+    #[inline(never)]
     pub fn new() -> Result<Self, Error> {
         let mut banks: [PreparedWavetable; 8] = Default::default();
         let mut samples = vec![0.0f32; g::FACTORY_FRAMES * g::WAVETABLE_SIZE];
