@@ -6,9 +6,11 @@
 
 - 데이터: `Track.inputRoute` (프로젝트 스키마 11, `src/core/types.ts`)
 - 순수 로직: `src/core/trackRouting.ts` (되먹임 검사, 마스터 피드 제외, 처리 순서, 삭제/복제 처리, 라벨)
-- 웹 엔진: `src/audio/graph.ts` (`connectRoutes`, `setRouteMonitoring`), `src/audio/RouteRecording.ts`,
+- 통합 Rust 엔진(데스크톱·웹 공통, 0.3.2 기본): `rust/garak-engine/src/routes.rs`(`prepareRoutes` 포팅: 처리 레벨, 루프 끊기,
+  마스터 피드, pre/post-FX·post-fader 탭). 녹음은 데스크톱 `garak_rs_engine_route_input`, 웹 `tap_output`. [RUST_ENGINE](RUST_ENGINE.md)
+- 웹 Web Audio 대체 경로: `src/audio/graph.ts` (`connectRoutes`, `setRouteMonitoring`), `src/audio/RouteRecording.ts`,
   `src/audio/routeRecorder.worklet.ts`, `src/audio/WebAudioEngine.ts`
-- 네이티브 엔진: `native/include/garak/engine.hpp` (`TrackRoute`, `RecordingTake::routed`),
+- 네이티브 셸과 이전 C++ 경로(`GARAK_RUST_ENGINE=0`): `native/include/garak/engine.hpp` (`TrackRoute`, `RecordingTake::routed`),
   `native/src/engine.cpp` (`prepareRoutes`, 레벨별 처리, 탭 버퍼), `native/src/protocol.hpp` (`route` 필드),
   `native/src/host.cpp` (테이크별 보정값), `src/audio/native/timeline.ts`
 - UI: `src/components/InputSelect.tsx` (입력 목록 + `TapSelect`), `TrackInspector.tsx`, `TrackHeader.tsx`

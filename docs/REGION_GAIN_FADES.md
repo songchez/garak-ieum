@@ -70,6 +70,8 @@
 
 ### 엔진
 
+- **통합 Rust 엔진**(`rust/garak-engine/src/clip.rs`, 0.3.2부터 데스크톱·웹 공통): 아래 네이티브 규칙과 같게 오디오 창마다 게인·페이드 5종·4 ms 클릭 가드를 샘플 단위로 계산한다. 아래 Web Audio·네이티브 C++ 항목은 각각 웹 대체 경로와 이전 C++ 경로다.
+
 - **Web Audio**(`src/audio/graph.ts`): 리전마다 GainNode 하나를 둔다. 곡선 페이드는 32개 직선 구간의
   `linearRampToValueAtTime`으로 근사한다(오차 < 0.05 dB). `setValueCurveAtTime`은 다른 이벤트와 겹치면 예외를 내므로 쓰지 않았다.
   같은 그래프를 OfflineAudioContext로 돌려 WAV를 내보내므로 내보내기에도 그대로 적용된다.

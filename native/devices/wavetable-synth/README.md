@@ -2,7 +2,7 @@
 
 This directory contains the original C++17 synthesis engine, a strict patch-pack decoder, native tests, and a float32 WAV renderer. It has no third-party DSP dependency and makes no calls to an audio device, Electron, Web Audio, WASM, JUCE, or an operating-system audio API. The repository's GPL-3.0 license applies.
 
-The application's `garak_core` now links this engine through `native/src/wavetable.cpp`. The common `RenderEngine` routes WAVE timeline notes, live/editor notes and offline WAV export through the same synth. Windows WASAPI and ASIO, and macOS Core Audio, use that common renderer. This library remains independent of the device adapters; its standalone WAV renderer also exercises the C++ synth directly.
+The application's `garak_core` now links this engine through `native/src/wavetable.cpp`. The common `RenderEngine` routes WAVE timeline notes, live/editor notes and offline WAV export through the same synth. Since 0.3.2 the tracks render in the unified Rust engine (`rust/garak-engine`, docs/RUST_ENGINE.md); there a desktop WAVE source stays this C++ synth as a host node that the Rust graph calls back into. A bit-identical Rust port of the synth also lives in `rust/garak-engine/src/wave/`. Windows WASAPI and ASIO, and macOS Core Audio, use that common renderer. This library remains independent of the device adapters; its standalone WAV renderer also exercises the C++ synth directly.
 
 ## Application host connection
 
