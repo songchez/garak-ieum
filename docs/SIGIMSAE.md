@@ -10,8 +10,8 @@
 | 내용 | 파일 |
 | --- | --- |
 | 모듈 파라미터(웹) | `src/devices/effects/*.ts`, `src/devices/effects/sigimsaeDefs.ts` |
-| 샘플 처리 커널(웹 워클릿) | `src/devices/effects/kernels.ts`, `src/devices/effects/sigimsae.worklet.ts` |
-| 네이티브 DSP | `native/src/dsp.cpp`, `native/src/sigimsae_effects.inc` (커널과 클래스 단위로 맞춤) |
+| 샘플 처리 커널 (데스크톱·웹 공통) | `rust/garak-dsp/src/fx/` (`no_std`). 데스크톱은 Rust 엔진이 `garak-ffi`로, 웹은 AudioWorklet의 `garak-engine.wasm`(Web Audio 대체 경로에서는 `garak-dsp.wasm` 워클릿)으로 씁니다. [RUST](RUST.md) |
+| 이전 커널 (0.3.2의 숨은 대체 경로, 다음 패치에서 삭제 예정) | 웹 `src/devices/effects/kernels.ts`·`sigimsae.worklet.ts`(`garak.rustDsp=0`), 네이티브 `native/src/dsp.cpp`·`native/src/sigimsae_effects.inc`(`GARAK_RUST_ENGINE=0` + `GARAK_RUST_EFFECTS=none`). Rust 커널과 클래스 단위로 맞춤 |
 | 라이브러리 변형 | `src/core/sigimsaeVariants.ts` |
 
 이름 규칙: 한국적인 이름과 장난스러운 서양식 오마주 이름을 섞되 실제 상표·모델명은 쓰지 않습니다.
@@ -155,5 +155,6 @@
 
 ## 테스트
 
+- Rust 커널: `pnpm rust:test`(단위 테스트), `native/tests/rust_parity_test.cpp`(C++ 커널 ↔ Rust, `ctest -R native-rust-parity`), `src/audio/rust/parity.test.ts`·`effectsParity.test.ts`(WASM ↔ TS)
 - 웹 커널: `src/devices/effects/kernels.test.ts` (리미터 실링, 게이트 무음, 유틸리티 모노·위상, 극단값 안정성, 핑퐁·템포, 리버브 IR, 변형 유효성·검색)
 - 네이티브: `native/tests/engine_test.cpp`의 `sigimsae effects` (위 항목 + 콜백 중 할당 없음, 상태 이전, 프리딜레이, 엔진 바이패스 비트 일치)

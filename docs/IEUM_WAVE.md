@@ -2,7 +2,7 @@
 
 가락이음의 독립적인 웨이브테이블 신디사이저입니다. React 편집기, 프로젝트에 저장되는 음색, C++17 음원 모듈을 함께 제공합니다. 악기 ID는 `wavetable`입니다.
 
-**현재 단계:** 데스크톱의 `NativeAudioEngine`과 C++ 공통 `RenderEngine`에 연결되어 편집기 미리 듣기, 타임라인 음표 재생, WAV 출력을 지원합니다. Windows의 WASAPI(기본값)·ASIO와 macOS의 Core Audio가 같은 WAVE DSP를 사용합니다. 별도 ASIO 드라이버 없이 WASAPI 출력 장치로 사용할 수 있습니다. 브라우저 데모는 음색 편집·저장을 지원하며 `WebAudioEngine`에서 WAVE를 합성하지 않습니다.
+**현재 단계:** 데스크톱의 `NativeAudioEngine`과 네이티브 호스트에 연결되어 편집기 미리 듣기, 타임라인 음표 재생, WAV 출력을 지원합니다. 0.3.2의 통합 Rust 엔진에서도 데스크톱 WAVE는 C++ 프로세서(`native/src/wavetable.cpp`)로 남고, Rust 그래프가 체인의 그 자리에서 셸을 콜백으로 부르는 **호스트 노드**로 렌더합니다(편집기·상태를 C++이 소유). Windows의 WASAPI(기본값)·ASIO와 macOS의 Core Audio가 같은 WAVE DSP를 사용합니다. 별도 ASIO 드라이버 없이 WASAPI 출력 장치로 사용할 수 있습니다. 같은 신스의 Rust 포팅(`rust/garak-engine/src/wave/`, C++과 비트 동일)이 엔진에 들어 있지만, 브라우저 화면은 아직 음색 편집·저장만 지원하며 WAVE 소리에는 네이티브 호스트가 필요하다고 안내합니다. [RUST_ENGINE 6장](RUST_ENGINE.md#6-악기보이스-인벤토리와-지원-현황)
 
 WAVE의 패치와 음표는 프로젝트·타임라인에 보존합니다. 앱은 장치를 열기 전에 실행 중인 네이티브 호스트의 WAVE 프로토콜과 스키마를 확인하고, 편집기는 현재 패치가 오디오 블록에 적용된 응답을 받은 뒤 건반을 활성화합니다. 모듈이 없는 구버전 호스트나 연결 실패에서는 이유를 표시하며 지원을 가장하지 않습니다. 같은 트랙에 VST3 악기를 지정하면 해당 VST3가 실제 음원이며 WAVE 패치는 프로젝트에 보관됩니다.
 

@@ -1,8 +1,8 @@
 # 가락이음 Windows 데스크톱
 
-2026-11-04 · Electron + C++ 네이티브 오디오, Windows x64 개발 프리뷰
+2026-11-17 (0.3.2) · Electron + 네이티브 오디오 호스트(C++ 셸 + 통합 Rust 엔진), Windows x64 개발 프리뷰
 
-편집기는 Electron 창에서, 실시간 오디오는 별도 C++ `garak-audio-host` 프로세스에서 실행합니다. 설치 파일에는 네이티브 엔진과 고지, 앱 화면, 내장 악기 샘플과 피치 편집 파일을 함께 넣습니다. 설치한 앱을 실행할 때 Node.js나 pnpm을 별도로 설치할 필요는 없습니다.
+편집기는 Electron 창에서, 실시간 오디오는 별도 `garak-audio-host` 프로세스에서 실행합니다. 이 호스트는 장치·VST3·녹음을 맡는 C++ 셸과, 웹과 같은 통합 Rust 렌더 엔진(`rust/garak-engine`, 정적 링크)으로 이루어집니다. 설치 파일에는 네이티브 엔진과 고지, 앱 화면, 내장 악기 샘플과 피치 편집 파일을 함께 넣습니다. 설치한 앱을 실행할 때 Node.js나 pnpm을 별도로 설치할 필요는 없습니다.
 
 이 문서는 **Windows x64** 설치를 설명합니다. **macOS Apple Silicon DMG**의 설치·빌드·서명 상태는 [macOS 안내](MACOS.md)를 확인하세요. 아래 CI는 Windows 설치 파일 생성과 패키징된 앱의 기본 동작을 검증하도록 구성되어 있습니다. 실제 성공 여부는 해당 커밋의 Actions 실행 결과에서 확인합니다.
 
@@ -72,32 +72,36 @@ Windows 설치 파일은 `.garak`를 **가락이음 음악 프로젝트**로 등
 
 앱의 **오디오 설정**에서 WASAPI 또는 설치된 ASIO 드라이버, 입력·출력 장치, 레이트·버퍼와 입력 채널을 선택합니다. ASIO 입력과 출력은 같은 드라이버를 사용합니다. 선택한 장치를 열 수 없으면 오류를 보여 주며 다른 장치나 Web Audio로 자동 대체하지 않습니다. 보고된 입력·출력 지연과 실제 블록은 물리 루프백으로 측정한 왕복 지연과 구분합니다.
 
-내장 악기·오디오 리전·기타 앰프·이펙트·VST3와 모니터링은 같은 네이티브 callback에서 처리합니다. 녹음은 네이티브 입력 PCM, WAV 출력은 같은 C++ 그래프의 오프라인 렌더를 사용합니다. Windows x64 VST3는 사용자가 선택한 플러그인을 별도 프로세스에서 탐색하고 악기/인서트에 연결합니다. 파라미터, 자체 창, component/controller 상태 저장을 지원하며 설치물에 타사 플러그인을 재배포하지 않습니다.
+내장 악기·오디오 리전·기타 앰프·이펙트·VST3와 모니터링은 같은 네이티브 callback에서 처리합니다. 트랙은 Rust 엔진이 렌더하고, VST3와 IEUM WAVE는 C++ 셸의 프로세서를 Rust 그래프가 콜백으로 부릅니다. 녹음은 네이티브 입력 PCM, WAV 출력은 같은 셸·Rust 그래프의 오프라인 렌더를 사용합니다. Windows x64 VST3는 사용자가 선택한 플러그인을 별도 프로세스에서 탐색하고 악기/인서트에 연결합니다. 파라미터, 자체 창, component/controller 상태 저장을 지원하며 설치물에 타사 플러그인을 재배포하지 않습니다.
 
-[네이티브 오디오 안내](NATIVE_AUDIO.md)에 처리 구조·한도·고정 SDK와 검증 결과를 정리했습니다. ASIO SDK 2.3.4의 GPLv3 경로와 앱 코드의 GPL-3.0-only를 유지합니다. Linux에서 실제 SDK/테스트 플러그인 회귀를 통과했으며, 새 Windows MSVC CI와 실제 ASIO 인터페이스의 청감·왕복 지연·장치 복구는 별도 확인 대상입니다. Web Audio는 브라우저 데모와 데스크톱의 일회성 압축 파일 디코딩·비실시간 피치 작업에 남습니다.
+[네이티브 오디오 안내](NATIVE_AUDIO.md)에 처리 구조·한도·고정 SDK와 검증 결과를 정리했습니다. ASIO SDK 2.3.4의 GPLv3 경로와 앱 코드의 GPL-3.0-only를 유지합니다. Linux에서 실제 SDK/테스트 플러그인 회귀를 통과했으며, 새 Windows MSVC CI와 실제 ASIO 인터페이스의 청감·왕복 지연·장치 복구는 별도 확인 대상입니다. 데스크톱에서 Web Audio는 일회성 압축 파일 디코딩·비실시간 피치 작업에만 남습니다.
+
+0.3.2에 한해 이전 C++ 렌더 경로를 숨은 스위치로 남깁니다. 앱을 `GARAK_RUST_ENGINE=0`(트랙을 C++ 엔진으로) 환경 변수로 실행하고, 그 C++ 경로의 이펙트까지 C++ 커널로 돌리려면 `GARAK_RUST_EFFECTS=none`도 줍니다. 이 경로는 다음 패치에서 삭제할 예정입니다. [Rust 렌더 엔진](RUST_ENGINE.md#10-데스크톱-호스트-경로-garak_rust_engine-g5-첫-단계)
 
 외부 MIDI 입력은 네이티브 호스트가 WinMM(Windows)·CoreMIDI(macOS)로 직접 엽니다([MIDI_RECORDING.md](MIDI_RECORDING.md)). VST2/AU/CLAP 호스트는 현재 패키징에서 추가하지 않습니다. 전체 지원 범위는 [구현 상태](IMPLEMENTATION_STATUS.md)를 따릅니다.
 
 ## 4. 소스에서 실행하고 빌드하기
 
-개발·빌드에는 **Node.js 24.x**와 **pnpm 11.25.0**을 사용합니다. 프로젝트 루트에서 실행합니다.
+개발·빌드에는 **Node.js 24.x**, **pnpm 11.25.0**과 `rust/rust-toolchain.toml`에 고정된 **Rust 툴체인**을 사용합니다. Rust는 `scripts/setup-rust.ps1`로 한 번 설치합니다(Visual Studio가 없으면 자체 MinGW 링커가 있는 GNU 툴체인을 기본으로 설정). 프로젝트 루트에서 실행합니다.
 
 ```powershell
 pnpm install --frozen-lockfile
+powershell -ExecutionPolicy Bypass -File scripts/setup-rust.ps1   # 한 번만
 pnpm desktop:dev
 ```
 
-`desktop:dev`는 네이티브 엔진·웹앱·MCP·Electron 코드를 빌드한 뒤 Electron 창을 엽니다. 실행 파일로 사용할 코드를 확인하는 흐름이며, 소스를 수정한 후 다시 실행해 반영합니다.
+`desktop:dev`는 Rust 엔진·C++ 호스트·웹앱(WASM 모듈 포함)·MCP·Electron 코드를 빌드한 뒤 Electron 창을 엽니다. Rust 없이 C++ 전용 호스트를 빌드하려면 `GARAK_RUST=0`을 줍니다([Rust 오디오 코어](RUST.md#빌드와-rust-없는-개발)). 실행 파일로 사용할 코드를 확인하는 흐름이며, 소스를 수정한 후 다시 실행해 반영합니다.
 
 Windows 설치물은 **Visual Studio 2022 또는 Build Tools 2022의 C++ 데스크톱 개발 도구와 Windows SDK**를 준비한 Windows에서 빌드합니다. **CMake 3.25 이상**도 필요합니다. 네이티브 오디오와 MCP 실행 파일을 컴파일하고 ASIO·VST3·miniaudio·JSON 소스는 [고정 manifest](../native/dependencies.lock.json)의 SHA-256을 검사합니다. 대응 소스 ZIP의 `native/dependency-sources/` archive를 우선 사용합니다. 설치 파일을 받아 사용하는 사람에게는 이 개발 도구가 필요하지 않습니다.
 
 | 명령 | 역할 |
 |---|---|
-| `pnpm native:build` | 고정 SDK로 C++ 엔진·테스트 VST3 빌드, CTest 실행, 배포용 helper·고지 설치 |
+| `pnpm native:build` | 고정 SDK로 C++ 셸과 Rust 엔진(`garak-ffi`)·테스트 VST3 빌드, CTest(Rust 패리티 포함) 실행, 배포용 helper·고지 설치 |
+| `pnpm rust:test` / `pnpm rust:check` | Rust 워크스페이스 테스트 / `cargo fmt --check`와 clippy(호스트·wasm32) |
 | `pnpm native:test` | 실제 helper와 VST3 fixture의 IPC·자산·상태·녹음·WAV 스모크 |
 | `pnpm desktop:compile` | Electron main·preload TypeScript를 `dist-desktop`으로 빌드 |
 | `pnpm desktop:launcher` | Windows에서 MCP 콘솔 실행 파일 `garak-mcp.exe` 빌드; 다른 OS에서는 이 Windows 단계 건너뜀 |
-| `pnpm desktop:dev` | 네이티브 엔진·웹앱·MCP·Electron 코드를 빌드하고 로컬 Electron 실행 |
+| `pnpm desktop:dev` | 네이티브 호스트·웹앱·MCP·Electron 코드를 빌드하고 로컬 Electron 실행 |
 | `pnpm desktop:pack` | 현재 OS용 압축되지 않은 앱 디렉터리 생성; Windows에서는 MCP 콘솔 실행 파일 포함 |
 | `pnpm desktop:build` | MCP 콘솔 실행 파일을 포함한 Windows x64 NSIS 설치 파일 생성; 공개 배포 안 함 |
 | `pnpm desktop:test` | 패키징된 앱을 Playwright로 실행해 기본 동작 확인 |
@@ -120,9 +124,9 @@ Windows 빌드 결과는 `release/*.exe`이고, 압축되지 않은 앱은 `rele
 
 [desktop.yml](../.github/workflows/desktop.yml)은 수동 실행, 데스크톱·네이티브·패키징 파일을 바꾸는 PR, 공개 릴리스에서 Windows 작업을 실행합니다. 앱 코드(`src/**` 등)만 바꾼 PR은 [checks.yml](../.github/workflows/checks.yml)의 빠른 검사만 실행하므로, 그 커밋의 설치 파일이 필요하면 Actions에서 **Run workflow**로 수동 실행합니다.
 
-1. 커밋 SHA로 고정한 공식 Actions로 Node.js와 pnpm을 준비합니다.
+1. 커밋 SHA로 고정한 공식 Actions로 Node.js와 pnpm을 준비하고, `scripts/setup-rust.ps1 -SkipVerify`로 고정 Rust 툴체인을 설치합니다.
 2. `pnpm install --frozen-lockfile`로 잠긴 의존성을 설치합니다.
-3. `pnpm test`를 통과한 뒤 `pnpm desktop:build`로 실제 SDK/C++ 엔진과 설치 파일을 만듭니다. 네이티브 CTest에 이어 `pnpm native:test`로 실제 helper/VST3 fixture를 검사합니다.
+3. `pnpm test`를 통과한 뒤 `pnpm desktop:build`로 실제 SDK·C++ 셸·Rust 엔진과 설치 파일을 만듭니다. 네이티브 CTest에 이어 `pnpm native:test`로 실제 helper/VST3 fixture를 검사합니다.
 4. [desktop-install-smoke.ps1](../scripts/desktop-install-smoke.ps1)이 실제 NSIS 설치 파일을 공백이 포함된 임시 경로에 현재 사용자용으로 자동 설치합니다. 설치된 실행 파일, HKCU의 `.garak` 연결, 실행 파일 아이콘을 가리키는 `DefaultIcon`, 실행 파일과 프로젝트 경로를 모두 따옴표로 감싼 열기 명령을 확인합니다.
 5. `GARAK_ELECTRON_EXECUTABLE`로 설치된 편집기 실행 파일을 지정한 뒤 `pnpm desktop:test`가 앱 로딩, 프로젝트 생성, 저장과 재실행 후 복원을 확인합니다. MCP 검사는 같은 설치 폴더의 `garak-mcp.exe`를 통해 키 생성·stdio 종료·편집기와의 loopback 연결을 확인하는 별도 경로입니다.
 6. 같은 커밋의 대응 소스 ZIP을 준비하고, 설치 파일·소스 ZIP의 SHA-256 체크섬과 함께 Artifact로 업로드합니다.

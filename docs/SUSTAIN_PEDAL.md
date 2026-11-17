@@ -63,7 +63,8 @@
 - `src/core/playback.ts`: `playbackNotes`(페달 적용), `playbackSustain`(VST3·내보내기용 CC64 이벤트)
 - `src/core/midiImport.ts`, `src/core/midiExport.ts`: CC64 가져오기/내보내기, `sustainToLength` 옵션
 - `src/audio/native/timeline.ts`: 소스별 페달 처리(`controls`)
-- `native/src/engine.cpp`: 컨트롤러 이벤트 순서, VST3 chase/정지, 실시간 페달 지연
+- `rust/garak-engine/src/instrument.rs`: 통합 Rust 엔진(0.3.2부터 데스크톱·웹 공통)의 내장 악기 페달·탐색 추적·라이브 페달
+- `native/src/engine.cpp`: 셸의 VST3 컨트롤러 이벤트 순서·chase/정지와 이전 C++ 경로의 실시간 페달 지연
 - `native/src/vst3.cpp`: `IMidiMapping`으로 CC → 파라미터 포인트
 - `src/components/SustainLane.tsx`, `PianoRoll.tsx`, `TimelineClip.tsx`: 레인, 굳히기 명령, 리전 표시
 

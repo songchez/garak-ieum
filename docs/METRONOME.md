@@ -40,11 +40,17 @@
 - 곡 중간에 박자가 바뀌면([METER_MAP.md](METER_MAP.md)) 각 박자의 펄스가 그 첫 마디선에서 다시 시작합니다. 마디마다 첫 박이 강세이고 겹박자 묶음도 마디 안에서 유지됩니다. 카운트인은 재생 시작 위치의 박자로 셉니다. 웹(`meterClicksInRange`)과 네이티브(`metronome::meterClicks`)가 같은 규칙입니다.
 - 루프 구간에서는 루프 끝에서 시작점으로 넘어가며, 시작점 박은 한 번만 울립니다.
 
-### 웹(Web Audio)
+### 웹(AudioWorklet의 Rust 엔진)
+
+0.3.2부터 웹은 통합 Rust 엔진이 같은 규칙(`rust/garak-engine/src/metronome.rs`, `metronome.hpp`·`meter.hpp` 포팅, 호스트 테스트로 비트 동일)으로 클릭과 카운트인을 마스터 뒤에 섞습니다. 아래 Web Audio 예약은 엔진이 프로젝트를 거부했을 때의 대체 경로입니다. [RUST_ENGINE 5.7](RUST_ENGINE.md#57-웹-호스트-2차-엔진-안에서-끝나는-일)
+
+### 웹(Web Audio 대체 경로)
 
 엔진의 미리 예약 스케줄러(25 ms마다 120 ms 앞까지)가 재생 구간을 나눌 때 같은 구간의 클릭을 `AudioBufferSourceNode.start(시각)`으로 오디오 시계에 예약합니다. 타이머로 소리를 내지 않습니다. 클릭 버스는 프로젝트 그래프 밖에서 `destination`으로 바로 갑니다. 그래서 마스터 볼륨·이펙트·미터, MediaRecorder 입력, `OfflineAudioContext` 내보내기와 섞이지 않습니다. 정지·탐색·템포 변경 때에는 아직 울리지 않은 클릭을 취소합니다. 카운트인은 재생 기준 시각을 카운트인 길이만큼 늦추고, `play()`는 다운비트 시각에 돌아와 녹음이 음악과 함께 시작합니다.
 
-### 데스크톱(네이티브 엔진)
+### 데스크톱(네이티브 호스트)
+
+트랙은 Rust 엔진이 렌더하지만 메트로놈·카운트인은 C++ 셸(`RenderEngine`)이 그대로 섞습니다.
 
 UI가 합성한 세 레벨 PCM을 `metronome.set { enabled, volume, sampleRate, strokes? }`로 호스트에 한 번 보냅니다(소리·강세·샘플레이트가 바뀔 때만 `strokes` 포함). 호스트는 장치를 다시 구성해도 설정을 유지합니다. 클릭은 `RenderEngine::render` 콜백 안에서 마스터 처리와 미터 다음에 정확한 프로젝트 프레임(`round(pulse × 프레임/박)`)에 더해집니다([`native/src/metronome.hpp`](../native/src/metronome.hpp)). 콜백에서는 할당하지 않습니다. 오프라인 인스턴스(WAV 내보내기)는 클릭을 만들지 않습니다.
 
