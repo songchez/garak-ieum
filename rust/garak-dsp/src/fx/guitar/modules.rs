@@ -1,4 +1,4 @@
-//! The rig's modules, one per dsp.cpp class: `RigComp`, `RigDrive` / `RigFuzz` ([`Clipper`]),
+//! The rig's modules, one per class of the former C++ DSP (0.3.2): `RigComp`, `RigDrive` / `RigFuzz` ([`Clipper`]),
 //! `RigAmp`, `RigCabinet`, `RigChorus`, `RigDelay`, `RigPhaser`, `RigTremolo`, `RigReverb`,
 //! `RigTuner`, with the shared `Chorus`, `Delay`, `Phaser` and `Tremolo` classes folded in. Same
 //! state, same operation order and the same float rounding points as the C++.
@@ -13,7 +13,7 @@ use crate::gain::db_to_gain;
 use crate::lines::{Carver, DelayLine};
 use crate::{PI, math, std_min};
 
-/// One module instance's parameters: `get(k)` is dsp.cpp `RigParams(base)` for the `k`-th id of
+/// One module instance's parameters: `get(k)` is the former C++ DSP (0.3.2) `RigParams(base)` for the `k`-th id of
 /// `MODULE_PARAMS[code]` (the instance's own `_2` / `_3` id when it is a copy).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct P<'v> {
@@ -95,7 +95,7 @@ fn set_filter(f: &mut Biquad, glide: bool, kind: FilterType, sr: f64, hz: f64, q
 
 // ---- 1 comp -------------------------------------------------------------------------------------
 
-/// `RigComp`: the dsp.cpp compressor with settings derived from Sustain.
+/// `RigComp`: the former C++ DSP (0.3.2) compressor with settings derived from Sustain.
 #[derive(Clone, Debug)]
 pub(crate) struct Comp {
     comp: Compressor,
@@ -242,7 +242,7 @@ impl Stage for Clipper {
 
 // ---- 3 amp --------------------------------------------------------------------------------------
 
-/// Model voicing (src/devices/guitar-rig/voicing.ts): 0 clean, 1 crunch, 2 lead, 3 chime, 4 jazz.
+/// Model voicing (the former TS rig DSP (0.3.2)): 0 clean, 1 crunch, 2 lead, 3 chime, 4 jazz.
 const AMP_PRE: [f64; 5] = [0.55, 1.5, 3.5, 1.0, 0.4];
 const AMP_INTER: [f64; 5] = [0.8, 1.2, 1.65, 1.05, 0.7];
 const AMP_HIGHPASS: [f64; 5] = [45.0, 75.0, 100.0, 90.0, 40.0];
@@ -478,7 +478,7 @@ pub(crate) fn chorus_frames(sr: f64) -> usize {
     (sr * 0.05) as usize + 4
 }
 
-/// `RigChorus` + dsp.cpp `Chorus`: one LFO, 14 / 17 ms taps moving in opposite directions.
+/// `RigChorus` + the former C++ DSP (0.3.2) `Chorus`: one LFO, 14 / 17 ms taps moving in opposite directions.
 #[derive(Debug)]
 pub(crate) struct RigChorus<'a> {
     line: DelayLine<'a>,
@@ -567,7 +567,7 @@ pub(crate) fn delay_frames(sr: f64) -> usize {
     (sr * 4.1) as usize
 }
 
-/// `RigDelay` + dsp.cpp `Delay(sr, time, mix, feedback, 4400, bandLimited = true)`: band-limited
+/// `RigDelay` + the former C++ DSP (0.3.2) `Delay(sr, time, mix, feedback, 4400, bandLimited = true)`: band-limited
 /// feedback (4.4 kHz low-pass, 120 Hz high-pass), filtered repeats added to the dry signal.
 #[derive(Debug)]
 pub(crate) struct RigDelay<'a> {
@@ -663,7 +663,7 @@ impl Stage for RigDelay<'_> {
 
 // ---- 8 phaser -----------------------------------------------------------------------------------
 
-/// `RigPhaser` + dsp.cpp `Phaser` (src/devices/guitar-rig/modulation.ts): six all-pass stages
+/// `RigPhaser` + the former C++ DSP (0.3.2) `Phaser` (the former TS rig DSP (0.3.2)): six all-pass stages
 /// swept by a quadrature LFO, with feedback; the switch fades over ~12 ms.
 #[derive(Clone, Debug)]
 pub(crate) struct RigPhaser {
@@ -766,7 +766,7 @@ impl Stage for RigPhaser {
 
 // ---- 9 tremolo ----------------------------------------------------------------------------------
 
-/// `RigTremolo` + dsp.cpp `Tremolo`: sine to near-square (tanh-shaped) amplitude modulation.
+/// `RigTremolo` + the former C++ DSP (0.3.2) `Tremolo`: sine to near-square (tanh-shaped) amplitude modulation.
 #[derive(Clone, Debug)]
 pub(crate) struct RigTremolo {
     step: f64,

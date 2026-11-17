@@ -1,6 +1,6 @@
 //! Utility 시김새: gain, balance, mid/side width, mono sum and per-side polarity.
-//! Mirrors `UtilityFx` (native/src/sigimsae_effects.inc) and `UtilityKernel`
-//! (src/devices/effects/kernels.ts); parameter ranges from src/devices/effects/sigimsaeDefs.ts.
+//! Mirrors `UtilityFx` (the former C++ 시김새 effects (0.3.2)) and `UtilityKernel`
+//! (src/devices/effects/the former TS kernels (0.3.2)); parameter ranges from src/devices/effects/sigimsaeDefs.ts.
 
 use crate::math;
 use crate::{
@@ -33,7 +33,7 @@ impl Default for UtilityParams {
 }
 
 impl UtilityParams {
-    /// Same clamping as `readParams` in kernels.ts (non-finite falls back to the default).
+    /// Same clamping as `readParams` in the former TS kernels (0.3.2) (non-finite falls back to the default).
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         let pick =
@@ -72,7 +72,7 @@ impl Utility {
         }
     }
 
-    /// The first call applies immediately; later calls glide over ~12 ms (kernels.ts semantics;
+    /// The first call applies immediately; later calls glide over ~12 ms (the former TS kernels (0.3.2) semantics;
     /// the C++ equivalent is a rebuilt processor + `takeStateFrom`).
     pub fn configure(&mut self, params: UtilityParams) {
         let p = params.sanitized();

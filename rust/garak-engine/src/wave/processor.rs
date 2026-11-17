@@ -1,4 +1,4 @@
-//! The engine side of IEUM WAVE (native/src/wavetable.cpp): the prepared-table cache
+//! The engine side of IEUM WAVE (the former C++ IEUM WAVE host (0.3.2)): the prepared-table cache
 //! (`WavetableResources`) and the processor that turns host events into synth events, applies
 //! CC7 / CC11 as a smoothed output gain, resets on transport changes, and hands its synth over to
 //! a rebuilt track (crossfading a changed table set).
@@ -77,7 +77,7 @@ struct GainChange {
 
 const MAX_EVENTS: usize = 2048;
 
-/// wavetable.cpp `WavetableProcessor`.
+/// the former C++ IEUM WAVE host (0.3.2) `WavetableProcessor`.
 #[derive(Debug)]
 pub struct Processor {
     desired_patch: Patch,
@@ -288,7 +288,7 @@ impl Processor {
         }
     }
 
-    /// wavetable.cpp `tailSeconds` (export allowance of the desired patch).
+    /// the former C++ IEUM WAVE host (0.3.2) `tailSeconds` (export allowance of the desired patch).
     pub fn tail_seconds(&self) -> f64 {
         patch_tail_seconds(&self.desired_patch)
     }

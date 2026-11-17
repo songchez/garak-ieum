@@ -2,7 +2,7 @@
 //!
 //! Every kernel here mirrors an existing C++ (`native/`) and TypeScript (`src/`) kernel line for
 //! line: same state, same order of operations, same parameter units. The parity tests
-//! (`native/tests/rust_parity_test.cpp`, `src/audio/rust/parity.test.ts`) hold them together.
+//! (`native/tests/rust_parity_test.cpp`, the former TS parity test (0.3.2)) hold them together.
 //!
 //! Real-time contract (docs/RUST.md):
 //! - `#![no_std]` without the `alloc` crate: nothing in this crate can allocate.

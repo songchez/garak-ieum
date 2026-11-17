@@ -1,8 +1,9 @@
 //! The engine's built-in voices: the five synthesizers (`keys`, `bass`, `pad`, `pluck`, `rhodes`),
 //! the synthesized drum kit (`drums`) and the sample player for `builtin-sampled` instruments and
-//! kits (pianos, gugak instruments, drum kits). A line-for-line port of native/src/engine.cpp
+//! kits (pianos, gugak instruments, drum kits). Ported line for line from the former C++
+//! implementation (0.3.2, native/src/engine.cpp
 //! (`Synth`, `Voice`, `pickZone`, `oscillator`, `TrackRuntime::spawn` / `envelope` /
-//! `voicesInto` / `releaseLive` / the live pedal), so the Rust render engine (garak-engine) sounds
+//! `voicesInto` / `releaseLive` / the live pedal)), so the Rust render engine (garak-engine) sounds
 //! bit-identical to the C++ `RenderEngine` on the same platform libm.
 //!
 //! Real-time contract: a [`Voices`] pool is a fixed array of [`MAX_VOICES`] voices (no heap; the
@@ -257,7 +258,7 @@ pub fn pick_zone(zones: &[Zone], kit: bool, pitch: i32, velocity: f32) -> Option
     best
 }
 
-/// Piano key-release ("damper") noise level, 0 = skip (dsp.hpp `releaseNoiseGain`).
+/// Piano key-release ("damper") noise level, 0 = skip (the former C++ DSP (0.3.2) `releaseNoiseGain`).
 // NaN-aware like the C++ `!(x > y)` tests.
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn release_noise_gain(velocity: f64, held: f64, natural: f64, amount: f64, cut: bool) -> f64 {

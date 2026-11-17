@@ -1,5 +1,5 @@
-//! Saturation and lo-fi: tape and bitcrusher (sigimsae_effects.inc `TapeFx`, `BitcrusherFx` =
-//! kernels.ts) and the oversampled drive (native/src/dsp.cpp `Saturator`, `Drive`).
+//! Saturation and lo-fi: tape and bitcrusher (the former C++ 시김새 effects (0.3.2) `TapeFx`, `BitcrusherFx` =
+//! the former TS kernels (0.3.2)) and the oversampled drive (the former C++ DSP (0.3.2) `Saturator`, `Drive`).
 
 use super::{Kernel, SettledFrame, process_interleaved_settled, process_planar_settled};
 use crate::biquad::{Biquad, FilterType};
@@ -541,7 +541,7 @@ mod tests {
     use crate::PI;
     use crate::math;
 
-    /// The scalar `Saturator` this file had before the two-lane rewrite (= native/src/dsp.cpp),
+    /// The scalar `Saturator` this file had before the two-lane rewrite (= the former C++ DSP (0.3.2)),
     /// one channel at a time.
     struct Reference {
         coefficients: [f64; 17],

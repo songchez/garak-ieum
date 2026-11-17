@@ -6,7 +6,7 @@
 //!   linked binary, so Rust and C++ get identical values and the platform's tuned implementations.
 //!   Nothing extra is linked: the symbols resolve against the CRT the C++ host already links.
 //! - **wasm32** (the browser worklet, which has no C library): `tan`/`exp`/`log`/`pow` are imported
-//!   from the host (`"math"` import module, `Math.*` in garakWasm.ts). Engines call imported `Math`
+//!   from the host (`"math"` import module, `Math.*` in garakEngineWasm.ts). Engines call imported `Math`
 //!   builtins directly as native code (no JS frame), which beats the same musl code compiled to
 //!   wasm (the phaser's per-sample `pow` + `tan` ran at 0.75x the TS kernel) and matches the
 //!   `Math.*` the TS kernels call. `sin`/`cos` stay in `libm`: inlined, they are cheaper than the
@@ -52,7 +52,7 @@ mod imp {
     use core::arch::wasm32::{f64x2_ceil, f64x2_extract_lane, f64x2_floor, f64x2_splat, f64x2_sqrt};
     pub use libm::{cos, cosf, exp2, log10, round, sin, sinf};
 
-    // Host `Math` functions (garakWasm.ts `MATH_IMPORTS`). Only builtins V8 lowers to a direct call
+    // Host `Math` functions (garakEngineWasm.ts `MATH_IMPORTS`). Only builtins V8 lowers to a direct call
     // of its own C implementation when imported (`tanh` and `log10` are not on that list, so they
     // stay in wasm; `sin`/`cos` are faster inlined, see the module docs). The import names differ from the C
     // names so wasm-ld cannot resolve them against compiler-builtins' own `sin`/`exp` symbols.

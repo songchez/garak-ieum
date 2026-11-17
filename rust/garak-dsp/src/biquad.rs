@@ -1,4 +1,4 @@
-//! RBJ biquad matching `garak::dsp::Biquad` (native/src/dsp.cpp `Biquad::configure/sample`) and
+//! RBJ biquad matching `garak::dsp::Biquad` (the former C++ DSP (0.3.2) `Biquad::configure/sample`) and
 //! the W3C `BiquadFilterNode` formulas (src/devices/effects/eqModel.ts `sectionCoefficients`).
 //!
 //! Units follow Web Audio: low/high-pass Q is in dB (and may be negative), band-pass, notch and

@@ -1,4 +1,4 @@
-//! IEUM WAVE voice and master DSP (native/devices/wavetable-synth/src/dsp.cpp): the exponential
+//! IEUM WAVE voice and master DSP (the former C++ DSP (0.3.2)): the exponential
 //! AHDSR envelope, the two-integrator TPT state-variable filter, and the drive / chorus / delay
 //! effects. Delay lines are sized once (`Effects::new`, control thread).
 
@@ -286,7 +286,7 @@ pub struct Effects {
 }
 
 impl Effects {
-    /// dsp.cpp `Effects::prepare` (allocates the lines).
+    /// the former C++ DSP (0.3.2) `Effects::prepare` (allocates the lines).
     pub fn new(sample_rate: f64) -> Self {
         let chorus = ceil(0.05 * sample_rate) as usize + 8;
         let delay = ceil(2.01 * sample_rate) as usize + 8;

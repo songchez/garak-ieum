@@ -1,4 +1,4 @@
-//! Studio delay: sigimsae_effects.inc `StudioDelay` (= kernels.ts `DelayKernel`). Stereo or
+//! Studio delay: the former C++ 시김새 effects (0.3.2) `StudioDelay` (= the former TS kernels (0.3.2) `DelayKernel`). Stereo or
 //! ping-pong; band-limited feedback path; Tape (age) adds 0.7 Hz wow, 7.3 Hz flutter and loop
 //! saturation. Every repeat passes through the filters. Tempo-synced times follow `set_tempo`.
 
@@ -21,7 +21,7 @@ const MS: usize = index_of(DELAY, "ms");
 const MODE: usize = index_of(DELAY, "mode");
 const DRY: usize = index_of(DELAY, "dry");
 
-/// Longest delay time (kernels.ts `DELAY_MAX_SECONDS`).
+/// Longest delay time (the former TS kernels (0.3.2) `DELAY_MAX_SECONDS`).
 pub const DELAY_MAX_SECONDS: f64 = 3.9;
 
 fn seconds(p: &ParamSet, bpm: f64) -> f64 {

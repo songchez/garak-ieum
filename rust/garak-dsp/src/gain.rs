@@ -1,5 +1,5 @@
-//! Gain and pan laws of the track channel strip (native/src/engine.cpp, track mix loop), which
-//! follow the W3C `StereoPannerNode` used by the web engine (src/audio/graph.ts).
+//! Gain and pan laws of the track channel strip (ported from the former C++ implementation (0.3.2): the native/src/engine.cpp track mix loop), which
+//! follow the W3C `StereoPannerNode` used by the former Web Audio graph (0.3.2).
 
 use crate::math;
 use crate::{PI, clamp, smooth::smoothing_coefficient};

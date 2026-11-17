@@ -36,9 +36,7 @@ on:
       - 'src/audio/rust/**'
       - 'src/audio/native/timeline.ts'
       - 'src/audio/native/timelineSync.ts'
-      - 'src/devices/effects/kernels.ts'
       - 'src/devices/effects/sigimsae.ts'
-      - 'src/devices/effects/sigimsae.worklet.ts'
       - 'src/devices/effects/sigimsaeDefs.ts'
       - 'src/devices/effects/eqModel.ts'
       - 'scripts/rust.mjs'
@@ -129,7 +127,7 @@ jobs:
         run: pnpm exec vitest run src/audio/rust
 
   native-parity:
-    name: C++ parity (${{ matrix.name }})
+    name: Rust engine (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:

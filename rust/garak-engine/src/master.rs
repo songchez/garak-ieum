@@ -1,4 +1,4 @@
-//! Master bus processor (dsp.cpp `Master`): a causal, linked-channel soft-knee compressor and
+//! Master bus processor (the former C++ DSP (0.3.2) `Master`): a causal, linked-channel soft-knee compressor and
 //! safety ceiling, no lookahead. Applied after the master gain, for playback and offline alike.
 
 use crate::math;

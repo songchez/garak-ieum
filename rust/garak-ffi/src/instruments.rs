@@ -1,5 +1,5 @@
 //! Built-in instruments over the C ABI: `garak_rs_instrument_*` (옥구슬 EP, 한밤 106). The C++
-//! engine wraps them as a `PluginProcessor` (native/src/rust_instrument.hpp). Declarations:
+//! engine wraps them as a `PluginProcessor` (the former C++ instrument adapter (0.3.2)). Declarations:
 //! `include/garak_rust.h`.
 //!
 //! Memory: the caller allocates `garak_rs_instrument_size()` bytes aligned to

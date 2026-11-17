@@ -1,4 +1,4 @@
-//! Parameter catalog of the guitar rig: native/src/dsp.cpp `guitarRigDefs()` (which mirrors
+//! Parameter catalog of the guitar rig: the former C++ DSP (0.3.2) `guitarRigDefs()` (which mirrors
 //! src/devices/guitar-rig/definition.ts) in the same order: the 46 base ids, then the `_2` / `_3`
 //! copies of every module's ids (module by module, instance by instance), then `rackSlot0..17`.
 //! The C++ adapter compares both catalogs id by id at construction.

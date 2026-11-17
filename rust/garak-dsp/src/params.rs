@@ -1,5 +1,5 @@
 //! Parameter catalogs of the built-in effects: ids, defaults and ranges in the order of
-//! `effectDefs()` / `sigimsaeDefs()` / `eqDefs()` in native/src/dsp.cpp (which mirror
+//! `effectDefs()` / `sigimsaeDefs()` / `eqDefs()` in the former C++ DSP (0.3.2) (which mirror
 //! src/devices/effects/sigimsaeDefs.ts and eqModel.ts). The C++ adapter checks at construction that
 //! both sides list the same ids in the same order, so a drift fails loudly instead of mis-wiring.
 
@@ -196,7 +196,7 @@ pub const REVERB: &[ParamDef] = &[
     d("dry", 1.0, 0.0, 1.0),
 ];
 
-/// eq_effects.inc `eqDefs()`: five legacy ids, then per band On, Type, [Freq], [Gain], Q, Slope.
+/// the former C++ EQ (0.3.2) `eqDefs()`: five legacy ids, then per band On, Type, [Freq], [Gain], Q, Slope.
 /// Band 2's frequency is `midFreq`; the gains of bands 1-3 are `low` / `mid` / `high`.
 pub const EQ: &[ParamDef] = &[
     d("low", 0.0, -24.0, 24.0),

@@ -1,4 +1,4 @@
-//! The guitar rig (`makeEffect("guitar-rig")`, native/src/dsp.cpp `GuitarRig`): a user-arranged
+//! The guitar rig (`makeEffect("guitar-rig")`, the former C++ DSP (0.3.2) `GuitarRig`): a user-arranged
 //! rack of up to 18 modules (compressor, drive, amp, cabinet + microphone, chorus, delay, fuzz,
 //! phaser, tremolo, plate reverb, tuner), each module up to three times, run in rack order.
 //!
@@ -47,7 +47,7 @@ pub fn reverb_ir_scratch_len(sample_rate: f64) -> usize {
     reverb::ir_scratch_len(sample_rate, 0)
 }
 
-/// The plate's impulse response for `decay` (dsp.cpp `RigReverb`: `blendedKernel(sr, hall,
+/// The plate's impulse response for `decay` (the former C++ DSP (0.3.2) `RigReverb`: `blendedKernel(sr, hall,
 /// float(decay))`). `left` / `right` hold [`reverb_ir_len`] frames. False when a buffer is short.
 pub fn generate_reverb_ir(
     sample_rate: f64,
@@ -71,7 +71,7 @@ pub fn sanitize(values: &[f64]) -> [f64; PARAM_COUNT] {
 }
 
 /// The modules of a rack in signal order: (code, instance) per occupied slot. Empty, unknown,
-/// over-limit and repeated entries are skipped (dsp.cpp `GuitarRig` constructor).
+/// over-limit and repeated entries are skipped (the former C++ DSP (0.3.2) `GuitarRig` constructor).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
     modules: [(u8, u8); SLOTS],

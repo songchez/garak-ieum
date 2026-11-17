@@ -1,4 +1,4 @@
-//! Parametric EQ ("Curve 8") and sweep filter: native/src/eq_effects.inc `BiquadChain`,
+//! Parametric EQ ("Curve 8") and sweep filter: the former C++ EQ (0.3.2) `BiquadChain`,
 //! `configureEq`, `configureSweep` (= src/devices/effects/eqModel.ts stage layout).
 
 use super::Kernel;

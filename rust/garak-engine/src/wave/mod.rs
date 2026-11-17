@@ -1,7 +1,7 @@
 //! IEUM WAVE (`native-wavetable`), the wavetable synth of docs/IEUM_WAVE.md. Since 0.3.3 this is its
 //! only implementation, on the desktop (garak-ffi) and in the browser (garak-engine-wasm). It began
 //! as a bit-identical port of the C++ library native/devices/wavetable-synth and of its engine
-//! wrapper native/src/wavetable.cpp (both removed in 0.3.3; renders of the C++ synth are kept as
+//! wrapper the former C++ IEUM WAVE host (0.3.2) (both removed in 0.3.3; renders of the C++ synth are kept as
 //! golden data in tests/golden/ieum-wave). Tables and delay lines are allocated on the control
 //! thread; the synth renders from preallocated state only.
 

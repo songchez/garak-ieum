@@ -1,4 +1,4 @@
-//! The IEUM WAVE synthesizer (native/devices/wavetable-synth/src/synth.cpp): 16 voices of three
+//! The IEUM WAVE synthesizer (the former C++ IEUM WAVE synth (0.3.2)): 16 voices of three
 //! wavetable oscillators with unison, a sub and noise, two SVFs, four envelopes and LFOs, a
 //! modulation matrix, voice stealing with a short tail fade, table-set crossfades, and the master
 //! effects. Same state and operation order as the C++ `Synth::Impl`.
@@ -36,7 +36,7 @@ pub enum EventType {
     AllNotesOff,
 }
 
-/// synth.hpp `Event`.
+/// the former C++ IEUM WAVE synth (0.3.2) `Event`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Event {
     pub offset: u32,

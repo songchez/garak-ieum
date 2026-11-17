@@ -111,7 +111,7 @@ pub(crate) fn catalog(kind: &str) -> Option<&'static [ParamDef]> {
     EffectKind::from_id(kind.as_bytes()).map(EffectKind::params)
 }
 
-/// dsp.cpp `liveEffectParameter`: true when set + commit fully applies a new value in place.
+/// the former C++ DSP (0.3.2) `liveEffectParameter`: true when set + commit fully applies a new value in place.
 pub(crate) fn live_parameter(kind: &str, id: &str) -> bool {
     let Some(defs) = catalog(kind) else { return false };
     if !defs.iter().any(|d| d.id == id) {
@@ -132,7 +132,7 @@ pub(crate) fn live_parameter(kind: &str, id: &str) -> bool {
     }
 }
 
-/// dsp.cpp `estimateEffectMemory`.
+/// the former C++ DSP (0.3.2) `estimateEffectMemory`.
 pub(crate) fn estimate_memory(kind: &str, sample_rate: f64) -> usize {
     match kind {
         "reverb" => (sample_rate * 4.2 * 36.0) as usize + 1024 * 1024,

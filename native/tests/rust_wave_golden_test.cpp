@@ -12,8 +12,8 @@
 // Gate: bit-identical (the float32 hash) on Windows x86-64 (MSVC and MinGW: the CRT math the C++ synth called),
 // otherwise a residual <= -90 dBFS against the stored 24-bit render; equal latency and length always.
 //
-// Built with GARAK_WAVE_GOLDEN_CAPTURE (only possible while the C++ synth existed) it rendered the C++
-// reference, checked the Rust engine against it and wrote the golden files.
+// The golden files were captured from the C++ RenderEngine before the synth was removed in 0.3.3 (in the same
+// run the Rust engine matched it bit for bit); that capture mode left with the C++ code.
 #include "garak_engine.h"
 #include "garak_engine_instruments.h"
 
@@ -28,11 +28,6 @@
 #include <utility>
 #include <vector>
 
-#ifdef GARAK_WAVE_GOLDEN_CAPTURE
-#include "cpp_reference_engine.hpp"
-#include "garak/engine.hpp"
-#include "protocol.hpp"
-#endif
 
 #ifndef GARAK_WAVE_GOLDEN_DIR
 #error "GARAK_WAVE_GOLDEN_DIR must name rust/garak-engine/tests/golden/ieum-wave"
@@ -167,7 +162,7 @@ std::string addNote(const std::string& json, const std::string& track, std::int6
   return out.insert(at, note);
 }
 
-// One engine of the live scenario: the Rust engine, or (capture) the C++ RenderEngine.
+// One engine of the live scenario (the Rust engine; the capture run also drove the former C++ RenderEngine).
 struct LiveEngine {
   virtual ~LiveEngine() = default;
   virtual int apply(const std::string& json) = 0; // 0 none, 1 diff, 2 tracks, 3 full; < 0 refused
@@ -348,116 +343,11 @@ constexpr OfflineCase kOffline[] = {
   {"offline-44k1-512", 3, 44100, 512},
 };
 
-#ifdef GARAK_WAVE_GOLDEN_CAPTURE
-garak::ProjectTimeline parse(const std::string& json) { return garak::protocol::timeline(garak::protocol::Json::parse(json)); }
-garak::AssetStore assetsOf(const Project& p) {
-  garak::AssetStore store;
-  for (std::size_t i = 0; i < p.assets.size(); ++i) {
-    auto asset = std::make_shared<garak::PcmAsset>();
-    asset->id = p.assets[i].first; asset->sampleRate = p.assetRates[i]; asset->channels = p.assetChannels[i]; asset->samples = p.assets[i].second;
-    store.emplace(asset->id, std::move(asset));
-  }
-  return store;
-}
-Render renderCppOffline(const Project& project, std::uint32_t block) {
-  auto timeline = parse(project.json); timeline.cycle.reset();
-  const auto assets = assetsOf(project);
-  garak::RenderEngine engine(timeline.sampleRate, block); engine.setOffline(true);
-  auto prepared = engine.prepare(timeline, assets, garak::SampleSetStore{});
-  const double tail = std::min(30.0, prepared->tailSeconds());
-  Render r; r.rate = timeline.sampleRate; r.latency = prepared->latencyFrames();
-  r.frames = std::uint64_t(timeline.lengthFrames) + std::uint64_t(std::ceil(tail * timeline.sampleRate));
-  engine.submit(std::move(prepared)); (void)engine.play();
-  std::vector<float> chunk(std::size_t(block) * 2);
-  for (std::uint64_t done = 0; done < r.frames + r.latency;) {
-    const auto frames = std::uint32_t(std::min<std::uint64_t>(block, r.frames + r.latency - done));
-    engine.render(chunk.data(), nullptr, frames, 0);
-    const auto skip = std::uint32_t(std::min<std::uint64_t>(frames, done < r.latency ? r.latency - done : 0));
-    r.samples.insert(r.samples.end(), chunk.begin() + skip * 2, chunk.begin() + frames * 2);
-    done += frames;
-  }
-  engine.collectRetired();
-  return r;
-}
-struct CppLive final : LiveEngine {
-  garak::RenderEngine e;
-  garak::AssetStore assets;
-  CppLive(const Project& p, std::uint32_t rate, std::uint32_t block) : e(rate, block), assets(assetsOf(p)) {}
-  int apply(const std::string& json) override {
-    const auto k = e.update(parse(json), assets, garak::SampleSetStore{}).kind;
-    return k == garak::UpdateResult::Kind::None ? 0 : k == garak::UpdateResult::Kind::Diff ? 1 : k == garak::UpdateResult::Kind::Tracks ? 2 : 3;
-  }
-  void transport(std::uint32_t command, std::int64_t frame) override {
-    if (command == GARAK_RS_PLAY) (void)e.play();
-    else if (command == GARAK_RS_PAUSE) (void)e.pause();
-    else if (command == GARAK_RS_STOP) (void)e.stop();
-    else if (command == GARAK_RS_SEEK) (void)e.seek(frame);
-  }
-  void noteOn(std::uint32_t t, int pitch, float v, int id) override { (void)e.noteOn(t, pitch, v, id); }
-  void noteOff(std::uint32_t t, int pitch, int id) override { (void)e.noteOff(t, pitch, id); }
-  void preview(std::uint32_t t, int pitch, float v, std::uint32_t frames) override { (void)e.previewNote(t, pitch, v, frames); }
-  void control(std::uint32_t t, int c, int value) override { (void)e.controlChange(t, c, value); }
-  void allNotesOff(std::uint32_t t) override { (void)e.allNotesOff(t); }
-  void render(float* out, std::uint32_t frames) override { e.render(out, nullptr, frames, 0); e.collectRetired(); }
-  std::int64_t frame() override { return e.snapshot().frame; }
-};
-void writeGolden(const std::string& name, const Render& r) {
-  std::vector<unsigned char> bytes(32 + storedFrames(r.frames) * 6);
-  std::memcpy(bytes.data(), "IWGOLD01", 8);
-  const auto put32 = [&](std::size_t at, std::uint32_t v) { for (int i = 0; i < 4; ++i) bytes[at + i] = static_cast<unsigned char>(v >> (8 * i)); };
-  const auto put64 = [&](std::size_t at, std::uint64_t v) { put32(at, std::uint32_t(v)); put32(at + 4, std::uint32_t(v >> 32)); };
-  put32(8, r.rate); put32(12, r.latency); put64(16, r.frames); put64(24, floatHash(r.samples));
-  for (std::size_t k = 0; k < storedFrames(r.frames) * 2; ++k) {
-    const std::size_t i = (k / 2) * kStride * 2 + k % 2;
-    const auto v = std::int32_t(std::lround(std::clamp(double(r.samples[i]), -2.0, 2.0 - 1.0 / kScale) * kScale));
-    for (int b = 0; b < 3; ++b) bytes[32 + k * 3 + b] = static_cast<unsigned char>((v >> (8 * b)) & 0xFF);
-  }
-  std::ofstream out(goldenPath(name), std::ios::binary);
-  out.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
-  if (!out) throw std::runtime_error("cannot write " + goldenPath(name));
-}
-double residual(const std::vector<float>& a, const std::vector<float>& b) {
-  if (a.size() != b.size()) return 1e9;
-  double m = 0;
-  for (std::size_t i = 0; i < a.size(); ++i) m = std::max(m, double(std::abs(a[i] - b[i])));
-  return m;
-}
-void capture() {
-  pinCppReferenceEngine();
-  for (const auto& c : kOffline) {
-    const auto project = waveProject(c.seconds, c.rate);
-    const auto cpp = renderCppOffline(project, c.block);
-    const auto rust = renderRustOffline(project, c.rate, c.block);
-    std::printf("capture %s: %llu frames, latency %u, C++ vs Rust %s\n", c.name, static_cast<unsigned long long>(cpp.frames), cpp.latency,
-                residual(cpp.samples, rust.samples) == 0 ? "bit-identical" : std::to_string(dbfs(residual(cpp.samples, rust.samples))).c_str());
-    check(residual(cpp.samples, rust.samples) == 0 && cpp.latency == rust.latency, std::string("capture: ") + c.name + " C++ vs Rust");
-    writeGolden(c.name, cpp);
-  }
-  const auto project = waveProject(kLiveSeconds, kLiveRate);
-  std::vector<int> cppKinds, rustKinds;
-  CppLive cppEngine(project, kLiveRate, kLiveBlock);
-  const auto cpp = live(cppEngine, project, &cppKinds);
-  RustLive rustEngineLive(project, kLiveRate, kLiveBlock);
-  const auto rust = live(rustEngineLive, project, &rustKinds);
-  std::printf("capture live: C++ vs Rust %s\n", residual(cpp.samples, rust.samples) == 0 ? "bit-identical" : std::to_string(dbfs(residual(cpp.samples, rust.samples))).c_str());
-  check(residual(cpp.samples, rust.samples) == 0, "capture: live C++ vs Rust");
-  check(cppKinds == rustKinds, "capture: live classifications");
-  writeGolden("live-48k-128", cpp);
-}
-#endif
 } // namespace
 
 int main(int argc, char** argv) {
   try {
-#ifdef GARAK_WAVE_GOLDEN_CAPTURE
-    if (argc > 1 && std::string(argv[1]) == "capture") {
-      capture();
-      if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
-      return 0;
-    }
-#else
     (void)argc; (void)argv;
-#endif
     std::printf("| Case | Rate | Length | Peak dBFS | Float32 | Residual vs C++ |\n|---|---|---|---|---|---|\n");
     for (const auto& c : kOffline) compare(c.name, renderRustOffline(waveProject(c.seconds, c.rate), c.rate, c.block));
     const auto project = waveProject(kLiveSeconds, kLiveRate);

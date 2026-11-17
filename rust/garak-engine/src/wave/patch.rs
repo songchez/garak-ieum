@@ -1,4 +1,4 @@
-//! IEUM WAVE patches (native/devices/wavetable-synth/src/patch.cpp): the patch model, parameter
+//! IEUM WAVE patches (the former C++ IEUM WAVE synth (0.3.2)): the patch model, parameter
 //! and patch validation, and the strict IEWAVE01 bridge-pack decoder (plus the base64 the
 //! timeline carries it in).
 
@@ -23,7 +23,7 @@ pub struct ModRoute {
 
 impl Default for ModRoute {
     fn default() -> Self {
-        // patch.hpp defaults: Env2 -> Filter1Cutoff, disabled.
+        // the former C++ IEUM WAVE synth (0.3.2) defaults: Env2 -> Filter1Cutoff, disabled.
         Self {
             source: 1,
             destination: 42,
@@ -68,7 +68,7 @@ pub struct CustomBank {
     pub samples: Vec<f32>,
 }
 
-/// patch.cpp `validateParameter`.
+/// the former C++ IEUM WAVE synth (0.3.2) `validateParameter`.
 pub fn validate_parameter(index: usize, value: f32) -> bool {
     let (Some(&min), Some(&max), Some(&integer), Some(&options), Some(values)) = (
         g::MINIMUM.get(index),
@@ -92,7 +92,7 @@ pub fn validate_parameter(index: usize, value: f32) -> bool {
     true
 }
 
-/// patch.cpp `validatePatch`.
+/// the former C++ IEUM WAVE synth (0.3.2) `validatePatch`.
 pub fn validate_patch(patch: &Patch) -> bool {
     if !patch.params.iter().enumerate().all(|(i, v)| validate_parameter(i, *v)) {
         return false;
@@ -154,7 +154,7 @@ pub fn unbase64(text: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// patch.cpp `decodePatchBundle`: the IEWAVE01 pack (patch + user banks).
+/// the former C++ IEUM WAVE synth (0.3.2) `decodePatchBundle`: the IEWAVE01 pack (patch + user banks).
 pub fn decode_patch_bundle(data: &[u8]) -> Result<(Patch, Vec<CustomBank>), String> {
     let err = |m: &str| Err(String::from(m));
     if data.len() < 32 || data.len() > 3 * 1024 * 1024 {

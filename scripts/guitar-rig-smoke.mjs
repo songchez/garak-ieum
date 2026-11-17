@@ -91,7 +91,7 @@ try {
     const { loadProject } = await import('/src/core/storage.ts')
     const saved = await loadProject()
     const rig = saved?.project.tracks[0]?.devices[0]
-    return rig?.type === 'guitar-rig' && rig.params.chorusEnabled === 0
+    return rig?.type === 'guitar-rig' && rig.params.chorusEnabled === 0 && rig.params.micPosition === 1 && rig.params.micType === 2
   })
 
   if (process.env.GARAK_RIG_SCREENSHOTS) {
@@ -115,8 +115,9 @@ try {
   await page.getByRole('button', { name: '시김새 체인', exact: true }).click()
   await page.getByRole('button', { name: '기타 앰프 편집기 열기', exact: true }).click()
   await editor.waitFor()
-  // Only the footswitch is checked after the reload: the mic position / type edits were seen reverting to the
-  // preset's values across a reload (an autosave ordering issue outside this smoke; see the PR notes).
+  // The edits survive the reload (the autosave flushes pending edits on Ctrl+S, pagehide and its 5 s ceiling).
+  assert.equal(await editor.getByRole('slider', { name: '마이크 위치', exact: true }).inputValue(), '1', 'the mic position survives a reload')
+  assert.equal(await editor.getByRole('combobox', { name: '마이크', exact: true }).inputValue(), '2', 'the mic type survives a reload')
   assert.equal(await editor.getByRole('button', { name: 'Blue Ripple 페달 켜기/바이패스', exact: true }).getAttribute('aria-pressed'), 'false')
   await editor.press('Escape')
 
