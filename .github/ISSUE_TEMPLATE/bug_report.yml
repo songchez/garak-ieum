@@ -1,0 +1,74 @@
+name: 버그 제보 / Bug report
+description: 앱이 예상과 다르게 동작하거나 멈출 때 알려 주세요. / Something is broken or behaves unexpectedly.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        제보해 주셔서 고맙습니다. 같은 문제가 이미 있는지 [이슈 검색](https://github.com/songchez/garak-ieum/issues?q=is%3Aissue)을 먼저 확인해 주세요.
+        보안 취약점은 이곳에 쓰지 말고 [보안 정책](https://github.com/songchez/garak-ieum/security/policy)에 따라 비공개로 알려 주세요.
+
+        English is welcome too.
+  - type: input
+    id: version
+    attributes:
+      label: 가락이음 버전 / Version
+      description: 앱의 '가락이음 정보' 화면 또는 설치 파일 이름에서 확인할 수 있습니다.
+      placeholder: "예: 0.3.5"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 운영체제 / Platform
+      options:
+        - Windows (x64)
+        - macOS (Apple Silicon)
+        - 브라우저 (웹) / Browser
+        - 기타 / Other
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: 시스템 정보 / System details
+      description: OS 버전, 오디오 장치(인터페이스·드라이버), 브라우저라면 브라우저와 버전
+      placeholder: "예: Windows 11 24H2, Focusrite Scarlett 2i2 (ASIO)"
+  - type: textarea
+    id: what
+    attributes:
+      label: 무슨 일이 있었나요? / What happened?
+      description: 실제로 일어난 일과 기대했던 동작을 적어 주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 재현 방법 / Steps to reproduce
+      description: 처음 상태에서 문제가 생길 때까지 순서대로 적어 주세요.
+      placeholder: |
+        1. 새 빈 프로젝트를 만든다
+        2. 소프트웨어 악기 트랙을 추가한다
+        3. 피아노롤에서 ...
+        4. ... 이(가) 일어난다
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: 얼마나 자주 일어나나요? / How often?
+      options:
+        - 매번 / Always
+        - 가끔 / Sometimes
+        - 한 번만 / Once
+  - type: textarea
+    id: attachments
+    attributes:
+      label: 스크린샷·녹화·프로젝트 파일 / Attachments
+      description: 화면이나 프로젝트 파일(.garak)을 끌어다 놓으면 첨부됩니다. 개인적인 녹음이 들어 있지 않은지 확인해 주세요.
+  - type: textarea
+    id: logs
+    attributes:
+      label: 오류 메시지·로그 / Logs
+      description: 화면에 나온 오류 문구나 로그가 있으면 붙여 넣어 주세요.
+      render: text

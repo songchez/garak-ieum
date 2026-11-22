@@ -96,7 +96,7 @@ flowchart TD
 | 구조와 구현 상태 | [아키텍처](docs/ARCHITECTURE.md) · [Rust 렌더 엔진](docs/RUST_ENGINE.md) · [Rust 오디오 코어](docs/RUST.md) · [네이티브 오디오](docs/NATIVE_AUDIO.md) · [구현 상태](docs/IMPLEMENTATION_STATUS.md) · [로드맵](docs/ROADMAP.md) |
 | 배포와 라이선스 | [릴리스 절차](docs/RELEASING.md) · [GPL 배포 안내](docs/LICENSING.md) |
 
-전체 문서는 [`docs/`](docs/) 폴더에 있습니다. 오류 제보와 의견은 [이슈](https://github.com/songchez/garak-ieum/issues)에 남겨 주세요.
+전체 문서는 [`docs/`](docs/) 폴더에 있습니다. 오류 제보와 기능 제안은 [이슈](https://github.com/songchez/garak-ieum/issues/new/choose)에 남겨 주세요. 코드 기여 방법은 [기여 안내](CONTRIBUTING.md), 보안 문제는 [보안 정책](SECURITY.md)을 참고하세요.
 
 ## 라이선스
 
