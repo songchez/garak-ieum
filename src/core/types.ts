@@ -164,7 +164,7 @@ export interface TrackInput {
   /** Channel name when chosen, used to re-find the input on another computer or interface. */
   label?: string
 }
-/** Where a track-input route listens on its source track (Ableton Pre FX / Post FX / Post Mixer). */
+/** Where a track-input route listens on its source track (Pre FX / Post FX / Post Mixer). */
 export type TrackInputTap = 'preFx' | 'postFx' | 'postFader'
 /**
  * Internal recording input (schema 11): another track's signal or the master mix (resampling) instead of a
@@ -175,7 +175,7 @@ export type TrackInputRoute =
   | { kind: 'track'; trackId: string; tap: TrackInputTap }
   | { kind: 'master' }
   | { kind: 'none' }
-/** Ableton-style monitoring: `auto` hears the input while armed unless clips are playing back without recording. */
+/** Monitoring: `auto` hears the input while armed unless clips are playing back without recording. */
 export type TrackMonitorMode = 'off' | 'auto' | 'in'
 /** One selectable track input built from the enabled device channels. */
 export interface InputChoice {
@@ -234,10 +234,10 @@ export interface AutomationLane {
   target: AutomationTarget
   /** Sorted by beat; two points on one beat make a jump. */
   points: AutomationPoint[]
-  /** Off = the static value plays (Ableton's override, Logic's lane off). Absent = true. */
+  /** Off = the static value plays (override, lane off). Absent = true. */
   enabled?: boolean
 }
-/** Logic's automation modes: 읽기 plays lanes, 터치/래치/쓰기 also record knob moves during playback. */
+/** Automation modes: 읽기 plays lanes, 터치/래치/쓰기 also record knob moves during playback. */
 export type AutomationMode = 'read' | 'touch' | 'latch' | 'write'
 
 /**
@@ -276,9 +276,9 @@ export interface Track {
   pan: number
   mute: boolean
   solo: boolean
-  /** Heard even when other tracks are soloed (Logic: ??click S). */
+  /** Heard even when other tracks are soloed (solo safe). */
   soloSafe: boolean
-  /** Off = not scheduled, no fader, no preview (Logic: track on/off, ?쩗). */
+  /** Off = not scheduled, no fader, no preview (track on/off). */
   enabled: boolean
   /** Record-enabled. Live state: never enters undo history. */
   armed: boolean
@@ -287,7 +287,7 @@ export interface Track {
   monitor: boolean
   /** Hidden in the Tracks area while hide view is off; still plays. */
   hidden: boolean
-  /** Track parameters applied at playback time (Logic Track inspector). Audio tracks store but ignore them. */
+  /** Track parameters applied at playback time (track inspector). Audio tracks store but ignore them. */
   transpose: number
   velocityOffset: number
   keyLimit: [number, number]
@@ -307,7 +307,7 @@ export interface Track {
   /** Audio tracks only. Absent: the engine's default input (first enabled channel or pair). A saved,
    * undoable setting (schema 8). */
   input?: TrackInput
-  /** Absent: derived from `monitor` (`in` when on, else `auto`). Saved with the project like Ableton's
+  /** Absent: derived from `monitor` (`in` when on, else `auto`). Saved with the project like a
    * monitor switch, but live like arm/monitor: it never enters undo history (schema 8). */
   monitorMode?: TrackMonitorMode
   /** Audio tracks only. When present it replaces `input` (which is kept for switching back): the track

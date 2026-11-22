@@ -1,4 +1,4 @@
-/* Library (F, left edge): Logic-style column browser for instruments and effects, plus project audio.
+/* Library (F, left edge): column browser for instruments and effects, plus project audio.
    The columns reuse the .library-* rules from Inspector.css; this file only adds what differs. */
 .file-browser.lib-panel{width:260px;min-width:260px;font-size:10px;outline:none}
 .lib-tabs{display:flex;gap:2px;margin:10px 10px 0;padding:2px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--surface-canvas)}

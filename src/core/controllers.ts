@@ -247,7 +247,7 @@ export function thinDefaults(key: ControllerKey): Required<ThinOptions> {
 }
 
 /**
- * Logic-like event thinning for recorded and drawn controller streams: repeated values are dropped, and a new
+ * Event thinning for recorded and drawn controller streams: repeated values are dropped, and a new
  * event is kept only once it moved by `tolerance` and `minGapBeats` passed (or the value jumped). The last event
  * of the stream and every return to the lane default (pitch bend back to center) are always kept, so the final
  * value is exact. Input must be sorted by beat.

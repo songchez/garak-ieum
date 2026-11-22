@@ -1,4 +1,4 @@
-/** Track button semantics (Logic: M/S/R/I/⏻/H with ⌥/⌘/⌃) and the derived audible/record/monitor sets. All pure. */
+/** Track button semantics (M/S/R/I/⏻/H with ⌥/⌘/⌃) and the derived audible/record/monitor sets. All pure. */
 import type { Project, Track, TrackMonitorMode } from './types'
 
 export type TrackButtonKind = 'mute' | 'solo' | 'arm' | 'monitor' | 'enabled' | 'hidden'
@@ -81,7 +81,7 @@ export function clearRecallSolo(project: Project, recall: string[] | null): { pr
   return { project, recall: null }
 }
 
-/** 'auto' = Logic's implicit record-enable of the focused software-instrument track when no instrument track is explicitly armed. */
+/** 'auto' = implicit record-enable of the focused software-instrument track when no instrument track is explicitly armed. */
 export function effectiveArm(track: Track, focusedTrackId: string | null, tracks: readonly Track[]): ArmState {
   if (track.armed) return 'armed'
   if (track.kind === 'instrument' && track.id === focusedTrackId && !tracks.some(t => t.kind === 'instrument' && t.armed)) return 'auto'
@@ -114,7 +114,7 @@ export function recordTarget(project: Project, focusedTrackId: string | null): R
   return { trackId: null, reason: 'focusedInstrument', extraArmed: [] }
 }
 
-/** Ableton monitor semantics: `in` always hears the input, `off` never does, and `auto` hears it while the
+/** Monitor semantics: `in` always hears the input, `off` never does, and `auto` hears it while the
  * track is armed unless clips are playing back without recording (so a take can be checked against the
  * input, then auditioned without the live signal on top). */
 export function monitorsInput(track: Track, recording: boolean, playing: boolean): boolean {

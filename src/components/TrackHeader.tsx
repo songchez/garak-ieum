@@ -80,7 +80,7 @@ export function TrackHeader(props: TrackHeaderProps) {
     if (e.button !== 0 || !(e.target instanceof Element) || e.target.closest(CONTROL)) return
     const mods = { range: e.shiftKey, toggle: MAC ? e.metaKey : e.ctrlKey, trackOnly: e.altKey }
     props.onFocus()
-    // Number click during a multi-selection only moves the focus (Logic).
+    // Number click during a multi-selection only moves the focus.
     if (multi && e.target.closest('.track-number') && !mods.range && !mods.toggle && !mods.trackOnly) return
     props.onClick(mods)
     if (!mods.range && !mods.toggle && !mods.trackOnly && !e.target.closest('.track-name')) props.onReorderStart(e)

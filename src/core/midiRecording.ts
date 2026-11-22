@@ -104,7 +104,7 @@ export class MidiTake {
   /** Transport position from the UI clock, so a cycle wrap is seen even when no key was played around it. */
   tick(beat: number): void { if (Number.isFinite(beat)) this.advance(beat) }
 
-  /** Detects a cycle wrap; held notes end at the cycle end (Logic) and are not continued in the next pass. */
+  /** Detects a cycle wrap; held notes end at the cycle end and are not continued in the next pass. */
   private advance(beat: number): void {
     if (this.cycle && beat < this.lastBeat - EPSILON && this.lastBeat - beat > (this.cycle.end - this.cycle.start) / 2) {
       this.pass += 1
@@ -227,7 +227,7 @@ export interface CommitResult { project: Project; clipIds: string[] }
 
 /**
  * Controller lanes of a recording, region-relative to [start, end): each lane's raw stream (a later cycle pass
- * replacing the span it covers on that lane), the value held at `start` chased at 0, then thinned (Logic-like).
+ * replacing the span it covers on that lane), the value held at `start` chased at 0, then thinned.
  */
 export function recordedControllers(events: readonly RecordedController[], start: number, end: number): MidiClip['controllers'] {
   const byKey = new Map<ControllerKey, RecordedController[]>()
@@ -276,8 +276,8 @@ export function recordedClip(notes: readonly RecordedNote[], start: number, end:
 
 /**
  * Writes a finished take into the project (one undo step for the caller). Empty tracks add nothing.
- * 합치기 (merge, default): MIDI regions overlapping the recording join it (Ableton arrangement overdub / Logic merge).
- * 대체 (replace): the recording cuts away whatever it covers on its track (Logic replace).
+ * 합치기 (merge, default): MIDI regions overlapping the recording join it (arrangement overdub / merge).
+ * 대체 (replace): the recording cuts away whatever it covers on its track.
  */
 export function commitMidiTake(project: Project, result: MidiTakeResult, options: CommitOptions): CommitResult {
   let next = project

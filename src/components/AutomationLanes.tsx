@@ -10,7 +10,7 @@ import { Icon } from './Icon'
 import './Automation.css'
 
 /**
- * Lanes under a track (docs/AUTOMATION.md): Logic's track automation view with Ableton-style breakpoint
+ * Lanes under a track (docs/AUTOMATION.md): a track automation view with breakpoint
  * editing. Click adds a point (and drags it), drag moves the selection, ⇧drag on empty space selects,
  * ⌥drag on a segment bends it, double-click resets (point → default value, segment → straight),
  * Delete removes the selection. Snapping follows the timeline grid (⌃/⌘ or the usual no-snap modifier: off).
@@ -39,7 +39,7 @@ export interface AutomationLanesProps {
 export function AutomationLanes(props: AutomationLanesProps) {
   const { track } = props
   const lanes = track.automation ?? []
-  // A track without lanes shows its volume lane, saved on the first point (Logic's default lane).
+  // A track without lanes shows its volume lane, saved on the first point (the default lane).
   const [virtualTarget, setVirtualTarget] = useState<AutomationTarget>(VOLUME_TARGET)
   const rows: { lane: AutomationLane | null; target: AutomationTarget }[] = lanes.length ? lanes.map(lane => ({ lane, target: lane.target })) : [{ lane: null, target: virtualTarget }]
   const groups = useMemo(() => targetGroups(track, undefined, props.returnNames), [track, props.returnNames])

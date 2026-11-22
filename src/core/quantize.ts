@@ -12,7 +12,7 @@ export function gridTarget(position: number, grid: number, swing = 50): number {
   return step * grid + (step % 2 ? (clamp(swing, 0, 100) - 50) / 50 * grid : 0)
 }
 
-/** Strength 0…100 moves the position that fraction of the way to its grid line (Logic Q-Strength, Ableton Amount). */
+/** Strength 0…100 moves the position that fraction of the way to its grid line (Q-Strength). */
 export function quantizePosition(position: number, grid: number, swing = 50, strength = 100): number {
   if (!(grid > 0)) return position
   const target = gridTarget(position, grid, swing)
@@ -28,7 +28,7 @@ export interface QuantizeOptions {
   swing?: number
   /** Move note starts. Default true. */
   starts?: boolean
-  /** Move note ends (Logic "Quantize Note End"). Default false. */
+  /** Move note ends ("Quantize Note End"). Default false. */
   ends?: boolean
 }
 

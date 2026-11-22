@@ -37,6 +37,17 @@
 .piano-lane-toggle { height: 22px; padding: 0 7px; border: 1px solid var(--border-default); border-radius: 4px; background: transparent; color:var(--text-muted); font: inherit; font-size: 8px; font-weight: 650; letter-spacing: .1em; cursor: pointer; }
 .piano-lane-toggle.active { color: var(--accent); border-color: var(--accent-border); background: var(--accent-soft); }
 .piano-lane-toggle:focus-visible { outline: 1px solid var(--piano-color); outline-offset: 1px; }
+.piano-lane-toggle:disabled { opacity: .4; cursor: default; }
+.piano-mode-switch { display: inline-flex; }
+.piano-mode-switch .piano-lane-toggle:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.piano-mode-switch .piano-lane-toggle:last-child { margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+/* Draw mode: a pencil-like cursor on the grid; notes show they erase on click. */
+.piano-roll--draw .piano-grid { cursor: cell; }
+.piano-roll--draw .piano-note, .piano-roll--draw .piano-note-resize { cursor: not-allowed; }
+.piano-ruler-beats--seek { cursor: pointer; touch-action: none; }
+.piano-keys { touch-action: none; }
+/* Pitches of the selected notes light up in the track colour, so even a tiny note reads at a glance. */
+.piano-keys .piano-key.piano-key--selected { background: var(--piano-color); color: var(--piano-note-text); font-weight: 700; }
 .piano-scroll { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--ink-29) var(--ink-11); }
 .piano-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
 .piano-scroll::-webkit-scrollbar-track { background: var(--surface-canvas-alt); }

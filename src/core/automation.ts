@@ -12,7 +12,7 @@ export const AUTOMATION_MODES: readonly AutomationMode[] = ['read', 'touch', 'la
 export const AUTOMATION_MODE_LABELS: Readonly<Record<AutomationMode, string>> = { read: '읽기', touch: '터치', latch: '래치', write: '쓰기' }
 export const MAX_AUTOMATION_LANES = 256
 export const MAX_AUTOMATION_POINTS = 20_000
-/** Segment curvature exponent at |curve| = 1 (Ableton-like bend). */
+/** Segment curvature exponent at |curve| = 1 (bend). */
 const CURVE_STRENGTH = 6
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value))

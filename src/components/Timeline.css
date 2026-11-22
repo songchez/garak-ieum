@@ -1,4 +1,4 @@
-/* Tracks area chrome (LOGIC_GAP §1.3/1.7/1.8). Width-dependent legacy rules in styles.css (208px) are overridden through --header-width. */
+/* Tracks area chrome. Width-dependent legacy rules in styles.css (208px) are overridden through --header-width. */
 .arrangement{--header-width:248px}
 .timeline-body{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
 .timeline-body .timeline-scroll{flex:1}

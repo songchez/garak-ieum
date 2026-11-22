@@ -17,14 +17,14 @@ export const FADE_CURVE_LABELS: Readonly<Record<FadeCurve, string>> = {
 /** Wire codes for the native engine (native/src/protocol.hpp). */
 export const FADE_CURVE_CODES: Readonly<Record<FadeCurve, number>> = { linear: 0, equalPower: 1, sCurve: 2, exponential: 3, logarithmic: 4 }
 
-/** Region gain range: Ableton/Logic style −∞…+24 dB for audio. MIDI region gain scales velocity, 0…2. */
+/** Region gain range: −∞…+24 dB for audio. MIDI region gain scales velocity, 0…2. */
 export const CLIP_GAIN_MIN_DB = -60
 export const AUDIO_CLIP_GAIN_MAX_DB = 24
 export const AUDIO_CLIP_GAIN_MAX = 10 ** (AUDIO_CLIP_GAIN_MAX_DB / 20)
 export const MIDI_CLIP_GAIN_MAX = 2
-/** Normalize target, Logic/Pro Tools style peak normalization. */
+/** Normalize target for peak normalization. */
 export const NORMALIZE_TARGET_DB = -0.1
-/** Length given to a crossfade between regions that only touch (Ableton "Create Crossfade"). */
+/** Length given to a crossfade between regions that only touch ("create crossfade"). */
 export const DEFAULT_CROSSFADE_SECONDS = 0.025
 
 export const isFadeCurve = (value: unknown): value is FadeCurve => typeof value === 'string' && (FADE_CURVES as readonly string[]).includes(value)
@@ -135,7 +135,7 @@ export function isContinuousSplice(a: AudioClip, b: AudioClip, tempo: Tempo): bo
 /**
  * Crossfades an earlier/later pair over `overlapBeats`. Different material gets equal power (constant loudness);
  * a continuous splice of one take gets equal gain (linear), which sums back to the original without a +3 dB bump
- * (Pro Tools' Equal Gain vs Equal Power rule).
+ * (equal gain vs equal power rule).
  */
 function crossfadePair(a: AudioClip, b: AudioClip, overlapBeats: number, tempo: Tempo): [AudioClip, AudioClip] {
   const seconds = spanSeconds(tempo, b.startBeat, b.startBeat + overlapBeats)
@@ -148,7 +148,7 @@ function crossfadePair(a: AudioClip, b: AudioClip, overlapBeats: number, tempo: 
 /**
  * "크로스페이드 만들기": for each pair of selected audio regions on one track that touch or overlap,
  * an overlap gets a crossfade across it (see crossfadePair for the curve); regions that only touch are first extended into
- * each other by up to DEFAULT_CROSSFADE_SECONDS of source handle (Ableton/Pro Tools edit crossfade).
+ * each other by up to DEFAULT_CROSSFADE_SECONDS of source handle (edit crossfade).
  * `sourceSeconds` returns an asset's length (Infinity when unknown).
  */
 export function crossfadeClips(project: Project, clipIds: ReadonlySet<string>, sourceSeconds: (assetId: string) => number, lengthSeconds = DEFAULT_CROSSFADE_SECONDS): { project: Project; count: number } {
@@ -187,7 +187,7 @@ export function crossfadeClips(project: Project, clipIds: ReadonlySet<string>, s
 }
 
 /**
- * Drag mode "크로스페이드" (Logic X-Fade): a moved audio region that partly overlaps another audio region
+ * Drag mode "크로스페이드" (X-Fade): a moved audio region that partly overlaps another audio region
  * on its track crossfades with it over the overlap. MIDI and regions that cover each other are left
  * unchanged for the caller to resolve like "겹치지 않음".
  */

@@ -1,5 +1,5 @@
-/** Per-track physical inputs: chooser labels, re-finding saved inputs on other hardware (Cubase "Missing
- * Ports"), and the one-edit remap. All pure; see docs/AUDIO_CORE_PLAN.md item 7–8. */
+/** Per-track physical inputs: chooser labels, re-finding saved inputs on other hardware ("missing
+ * ports"), and the one-edit remap. All pure; see docs/AUDIO_CORE_PLAN.md item 7–8. */
 import type { InputChoice, Project, Track, TrackInput } from './types'
 
 export const DEFAULT_INPUT_LABEL = '기본 입력'

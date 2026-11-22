@@ -56,7 +56,7 @@ export interface AudioSettings {
   nativeInputChannel: number
   lowLatencyMonitoring: boolean
   nativeDeviceProfiles: Record<string, NativeDeviceProfile>
-  /** Close the driver while the window is in the background so other apps can use it (Cubase-style). */
+  /** Close the driver while the window is in the background so other apps can use it. */
   releaseInBackground: boolean
   /** Driver clock source index from `devices.probe`; absent keeps the driver's own choice. */
   clockSource?: number

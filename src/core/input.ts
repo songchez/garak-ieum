@@ -38,6 +38,7 @@ export type ProjectShortcut =
   | 'toggleInspector' | 'toggleMixer' | 'toggleBrowser' | 'globalTracks' | 'createMarker'
   | 'deleteNotes' | 'quantize' | 'transposeUp' | 'transposeDown' | 'transposeOctaveUp' | 'transposeOctaveDown'
   | 'musicalTyping' | 'captureMidi' | 'toggleAutomation' | 'countIn'
+  | 'end' | 'selectNoteAbove' | 'selectNoteBelow' | 'drawMode'
 
 export function isShortcutSuppressed(event: ShortcutEvent, allowRepeat = false, platform: ShortcutPlatform = shortcutPlatform()): boolean {
   // Firefox on macOS can report Option as AltGraph. Only that Option-only
@@ -61,7 +62,7 @@ export function shortcutScope(target: EventTarget | null): ShortcutScope {
     || target.closest('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),textarea,[data-selectable-text],[role="textbox"],[role="searchbox"],[role="spinbutton"]')) return 'text'
   // Controls keep native activation/navigation. Other commands can use their
   // owning editor through resolveRoutedShortcut; note buttons are edit objects.
-  if (target.closest('button,a[href],select,input,[role="checkbox"],[role="switch"],[role="slider"],[role="combobox"]') && !target.closest('.piano-note')) return 'control'
+  if (target.closest('button,a[href],select,input,[role="checkbox"],[role="switch"],[role="slider"],[role="combobox"]') && !target.closest('.piano-note,.piano-key')) return 'control'
   const area = shortcutEditorScope(target)
   if (area) return area
   if (target.closest('.studio-app') || target === document.body) return 'workspace'
@@ -81,7 +82,7 @@ export function shortcutEditorScope(target: EventTarget | null): ShortcutEditSco
  * 'anyShift' ignores Shift for characters such as '?' whose Shift depends on
  * the layout.
  *
- * Platform rule for Logic's ⌃ chords: on macOS they are bound as 'ctrl' and
+ * Platform rule for ⌃ chords: on macOS they are bound as 'ctrl' and
  * listed before every 'mod' binding, so Ctrl+R is armTrack while ⌘R (and
  * Ctrl on the other keys) still reads as Mod. On Windows/Linux Ctrl is Mod,
  * so ⌃key becomes Alt+Shift+key (⌃⇧H becomes Ctrl+Alt+H; ⌃Z has no key
@@ -122,7 +123,7 @@ const MAC = ['mac'] as const, PC = ['windows', 'linux'] as const, NOT_MAC = ['wi
 const bind = (command: ProjectShortcut, key: ShortcutKey, mods: ShortcutMods, scopes: readonly ShortcutEditScope[], platforms?: readonly ShortcutPlatform[]): ShortcutBinding => ({ command, key, mods, scopes, platforms })
 
 /**
- * Every binding, primary first per command; the first match wins. Logic's ⌃
+ * Every binding, primary first per command; the first match wins. ⌃
  * chords come first so that on macOS the literal Ctrl key beats the same
  * key's 'mod' binding (see ShortcutMods). Mod+D/T/R and ⌃M are timeline-only
  * region commands; Mod+T/N/W are browser-reserved, hence the Mod+E alias.
@@ -141,7 +142,7 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('rewind', punct('Comma', ','), '', TW), bind('forward', punct('Period', '.'), '', TW),
   bind('escape', named('Escape', 'Esc'), '', TPW), bind('help', named('?', '?'), 'anyShift', TPW),
   bind('cycle', letter('C'), '', TPW), bind('record', letter('R'), '', TPW), bind('metronome', letter('K'), '', TPW), bind('countIn', letter('K'), 'shift', TPW),
-  // docs/MIDI_RECORDING.md: Logic ⌘K Musical Typing, Logic ⇧R Capture Recording.
+  // docs/MIDI_RECORDING.md: ⌘K musical typing, ⇧R capture recording.
   bind('musicalTyping', letter('K'), 'mod', TPW), bind('captureMidi', letter('R'), 'shift', TPW),
   bind('snapToggle', letter('G'), 'mod', TPW),
   bind('zoomIn', RIGHT, 'mod', TPW), bind('zoomOut', LEFT, 'mod', TPW), bind('zoomInV', DOWN, 'mod', TPW), bind('zoomOutV', UP, 'mod', TPW),
@@ -154,9 +155,14 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('loopClip', letter('L'), '', T), bind('renameClip', letter('N'), 'shift', T),
   bind('moveToPlayhead', punct('Semicolon', ';'), '', T),
   bind('selectPrev', LEFT, '', T), bind('selectNext', RIGHT, '', T),
-  bind('nudgeLeft', LEFT, 'alt', TP), bind('nudgeRight', RIGHT, 'alt', TP),
+  // docs/EDITING_UX_PLAN.md: in the piano roll arrows move notes, ⇧ = length/octave, and ⌥ walks notes.
+  bind('selectPrev', LEFT, 'alt', P), bind('selectNext', RIGHT, 'alt', P),
+  bind('selectNoteAbove', UP, 'alt', P), bind('selectNoteBelow', DOWN, 'alt', P),
+  bind('nudgeLeft', LEFT, 'alt', T), bind('nudgeRight', RIGHT, 'alt', T),
   bind('nudgeLeft', LEFT, '', P), bind('nudgeRight', RIGHT, '', P),
-  bind('trimEndLeft', LEFT, 'altShift', TP), bind('trimEndRight', RIGHT, 'altShift', TP),
+  bind('trimEndLeft', LEFT, 'altShift', T), bind('trimEndRight', RIGHT, 'altShift', T),
+  bind('trimEndLeft', LEFT, 'shift', P), bind('trimEndRight', RIGHT, 'shift', P),
+  bind('end', named('End', 'End'), '', P), bind('drawMode', letter('B'), '', P),
   bind('trimStartToPlayhead', punct('BracketLeft', '['), 'mod', T), bind('trimEndToPlayhead', punct('BracketRight', ']'), 'mod', T),
   bind('muteTrack', letter('M'), '', TW), bind('soloTrack', letter('S'), '', TW),
   bind('toggleTrackOn', letter('M'), 'alt', TW), bind('clearRecallSolo', letter('S'), 'alt', TW),
@@ -171,9 +177,10 @@ export const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   bind('createMarker', punct('Quote', "'"), 'alt', TW),
   bind('deleteNotes', DEL, '', P), bind('deleteNotes', BACK, '', P),
   bind('quantize', letter('Q'), '', P),
-  bind('transposeUp', UP, 'alt', TP), bind('transposeDown', DOWN, 'alt', TP),
+  bind('transposeUp', UP, 'alt', T), bind('transposeDown', DOWN, 'alt', T),
   bind('transposeUp', UP, '', P), bind('transposeDown', DOWN, '', P),
-  bind('transposeOctaveUp', UP, 'altShift', TP), bind('transposeOctaveDown', DOWN, 'altShift', TP),
+  bind('transposeOctaveUp', UP, 'altShift', T), bind('transposeOctaveDown', DOWN, 'altShift', T),
+  bind('transposeOctaveUp', UP, 'shift', P), bind('transposeOctaveDown', DOWN, 'shift', P),
 ]
 
 const keyMatches = (event: ShortcutEvent, spec: ShortcutKey) =>
@@ -220,93 +227,97 @@ export function shortcutLabel(command: ProjectShortcut, platform: ShortcutPlatfo
   return binding ? formatBinding(binding, platform) : ''
 }
 
-const META: Record<ProjectShortcut, { label: string; logic: string }> = {
-  playback: { label: '재생 / 일시 정지', logic: 'Space' },
-  playFromSelection: { label: '선택 위치부터 재생', logic: '⇧Space' },
-  undo: { label: '실행 취소', logic: '⌘Z' },
-  redo: { label: '다시 실행', logic: '⇧⌘Z' },
-  save: { label: '.garak 파일 저장', logic: '⌘S' },
-  home: { label: '처음으로 이동', logic: '↩' },
-  rewind: { label: '뒤로 감기', logic: ',' },
-  forward: { label: '앞으로 감기', logic: '.' },
-  escape: { label: '선택 해제 / 취소', logic: 'Esc (도구 메뉴)' },
-  help: { label: '단축키 도움말', logic: '—' },
-  openSettings: { label: '설정 열기', logic: '⌘,' },
-  cycle: { label: '반복 구간(사이클) 켜기/끄기', logic: 'C' },
-  record: { label: '녹음', logic: 'R' },
-  metronome: { label: '메트로놈 켜기/끄기', logic: 'K' },
-  countIn: { label: '녹음 카운트인 켜기/끄기', logic: '⇧K' },
-  snapToggle: { label: '스냅 켜기/끄기', logic: '⌘G' },
-  zoomIn: { label: '가로 확대', logic: '⌘→' },
-  zoomOut: { label: '가로 축소', logic: '⌘←' },
-  zoomInV: { label: '세로 확대 (트랙·건반 높이)', logic: '⌘↓' },
-  zoomOutV: { label: '세로 축소', logic: '⌘↑' },
-  zoomToFit: { label: '선택(없으면 전체)에 맞춰 보기', logic: 'Z' },
-  setLoopFromSelection: { label: '선택 클립으로 반복 구간 지정', logic: '⌘U' },
-  deleteClip: { label: '선택 클립 삭제', logic: '⌫' },
-  split: { label: '재생 커서에서 클립 분할', logic: '⌘T' },
-  join: { label: '클립 합치기', logic: '⌘J' },
-  repeat: { label: '클립 반복 붙이기', logic: '⌘R' },
-  copy: { label: '복사', logic: '⌘C' },
-  cut: { label: '잘라내기', logic: '⌘X' },
-  paste: { label: '붙여넣기', logic: '⌘V' },
-  selectAll: { label: '모두 선택', logic: '⌘A' },
-  loopClip: { label: '클립 루프 켜기/끄기', logic: 'L' },
-  muteClip: { label: '클립 음소거', logic: '⌃M' },
-  renameClip: { label: '클립 이름 변경', logic: '⇧N' },
-  moveToPlayhead: { label: '클립을 재생 커서로 이동', logic: ';' },
-  selectPrev: { label: '이전 클립 선택', logic: '←' },
-  selectNext: { label: '다음 클립 선택', logic: '→' },
-  nudgeLeft: { label: '조금씩 왼쪽으로 이동', logic: '⌥←' },
-  nudgeRight: { label: '조금씩 오른쪽으로 이동', logic: '⌥→' },
-  trimEndLeft: { label: '끝 지점 줄이기', logic: '⌥⇧←' },
-  trimEndRight: { label: '끝 지점 늘리기', logic: '⌥⇧→' },
-  trimStartToPlayhead: { label: '시작 지점을 재생 커서로 자르기', logic: '⌘[' },
-  trimEndToPlayhead: { label: '끝 지점을 재생 커서로 자르기', logic: '⌘]' },
-  muteTrack: { label: '트랙 음소거', logic: 'M' },
-  soloTrack: { label: '트랙 솔로', logic: 'S' },
-  armTrack: { label: '트랙 녹음 활성화 켜기/끄기', logic: '⌃R' },
-  monitorTrack: { label: '트랙 입력 모니터링 켜기/끄기', logic: '⌃I' },
-  toggleTrackOn: { label: '트랙 켬/끔', logic: '⌥M' },
-  clearRecallSolo: { label: '솔로 전체 해제 / 복원', logic: '⌥S' },
-  trackUp: { label: '위 트랙 선택', logic: '↑' },
-  trackDown: { label: '아래 트랙 선택', logic: '↓' },
-  trackUpExtend: { label: '위 트랙까지 선택 확장', logic: '⇧↑' },
-  trackDownExtend: { label: '아래 트랙까지 선택 확장', logic: '⇧↓' },
-  newTracksDialog: { label: '새로운 트랙… 창', logic: '⌥⌘N' },
-  newAudioTrack: { label: '새로운 오디오 트랙', logic: '⌥⌘A' },
-  newInstrumentTrack: { label: '새로운 소프트웨어 악기 트랙', logic: '⌥⌘S' },
-  duplicateTrack: { label: '트랙 복제', logic: '⌘D' },
-  duplicateTrackContent: { label: '트랙과 내용 복제', logic: '⌥⇧⌘D' },
-  deleteTrack: { label: '선택 트랙 삭제', logic: '⌘⌫' },
-  renameTrack: { label: '트랙 이름 변경', logic: '⇧↩' },
-  hideSelectedTracks: { label: '선택 트랙 가리기', logic: '⌃H' },
-  unhideAllTracks: { label: '모든 트랙 가리기 해제', logic: '⌃⇧H' },
-  toggleHideView: { label: '트랙 가리기(H) 버튼 보기/감추기', logic: 'H' },
-  colorPalette: { label: '색상 팔레트', logic: '⌥C' },
-  configureTrackHeader: { label: '트랙 헤더 구성', logic: '⌥T' },
-  trackZoomIn: { label: '포커스 트랙 확대', logic: '⌥⌘↓' },
-  trackZoomOut: { label: '포커스 트랙 축소', logic: '⌥⌘↑' },
-  trackZoomToggle: { label: '포커스 트랙 확대 켜기/끄기', logic: '⌥⌘Z' },
-  trackZoomReset: { label: '트랙 확대 초기화', logic: '⌥⌘⌫' },
-  zoomFocusedTrack: { label: '포커스 트랙만 확대 (macOS)', logic: '⌃Z' },
-  toggleInspector: { label: '인스펙터 보기/가리기', logic: 'I' },
-  toggleMixer: { label: '믹서 보기/가리기', logic: 'X' },
-  toggleBrowser: { label: '라이브러리 보기/가리기', logic: 'F' },
-  globalTracks: { label: '글로벌 트랙 보기/가리기', logic: 'G' },
-  createMarker: { label: '마커 생성', logic: "⌥'" },
-  deleteNotes: { label: '선택 음표 삭제', logic: '⌫' },
-  quantize: { label: '퀀타이즈', logic: 'Q' },
-  transposeUp: { label: '반음 올리기', logic: '⌥↑' },
-  transposeDown: { label: '반음 내리기', logic: '⌥↓' },
-  transposeOctaveUp: { label: '옥타브 올리기', logic: '⌥⇧↑' },
-  transposeOctaveDown: { label: '옥타브 내리기', logic: '⌥⇧↓' },
-  musicalTyping: { label: '컴퓨터 키보드 연주 켜기/끄기', logic: '⌘K' },
-  captureMidi: { label: '마지막 MIDI 연주 캡처', logic: '⇧R' },
-  toggleAutomation: { label: '트랙 오토메이션 보기/가리기', logic: 'A' },
+const META: Record<ProjectShortcut, { label: string }> = {
+  playback: { label: '재생 / 일시 정지' },
+  playFromSelection: { label: '선택 위치부터 재생' },
+  undo: { label: '실행 취소' },
+  redo: { label: '다시 실행' },
+  save: { label: '.garak 파일 저장' },
+  home: { label: '처음으로 이동' },
+  rewind: { label: '뒤로 감기' },
+  forward: { label: '앞으로 감기' },
+  escape: { label: '선택 해제 / 취소' },
+  help: { label: '단축키 도움말' },
+  openSettings: { label: '설정 열기' },
+  cycle: { label: '반복 구간(사이클) 켜기/끄기' },
+  record: { label: '녹음' },
+  metronome: { label: '메트로놈 켜기/끄기' },
+  countIn: { label: '녹음 카운트인 켜기/끄기' },
+  snapToggle: { label: '스냅 켜기/끄기' },
+  zoomIn: { label: '가로 확대' },
+  zoomOut: { label: '가로 축소' },
+  zoomInV: { label: '세로 확대 (트랙·건반 높이)' },
+  zoomOutV: { label: '세로 축소' },
+  zoomToFit: { label: '선택(없으면 전체)에 맞춰 보기' },
+  setLoopFromSelection: { label: '선택 클립으로 반복 구간 지정' },
+  deleteClip: { label: '선택 클립 삭제' },
+  split: { label: '재생 커서에서 클립 분할' },
+  join: { label: '클립 합치기' },
+  repeat: { label: '클립 반복 붙이기' },
+  copy: { label: '복사' },
+  cut: { label: '잘라내기' },
+  paste: { label: '붙여넣기' },
+  selectAll: { label: '모두 선택' },
+  loopClip: { label: '클립 루프 켜기/끄기' },
+  muteClip: { label: '클립 음소거' },
+  renameClip: { label: '클립 이름 변경' },
+  moveToPlayhead: { label: '클립을 재생 커서로 이동' },
+  selectPrev: { label: '이전 클립/음표 선택' },
+  selectNext: { label: '다음 클립/음표 선택' },
+  selectNoteAbove: { label: '위쪽 음표 선택' },
+  selectNoteBelow: { label: '아래쪽 음표 선택' },
+  end: { label: '클립 끝으로 이동' },
+  drawMode: { label: '그리기 모드 켜기/끄기' },
+  nudgeLeft: { label: '조금씩 왼쪽으로 이동' },
+  nudgeRight: { label: '조금씩 오른쪽으로 이동' },
+  trimEndLeft: { label: '끝 지점 줄이기' },
+  trimEndRight: { label: '끝 지점 늘리기' },
+  trimStartToPlayhead: { label: '시작 지점을 재생 커서로 자르기' },
+  trimEndToPlayhead: { label: '끝 지점을 재생 커서로 자르기' },
+  muteTrack: { label: '트랙 음소거' },
+  soloTrack: { label: '트랙 솔로' },
+  armTrack: { label: '트랙 녹음 활성화 켜기/끄기' },
+  monitorTrack: { label: '트랙 입력 모니터링 켜기/끄기' },
+  toggleTrackOn: { label: '트랙 켬/끔' },
+  clearRecallSolo: { label: '솔로 전체 해제 / 복원' },
+  trackUp: { label: '위 트랙 선택' },
+  trackDown: { label: '아래 트랙 선택' },
+  trackUpExtend: { label: '위 트랙까지 선택 확장' },
+  trackDownExtend: { label: '아래 트랙까지 선택 확장' },
+  newTracksDialog: { label: '새로운 트랙… 창' },
+  newAudioTrack: { label: '새로운 오디오 트랙' },
+  newInstrumentTrack: { label: '새로운 소프트웨어 악기 트랙' },
+  duplicateTrack: { label: '트랙 복제' },
+  duplicateTrackContent: { label: '트랙과 내용 복제' },
+  deleteTrack: { label: '선택 트랙 삭제' },
+  renameTrack: { label: '트랙 이름 변경' },
+  hideSelectedTracks: { label: '선택 트랙 가리기' },
+  unhideAllTracks: { label: '모든 트랙 가리기 해제' },
+  toggleHideView: { label: '트랙 가리기(H) 버튼 보기/감추기' },
+  colorPalette: { label: '색상 팔레트' },
+  configureTrackHeader: { label: '트랙 헤더 구성' },
+  trackZoomIn: { label: '포커스 트랙 확대' },
+  trackZoomOut: { label: '포커스 트랙 축소' },
+  trackZoomToggle: { label: '포커스 트랙 확대 켜기/끄기' },
+  trackZoomReset: { label: '트랙 확대 초기화' },
+  zoomFocusedTrack: { label: '포커스 트랙만 확대 (macOS)' },
+  toggleInspector: { label: '인스펙터 보기/가리기' },
+  toggleMixer: { label: '믹서 보기/가리기' },
+  toggleBrowser: { label: '라이브러리 보기/가리기' },
+  globalTracks: { label: '글로벌 트랙 보기/가리기' },
+  createMarker: { label: '마커 생성' },
+  deleteNotes: { label: '선택 음표 삭제' },
+  quantize: { label: '퀀타이즈' },
+  transposeUp: { label: '반음 올리기' },
+  transposeDown: { label: '반음 내리기' },
+  transposeOctaveUp: { label: '옥타브 올리기' },
+  transposeOctaveDown: { label: '옥타브 내리기' },
+  musicalTyping: { label: '컴퓨터 키보드 연주 켜기/끄기' },
+  captureMidi: { label: '마지막 MIDI 연주 캡처' },
+  toggleAutomation: { label: '트랙 오토메이션 보기/가리기' },
 }
 
-export interface ShortcutRow { command: ProjectShortcut; label: string; mac: string; win: string; scopes: readonly ShortcutEditScope[]; logic: string }
+export interface ShortcutRow { command: ProjectShortcut; label: string; mac: string; win: string; scopes: readonly ShortcutEditScope[] }
 
 const SCOPE_LABELS: Record<ShortcutEditScope, string> = { timeline: '타임라인', piano: '피아노롤', mixer: '믹서', devices: '시김새 체인', workspace: '작업 공간' }
 const formatAll = (command: ProjectShortcut, platform: ShortcutPlatform) => {
@@ -329,7 +340,7 @@ export const SHORTCUT_TABLE: readonly ShortcutRow[] = (Object.keys(META) as Proj
 export interface DragModifiers { copy: boolean; fine: boolean; noSnap: boolean; axisLock: boolean }
 
 /**
- * Logic-style drag modifiers, identical on every platform:
+ * Drag modifiers, identical on every platform:
  * Alt/⌥ copies, Ctrl/⌃ moves by the fine step, Ctrl/⌃+Shift ignores snap,
  * Shift alone locks the axis. ⌘ is never a drag modifier. On macOS a Ctrl
  * press-click opens the context menu, so ⌃ should be read during the move.

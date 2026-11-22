@@ -180,7 +180,7 @@ The adapter performs no hidden normalization, clipping or limiting. Larger
 formant offsets can also lose resonances even when a request is accepted;
 Nyquist and source-harmonic bandwidth cannot be recovered by envelope remapping.
 Natural speech, singing, consonants and attacks require listening comparison.
-These synthetic checks are not a listening test or a Melodyne-parity claim.
+These synthetic checks are not a listening test or a claim of parity with commercial pitch editors.
 
 ### Rejected combined shifts
 

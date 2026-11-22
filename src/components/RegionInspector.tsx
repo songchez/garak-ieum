@@ -32,14 +32,14 @@ export interface ValueFieldProps {
   pxPerStep?: number
   format?: (v: number) => string
   parse?: (s: string) => number | null
-  /** absolute = ⌥⇧ was held at commit (Logic: every selected item gets the same value). */
+  /** absolute = ⌥⇧ was held at commit (every selected item gets the same value). */
   onChange: (next: number, final: boolean, absolute: boolean) => void
   ariaLabel: string
   disabled?: boolean
   className?: string
 }
 
-/** Logic-style value field: drag vertically to change, click to type, ↑/↓ to step, Esc to revert. */
+/** Value field: drag vertically to change, click to type, ↑/↓ to step, Esc to revert. */
 export function ValueField({ value, mixed, min, max, step = 1, pxPerStep = 3, format = String, parse = parseNumber, onChange, ariaLabel, disabled, className = '' }: ValueFieldProps) {
   const [draft, setDraft] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)

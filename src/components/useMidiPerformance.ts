@@ -231,7 +231,7 @@ export function useMidiPerformance(options: MidiPerformanceOptions) {
     } finally { setPreparing(false) }
   }, [engine, preparing, beginTake])
 
-  /** Ends a MIDI-only take; the transport stops like Logic's record button (pause keeps the playhead). */
+  /** Ends a MIDI-only take; the transport stops like the record button (pause keeps the playhead). */
   const stopRecording = useCallback(() => {
     if (!take.current) return
     finishTake()

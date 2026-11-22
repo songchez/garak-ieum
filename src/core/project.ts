@@ -23,7 +23,7 @@ let fallbackSequence = 0
 /** First schema with Project.meterMap (time-signature changes). Renumber here if another format change lands first. */
 const METER_MAP_SCHEMA = 18
 
-/** Logic defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%); returns at 270°. */
+/** Kind defaults (C-02): palette row 2 at hue 210° (audio) and 120° (instrument), hsl(h 58% 62%); returns at 270°. */
 export const DEFAULT_TRACK_COLORS: Readonly<Record<Track['kind'], string>> = { audio: '#669ed6', instrument: '#66d666', return: '#9e66d6' }
 
 /**
@@ -148,7 +148,7 @@ function midiClip(name: string, startBeat: number, lengthBeats: number, notes: M
   return { id: uid(), kind: 'midi', name, startBeat, lengthBeats, gain: 1, notes }
 }
 
-/** Demo tracks keep their instrument colors rather than the Logic default (C-02). */
+/** Demo tracks keep their instrument colors rather than the kind default (C-02). */
 function demoTrack(instrument: InstrumentId): Track {
   return { ...createTrack('instrument', instrument), color: instrumentDef(instrument).color }
 }
@@ -434,7 +434,7 @@ function withCopiedAutomation(source: Track, copy: Track): Track {
   return automation ? { ...rest, automation } : rest
 }
 
-/** Logic "New Track With Duplicate Settings": every setting but no clips; arm and monitor stay off.
+/** "New track with duplicate settings": every setting but no clips; arm and monitor stay off.
  * The input and monitor mode are settings and carry over, except that `in` (the I flag) becomes `off`. */
 export function duplicateTrackSettings(track: Track): Track {
   const { freeze: _freeze, ...unfrozen } = track
@@ -481,9 +481,9 @@ function cutAround(piece: Clip, start: number, end: number, tempo: Tempo): Clip[
 }
 
 /**
- * Logic Drag mode (R-05). `noOverlap` trims, splits or removes the clips on `trackIds` that a moved
+ * Drag mode (R-05). `noOverlap` trims, splits or removes the clips on `trackIds` that a moved
  * clip now covers; moved clips themselves are never changed. `overlap` returns the project as is.
- * `crossfade` (Logic X-Fade) crossfades partial audio overlaps instead of cutting them.
+ * `crossfade` (X-Fade) crossfades partial audio overlaps instead of cutting them.
  */
 export function applyDragMode(project: Project, trackIds: readonly string[], movedClipIds: readonly string[], mode: DragMode): Project {
   if (mode === 'overlap' || movedClipIds.length === 0) return project

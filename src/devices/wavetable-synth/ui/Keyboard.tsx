@@ -6,7 +6,7 @@ export function SynthKeyboard({ ready, connected, onNoteOn, onNoteOff }: { ready
   const down = useRef(new Set<number>()), pointers = useRef(new Map<number, number>()), keyDown = useRef(new Set<number>())
   const latest = useRef({ onNoteOn, onNoteOff }); latest.current = { onNoteOn, onNoteOff }
   const enabled = ready && !!onNoteOn && !!onNoteOff
-  // Match the DAW/Logic convention: middle C (MIDI 60) is C3.
+  // Match the DAW convention: middle C (MIDI 60) is C3.
   const first = octave * 12 + 24, notes = Array.from({ length: 25 }, (_, i) => first + i), whites = notes.filter(note => !black(note))
   const stop = () => { for (const note of down.current) latest.current.onNoteOff?.(note); down.current.clear(); pointers.current.clear(); keyDown.current.clear(); setActive([]) }
   // A new patch temporarily gates note-on, but a held note must keep sounding.

@@ -1,4 +1,4 @@
-/* Control bar, Logic-style: left panels + project · transport · right panel, tools and export.
+/* Control bar: left panels + project · transport · right panel, tools and export.
    File/edit/view/help menus live in the desktop title bar (or, in a browser, at the start of this bar). */
 .studio-app {
   --app-header-height: 44px;

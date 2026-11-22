@@ -53,7 +53,7 @@ describe('send/return model (docs/SENDS_RETURNS.md)', () => {
   })
 })
 
-describe('send/return solo logic follows Logic/Ableton', () => {
+describe('send/return solo logic', () => {
   const tracks = () => [
     track('audio', 'vox', { sends: [{ returnId: 'verb', level: 0.5 }] }),
     track('instrument', 'keys', { sends: [{ returnId: 'echo', level: 0.4 }] }),

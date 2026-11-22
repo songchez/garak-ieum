@@ -8,7 +8,7 @@ import { applyTrackInputs } from './trackInputs'
 
 export const TAP_LABELS: Readonly<Record<TrackInputTap, string>> = { preFx: '시김새 전', postFx: '시김새 후', postFader: '페이더 후' }
 export const TAP_ORDER: readonly TrackInputTap[] = ['preFx', 'postFx', 'postFader']
-/** Ableton's default for "Audio From <track>" is Post FX. */
+/** The default for "Audio From <track>" is Post FX. */
 export const DEFAULT_TAP: TrackInputTap = 'postFx'
 export const MASTER_ROUTE_LABEL = '마스터 (리샘플링)'
 export const NO_ROUTE_LABEL = '없음'
@@ -49,8 +49,8 @@ export function takesFrom(tracks: readonly Track[], toId: string, fromId: string
 
 /**
  * Tracks left out of the master feed a resampling track hears: every track that records the master,
- * and every track downstream of one (it carries the resampled signal). Ableton likewise never feeds a
- * Resampling track its own output.
+ * and every track downstream of one (it carries the resampled signal), so a
+ * resampling track is never fed its own output.
  */
 export function masterFeedExcluded(tracks: readonly Track[], edges = trackRouteSources(tracks)): Set<string> {
   const excluded = new Set(tracks.filter(track => routeOf(track)?.kind === 'master').map(track => track.id))
@@ -147,8 +147,8 @@ export function detachDeletedRoutes(project: Project): { project: Project; detac
 
 /**
  * Copies made together keep their routing among themselves: a copied destination whose source was copied
- * in the same operation follows the copy; other routes keep their original source (Ableton/Logic keep
- * the input of a duplicated track).
+ * in the same operation follows the copy; other routes keep their original source (a duplicated
+ * track keeps its input).
  */
 export function remapCopiedRoutes(copies: Track[], idMap: ReadonlyMap<string, string>): Track[] {
   return copies.map(track => {

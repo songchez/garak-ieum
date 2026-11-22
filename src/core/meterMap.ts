@@ -40,7 +40,7 @@ export const sameMeter = (a: TimeSignature, b: TimeSignature): boolean => a.nume
 
 /**
  * Sorted, de-duplicated events with the first at bar 0 carrying `signature`. Invalid entries are dropped and
- * events at the same bar keep the last one. A repeated meter is kept (Logic keeps it too): it is a no-op.
+ * events at the same bar keep the last one. A repeated meter is kept: it is a no-op.
  */
 export function normalizeMeterEvents(signature: TimeSignature, events: readonly MeterEvent[] | undefined): MeterEvent[] {
   const first: MeterEvent = { bar: 0, numerator: signature.numerator, denominator: signature.denominator }

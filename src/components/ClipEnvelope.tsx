@@ -28,8 +28,8 @@ export const formatFadeSeconds = (s: number) => s < 1 ? `${Math.round(s * 1000)}
 type Drag = { kind: 'gain' | FadeEdge; id: number; x: number; y: number; moved: boolean; start: Map<string, number>; ids: string[] }
 
 /**
- * On-region gain line (Reaper/Cubase volume handle) and fade handles at the top corners
- * (Reaper/Studio One/Cubase). Drag edits every selected audio region; double-click resets.
+ * On-region gain line (volume handle) and fade handles at the top corners.
+ * Drag edits every selected audio region; double-click resets.
  */
 export function ClipEnvelope({ clip, widthPx, tempo, asset, showFades, readOnly = false, actions }: {
   clip: AudioClip; widthPx: number; tempo: Tempo; asset?: AudioAsset; showFades: boolean
@@ -72,7 +72,7 @@ export function ClipEnvelope({ clip, widthPx, tempo, asset, showFades, readOnly 
       act.edit(d.ids, c => c.kind === 'audio' ? withClipGainDb(c, Math.round(((d.start.get(c.id) ?? 0) + delta) * 100) / 100) : c, label('gain'))
       setReadout({ kind: 'gain', text: formatGainDb(Math.min(clipGainMaxDb(clip), anchor)) })
     } else {
-      // Fades take the same absolute length on every selected region (Logic/Cubase), each limited by its own length.
+      // Fades take the same absolute length on every selected region, each limited by its own length.
       const base = d.start.get(clip.id) ?? 0
       const seconds = Math.max(0, base + (d.kind === 'in' ? dx : -dx) / pxPerSecond * (e.shiftKey ? 0.1 : 1))
       const edge = d.kind
@@ -105,7 +105,7 @@ export function ClipEnvelope({ clip, widthPx, tempo, asset, showFades, readOnly 
   })
   const y = gainY(db)
   const active = readout?.kind
-  // One envelope line (Ableton/Logic): rises from the bottom along the fade-in curve to the gain level,
+  // One envelope line: rises from the bottom along the fade-in curve to the gain level,
   // stays flat, then falls along the fade-out curve. Same fadeShape as playback, so the line is the sound.
   const fadeVisible = showFades && (inPx > 0.5 || outPx > 0.5)
   const at = (shape: number) => (100 - (100 - y) * shape).toFixed(2)

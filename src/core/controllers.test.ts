@@ -78,7 +78,7 @@ describe('controller lanes model', () => {
     expect(joinControllers([a, b], 0)?.pitchBend).toEqual(pts([1, 500], [2, 0], [4, -500], [6, 0]))
   })
 
-  it('thins dense streams (Logic-like) but keeps the final value and returns to center', () => {
+  it('thins dense streams but keeps the final value and returns to center', () => {
     const dense = Array.from({ length: 500 }, (_, index) => ({ beat: index / 500, value: Math.round(Math.sin(index / 500 * Math.PI) * 4000) }))
     dense.push({ beat: 1, value: 0 })
     const thinned = thinController('pitchBend', dense)

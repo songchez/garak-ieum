@@ -5,7 +5,7 @@ import { Icon } from './Icon'
 import { InputSelect } from './InputSelect'
 import './Inspector.css'
 
-/** Cubase-style "Missing Ports": saved track inputs this device does not offer, each with a chooser.
+/** "Missing ports": saved track inputs this device does not offer, each with a chooser.
  * Inputs found again by name are applied together with the choices, as one Undo step. */
 export function InputRemapDialog({ project, plan, choices, onApply, onLater }: {
   project: Project; plan: InputRemapPlan; choices: readonly InputChoice[]

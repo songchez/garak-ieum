@@ -42,7 +42,7 @@ const MONITOR_MODES: { mode: TrackMonitorMode; label: string; help: string }[] =
 export function TrackInspector({ track, bpm, onTrackChange, onInstrumentChange, onOpenColorPalette, onIconMenu, inputChoices = [], onInputChange, tracks, onRouteChange }: Props) {
   const id = track.id
   const patch = (p: Partial<Track>, key: string) => onTrackChange(id, p, `${id}:${key}`)
-  /** Two-field range: the edited bound pushes the other one along (Logic). */
+  /** Two-field range: the edited bound pushes the other one along. */
   function limit(label: string, field: 'keyLimit' | 'velocityLimit', min: number, max: number, format?: (v: number) => string, parse?: (s: string) => number | null) {
     const [lo, hi] = track[field]
     const set = (which: 0 | 1, v: number) => { const next: [number, number] = which === 0 ? [v, Math.max(v, hi)] : [Math.min(lo, v), v]; patch({ [field]: next }, `${field}:${which}`) }

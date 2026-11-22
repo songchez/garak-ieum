@@ -1,14 +1,14 @@
 <!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DAW 단축키·상호작용 명세 v0.2</title><style>
 :root{color-scheme:dark;--bg:#101216;--panel:#191d24;--line:#303842;--text:#e7eaf0;--muted:#a8b1bf;--accent:#a5d8c4}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.85 -apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans KR',sans-serif}a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:3px}a:focus-visible{outline:2px solid var(--accent);outline-offset:4px}.shell{max-width:1400px;margin:auto;display:grid;grid-template-columns:260px minmax(0,1fr);gap:56px;padding:64px 44px 100px}aside{position:sticky;top:24px;max-height:calc(100vh - 48px);overflow:auto;align-self:start;padding:0 20px 0 0;border-right:1px solid var(--line);font-size:12px}aside strong{display:block;font-size:13px;letter-spacing:.08em;color:var(--muted);margin-bottom:20px}aside a{display:block;color:var(--muted);text-decoration:none;padding:7px 0;line-height:1.6}aside a:hover{color:var(--accent)}main{min-width:0;max-width:1000px}.eyebrow{color:var(--accent);font-size:12px;letter-spacing:.14em;font-weight:700}.cover{padding-bottom:32px;border-bottom:1px solid var(--line);margin-bottom:36px}.cover h1{font-size:clamp(30px,4vw,46px);line-height:1.25;letter-spacing:-.04em;margin:18px 0}.cover p{color:var(--muted);max-width:760px}.badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}.badges span{border:1px solid var(--line);border-radius:30px;padding:5px 12px;color:var(--muted);font-size:12px}.callout{border-left:3px solid var(--accent);background:var(--panel);padding:16px 20px;margin:24px 0 40px}.callout p{margin:0}h2{font-size:25px;line-height:1.5;letter-spacing:-.025em;margin:60px 0 20px;padding-top:18px;border-top:1px solid var(--line)}h3{font-size:19px;line-height:1.6;margin:36px 0 14px;color:#c1e6d7}h4{font-size:16px;margin:30px 0 12px}p{margin:0 0 18px}ul,ol{padding-left:25px;margin:14px 0 24px}li{margin:8px 0}strong{color:#f5f7fa}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#242b34;border:1px solid #35404c;border-radius:4px;padding:2px 5px;font-size:.85em;overflow-wrap:anywhere}pre{overflow:auto;background:var(--panel);padding:18px;border-radius:6px}pre code{padding:0;border:0;background:transparent}.table-wrap{overflow-x:auto;margin:20px 0 30px;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.75}th{text-align:left;background:#242b34;color:#d1e6dc;white-space:normal}td,th{padding:11px 13px;vertical-align:top;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}tbody tr:nth-child(even){background:#15191f}td:first-child{font-weight:600}blockquote{border-left:3px solid var(--line);padding-left:20px;color:var(--muted)}.implementation{margin-top:80px;padding-top:36px;border-top:2px solid var(--accent)}.implementation>.eyebrow{font-size:14px}.implementation>h2{font-size:32px;border:0;margin:8px 0 24px;padding:0}.footer{font-size:12px;color:var(--muted);border-top:1px solid var(--line);margin-top:60px;padding-top:20px}@media(max-width:980px){.shell{grid-template-columns:1fr;gap:30px;padding:30px 24px 60px}aside{position:static;max-height:280px;border:1px solid var(--line);padding:18px;border-radius:8px}aside a{display:inline-block;margin-right:18px}aside strong{margin:0 0 10px}}@media print{:root{color-scheme:light;--bg:#fff;--text:#20242a;--line:#ccd2d8;--panel:#f3f5f7;--muted:#505d69;--accent:#18684c}body{font-size:10pt;line-height:1.6}.shell{display:block;max-width:none;padding:0}aside{display:none}main{max-width:none}h2{break-after:avoid;margin:25pt 0 12pt}h3,h4{break-after:avoid}strong{color:#111}h3{color:#184d3b}th{background:#e8efec;color:#16382b}code{background:#f0f2f4;border-color:#ccd2d8}tbody tr:nth-child(even){background:#f5f7f8}.table-wrap{overflow:visible}tr{break-inside:avoid}a{color:#126746}.implementation{break-before:page}.cover h1{font-size:29pt}.cover{margin-bottom:20pt}}
-</style></head><body><div class="shell"><aside aria-label="문서 목차"><strong>CONTENTS · v0.2</strong><a href="#spec-1">1. 합의된 방향과 이 문서의 상태</a><a href="#spec-2">2. 반드시 지킬 여덟 가지 규칙</a><a href="#spec-3">3. 키보드 표기와 처리 순서</a><a href="#spec-4">4. 포커스와 선택의 구분</a><a href="#spec-5">5. Logic 참고 키맵과 웹 기본안</a><a href="#spec-10">6. 브라우저와 충돌하는 키의 정책</a><a href="#spec-11">7. 포인터 수정키의 명시적 결정</a><a href="#spec-12">8. 저장·파일·클립보드 계약</a><a href="#spec-13">9. 오디오·MIDI 장치 상호작용</a><a href="#spec-14">10. 숫자·접근성·상태 피드백 보완</a><a href="#spec-15">11. 구현 구조</a><a href="#spec-16">12. 검증과 완료 판정</a><a href="#spec-17">13. 승인된 화면의 영역별 세부 동작</a><a href="#spec-23">출처</a><a href="#spec-24">부록 A. 포인터·선택·편집의 구현 계약</a><a href="#status-35">현재 작업본의 위치와 범위</a><a href="#status-36">이번에 실제로 수정한 코드</a><a href="#status-37">자동 검증</a><a href="#status-38">브라우저에서 직접 확인한 범위</a><a href="#status-39">아직 명세대로 구현하지 않은 부분</a><a href="#status-40">다음 구현 순서</a><a href="#implementation">구현·검증 상태</a></aside><main>
-<header class="cover"><div class="eyebrow">OPEN SOURCE DAW · INTERACTION DESIGN</div><h1>손끝의 동작까지<br>같은 규칙으로.</h1><p>승인된 Logic 참고 화면 배치에 적용할 단축키, 포커스, 선택, 포인터 제스처, 취소와 저장의 상세 설계입니다.</p><div class="badges"><span>2026.10.30</span><span>React + TypeScript</span><span>Dark UI</span><span>1.0 Web · 2.0 Native host</span></div></header>
+</style></head><body><div class="shell"><aside aria-label="문서 목차"><strong>CONTENTS · v0.2</strong><a href="#spec-1">1. 합의된 방향과 이 문서의 상태</a><a href="#spec-2">2. 반드시 지킬 여덟 가지 규칙</a><a href="#spec-3">3. 키보드 표기와 처리 순서</a><a href="#spec-4">4. 포커스와 선택의 구분</a><a href="#spec-5">5. 웹 기본 키맵</a><a href="#spec-10">6. 브라우저와 충돌하는 키의 정책</a><a href="#spec-11">7. 포인터 수정키의 명시적 결정</a><a href="#spec-12">8. 저장·파일·클립보드 계약</a><a href="#spec-13">9. 오디오·MIDI 장치 상호작용</a><a href="#spec-14">10. 숫자·접근성·상태 피드백 보완</a><a href="#spec-15">11. 구현 구조</a><a href="#spec-16">12. 검증과 완료 판정</a><a href="#spec-17">13. 승인된 화면의 영역별 세부 동작</a><a href="#spec-23">출처</a><a href="#spec-24">부록 A. 포인터·선택·편집의 구현 계약</a><a href="#status-35">현재 작업본의 위치와 범위</a><a href="#status-36">이번에 실제로 수정한 코드</a><a href="#status-37">자동 검증</a><a href="#status-38">브라우저에서 직접 확인한 범위</a><a href="#status-39">아직 명세대로 구현하지 않은 부분</a><a href="#status-40">다음 구현 순서</a><a href="#implementation">구현·검증 상태</a></aside><main>
+<header class="cover"><div class="eyebrow">OPEN SOURCE DAW · INTERACTION DESIGN</div><h1>손끝의 동작까지<br>같은 규칙으로.</h1><p>승인된 화면 배치에 적용할 단축키, 포커스, 선택, 포인터 제스처, 취소와 저장의 상세 설계입니다.</p><div class="badges"><span>2026.10.30</span><span>React + TypeScript</span><span>Dark UI</span><span>1.0 Web · 2.0 Native host</span></div></header>
 <div class="callout"><p><strong>설계와 구현 상태를 구분했습니다.</strong> 이 문서의 모든 기능이 현재 코드에서 작동하는 것은 아닙니다. 실제 수정·검증 결과와 남은 작업은 문서 마지막에서 확인할 수 있습니다. 제품명은 미확정입니다.</p></div>
 <p>버전 0.2 · 2026-10-30 · 승인된 화면 배치에 적용할 상세 설계</p>
 <h2 id="spec-1">1. 합의된 방향과 이 문서의 상태</h2>
-<p>화면 배치는 왼쪽 라이브러리, 그 옆 인스펙터와 두 채널 스트립, 중앙 트랙 영역, 하단 편집기·믹서, 오른쪽 보조 브라우저를 기준으로 합니다. 다크 테마를 사용하며 시각 표현은 자체 디자인으로 만듭니다. Logic Pro for Mac의 익숙한 작업 흐름을 참고하고, 1.0은 웹과 오디오 엔진, 2.0은 로컬 호스트와 VST 연결입니다. USB MIDI 키보드와 브라우저에 노출되는 오디오 입출력은 1.0 설계 범위입니다.</p>
+<p>화면 배치는 왼쪽 라이브러리, 그 옆 인스펙터와 두 채널 스트립, 중앙 트랙 영역, 하단 편집기·믹서, 오른쪽 보조 브라우저를 기준으로 합니다. 다크 테마를 사용하며 시각 표현은 자체 디자인으로 만듭니다. 1.0은 웹과 오디오 엔진, 2.0은 로컬 호스트와 VST 연결입니다. USB MIDI 키보드와 브라우저에 노출되는 오디오 입출력은 1.0 설계 범위입니다.</p>
 <p>이 문서는 <strong>구현할 동작 계약</strong>입니다. 여기에 적힌 기능이 모두 구현되었다는 뜻이 아닙니다. 승인된 배치 시안, 현재 React 개발 코드, 앞으로 구현할 동작을 구분합니다. 각 기능의 완료 판정은 마지막의 검증 표를 사용합니다. 기능·화면 일치율을 측정하지 않았으므로 ‘98% 완성’으로 표시하지 않습니다.</p>
-<p>Logic 비교 기준은 Apple의 <strong>U.S. default key command preset</strong>입니다. 주요 키 명령 페이지는 12.3을 표시하며, 포인터·보조 문서는 지역별 접근 경로에 따라 12.0·12.2 또는 명시된 이전 버전을 참고했습니다. 이것을 Logic 최신 릴리스 번호라고 단정하지 않습니다. 한국어 배열, 사용자 지정 키맵, 이전 버전은 결과가 다를 수 있습니다. 아래에서 ‘Logic 참고’와 ‘우리 웹 기본안’을 분리합니다. 임계값·최소 길이·Undo 단위·오류 처리는 별도로 표시하지 않아도 우리 제품의 설계 선택입니다. [A1][A2][A3]</p>
+<p>키 배치는 macOS를 기준으로 정하고 Windows·Linux 조합을 따로 정합니다. 한국어 배열과 사용자 지정 키맵은 결과가 다를 수 있습니다. 임계값·최소 길이·Undo 단위·오류 처리는 별도로 표시하지 않아도 우리 제품의 설계 선택입니다.</p>
 <h2 id="spec-2">2. 반드시 지킬 여덟 가지 규칙</h2>
 <ol>
 <li><strong>현재 작업 영역의 명령만 실행합니다.</strong> 음표를 선택하지 않았다고 같은 Delete가 리전이나 트랙을 대신 삭제하지 않습니다.</li>
@@ -21,7 +21,7 @@
 <li><strong>미구현 명령은 실행된 것처럼 보이지 않습니다.</strong> 기능 상태를 명령 목록에서 표시하며, 연결되지 않은 단축키는 등록하지 않습니다.</li>
 </ol>
 <h2 id="spec-3">3. 키보드 표기와 처리 순서</h2>
-<p><code>Mod</code>는 macOS의 Command, Windows/Linux의 Control입니다. <code>Alt</code>는 macOS의 Option, Windows/Linux의 Alt입니다. <strong>모든 Logic의 Control을 Mod로 치환하지 않습니다.</strong> 예를 들어 macOS Control+M과 Command+M은 다릅니다. Return과 숫자패드 Enter도 별도 키입니다.</p>
+<p><code>Mod</code>는 macOS의 Command, Windows/Linux의 Control입니다. <code>Alt</code>는 macOS의 Option, Windows/Linux의 Alt입니다. <strong>macOS의 Control 조합을 모두 Mod로 치환하지 않습니다.</strong> 예를 들어 macOS Control+M과 Command+M은 다릅니다. Return과 숫자패드 Enter도 별도 키입니다.</p>
 <p>입력 처리 순서는 다음과 같습니다.</p>
 <ol>
 <li>이벤트가 이미 처리되었는지, 한글 등 IME 조합 중인지, 해당 환경의 AltGraph 문자 입력인지 검사합니다.</li>
@@ -94,21 +94,20 @@
 <td>해당 컨트롤의 동작</td>
 </tr>
 </tbody></table></div>
-<p>라이브러리에서 Space 미리듣기는 해당 목록을 클릭하거나 키보드로 이동해 <strong>명시적으로 포커스를 준 경우</strong>만 사용합니다. 재생 중 사운드 탐색을 하다가 프로젝트 재생을 우발적으로 끄지 않도록, 상단 재생 버튼과 미리듣기 상태를 구분합니다. Logic도 작업 영역에 따라 transport 키의 대상이 달라질 수 있으므로 이 부분은 반드시 문맥으로 구현합니다. [A9]</p>
+<p>라이브러리에서 Space 미리듣기는 해당 목록을 클릭하거나 키보드로 이동해 <strong>명시적으로 포커스를 준 경우</strong>만 사용합니다. 재생 중 사운드 탐색을 하다가 프로젝트 재생을 우발적으로 끄지 않도록, 상단 재생 버튼과 미리듣기 상태를 구분합니다. 작업 영역에 따라 transport 키의 대상이 달라질 수 있으므로 이 부분은 반드시 문맥으로 구현합니다.</p>
 <p>편집기 안에서 선택이 없어도 그 편집기는 Delete를 소비합니다. 이후 상위 편집기나 전체 프로젝트로 전파하지 않습니다. 도움말에는 ‘선택 없음’으로 표시할 수 있지만 매번 토스트를 띄우지는 않습니다.</p>
 <p>현재 선택 트랙, 선택 리전 집합, 선택 음표 집합, 현재 포커스 영역, 범위 선택 기준점을 별도 상태로 저장합니다. 패널을 닫으면 마지막으로 유효했던 편집 영역에 포커스를 되돌립니다. 열린 패널의 스크롤·확대·선택은 유지하며, 존재하지 않는 ID는 복원 과정에서 제거합니다.</p>
 <p>리전 단일 클릭은 선택과 인스펙터 갱신만 수행합니다. 닫힌 편집기를 열거나 현재 믹서를 피아노롤로 바꾸지 않습니다. 더블클릭 또는 E/P로 편집기를 명시적으로 엽니다. 이미 문맥 편집기가 열려 있으면 선택한 리전에 맞춰 내용을 갱신하되 키보드 포커스를 강제로 빼앗지 않습니다.</p>
 <p>툴바·컨텍스트 메뉴·명령 검색은 열기 직전의 편집 범위와 선택을 보관합니다. 버튼 클릭으로 포커스가 버튼으로 옮겨도 그 보관한 대상에 실행합니다. ‘리전 분할’처럼 대상 종류가 고정된 버튼은 그 대상을 이름과 활성 상태로 명시합니다. 일반 키보드 Delete는 이러한 보관 대상을 쓰지 않고 현재 포커스 범위만 사용합니다.</p>
-<h2 id="spec-5">5. Logic 참고 키맵과 웹 기본안</h2>
-<p>다음 표의 키는 <strong>설계 목표</strong>입니다. 현재 React 코드에 모두 연결되었다는 뜻이 아닙니다. 비교 기준은 Apple의 U.S. preset이고, 브라우저 충돌과 제품 지원 범위는 별도로 표시했습니다. [A1][A2][A3]</p>
+<h2 id="spec-5">5. 웹 기본 키맵</h2>
+<p>다음 표의 키는 <strong>설계 목표</strong>입니다. 현재 React 코드에 모두 연결되었다는 뜻이 아닙니다. 브라우저 충돌과 제품 지원 범위는 별도로 표시했습니다.</p>
 <h3 id="spec-6">5.1 재생·녹음·탐색</h3>
 <div class="table-wrap"><table>
 <thead>
 <tr>
 <th>명령 ID</th>
 <th>동작</th>
-<th>Logic 참고</th>
-<th>우리 웹 기본안</th>
+<th>기본키</th>
 <th>반복/조건</th>
 </tr>
 </thead>
@@ -116,20 +115,17 @@
 <td>transport.playStop</td>
 <td>프로젝트 재생·정지</td>
 <td>Space</td>
-<td>Space</td>
 <td>최초 1회; 편집 캔버스 문맥</td>
 </tr>
 <tr>
 <td>transport.playSelection</td>
 <td>선택 시작부터 재생</td>
 <td>Shift+Space</td>
-<td>Shift+Space</td>
 <td>최초 1회; 선택 없으면 실행하지 않음</td>
 </tr>
 <tr>
 <td>transport.beginning</td>
 <td>프로젝트 처음으로</td>
-<td>Return</td>
 <td>Return; Home 보조키</td>
 <td>입력 필드에서는 실행하지 않음</td>
 </tr>
@@ -137,13 +133,11 @@
 <td>transport.record</td>
 <td>녹음</td>
 <td>R</td>
-<td>R</td>
 <td>녹음 대기 트랙·권한·입력 확인 후</td>
 </tr>
 <tr>
 <td>transport.cycle</td>
 <td>사이클 켜기·끄기</td>
-<td>C</td>
 <td>C</td>
 <td>최초 1회; 범위가 없으면 §13.3의 기본 범위 생성</td>
 </tr>
@@ -151,13 +145,11 @@
 <td>transport.metronome</td>
 <td>메트로놈</td>
 <td>K</td>
-<td>K</td>
 <td>메트로놈 구현 후 활성화</td>
 </tr>
 <tr>
 <td>transport.countIn</td>
 <td>카운트인</td>
-<td>Shift+K</td>
 <td>Shift+K</td>
 <td>카운트인 구현 후 활성화</td>
 </tr>
@@ -165,13 +157,11 @@
 <td>transport.rewind</td>
 <td>뒤로 이동</td>
 <td>,</td>
-<td>,</td>
 <td>초기 이동 단위 1마디; 반복 허용</td>
 </tr>
 <tr>
 <td>transport.forward</td>
 <td>앞으로 이동</td>
-<td>.</td>
 <td>.</td>
 <td>초기 이동 단위 1마디; 반복 허용</td>
 </tr>
@@ -179,13 +169,11 @@
 <td>transport.fastRewind</td>
 <td>빠르게 뒤로 이동</td>
 <td>Shift+,</td>
-<td>Shift+,</td>
 <td>초기 이동 단위 4마디; 반복 허용</td>
 </tr>
 <tr>
 <td>transport.fastForward</td>
 <td>빠르게 앞으로 이동</td>
-<td>Shift+.</td>
 <td>Shift+.</td>
 <td>초기 이동 단위 4마디; 반복 허용</td>
 </tr>
@@ -193,13 +181,11 @@
 <td>cycle.fromSelectionRounded</td>
 <td>선택을 감싸는 사이클</td>
 <td>U</td>
-<td>U</td>
 <td>시작 내림·끝 올림, 마디 경계 기준</td>
 </tr>
 <tr>
 <td>cycle.fromSelectionExact</td>
 <td>선택 경계 그대로 사이클</td>
-<td>Mod+U</td>
 <td>메뉴·명령 검색</td>
 <td>브라우저 소스 보기와 충돌</td>
 </tr>
@@ -207,13 +193,12 @@
 <td>transport.goToPosition</td>
 <td>재생 위치 입력</td>
 <td>/</td>
-<td>/</td>
 <td>위치 입력 팝업; Escape 취소</td>
 </tr>
 </tbody></table></div>
-<p>Return은 현재 Apple 표에서 프로젝트 처음 이동을 확인했습니다. C는 이전 공식 기본값과 일치하는 웹 기본안이며, 최신 사용자 지정 프리셋까지 같다고 주장하지 않습니다. 숫자패드 Enter/0/점은 선택 가능한 확장 프리셋으로 두고, 키 위치를 구분할 수 있는 환경에서만 활성화합니다.</p>
+<p>숫자패드 Enter/0/점은 선택 가능한 확장 프리셋으로 두고, 키 위치를 구분할 수 있는 환경에서만 활성화합니다.</p>
 <p>Space로 정지할 때는 현재 위치를 유지합니다. Return으로 처음으로 갑니다. 사이클이 켜져 있는 일반 재생은 사이클 시작점에서 시작하도록 정의하고, 선택 재생은 사용자가 지정한 선택 시작점을 우선합니다. 사이클·선택 재생의 우선순위는 UI에 표시하고 설정값으로 무질서하게 갈라놓지 않습니다.</p>
-<p>녹음 중 Space는 녹음을 마감하고 정지합니다. R을 다시 누르면 현재 테이크를 마감하고 재생은 이어갑니다. 진행 중 녹음을 버리는 Logic의 Mod+Period 동작은 1.0 기본키에 넣지 않습니다. 녹음이 끝난 뒤 명시적인 Undo로 테이크를 되돌립니다. 반복 R 이벤트로 녹음 시작·종료가 연달아 실행되지 않아야 합니다.</p>
+<p>녹음 중 Space는 녹음을 마감하고 정지합니다. R을 다시 누르면 현재 테이크를 마감하고 재생은 이어갑니다. 진행 중 녹음을 버리는 동작은 1.0 기본키에 넣지 않습니다. 녹음이 끝난 뒤 명시적인 Undo로 테이크를 되돌립니다. 반복 R 이벤트로 녹음 시작·종료가 연달아 실행되지 않아야 합니다.</p>
 <h3 id="spec-7">5.2 패널과 작업 영역</h3>
 <div class="table-wrap"><table>
 <thead>
@@ -264,7 +249,7 @@
 <td>panel.loopBrowser</td>
 <td>루프 브라우저</td>
 <td>O</td>
-<td>사용자 루프 탐색; Apple 사운드 자산을 포함한다는 의미 아님</td>
+<td>사용자 루프 탐색; 기본 사운드 자산을 포함한다는 의미 아님</td>
 </tr>
 <tr>
 <td>panel.fileBrowser</td>
@@ -297,161 +282,137 @@
 <td>우리 웹 추가키; 마지막 편집 대상을 기억</td>
 </tr>
 </tbody></table></div>
-<p>E/D/F는 구버전 공식 기본값에서도 확인되는 배치를 웹 기본안으로 채택한 것입니다. 현재 모든 프리셋에서 동일하다는 주장은 하지 않습니다. 하단 믹서와 편집기는 같은 도킹 영역을 사용하며 한 번에 하나를 표시합니다. 패널 표시 토글은 프로젝트 Undo나 자동 저장을 만들지 않고 사용자 작업 공간 설정으로 보관합니다.</p>
+<p>하단 믹서와 편집기는 같은 도킹 영역을 사용하며 한 번에 하나를 표시합니다. 패널 표시 토글은 프로젝트 Undo나 자동 저장을 만들지 않고 사용자 작업 공간 설정으로 보관합니다.</p>
 <h3 id="spec-8">5.3 선택·편집</h3>
 <div class="table-wrap"><table>
 <thead>
 <tr>
 <th>동작</th>
-<th>Logic 참고</th>
-<th>우리 웹 기본안</th>
+<th>기본키</th>
 <th>적용 대상</th>
 </tr>
 </thead>
 <tbody><tr>
 <td>실행 취소 / 다시 실행</td>
 <td>Mod+Z / Shift+Mod+Z</td>
-<td>동일</td>
 <td>활성 프로젝트; 입력 중에는 텍스트 Undo 우선</td>
 </tr>
 <tr>
 <td>모두 선택</td>
 <td>Mod+A</td>
-<td>동일</td>
 <td>포커스 편집 영역</td>
 </tr>
 <tr>
 <td>선택 해제</td>
-<td>Shift+D</td>
-<td>동일; Escape 단계적 취소</td>
+<td>Shift+D; Escape 단계적 취소</td>
 <td>현재 영역만</td>
 </tr>
 <tr>
 <td>선택 반전</td>
 <td>Shift+I</td>
-<td>동일</td>
 <td>현재 편집 가능한 객체 집합</td>
 </tr>
 <tr>
 <td>이전/다음 객체 선택</td>
 <td>← / →</td>
-<td>동일</td>
 <td>리전·음표; 시간·음높이 순서로 결정</td>
 </tr>
 <tr>
 <td>이전/다음 선택 토글</td>
 <td>Shift+← / →</td>
-<td>동일</td>
 <td>현재 편집 영역</td>
 </tr>
 <tr>
 <td>위/아래 트랙 선택</td>
 <td>↑ / ↓</td>
-<td>동일</td>
 <td>트랙 목록·어레인지먼트; 재생 위치 유지</td>
 </tr>
 <tr>
 <td>선택 객체 삭제</td>
-<td>Delete</td>
 <td>Delete / Backspace</td>
 <td>음표 또는 리전; 상위 대상 대체 없음</td>
 </tr>
 <tr>
 <td>트랙 삭제</td>
-<td>Mod+Delete</td>
 <td>별도 트랙 메뉴/명령 검색</td>
 <td>트랙 삭제라는 이름·대상을 명확히 표시</td>
 </tr>
 <tr>
 <td>잘라내기 / 복사 / 붙여넣기</td>
 <td>Mod+X/C/V</td>
-<td>동일</td>
 <td>앱 내부 객체 클립보드; 텍스트 입력 우선</td>
 </tr>
 <tr>
 <td>설정을 복제한 새 트랙</td>
-<td>Mod+D</td>
 <td>메뉴·명령 검색</td>
 <td>리전 복제와 다른 명령</td>
 </tr>
 <tr>
 <td>리전·음표 반복</td>
-<td>Mod+R</td>
 <td>메뉴·명령 검색; Alt 드래그 복제</td>
 <td>원본과 독립된 사본</td>
 </tr>
 <tr>
 <td>재생 위치에서 분할</td>
-<td>Mod+T</td>
 <td>메뉴·명령 검색; T→I 가위 도구</td>
 <td>분할 가능한 리전 내부</td>
 </tr>
 <tr>
 <td>결합</td>
-<td>Mod+J</td>
 <td>메뉴·명령 검색</td>
 <td>지원하는 동일 종류 객체만</td>
 </tr>
 <tr>
 <td>퀀타이즈</td>
 <td>Q</td>
-<td>Q</td>
 <td>선택 음표 또는 선택 MIDI 리전</td>
 </tr>
 <tr>
 <td>리전 루프</td>
-<td>L</td>
 <td>L</td>
 <td>루프 지원이 구현된 리전</td>
 </tr>
 <tr>
 <td>선택을 재생 위치로 이동</td>
 <td>;</td>
-<td>;</td>
 <td>선택 전체의 상대 간격 유지</td>
 </tr>
 <tr>
 <td>가로 위치 미세 이동</td>
-<td>Option+← / →</td>
 <td>Alt+, / Alt+.</td>
 <td>웹 공통 대체키; macOS Option+←/→ 보조키 가능</td>
 </tr>
 <tr>
 <td>길이 미세 조절</td>
-<td>Option+Shift+← / →</td>
 <td>Alt+Shift+, / Alt+Shift+.</td>
-<td>웹 공통 대체키; macOS 원래 조합 보조키 가능</td>
+<td>웹 공통 대체키; macOS Option+Shift+←/→ 보조키 가능</td>
 </tr>
 <tr>
 <td>음높이 반음 이동</td>
-<td>Option+↑ / ↓</td>
 <td>Alt+↑ / ↓</td>
 <td>선택 MIDI 음표/리전; 텍스트 입력 제외</td>
 </tr>
 <tr>
 <td>음높이 옥타브 이동</td>
-<td>Option+Shift+↑ / ↓</td>
 <td>Alt+Shift+↑ / ↓</td>
 <td>선택 MIDI 음표/리전</td>
 </tr>
 <tr>
 <td>선택 노트·리전 뮤트</td>
 <td>Control+M</td>
-<td>Control+M</td>
 <td>macOS에서도 Command로 바꾸지 않음</td>
 </tr>
 <tr>
 <td>맞춤 확대 토글</td>
 <td>Z</td>
-<td>Z</td>
 <td>선택 범위; 선택 없으면 내용 전체</td>
 </tr>
 </tbody></table></div>
-<p><strong>Shift+D를 복제로 사용하지 않습니다.</strong> Logic의 선택 해제와 충돌하기 때문입니다. <strong>S를 분할로 사용하지 않습니다.</strong> 채널 솔로와 도구 메뉴 안의 솔로 도구가 다른 문맥에서 사용됩니다. 채널 M/S는 선택 트랙·채널을 대상으로 하며, 리전/음표 뮤트와 별도 명령입니다.</p>
-<p>우리의 반복 명령은 선택 묶음의 시작부터 가장 늦은 끝까지를 한 단위로 보고, 그 뒤에 사본 한 묶음을 만드는 것으로 정의합니다. 여러 번 반복할 때는 반복 횟수 대화상자를 사용합니다. 이것은 Apple의 명령 이름을 확인한 뒤 정한 우리 동작이며, Logic의 모든 반복 설정까지 같다고 주장하지 않습니다.</p>
+<p><strong>Shift+D를 복제로 사용하지 않습니다.</strong> 선택 해제 키이기 때문입니다. <strong>S를 분할로 사용하지 않습니다.</strong> 채널 솔로와 도구 메뉴 안의 솔로 도구가 다른 문맥에서 사용됩니다. 채널 M/S는 선택 트랙·채널을 대상으로 하며, 리전/음표 뮤트와 별도 명령입니다.</p>
+<p>우리의 반복 명령은 선택 묶음의 시작부터 가장 늦은 끝까지를 한 단위로 보고, 그 뒤에 사본 한 묶음을 만드는 것으로 정의합니다. 여러 번 반복할 때는 반복 횟수 대화상자를 사용합니다.</p>
 <p>웹의 Alt+쉼표/마침표 이동 단위는 화면의 Nudge 설정을 따릅니다. 기본값은 현재 고정 격자이며 Smart일 때는 현재 확대에서 계산한 격자를 표시합니다. 수정키 조합은 완전히 일치해야 합니다. Alt+Shift+쉼표가 일반 Shift+쉼표 transport 이동과 동시에 실행되면 안 됩니다.</p>
 <h3 id="spec-9">5.4 도구 메뉴</h3>
-<p>T는 도구 메뉴입니다. 메뉴가 열린 동안 다음 키를 해석합니다. 도구를 정한 뒤 메뉴를 닫고 원래 편집 영역에 포커스를 돌려줍니다. 입력 필드에서는 T를 문자로 처리합니다. <code>T→P</code> 같은 시퀀스는 두 키를 동시에 누르는 조합이 아닙니다. [A4]</p>
+<p>T는 도구 메뉴입니다. 메뉴가 열린 동안 다음 키를 해석합니다. 도구를 정한 뒤 메뉴를 닫고 원래 편집 영역에 포커스를 돌려줍니다. 입력 필드에서는 T를 문자로 처리합니다. <code>T→P</code> 같은 시퀀스는 두 키를 동시에 누르는 조합이 아닙니다.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -463,7 +424,7 @@
 <tbody><tr>
 <td>T→T</td>
 <td>포인터</td>
-<td>기본 도구; 이전 공식 할당과 일치</td>
+<td>기본 도구</td>
 </tr>
 <tr>
 <td>T→P</td>
@@ -585,7 +546,7 @@
 <td>할당한 보조 도구; 스냅 해제 전용 조합은 제외</td>
 </tr>
 </tbody></table></div>
-<p>Logic에서는 Option을 경계에 적용할 때 시간 늘이기/줄이기로 쓰는 문맥도 있습니다. 따라서 <strong>본문 복제와 경계 트림을 같은 규칙으로 처리하지 않습니다.</strong> 1.0에서 지원하지 않는 시간 늘이기나 MIDI alias 수정키를 일반 복사로 조용히 바꾸지 않습니다. 해당 편집을 명시적으로 비활성화하고 일반 이동·복제 경로를 제공합니다. [A5][A6]</p>
+<p>Option을 경계에 적용하면 시간 늘이기/줄이기로 쓸 수 있는 문맥이 있으므로 <strong>본문 복제와 경계 트림을 같은 규칙으로 처리하지 않습니다.</strong> 1.0에서 지원하지 않는 시간 늘이기나 MIDI alias 수정키를 일반 복사로 조용히 바꾸지 않습니다. 해당 편집을 명시적으로 비활성화하고 일반 이동·복제 경로를 제공합니다.</p>
 <p>특히 Alt+Shift+MIDI 리전 드래그는 alias용으로 예약하고, alias가 없는 1.0에서는 그 조합으로 편집을 확정하지 않습니다. 일반 복제는 Alt만 사용합니다. 음표 문맥의 복제·길이 조절은 리전 alias 규칙과 구분합니다. 보조 도구는 제스처 시작 시 결정하고 드래그 중 바뀌지 않습니다. 복제 의도·스냅 해제·축 고정은 진행 중 수정키 변화에 반응합니다.</p>
 <p>수정키 해석은 <code>예약 조합 → 플랫폼별 임시 스냅 해제 → 나머지 Shift 축 고정 → 일반 복제 의도</code> 순서로 계산합니다. Windows/Linux의 Control+Shift 동안에는 스냅 해제만 적용하고 축 고정을 동시에 켜지 않습니다. MIDI 리전에서 Alt+Shift가 되면 ‘alias 미지원’ 미리보기로 바꾸며, 그 상태에서 놓으면 원본 복원·새 ID 없음·Undo 없음으로 끝냅니다. Shift를 놓아 Alt만 남으면 일반 복제로 돌아갈 수 있습니다. 이 예외가 아래 부록의 일반 복제 규칙보다 우선합니다.</p>
 <h2 id="spec-12">8. 저장·파일·클립보드 계약</h2>
@@ -606,7 +567,7 @@
 <p>모달은 배경 편집을 막고 포커스를 안에 유지합니다. 닫으면 실행 버튼 또는 원래 편집 영역으로 돌아갑니다. 작업 중 창을 여는 명령은 먼저 드래그를 취소하거나 현재 필드를 확정하며, 프로젝트 편집 제스처와 모달을 동시에 활성화하지 않습니다. Escape 한 번은 가장 가까운 작업 하나만 취소합니다.</p>
 <p>상태 표시에는 현재 도구, 선택 수, 이동량·길이, 스냅 상태, 녹음 입력과 연결 상태를 필요한 때만 보여줍니다. 잘못된 드롭은 금지 커서와 이유를, 클리핑은 미터와 텍스트를 함께 표시합니다. 반복되는 포인터 이동마다 알림이나 스크린리더 발표를 만들지 않습니다. 긴 작업에는 취소 가능 여부와 진행 상태를 표시합니다.</p>
 <h2 id="spec-15">11. 구현 구조</h2>
-<p>명령은 <code>id / label / scope / binding / capability / canExecute / execute / repeatPolicy / undoPolicy</code>로 정의합니다. UI 버튼과 키보드가 같은 명령을 호출합니다. 원래 Logic 키는 설명용 메타데이터이고 웹에서 실제 등록하는 키와 구분합니다.</p>
+<p>명령은 <code>id / label / scope / binding / capability / canExecute / execute / repeatPolicy / undoPolicy</code>로 정의합니다. UI 버튼과 키보드가 같은 명령을 호출합니다. 설명용 macOS 원래 키는 메타데이터이고 웹에서 실제 등록하는 키와 구분합니다.</p>
 <p>입력 컨텍스트는 <code>text</code>, <code>dialog</code>, <code>menu</code>, <code>gesture</code>, <code>track-list</code>, <code>arrangement</code>, <code>piano-roll</code>, <code>mixer</code>, <code>browser</code>, <code>transport</code>로 나눕니다. 대상 DOM 이름을 여러 컴포넌트에서 따로 추측하는 구현을 줄이고 편집 영역의 명시적인 범위를 사용합니다. React 이벤트와 window 이벤트를 동시에 쓸 때는 <code>defaultPrevented</code>와 스코프 처리를 확인합니다.</p>
 <p>제스처는 문서 원본, 미리보기, 확정 명령을 분리합니다. 포인터마다 전역 리스너를 남기지 않고 AbortController 또는 대칭 cleanup으로 정리합니다. 정상 pointerup 이후 캡처 해제가 다시 취소를 호출하지 않도록 활성 상태를 먼저 종료합니다. 프로젝트 전환·Undo·비동기 자산 로드와의 경쟁 상태도 테스트합니다.</p>
 <p>편집의 실행 취소 기록은 가능하면 의미 있는 명령 이름과 before/after 선택 상태를 포함합니다. 일정 시간 안에 들어온 업데이트를 무조건 합치는 방식은 초깃값으로 사용하지 않습니다. 페이더 한 번, 음표 드래그 한 번, 다중 리전 이동 한 번을 각각 하나의 명령으로 기록합니다.</p>
@@ -719,23 +680,13 @@
 <p>선택·드래그·검색은 렌더링된 DOM 개수와 무관한 프로젝트 모델을 사용합니다. 화면 밖 객체도 동일한 선택 규칙을 따릅니다. 포인터 미리보기와 재생 헤드는 매 프레임 전체 React 트리를 갱신하지 않도록 분리하고, 미터는 표시 중인 채널을 중심으로 갱신합니다. 이는 구현 방향이며 현재 수백 트랙 성능이 검증되었다는 뜻이 아닙니다. 체감 반응, 오디오 끊김, 메모리 사용을 각각 측정해야 합니다.</p>
 <h2 id="spec-23">출처</h2>
 <ul>
-<li>[A1] <a href="https://support.apple.com/en-ph/guide/logicpro/lgcp02bf31b6/mac">Apple: Global Commands</a> — U.S. 기본 키맵, 재생·녹음·패널 명령.</li>
-<li>[A2] <a href="https://support.apple.com/guide/logicpro/main-window-tracks-and-various-editors-lgcpe8314fe2/12.3/mac/15.6">Apple: Main Window Tracks and Various Editors, 12.3</a> — 트랙 설정 복제, 리전 반복, 분할, 이동·길이·음높이.</li>
-<li>[A3] <a href="https://support.apple.com/en-ke/guide/logicpro/lgcp665bbccc/mac">Apple: Various Windows</a> — 선택·실행 취소·맞춤 확대.</li>
-<li>[A4] <a href="https://support.apple.com/en-om/guide/logicpro/lgcp0182c4e5/mac">Apple: Tool Menu</a> — 도구 메뉴 안의 키.</li>
-<li>[A5] <a href="https://support.apple.com/nl-be/guide/logicpro/lgcp77b30381/mac">Apple: General pointer shortcuts</a> — 복제, 기본값 복귀, 미세 조절.</li>
-<li>[A6] <a href="https://support.apple.com/en-hk/guide/logicpro/lgcpea796663/mac">Apple: Tracks area pointer shortcuts</a> — 리전 본문·경계·수정키 문맥.</li>
-<li>[A7] <a href="https://support.apple.com/en-tm/guide/logicpro/lgcp9a4b36c6/mac">Apple: Piano Roll pointer shortcuts</a> — 음표 길이·벨로시티의 특수 조작.</li>
-<li>[A8] <a href="https://support.apple.com/en-mide/guide/logicpro/lgcp5b365bf4/10.7/mac/11.0">Apple: Assign tools, 10.7</a> — T→T 포인터 및 보조 도구; 이전 버전 참고.</li>
-<li>[A9] <a href="https://support.apple.com/guide/logicpro/use-transport-key-commands-lgcp2814a670/10.7/mac/11.0">Apple: Use transport key commands, 10.7</a> — 작업 영역에 따른 재생 키의 문맥; 이전 버전 참고.</li>
-<li>[A10] <a href="https://support.apple.com/en-by/guide/logicpro/lgcp02bf31b6/10.7/mac/11.0">Apple: Global Commands, 10.7</a> — C 및 구버전 패널 키 비교.</li>
 <li>[W1] <a href="https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent">MDN: KeyboardEvent</a> — code/key, isComposing, repeat.</li>
 <li>[W2] <a href="https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/getModifierState">MDN: getModifierState</a> — AltGraph의 플랫폼 차이.</li>
 <li>[W3] <a href="https://support.google.com/chrome/answer/157179?hl=en">Google: Chrome keyboard shortcuts</a> — 브라우저 예약 조합.</li>
 </ul>
 <p>아래 부록은 위 계약을 구현 가능한 수준으로 풀어 쓴 포인터 세부안입니다. 수치와 처리 정책은 우리 제품의 초기 설계값이며, 실사용 검증 후 조정할 수 있습니다.</p>
 <h2 id="spec-24">부록 A. 포인터·선택·편집의 구현 계약</h2>
-<p>이 부록의 모든 키 처리와 Escape 규칙에는 본문 §3의 IME·기처리 이벤트 검사가 먼저 적용됩니다. 수정키 충돌은 본문 §7을 우선합니다. 특히 MIDI 리전의 Alt+Shift alias 예약은 일반 Alt 복제 규칙보다 먼저 판정합니다. 아래 수치와 세부 동작은 우리 제품의 설계값이며 Logic의 내부 구현을 단정하지 않습니다.</p>
+<p>이 부록의 모든 키 처리와 Escape 규칙에는 본문 §3의 IME·기처리 이벤트 검사가 먼저 적용됩니다. 수정키 충돌은 본문 §7을 우선합니다. 특히 MIDI 리전의 Alt+Shift alias 예약은 일반 Alt 복제 규칙보다 먼저 판정합니다. 아래 수치와 세부 동작은 우리 제품의 설계값입니다.</p>
 <h3 id="spec-25">A.1. 공통 입력 상태와 우선순위</h3>
 <p>편집 영역의 상태는 <code>대기 → 누름 대기 → 드래그 미리보기 → 확정 또는 취소</code>로 정의합니다. 누름 대기에서는 문서 데이터를 변경하지 않습니다. 우선순위는 <code>열린 모달/메뉴 → 진행 중인 제스처 → 텍스트·숫자 입력 → 포커스 편집기 → 전역 명령</code>입니다. 앞 단계에서 처리한 이벤트는 뒤 단계에서 다시 처리하지 않습니다.</p>
 <p>각 제스처는 시작 시 프로젝트 버전, 원본 객체 값, 선택 집합, 활성 객체, 포인터 ID, 대상 편집 영역, 시작 좌표를 보관합니다. 화면의 스크롤과 좌표 변환 값도 함께 기록합니다. 미리보기와 확정 데이터를 분리하며, 확정 시 원본 객체가 사라졌거나 관련 버전이 바뀌었다면 다른 작업을 덮어쓰지 않고 해당 제스처를 취소합니다.</p>
@@ -858,7 +809,7 @@
 <section class="implementation" id="implementation"><div class="eyebrow">IMPLEMENTATION & VALIDATION</div><h2>현재 코드에 반영된 범위</h2><p>2026-10-30 · 개발 스냅샷 · 정식 1.0 아님</p>
 <h2 id="status-35">현재 작업본의 위치와 범위</h2>
 <p>이 작업본은 대화에 연결된 클라우드 개발 공간에서 만들었습니다. 사용자 컴퓨터에 직접 설치하거나 사용자 GitHub 저장소에 연결한 상태가 아닙니다. 내려받은 소스 폴더에서 README의 명령으로 로컬 개발을 시작할 수 있습니다. 제품명은 미확정이며 코드의 NOCT Studio 표기는 기존 개발 가칭입니다.</p>
-<p>승인된 Logic 참고 화면 배치 시안과 현재 실행 가능한 React 프로토타입은 별개입니다. 이번 변경은 단축키·상호작용 상세 명세 작성과 기존 입력 처리의 오류 수정입니다. 승인된 모든 패널 배치와 아래 명세 전체를 구현했다고 표시하지 않습니다.</p>
+<p>승인된 화면 배치 시안과 현재 실행 가능한 React 프로토타입은 별개입니다. 이번 변경은 단축키·상호작용 상세 명세 작성과 기존 입력 처리의 오류 수정입니다. 승인된 모든 패널 배치와 아래 명세 전체를 구현했다고 표시하지 않습니다.</p>
 <h2 id="status-36">이번에 실제로 수정한 코드</h2>
 <div class="table-wrap"><table>
 <thead>
@@ -915,7 +866,7 @@
 <li>Vitest 4개 파일, <strong>30개 테스트 통과</strong>. 기존 22개에 입력·상대 스냅·플랫폼 구분 회귀 테스트 8개를 추가했습니다.</li>
 <li>프로덕션 빌드 통과: Vite 8.3.5, 변환 모듈 28개. 빌드 성공을 오디오 성능·장치 호환성 검증으로 간주하지 않습니다.</li>
 </ul>
-<p>새 테스트는 명령 해석과 이동 계산 로직을 확인합니다. 실제 운영체제의 한글 IME 이벤트 순서나 물리 키의 길게 누르기를 자동화한 전체 브라우저 테스트는 아닙니다.</p>
+<p>새 테스트는 명령 해석과 이동 계산 코드를 확인합니다. 실제 운영체제의 한글 IME 이벤트 순서나 물리 키의 길게 누르기를 자동화한 전체 브라우저 테스트는 아닙니다.</p>
 <h2 id="status-38">브라우저에서 직접 확인한 범위</h2>
 <p>클라우드 Chrome의 기존 데모 프로젝트에서 아래를 확인했습니다.</p>
 <div class="table-wrap"><table>
@@ -964,7 +915,7 @@
 <td>별도 화면 시안에 있음. React 프로토타입에 전체 이식 전.</td>
 </tr>
 <tr>
-<td>Y/I/X/E/P 등 전체 Logic 참고 키맵, 명령 검색·도구 메뉴</td>
+<td>Y/I/X/E/P 등 전체 기본 키맵, 명령 검색·도구 메뉴</td>
 <td>상세 명세 완료, 실제 등록·연결 전. 현재 ?는 도움말만 엽니다.</td>
 </tr>
 <tr>

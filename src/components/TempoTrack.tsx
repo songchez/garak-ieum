@@ -26,7 +26,7 @@ interface Props {
 interface Drag { index: number; beat: number; bpm: number }
 
 /**
- * 템포 global track (docs/TEMPO_MAP.md, Logic's Tempo track): the tempo curve under the ruler.
+ * 템포 global track (docs/TEMPO_MAP.md, tempo track): the tempo curve under the ruler.
  * Double-click adds a point at that position and tempo; drag moves it (beat and BPM); right-click or
  * ⌫ deletes it; the menu (or R) switches the segment after a point between step and ramp.
  */
