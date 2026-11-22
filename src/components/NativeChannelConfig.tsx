@@ -16,7 +16,7 @@ interface Props {
   onOutputs: Change
 }
 
-/** Ableton-style Input/Output Config: enable inputs, pair them, and name channels per device. */
+/** Input/Output config: enable inputs, pair them, and name channels per device. */
 export function NativeChannelConfig({ inputs, outputs, inputProfile, outputProfile, disabled, note, onInputs, onOutputs }: Props) {
   const driverInputs: string[] = [], driverOutputs: string[] = []
   for (const channel of inputs) driverInputs[channel.index] = channel.name

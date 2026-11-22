@@ -1,7 +1,7 @@
 import type { AudioClip, AudioTranspose, AudioTransposeRender, TransposeMode } from '../../core/types'
 
 /**
- * Region pitch (docs/REGION_PITCH.md). Two modes, like Ableton's Warp on/off or Reaper's
+ * Region pitch (docs/REGION_PITCH.md). Two modes, warp on/off or
  * "preserve pitch":
  * - keep (템포 유지): pitch moves, length stays; an offline Signalsmith render.
  * - varispeed (자연스럽게): pitch and speed move together like tape, so the region gets

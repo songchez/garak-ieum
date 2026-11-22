@@ -64,7 +64,7 @@ pnpm release:prepare --version 0.1.2 --channel stable --publish
 
 `.github/workflows/release.yml`의 **Public desktop release**가 다음 순서로 실행됩니다.
 
-1. 설정과 릴리스 보호 로직을 검사하고 `main`의 정확한 push 전후 커밋을 확인합니다.
+1. 설정과 릴리스 보호 규칙을 검사하고 `main`의 정확한 push 전후 커밋을 확인합니다.
 2. 기존 Windows/macOS 워크플로를 재사용해 잠긴 의존성을 설치하고 앱 테스트, 설치본 빌드, 실제 설치 검사, 설치한 앱의 스모크 테스트를 실행합니다. Windows 파일 연결과 macOS 번들 확인도 그대로 포함됩니다.
 3. 두 플랫폼에서 설치 파일과 동일 커밋의 프로젝트 소스 ZIP 및 SHA-256 체크섬을 만듭니다.
 4. 같은 워크플로 실행에서 성공한 Windows/Mac artifact만 가져옵니다. 파일 목록, 버전, 해시, 소스 ZIP의 전체 커밋 SHA, `SOURCE_VERSION.json`, 라이선스 문서를 검증합니다.

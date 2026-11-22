@@ -4,7 +4,7 @@
 
 > **상태 (2026-11-17, 첫 마일스톤):** `rust/garak-engine`이 오디오 트랙(PCM 클립·게인·페이드·크로스페이드), 트랙 볼륨/팬/뮤트/솔로, 내장 이펙트 체인(garak-dsp, 기타 랙 인서트 포함), 센드/리턴, 마스터, 볼륨/팬/뮤트/센드/인서트 파라미터 오토메이션, 템포 맵을 C++ `RenderEngine`과 같은 의미로 렌더합니다. 같은 엔진이 **네이티브(C++ 호스트, `garak-ffi`)와 브라우저(WASM, `garak-engine-wasm`)에서 처음부터 똑같이** 돕니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW·MSVC, 오프라인 내보내기 4종 + 재생 중 diff, C++·Rust 이펙트 모두. macOS arm64는 Rust 이펙트 기준 비트 동일, C++ 이펙트 기준 ≤ -138 dBFS), WASM 대비 네이티브 Rust **-144.5 dBFS**. 웹 앱은 **플래그(`garak.rustEngine`, 기본 꺼짐)로 이 엔진을 AudioWorklet에서 씁니다**([5장](#5-wasm-호스트-audioworklet--5단계-웹-호스트)); 기본 동작 변화 없음(당시 기록. 0.3.2에서 웹 기본값이 됐고, 0.3.3부터는 웹의 유일한 렌더러이며 플래그는 삭제됐습니다). 데스크톱은 당시 `GARAK_RUST_ENGINE=1`로 켤 수 있었습니다([10장](#10-데스크톱-호스트-경로-셸--rust-그래프)). VST3(호스트 노드), 입력 모니터링·트랙 입력 라우트·녹음 탭, 얼린 윈도, render-ahead도 Rust 그래프로 렌더합니다(2026-11-17, C++ 대비 비트 동일). 두 호스트는 하나의 `Track::render(.., &Io)`와 하나의 `routes::prepare`를 공유합니다: 데스크톱은 `Io::host` 콜백으로, 브라우저는 `Io::input`(입력 블록)으로 모니터 입력을 줍니다. 내장 악기도 두 호스트에서 Rust 엔진이 렌더합니다(아래).
 
-> **악기 마일스톤 (2026-11-17, G2):** 내장 악기 전부가 Rust 엔진에서 돕니다 — 신스 5종(벨벳 키 `keys`, 틴 EP `rhodes`, 모노 베이스 `bass`, 클라우드 패드 `pad`, 글라스 플럭 `pluck`), 포켓 드럼 `drums`, 샘플 악기·킷 전부(`builtin-sampled`: 그랜드/콘서트 그랜드/월리처, 스튜디오·808·로파이 킷, 사물놀이, 가야금·해금·대금), 옥구슬 EP·한밤 106, IEUM WAVE(`native-wavetable`: 원래 C++ `native/devices/wavetable-synth` 전체 포팅, 0.3.3부터 유일한 구현). 음표/컨트롤러 커서, 서스테인 페달, 피치벤드·모듈레이션·프레셔, CC7/CC11, 릴리스 노이즈 규칙, 보이스 스틸, 편집 중 음표 상태 승계(음표 id 재부여, 지운 음표 릴리스), 탐색·사이클 추적(페달 포함), 악기 파라미터 오토메이션, 라이브 MIDI까지 C++ `RenderEngine`과 같은 의미입니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW, 오프라인 10종 × C++/Rust 이펙트 + 재생 중 편집·사이클·라이브 MIDI·WAVE 패치 크로스페이드, [7.2](#72-결과-이-pc-mingw-w64-gcc-16-release-x86-64)). 아직 아닌 것: VST3 악기(C++ 유지, 4장 hook).
+> **악기 마일스톤 (2026-11-17, G2):** 내장 악기 전부가 Rust 엔진에서 돕니다 — 신스 5종(벨벳 키 `keys`, 틴 EP `rhodes`, 모노 베이스 `bass`, 클라우드 패드 `pad`, 글라스 플럭 `pluck`), 포켓 드럼 `drums`, 샘플 악기·킷 전부(`builtin-sampled`: 그랜드/콘서트 그랜드/리드 EP, 스튜디오·808·로파이 킷, 사물놀이, 가야금·해금·대금), 옥구슬 EP·한밤 106, IEUM WAVE(`native-wavetable`: 원래 C++ `native/devices/wavetable-synth` 전체 포팅, 0.3.3부터 유일한 구현). 음표/컨트롤러 커서, 서스테인 페달, 피치벤드·모듈레이션·프레셔, CC7/CC11, 릴리스 노이즈 규칙, 보이스 스틸, 편집 중 음표 상태 승계(음표 id 재부여, 지운 음표 릴리스), 탐색·사이클 추적(페달 포함), 악기 파라미터 오토메이션, 라이브 MIDI까지 C++ `RenderEngine`과 같은 의미입니다. 패리티: C++ 엔진 대비 **비트 동일**(MinGW, 오프라인 10종 × C++/Rust 이펙트 + 재생 중 편집·사이클·라이브 MIDI·WAVE 패치 크로스페이드, [7.2](#72-결과-이-pc-mingw-w64-gcc-16-release-x86-64)). 아직 아닌 것: VST3 악기(C++ 유지, 4장 hook).
 
 관련 문서: [RUST.md](RUST.md)(1~3단계, DSP 커널), [RENDER_DIFF_PROTOCOL.md](RENDER_DIFF_PROTOCOL.md)(엔진 입력 계약), [SENDS_RETURNS.md](SENDS_RETURNS.md), [AUTOMATION.md](AUTOMATION.md), [TEMPO_MAP.md](TEMPO_MAP.md), [REGION_GAIN_FADES.md](REGION_GAIN_FADES.md).
 
@@ -253,7 +253,7 @@ wasm32 링크 스택은 256 KiB입니다(`rust/.cargo/config.toml`, 이전 64 Ki
 
 크기: 259 → 289 KiB raw / 105 → 118 KB gzip(예산 304 KiB / 124 KB로 올림, `scripts/rust.mjs`에 이유).
 
-크기(악기 통합 후, `rust/engine-integrate`): 291 → 460 KiB raw / 119 → 189 KB gzip, 기타 랙까지 512 KiB / 207 KB(예산 528 KiB / 212 KB, `scripts/rust.mjs`에 이유). 늘어난 대부분은 악기 코드 자체(IEUM WAVE 신스·테이블 준비와 팩토리 하모닉 표, 옥구슬 EP·한밤 106 커널, 내장 보이스, 샘플 세트 파서, 커서·승계 로직)입니다. ABI 4: 샘플 세트 등록(`garak_engine_register_samples`)과 라이브 MIDI 내보내기가 늘었고, `garak_engine_live`(라이브 링·미리 듣기)도 내장 악기를 연주합니다. ABI 5(라이브 샘플 오프셋, 5.8): `garak_engine_live_at`, 514.7 KiB / 208 KB.
+크기(악기 통합 후, `rust/engine-integrate`): 291 → 460 KiB raw / 119 → 189 KB gzip, 기타 랙까지 512 KiB / 207 KB(예산 528 KiB / 212 KB, `scripts/rust.mjs`에 이유). 늘어난 대부분은 악기 코드 자체(IEUM WAVE 신스·테이블 준비와 팩토리 하모닉 표, 옥구슬 EP·한밤 106 커널, 내장 보이스, 샘플 세트 파서, 커서·승계 코드)입니다. ABI 4: 샘플 세트 등록(`garak_engine_register_samples`)과 라이브 MIDI 내보내기가 늘었고, `garak_engine_live`(라이브 링·미리 듣기)도 내장 악기를 연주합니다. ABI 5(라이브 샘플 오프셋, 5.8): `garak_engine_live_at`, 514.7 KiB / 208 KB.
 
 ### 5.8 라이브 MIDI 샘플 정확도
 
@@ -272,7 +272,7 @@ wasm32 링크 스택은 256 KiB입니다(`rust/.cargo/config.toml`, 이전 64 Ki
 |---|---|---|---|---|
 | 내장 신스 `keys`·`rhodes`·`bass`·`pad`·`pluck` | 벨벳 키, 틴 EP, 모노 베이스, 클라우드 패드, 글라스 플럭 | `engine.cpp` `Synth`/`Voice`/`oscillator`(polyBLEP·삼각 급수), 엔벨로프, 톤 필터 | **지원**: `garak-dsp::instruments::builtin`(같은 식·같은 연산 순서, 128보이스 고정 풀) | 비트 동일 |
 | 내장 드럼 `drums` | 포켓 드럼 | `Synth::Kind::Drums`(스윕 사인, LCG 노이즈 + 하이패스) | **지원** | 비트 동일 |
-| 샘플 악기 / 킷 `builtin-sampled` | 그랜드(Salamander), 콘서트 그랜드(bitKlavier), 월리처, 가야금·해금·대금, 스튜디오·808·로파이 킷, 사물놀이 | `SampleSet`, `pickZone`, 루프, 릴리스 존, 초크, 코덱 오프셋 | **지원**: `samples.register`와 같은 JSON으로 등록, PCM은 `put_asset` 저장소 공유 | 비트 동일 |
+| 샘플 악기 / 킷 `builtin-sampled` | 그랜드(Salamander), 콘서트 그랜드(bitKlavier), 리드 EP, 가야금·해금·대금, 스튜디오·808·로파이 킷, 사물놀이 | `SampleSet`, `pickZone`, 루프, 릴리스 존, 초크, 코덱 오프셋 | **지원**: `samples.register`와 같은 JSON으로 등록, PCM은 `put_asset` 저장소 공유 | 비트 동일 |
 | 옥구슬 EP `okgu-ep`, 한밤 106 `hanbam-106` | 빈티지 | `rust_instrument.hpp`(플러그인 이벤트 경로로 Rust 커널 호출) | **지원**: 같은 커널을 엔진이 직접, 이벤트 변환·정렬·리셋 규칙 동일 | 비트 동일 |
 | IEUM WAVE `native-wavetable` | IEUM WAVE | (0.3.3에서 삭제: `native/devices/wavetable-synth` + `wavetable.cpp`) | **지원, 유일한 구현**: `garak-engine::wave`(같은 상태·같은 연산 순서; 테이블·딜레이선은 제어 스레드에서 할당, 테이블 세트는 사용자 뱅크가 같으면 공유) | 비트 동일 |
 | VST3 악기 | — | `vst3.cpp` | 거부. C++ 유지, 4장 외부 hook | — |

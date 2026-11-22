@@ -3,7 +3,7 @@ import { toNormalized } from './devices'
 import type { AutomationMode, AutomationPoint, AutomationTarget, Project, Track } from './types'
 
 /**
- * One automation recording pass (play → stop), Logic's 터치/래치/쓰기 (docs/AUTOMATION.md).
+ * One automation recording pass (play → stop), 터치/래치/쓰기 (docs/AUTOMATION.md).
  * The pass never edits the project while it runs: the UI draws `apply(project)` and the engine hears
  * `engineProject(project)`; stopping commits `apply()` as one undo step.
  *  - 터치: writes while a control is held, then returns to the existing lane.

@@ -20,7 +20,7 @@ export function savePianoQuantize(settings: PianoQuantizeSettings): void { try {
 
 const GRIDS: [string, number][] = [['1/4', 1], ['1/8', 0.5], ['1/16', 0.25], ['1/32', 0.125], ['1/64', 0.0625], ['1/4T', 2 / 3], ['1/8T', 1 / 3], ['1/16T', 1 / 6]]
 
-/** Piano roll Q options (Logic Time Quantize / Ableton Quantize Settings). Applying uses and remembers them; Q repeats them. */
+/** Piano roll Q options. Applying uses and remembers them; Q repeats them. */
 export function QuantizePopover({ settings, onChange, onApply, onClose, hasSelection }: { settings: PianoQuantizeSettings; onChange(next: PianoQuantizeSettings): void; onApply(): void; onClose(): void; hasSelection: boolean }) {
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => {

@@ -2,15 +2,15 @@
 
 버전 0.2 · 2026-10-30 · 승인된 화면 배치에 적용할 상세 설계
 
-**2026-11-01 리전 편집 기준 보완:** [Logic 리전 편집 벤치마크](REGION_EDITING_BENCHMARK.md)와 [현재 코드 감사](REGION_EDITING_AUDIT.md)를 추가했습니다. 이 문서의 §7·§8.1·부록 A에는 제품 제안과 과거 구현 스냅샷이 포함됩니다. 특히 스냅 기본값·정밀 수정키·Command 보조 도구·MIDI 트림을 현재 Logic 동작 또는 현재 구현 완료로 읽지 않습니다. 최신 공식 비교와 미확정 항목은 새 벤치마크, 실제 제공 키는 [SHORTCUTS](SHORTCUTS.md)를 기준으로 확인합니다.
+**2026-11-01 리전 편집 기준 보완:** [현재 코드 감사](REGION_EDITING_AUDIT.md)를 추가했습니다. 이 문서의 §7·§8.1·부록 A에는 제품 제안과 과거 구현 스냅샷이 포함됩니다. 특히 스냅 기본값·정밀 수정키·Command 보조 도구·MIDI 트림을 현재 구현 완료로 읽지 않습니다. 실제 제공 키는 [SHORTCUTS](SHORTCUTS.md)를 기준으로 확인합니다.
 
 ## 1. 합의된 방향과 이 문서의 상태
 
-화면 배치는 왼쪽 라이브러리, 그 옆 인스펙터와 두 채널 스트립, 중앙 트랙 영역, 하단 편집기·믹서, 오른쪽 보조 브라우저를 기준으로 합니다. 다크 테마를 사용하며 시각 표현은 자체 디자인으로 만듭니다. Logic Pro for Mac의 익숙한 작업 흐름을 참고하고, 1.0은 웹과 오디오 엔진, 2.0은 로컬 호스트와 VST 연결입니다. USB MIDI 키보드와 브라우저에 노출되는 오디오 입출력은 1.0 설계 범위입니다.
+화면 배치는 왼쪽 라이브러리, 그 옆 인스펙터와 두 채널 스트립, 중앙 트랙 영역, 하단 편집기·믹서, 오른쪽 보조 브라우저를 기준으로 합니다. 다크 테마를 사용하며 시각 표현은 자체 디자인으로 만듭니다. 1.0은 웹과 오디오 엔진, 2.0은 로컬 호스트와 VST 연결입니다. USB MIDI 키보드와 브라우저에 노출되는 오디오 입출력은 1.0 설계 범위입니다.
 
 이 문서는 **구현할 동작 계약**입니다. 여기에 적힌 기능이 모두 구현되었다는 뜻이 아닙니다. 승인된 배치 시안, 현재 React 개발 코드, 앞으로 구현할 동작을 구분합니다. 각 기능의 완료 판정은 마지막의 검증 표를 사용합니다. 기능·화면 일치율을 측정하지 않았으므로 ‘98% 완성’으로 표시하지 않습니다.
 
-Logic 비교 기준은 Apple의 **U.S. default key command preset**입니다. 주요 키 명령 페이지는 12.3을 표시하며, 포인터·보조 문서는 지역별 접근 경로에 따라 12.0·12.2 또는 명시된 이전 버전을 참고했습니다. 이것을 Logic 최신 릴리스 번호라고 단정하지 않습니다. 한국어 배열, 사용자 지정 키맵, 이전 버전은 결과가 다를 수 있습니다. 아래에서 ‘Logic 참고’와 ‘우리 웹 기본안’을 분리합니다. 임계값·최소 길이·Undo 단위·오류 처리는 별도로 표시하지 않아도 우리 제품의 설계 선택입니다. [A1][A2][A3]
+키 배치는 macOS를 기준으로 정하고 Windows·Linux 조합을 따로 정합니다. 한국어 배열과 사용자 지정 키맵은 결과가 다를 수 있습니다. 임계값·최소 길이·Undo 단위·오류 처리는 별도로 표시하지 않아도 우리 제품의 설계 선택입니다.
 
 ## 2. 반드시 지킬 여덟 가지 규칙
 
@@ -25,7 +25,7 @@ Logic 비교 기준은 Apple의 **U.S. default key command preset**입니다. �
 
 ## 3. 키보드 표기와 처리 순서
 
-`Mod`는 macOS의 Command, Windows/Linux의 Control입니다. `Alt`는 macOS의 Option, Windows/Linux의 Alt입니다. **모든 Logic의 Control을 Mod로 치환하지 않습니다.** 예를 들어 macOS Control+M과 Command+M은 다릅니다. Return과 숫자패드 Enter도 별도 키입니다.
+`Mod`는 macOS의 Command, Windows/Linux의 Control입니다. `Alt`는 macOS의 Option, Windows/Linux의 Alt입니다. **macOS의 Control 조합을 모두 Mod로 치환하지 않습니다.** 예를 들어 macOS Control+M과 Command+M은 다릅니다. Return과 숫자패드 Enter도 별도 키입니다.
 
 입력 처리 순서는 다음과 같습니다.
 
@@ -57,7 +57,7 @@ AltGraph 검사는 운영체제별로 다르게 합니다. 일부 macOS 브라�
 | 버튼·체크박스 | 기본 컨트롤 동작 | 앱 명령 없음 | 해당 버튼·체크박스 작동 |
 | 모달·메뉴 | 그 대화상자의 동작만 | 해당 입력 범위 | 해당 컨트롤의 동작 |
 
-라이브러리에서 Space 미리듣기는 해당 목록을 클릭하거나 키보드로 이동해 **명시적으로 포커스를 준 경우**만 사용합니다. 재생 중 사운드 탐색을 하다가 프로젝트 재생을 우발적으로 끄지 않도록, 상단 재생 버튼과 미리듣기 상태를 구분합니다. Logic도 작업 영역에 따라 transport 키의 대상이 달라질 수 있으므로 이 부분은 반드시 문맥으로 구현합니다. [A9]
+라이브러리에서 Space 미리듣기는 해당 목록을 클릭하거나 키보드로 이동해 **명시적으로 포커스를 준 경우**만 사용합니다. 재생 중 사운드 탐색을 하다가 프로젝트 재생을 우발적으로 끄지 않도록, 상단 재생 버튼과 미리듣기 상태를 구분합니다. 작업 영역에 따라 transport 키의 대상이 달라질 수 있으므로 이 부분은 반드시 문맥으로 구현합니다.
 
 편집기 안에서 선택이 없어도 그 편집기는 Delete를 소비합니다. 이후 상위 편집기나 전체 프로젝트로 전파하지 않습니다. 도움말에는 ‘선택 없음’으로 표시할 수 있지만 매번 토스트를 띄우지는 않습니다.
 
@@ -67,34 +67,34 @@ AltGraph 검사는 운영체제별로 다르게 합니다. 일부 macOS 브라�
 
 툴바·컨텍스트 메뉴·명령 검색은 열기 직전의 편집 범위와 선택을 보관합니다. 버튼 클릭으로 포커스가 버튼으로 옮겨도 그 보관한 대상에 실행합니다. ‘리전 분할’처럼 대상 종류가 고정된 버튼은 그 대상을 이름과 활성 상태로 명시합니다. 일반 키보드 Delete는 이러한 보관 대상을 쓰지 않고 현재 포커스 범위만 사용합니다.
 
-## 5. Logic 참고 키맵과 웹 기본안
+## 5. 웹 기본 키맵
 
-다음 표의 키는 **설계 목표**입니다. 현재 React 코드에 모두 연결되었다는 뜻이 아닙니다. 비교 기준은 Apple의 U.S. preset이고, 브라우저 충돌과 제품 지원 범위는 별도로 표시했습니다. [A1][A2][A3]
+다음 표의 키는 **설계 목표**입니다. 현재 React 코드에 모두 연결되었다는 뜻이 아닙니다. 브라우저 충돌과 제품 지원 범위는 별도로 표시했습니다.
 
 ### 5.1 재생·녹음·탐색
 
-| 명령 ID | 동작 | Logic 참고 | 우리 웹 기본안 | 반복/조건 |
-|---|---|---|---|---|
-| transport.playStop | 프로젝트 재생·정지 | Space | Space | 최초 1회; 편집 캔버스 문맥 |
-| transport.playSelection | 선택 시작부터 재생 | Shift+Space | Shift+Space | 최초 1회; 선택 없으면 실행하지 않음 |
-| transport.beginning | 프로젝트 처음으로 | Return | Return; Home 보조키 | 입력 필드에서는 실행하지 않음 |
-| transport.record | 녹음 | R | R | 녹음 대기 트랙·권한·입력 확인 후 |
-| transport.cycle | 사이클 켜기·끄기 | C | C | 최초 1회; 범위가 없으면 §13.3의 기본 범위 생성 |
-| transport.metronome | 메트로놈 | K | K | 구현됨 ([METRONOME.md](METRONOME.md)) |
-| transport.countIn | 카운트인 | Shift+K | Shift+K | 메트로놈 설정에서 선택 (단축키는 아직 미할당) |
-| transport.rewind | 뒤로 이동 | , | , | 초기 이동 단위 1마디; 반복 허용 |
-| transport.forward | 앞으로 이동 | . | . | 초기 이동 단위 1마디; 반복 허용 |
-| transport.fastRewind | 빠르게 뒤로 이동 | Shift+, | Shift+, | 초기 이동 단위 4마디; 반복 허용 |
-| transport.fastForward | 빠르게 앞으로 이동 | Shift+. | Shift+. | 초기 이동 단위 4마디; 반복 허용 |
-| cycle.fromSelectionRounded | 선택을 감싸는 사이클 | U | U | 시작 내림·끝 올림, 마디 경계 기준 |
-| cycle.fromSelectionExact | 선택 경계 그대로 사이클 | Mod+U | 메뉴·명령 검색 | 브라우저 소스 보기와 충돌 |
-| transport.goToPosition | 재생 위치 입력 | / | / | 위치 입력 팝업; Escape 취소 |
+| 명령 ID | 동작 | 기본키 | 반복/조건 |
+| --- | --- | --- | --- |
+| transport.playStop | 프로젝트 재생·정지 | Space | 최초 1회; 편집 캔버스 문맥 |
+| transport.playSelection | 선택 시작부터 재생 | Shift+Space | 최초 1회; 선택 없으면 실행하지 않음 |
+| transport.beginning | 프로젝트 처음으로 | Return; Home 보조키 | 입력 필드에서는 실행하지 않음 |
+| transport.record | 녹음 | R | 녹음 대기 트랙·권한·입력 확인 후 |
+| transport.cycle | 사이클 켜기·끄기 | C | 최초 1회; 범위가 없으면 §13.3의 기본 범위 생성 |
+| transport.metronome | 메트로놈 | K | 구현됨 ([METRONOME.md](METRONOME.md)) |
+| transport.countIn | 카운트인 | Shift+K | 메트로놈 설정에서 선택 (단축키는 아직 미할당) |
+| transport.rewind | 뒤로 이동 | , | 초기 이동 단위 1마디; 반복 허용 |
+| transport.forward | 앞으로 이동 | . | 초기 이동 단위 1마디; 반복 허용 |
+| transport.fastRewind | 빠르게 뒤로 이동 | Shift+, | 초기 이동 단위 4마디; 반복 허용 |
+| transport.fastForward | 빠르게 앞으로 이동 | Shift+. | 초기 이동 단위 4마디; 반복 허용 |
+| cycle.fromSelectionRounded | 선택을 감싸는 사이클 | U | 시작 내림·끝 올림, 마디 경계 기준 |
+| cycle.fromSelectionExact | 선택 경계 그대로 사이클 | 메뉴·명령 검색 | 브라우저 소스 보기와 충돌 |
+| transport.goToPosition | 재생 위치 입력 | / | 위치 입력 팝업; Escape 취소 |
 
-Return은 현재 Apple 표에서 프로젝트 처음 이동을 확인했습니다. C는 이전 공식 기본값과 일치하는 웹 기본안이며, 최신 사용자 지정 프리셋까지 같다고 주장하지 않습니다. 숫자패드 Enter/0/점은 선택 가능한 확장 프리셋으로 두고, 키 위치를 구분할 수 있는 환경에서만 활성화합니다.
+숫자패드 Enter/0/점은 선택 가능한 확장 프리셋으로 두고, 키 위치를 구분할 수 있는 환경에서만 활성화합니다.
 
 Space로 정지할 때는 현재 위치를 유지합니다. Return으로 처음으로 갑니다. 사이클이 켜져 있는 일반 재생은 사이클 시작점에서 시작하도록 정의하고, 선택 재생은 사용자가 지정한 선택 시작점을 우선합니다. 사이클·선택 재생의 우선순위는 UI에 표시하고 설정값으로 무질서하게 갈라놓지 않습니다.
 
-녹음 중 Space는 녹음을 마감하고 정지합니다. R을 다시 누르면 현재 테이크를 마감하고 재생은 이어갑니다. 진행 중 녹음을 버리는 Logic의 Mod+Period 동작은 1.0 기본키에 넣지 않습니다. 녹음이 끝난 뒤 명시적인 Undo로 테이크를 되돌립니다. 반복 R 이벤트로 녹음 시작·종료가 연달아 실행되지 않아야 합니다.
+녹음 중 Space는 녹음을 마감하고 정지합니다. R을 다시 누르면 현재 테이크를 마감하고 재생은 이어갑니다. 진행 중 녹음을 버리는 동작은 1.0 기본키에 넣지 않습니다. 녹음이 끝난 뒤 명시적인 Undo로 테이크를 되돌립니다. 반복 R 이벤트로 녹음 시작·종료가 연달아 실행되지 않아야 합니다.
 
 ### 5.2 패널과 작업 영역
 
@@ -106,56 +106,56 @@ Space로 정지할 때는 현재 위치를 유지합니다. Return으로 처음�
 | panel.editor | 문맥 편집기 | E | MIDI면 피아노롤, 오디오면 오디오 편집기 |
 | panel.pianoRoll | 피아노롤 | P | 유효한 MIDI 리전이 있을 때 표시; 오디오를 MIDI로 바꾸지 않음 |
 | panel.smartControls | 사운드 제어 | B | 기능 구현 후 활성화 |
-| panel.loopBrowser | 루프 브라우저 | O | 사용자 루프 탐색; Apple 사운드 자산을 포함한다는 의미 아님 |
+| panel.loopBrowser | 루프 브라우저 | O | 사용자 루프 탐색; 기본 사운드 자산을 포함한다는 의미 아님 |
 | panel.fileBrowser | 프로젝트/파일 브라우저 | F | 마지막 파일 탭·검색 유지 |
 | panel.listEditors | 이벤트 목록 | D | 기능 구현 후 활성화 |
 | view.automation | 오토메이션 표시 | A | 선택 트랙의 표시 상태 전환, 데이터 생성 안 함 |
 | view.globalTracks | 글로벌 트랙 표시 | G | 템포·마커 등 지원 항목만 표시 |
 | help.commands | 단축키·명령 검색 | ? | 우리 웹 추가키; 마지막 편집 대상을 기억 |
 
-E/D/F는 구버전 공식 기본값에서도 확인되는 배치를 웹 기본안으로 채택한 것입니다. 현재 모든 프리셋에서 동일하다는 주장은 하지 않습니다. 하단 믹서와 편집기는 같은 도킹 영역을 사용하며 한 번에 하나를 표시합니다. 패널 표시 토글은 프로젝트 Undo나 자동 저장을 만들지 않고 사용자 작업 공간 설정으로 보관합니다.
+하단 믹서와 편집기는 같은 도킹 영역을 사용하며 한 번에 하나를 표시합니다. 패널 표시 토글은 프로젝트 Undo나 자동 저장을 만들지 않고 사용자 작업 공간 설정으로 보관합니다.
 
 ### 5.3 선택·편집
 
-| 동작 | Logic 참고 | 우리 웹 기본안 | 적용 대상 |
-|---|---|---|---|
-| 실행 취소 / 다시 실행 | Mod+Z / Shift+Mod+Z | 동일 | 활성 프로젝트; 입력 중에는 텍스트 Undo 우선 |
-| 모두 선택 | Mod+A | 동일 | 포커스 편집 영역 |
-| 선택 해제 | Shift+D | 동일; Escape 단계적 취소 | 현재 영역만 |
-| 선택 반전 | Shift+I | 동일 | 현재 편집 가능한 객체 집합 |
-| 이전/다음 객체 선택 | ← / → | 동일 | 리전·음표; 시간·음높이 순서로 결정 |
-| 이전/다음 선택 토글 | Shift+← / → | 동일 | 현재 편집 영역 |
-| 위/아래 트랙 선택 | ↑ / ↓ | 동일 | 트랙 목록·어레인지먼트; 재생 위치 유지 |
-| 선택 객체 삭제 | Delete | Delete / Backspace | 음표 또는 리전; 상위 대상 대체 없음 |
-| 트랙 삭제 | Mod+Delete | 별도 트랙 메뉴/명령 검색 | 트랙 삭제라는 이름·대상을 명확히 표시 |
-| 잘라내기 / 복사 / 붙여넣기 | Mod+X/C/V | 동일 | 앱 내부 객체 클립보드; 텍스트 입력 우선 |
-| 설정을 복제한 새 트랙 | Mod+D | 메뉴·명령 검색 | 리전 복제와 다른 명령 |
-| 리전·음표 반복 | Mod+R | 메뉴·명령 검색; Alt 드래그 복제 | 원본과 독립된 사본 |
-| 재생 위치에서 분할 | Mod+T | 메뉴·명령 검색; T→I 가위 도구 | 분할 가능한 리전 내부 |
-| 결합 | Mod+J | 메뉴·명령 검색 | 지원하는 동일 종류 객체만 |
-| 퀀타이즈 | Q | Q | 선택 음표 또는 선택 MIDI 리전 |
-| 리전 루프 | L | L | 루프 지원이 구현된 리전 |
-| 선택을 재생 위치로 이동 | ; | ; | 선택 전체의 상대 간격 유지 |
-| 가로 위치 미세 이동 | Option+← / → | Alt+, / Alt+. | 웹 공통 대체키; macOS Option+←/→ 보조키 가능 |
-| 길이 미세 조절 | Option+Shift+← / → | Alt+Shift+, / Alt+Shift+. | 웹 공통 대체키; macOS 원래 조합 보조키 가능 |
-| 음높이 반음 이동 | Option+↑ / ↓ | Alt+↑ / ↓ | 선택 MIDI 음표/리전; 텍스트 입력 제외 |
-| 음높이 옥타브 이동 | Option+Shift+↑ / ↓ | Alt+Shift+↑ / ↓ | 선택 MIDI 음표/리전 |
-| 선택 노트·리전 뮤트 | Control+M | Control+M | macOS에서도 Command로 바꾸지 않음 |
-| 맞춤 확대 토글 | Z | Z | 선택 범위; 선택 없으면 내용 전체 |
+| 동작 | 기본키 | 적용 대상 |
+| --- | --- | --- |
+| 실행 취소 / 다시 실행 | Mod+Z / Shift+Mod+Z | 활성 프로젝트; 입력 중에는 텍스트 Undo 우선 |
+| 모두 선택 | Mod+A | 포커스 편집 영역 |
+| 선택 해제 | Shift+D; Escape 단계적 취소 | 현재 영역만 |
+| 선택 반전 | Shift+I | 현재 편집 가능한 객체 집합 |
+| 이전/다음 객체 선택 | ← / → | 리전·음표; 시간·음높이 순서로 결정 |
+| 이전/다음 선택 토글 | Shift+← / → | 현재 편집 영역 |
+| 위/아래 트랙 선택 | ↑ / ↓ | 트랙 목록·어레인지먼트; 재생 위치 유지 |
+| 선택 객체 삭제 | Delete / Backspace | 음표 또는 리전; 상위 대상 대체 없음 |
+| 트랙 삭제 | 별도 트랙 메뉴/명령 검색 | 트랙 삭제라는 이름·대상을 명확히 표시 |
+| 잘라내기 / 복사 / 붙여넣기 | Mod+X/C/V | 앱 내부 객체 클립보드; 텍스트 입력 우선 |
+| 설정을 복제한 새 트랙 | 메뉴·명령 검색 | 리전 복제와 다른 명령 |
+| 리전·음표 반복 | 메뉴·명령 검색; Alt 드래그 복제 | 원본과 독립된 사본 |
+| 재생 위치에서 분할 | 메뉴·명령 검색; T→I 가위 도구 | 분할 가능한 리전 내부 |
+| 결합 | 메뉴·명령 검색 | 지원하는 동일 종류 객체만 |
+| 퀀타이즈 | Q | 선택 음표 또는 선택 MIDI 리전 |
+| 리전 루프 | L | 루프 지원이 구현된 리전 |
+| 선택을 재생 위치로 이동 | ; | 선택 전체의 상대 간격 유지 |
+| 가로 위치 미세 이동 | Alt+, / Alt+. | 웹 공통 대체키; macOS Option+←/→ 보조키 가능 |
+| 길이 미세 조절 | Alt+Shift+, / Alt+Shift+. | 웹 공통 대체키; macOS Option+Shift+←/→ 보조키 가능 |
+| 음높이 반음 이동 | Alt+↑ / ↓ | 선택 MIDI 음표/리전; 텍스트 입력 제외 |
+| 음높이 옥타브 이동 | Alt+Shift+↑ / ↓ | 선택 MIDI 음표/리전 |
+| 선택 노트·리전 뮤트 | Control+M | macOS에서도 Command로 바꾸지 않음 |
+| 맞춤 확대 토글 | Z | 선택 범위; 선택 없으면 내용 전체 |
 
-**Shift+D를 복제로 사용하지 않습니다.** Logic의 선택 해제와 충돌하기 때문입니다. **S를 분할로 사용하지 않습니다.** 채널 솔로와 도구 메뉴 안의 솔로 도구가 다른 문맥에서 사용됩니다. 채널 M/S는 선택 트랙·채널을 대상으로 하며, 리전/음표 뮤트와 별도 명령입니다.
+**Shift+D를 복제로 사용하지 않습니다.** 선택 해제 키이기 때문입니다. **S를 분할로 사용하지 않습니다.** 채널 솔로와 도구 메뉴 안의 솔로 도구가 다른 문맥에서 사용됩니다. 채널 M/S는 선택 트랙·채널을 대상으로 하며, 리전/음표 뮤트와 별도 명령입니다.
 
-우리의 반복 명령은 선택 묶음의 시작부터 가장 늦은 끝까지를 한 단위로 보고, 그 뒤에 사본 한 묶음을 만드는 것으로 정의합니다. 여러 번 반복할 때는 반복 횟수 대화상자를 사용합니다. 이것은 Apple의 명령 이름을 확인한 뒤 정한 우리 동작이며, Logic의 모든 반복 설정까지 같다고 주장하지 않습니다.
+우리의 반복 명령은 선택 묶음의 시작부터 가장 늦은 끝까지를 한 단위로 보고, 그 뒤에 사본 한 묶음을 만드는 것으로 정의합니다. 여러 번 반복할 때는 반복 횟수 대화상자를 사용합니다.
 
 웹의 Alt+쉼표/마침표 이동 단위는 화면의 Nudge 설정을 따릅니다. 기본값은 현재 고정 격자이며 Smart일 때는 현재 확대에서 계산한 격자를 표시합니다. 수정키 조합은 완전히 일치해야 합니다. Alt+Shift+쉼표가 일반 Shift+쉼표 transport 이동과 동시에 실행되면 안 됩니다.
 
 ### 5.4 도구 메뉴
 
-T는 도구 메뉴입니다. 메뉴가 열린 동안 다음 키를 해석합니다. 도구를 정한 뒤 메뉴를 닫고 원래 편집 영역에 포커스를 돌려줍니다. 입력 필드에서는 T를 문자로 처리합니다. `T→P` 같은 시퀀스는 두 키를 동시에 누르는 조합이 아닙니다. [A4]
+T는 도구 메뉴입니다. 메뉴가 열린 동안 다음 키를 해석합니다. 도구를 정한 뒤 메뉴를 닫고 원래 편집 영역에 포커스를 돌려줍니다. 입력 필드에서는 T를 문자로 처리합니다. `T→P` 같은 시퀀스는 두 키를 동시에 누르는 조합이 아닙니다.
 
 | 시퀀스 | 도구 | 1.0 설계 상태 |
 |---|---|---|
-| T→T | 포인터 | 기본 도구; 이전 공식 할당과 일치 |
+| T→T | 포인터 | 기본 도구 |
 | T→P | 연필 | MIDI 리전·음표 생성 |
 | T→E | 지우개 | 클릭한 대상 삭제; 빈 공간에서는 동작 없음 |
 | T→I | 가위 | 리전 분할; 분할 위치 미리 표시 |
@@ -200,7 +200,7 @@ Chrome은 새 탭·새로고침·북마크·뒤로 가기 등 자체 단축키�
 | 파라미터 드래그 | Shift | 미세 조정; 감도 변경 순간 값이 점프하지 않음 |
 | 캔버스의 새 pointerdown | Mod | 할당한 보조 도구; 스냅 해제 전용 조합은 제외 |
 
-Logic에서는 Option을 경계에 적용할 때 시간 늘이기/줄이기로 쓰는 문맥도 있습니다. 따라서 **본문 복제와 경계 트림을 같은 규칙으로 처리하지 않습니다.** 1.0에서 지원하지 않는 시간 늘이기나 MIDI alias 수정키를 일반 복사로 조용히 바꾸지 않습니다. 해당 편집을 명시적으로 비활성화하고 일반 이동·복제 경로를 제공합니다. [A5][A6]
+Option을 경계에 적용하면 시간 늘이기/줄이기로 쓸 수 있는 문맥이 있으므로 **본문 복제와 경계 트림을 같은 규칙으로 처리하지 않습니다.** 1.0에서 지원하지 않는 시간 늘이기나 MIDI alias 수정키를 일반 복사로 조용히 바꾸지 않습니다. 해당 편집을 명시적으로 비활성화하고 일반 이동·복제 경로를 제공합니다.
 
 특히 Alt+Shift+MIDI 리전 드래그는 alias용으로 예약하고, alias가 없는 1.0에서는 그 조합으로 편집을 확정하지 않습니다. 일반 복제는 Alt만 사용합니다. 음표 문맥의 복제·길이 조절은 리전 alias 규칙과 구분합니다. 보조 도구는 제스처 시작 시 결정하고 드래그 중 바뀌지 않습니다. 복제 의도·스냅 해제·축 고정은 진행 중 수정키 변화에 반응합니다.
 
@@ -262,7 +262,7 @@ Logic에서는 Option을 경계에 적용할 때 시간 늘이기/줄이기로 �
 
 ## 11. 구현 구조
 
-명령은 `id / label / scope / binding / capability / canExecute / execute / repeatPolicy / undoPolicy`로 정의합니다. UI 버튼과 키보드가 같은 명령을 호출합니다. 원래 Logic 키는 설명용 메타데이터이고 웹에서 실제 등록하는 키와 구분합니다.
+명령은 `id / label / scope / binding / capability / canExecute / execute / repeatPolicy / undoPolicy`로 정의합니다. UI 버튼과 키보드가 같은 명령을 호출합니다. 설명용 macOS 원래 키는 메타데이터이고 웹에서 실제 등록하는 키와 구분합니다.
 
 입력 컨텍스트는 `text`, `dialog`, `menu`, `gesture`, `track-list`, `arrangement`, `piano-roll`, `mixer`, `browser`, `transport`로 나눕니다. 대상 DOM 이름을 여러 컴포넌트에서 따로 추측하는 구현을 줄이고 편집 영역의 명시적인 범위를 사용합니다. React 이벤트와 window 이벤트를 동시에 쓸 때는 `defaultPrevented`와 스코프 처리를 확인합니다.
 
@@ -339,16 +339,6 @@ A는 표시 상태만 바꿉니다. 선이나 포인트 편집이 구현되면 �
 
 ## 출처
 
-- [A1] [Apple: Global Commands](https://support.apple.com/en-ph/guide/logicpro/lgcp02bf31b6/mac) — U.S. 기본 키맵, 재생·녹음·패널 명령.
-- [A2] [Apple: Main Window Tracks and Various Editors, 12.3](https://support.apple.com/guide/logicpro/main-window-tracks-and-various-editors-lgcpe8314fe2/12.3/mac/15.6) — 트랙 설정 복제, 리전 반복, 분할, 이동·길이·음높이.
-- [A3] [Apple: Various Windows](https://support.apple.com/en-ke/guide/logicpro/lgcp665bbccc/mac) — 선택·실행 취소·맞춤 확대.
-- [A4] [Apple: Tool Menu](https://support.apple.com/en-om/guide/logicpro/lgcp0182c4e5/mac) — 도구 메뉴 안의 키.
-- [A5] [Apple: General pointer shortcuts](https://support.apple.com/nl-be/guide/logicpro/lgcp77b30381/mac) — 복제, 기본값 복귀, 미세 조절.
-- [A6] [Apple: Tracks area pointer shortcuts](https://support.apple.com/en-hk/guide/logicpro/lgcpea796663/mac) — 리전 본문·경계·수정키 문맥.
-- [A7] [Apple: Piano Roll pointer shortcuts](https://support.apple.com/en-tm/guide/logicpro/lgcp9a4b36c6/mac) — 음표 길이·벨로시티의 특수 조작.
-- [A8] [Apple: Assign tools, 10.7](https://support.apple.com/en-mide/guide/logicpro/lgcp5b365bf4/10.7/mac/11.0) — T→T 포인터 및 보조 도구; 이전 버전 참고.
-- [A9] [Apple: Use transport key commands, 10.7](https://support.apple.com/guide/logicpro/use-transport-key-commands-lgcp2814a670/10.7/mac/11.0) — 작업 영역에 따른 재생 키의 문맥; 이전 버전 참고.
-- [A10] [Apple: Global Commands, 10.7](https://support.apple.com/en-by/guide/logicpro/lgcp02bf31b6/10.7/mac/11.0) — C 및 구버전 패널 키 비교.
 - [W1] [MDN: KeyboardEvent](https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent) — code/key, isComposing, repeat.
 - [W2] [MDN: getModifierState](https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/getModifierState) — AltGraph의 플랫폼 차이.
 - [W3] [Google: Chrome keyboard shortcuts](https://support.google.com/chrome/answer/157179?hl=en) — 브라우저 예약 조합.
@@ -357,7 +347,7 @@ A는 표시 상태만 바꿉니다. 선이나 포인트 편집이 구현되면 �
 
 ## 부록 A. 포인터·선택·편집의 구현 계약
 
-이 부록의 모든 키 처리와 Escape 규칙에는 본문 §3의 IME·기처리 이벤트 검사가 먼저 적용됩니다. 수정키 충돌은 본문 §7을 우선합니다. 특히 MIDI 리전의 Alt+Shift alias 예약은 일반 Alt 복제 규칙보다 먼저 판정합니다. 아래 수치와 세부 동작은 우리 제품의 설계값이며 Logic의 내부 구현을 단정하지 않습니다.
+이 부록의 모든 키 처리와 Escape 규칙에는 본문 §3의 IME·기처리 이벤트 검사가 먼저 적용됩니다. 수정키 충돌은 본문 §7을 우선합니다. 특히 MIDI 리전의 Alt+Shift alias 예약은 일반 Alt 복제 규칙보다 먼저 판정합니다. 아래 수치와 세부 동작은 우리 제품의 설계값입니다.
 
 ### A.1. 공통 입력 상태와 우선순위
 

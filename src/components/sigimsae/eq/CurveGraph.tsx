@@ -47,8 +47,8 @@ export interface CurveGraphProps {
 }
 
 /**
- * Interactive frequency-response graph (log 20 Hz–20 kHz × ±range dB) in the spirit of
- * FabFilter Pro-Q: drag nodes, wheel = Q, double-click adds, right-click menus, Alt-click
+ * Interactive frequency-response graph (log 20 Hz–20 kHz × ±range dB):
+ * drag nodes, wheel = Q, double-click adds, right-click menus, Alt-click
  * bypasses, Shift = fine, arrows move the focused node. Renders crisp SVG at any size.
  */
 export function CurveGraph(props: CurveGraphProps) {

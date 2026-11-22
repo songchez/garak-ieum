@@ -6,7 +6,7 @@ import { AFTERTOUCH_NUMBER, PITCH_BEND_NUMBER, PROGRAM_NUMBER } from './controll
 import type { StampedMidi } from '../audio/liveMidi'
 
 /**
- * 캡처 (Ableton Capture MIDI, Logic Capture Recording): the last few minutes of live input are kept while not
+ * 캡처 (capture recording): the last few minutes of live input are kept while not
  * recording, and one command turns the last performance into a region (docs/MIDI_RECORDING.md).
  */
 export const CAPTURE_WINDOW_MS = 5 * 60_000

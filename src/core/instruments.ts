@@ -71,7 +71,7 @@ export const INSTRUMENTS: readonly InstrumentDef[] = [
   HANBAM_106_DEFINITION,
   sampled('grand', 'salamander', 'Grand Piano', '그랜드 피아노', 'SAMPLED GRAND', 'piano', false, '#d9b45a', '네 단계 세기로 녹음한 밝고 또렷한 그랜드'),
   sampled('concert-grand', 'bitklavier', 'Concert Grand', '콘서트 그랜드', 'SAMPLED CONCERT GRAND', 'piano', false, '#c79a4b', '공연장에서 녹음한 깊고 풍성한 콘서트 그랜드'),
-  sampled('wurlitzer', 'wurlitzer', 'Wurlitzer EP', '월리처', 'SAMPLED EP', 'keys', false, '#6f9fd0', '따뜻하게 일그러지는 빈티지 전기 피아노'),
+  sampled('wurlitzer', 'wurlitzer', 'Reed EP', '리드 EP', 'SAMPLED EP', 'keys', false, '#6f9fd0', '따뜻하게 일그러지는 빈티지 전기 피아노'),
   sampled('kit-acoustic', 'kit-acoustic', 'Studio Kit', '스튜디오 드럼', 'ACOUSTIC KIT', 'drums', true, '#e38457', '자연스러운 어쿠스틱 스튜디오 드럼'),
   sampled('kit-808', 'kit-808', '808 Kit', '808 드럼', 'ELECTRONIC KIT', 'drums', true, '#d96f5a', '묵직한 808 킥과 전자 퍼커션'),
   sampled('kit-lofi', 'kit-lofi', 'Lo-fi Kit', '로파이 드럼', 'LO-FI KIT', 'drums', true, '#c98f6c', '먼지 낀 질감의 로파이 드럼'),
@@ -106,7 +106,7 @@ export const SAMPLE_SETS: readonly string[] = [...new Set(INSTRUMENTS.flatMap(de
 export const SAMPLE_CREDITS: readonly (SampleAttribution & { instruments: string })[] = [
   { title: 'Accurate-Salamander Grand Piano V6.2e (Salamander Grand Piano V3)', author: 'Alexander Holm · Chisato Yamauchi (Accurate-Salamander Project)', license: 'CC BY 3.0', url: 'https://www.ir.isas.jaxa.jp/~cyamauch/AccurateSalamander/', instruments: 'Grand Piano' },
   { title: 'The bitKlavier Grand', author: 'Dan Trueman · Andrés Villalta · Matt Wang et al. (Princeton University)', license: 'CC BY 4.0', url: 'https://bitklavier.com/the-bitklavier-grand/', instruments: 'Concert Grand' },
-  { title: 'Wurlitzer EP200', author: 'Greg Sullivan', license: 'CC BY 3.0 / 4.0', instruments: 'Wurlitzer EP' },
+  { title: 'Wurlitzer EP200', author: 'Greg Sullivan', license: 'CC BY 3.0 / 4.0', instruments: 'Reed EP' },
   { title: 'Virtuosity Drums', author: 'Versilian Studios · Karoryfer Samples', license: 'CC0', instruments: 'Studio Kit' },
   { title: 'VCSL (Versilian Community Sample Library)', author: 'Versilian Studios', license: 'CC0', url: 'https://github.com/sgossner/VCSL', instruments: 'Studio Kit · Lo-fi Kit' },
   { title: 'Gogodze Phu Vol II', author: 'Karoryfer Samples', license: 'CC0', instruments: 'Lo-fi Kit' },

@@ -3,18 +3,10 @@
 오디오 리전마다 피치를 반음·센트 단위로 옮기고, 그때 **템포를 유지할지(템포 유지)** 아니면
 **테이프처럼 속도도 함께 바뀌게 할지(자연스럽게)** 고를 수 있습니다. 스키마 12에서 추가되었습니다.
 
-## 1. 벤치마크
+## 1. 설계 원칙
 
-| DAW | 리전 단위 조옮김 | 템포 유지 | 속도 함께 (varispeed) | 비고 |
-| --- | --- | --- | --- | --- |
-| Ableton Live | 클립 뷰 **Transpose**(±48 반음) + **Detune**(±50 센트) | Warp 켬: 선택한 워프 모드(Beats/Tones/Texture/Complex/Complex Pro)로 길이 유지 | Warp 끔: 조옮김하면 재생 속도가 바뀌고 클립 길이도 바뀜. Re-Pitch 모드는 템포를 피치로 따라감 | Complex Pro에 Formants 옵션. 렌더는 실시간 |
-| Logic Pro | 리전 인스펙터 Transpose(주로 Apple Loops), 음표 단위는 **Flex Pitch** | Flex Pitch/Apple Loops의 Follow Tempo & Pitch | 프로젝트 전체 **Varispeed**(Speed Only / Speed and Pitch) — 리전 단위는 아님 | Flex Pitch는 음표 단위 편집 |
-| Pro Tools | Elastic Audio의 **Elastic Properties → Pitch Shift**(반음+센트), AudioSuite Pitch Shift(오프라인) | Polyphonic/Rhythmic/X-Form 알고리즘 | **Varispeed** Elastic 알고리즘: 늘이면 테이프처럼 피치도 변함 | X-Form은 오프라인 렌더 후 재생 |
-| Reaper | 아이템 속성 **Pitch adjust**(반음, 소수점 가능) + **Playback rate** | 피치 시프트 모드(élastique 등) | **Preserve pitch when changing rate** 체크 해제 → 속도와 피치가 함께 변함 | 아이템마다 모드 지정 |
-
-공통점: (1) 반음과 미세 조정(센트)을 따로 둔다, (2) "길이 유지"와 "속도 함께"를 리전/클립 단위로
-고른다, (3) 속도 함께 모드에서는 리전 길이가 비율만큼 변한다, (4) 원본은 비파괴로 보존한다.
-가락이음은 Ableton의 Transpose/Detune 구성과 Reaper의 "피치 보존" 스위치를 합친 형태를 택했습니다.
+(1) 반음과 미세 조정(센트)을 따로 둔다, (2) "템포 유지"와 "자연스럽게(속도 함께)"를 리전 단위로
+고른다, (3) 자연스럽게 모드에서는 리전 길이가 비율만큼 변한다, (4) 원본은 비파괴로 보존한다.
 
 ## 2. 사용법
 
@@ -75,7 +67,7 @@
 - 스키마 12 (`src/core/project.ts`): 11 이하 프로젝트는 그대로 열리고(조옮김 없음), 12 미만 파일에
   `regionPitch`가 있으면 거부합니다. 검증: 반음 정수 ±24, 센트 정수 ±50, 합계 ±24 반음, 모드, 렌더/에셋
   일관성(렌더 표시가 있으면 원본이 아닌 에셋, 없으면 원본), 워프와 같은 원본, 음표 피치 편집과 배타.
-- 상태 로직: `src/devices/region-pitch/state.ts` (`setClipTranspose`, `transposeRate`, `assetScale`, 검증).
+- 상태 처리: `src/devices/region-pitch/state.ts` (`setClipTranspose`, `transposeRate`, `assetScale`, 검증).
 - 렌더 계획: `src/devices/audio-warp/renderPlan.ts`의 `RenderGroup`이 워프와 피치를 함께 기술합니다.
   `renderJob`: 템포 유지는 stretch = 워프 × p, 자연스럽게는 stretch = 워프, 그 다음 p 배 리샘플링
   (p = 2^(센트/1200)). 결과 길이 = 원본 × stretch / p.

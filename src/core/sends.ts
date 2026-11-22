@@ -12,7 +12,7 @@ import type { Project, Track, TrackSend } from './types'
 
 /** Linear send gain range (same scale as Track.volume): 0 = off, 1 = 0 dB, 2 = +6 dB. */
 export const SEND_LEVEL_MAX = 2
-/** Ableton/Logic start a newly used send at −∞; a double-click resets the knob to this. */
+/** A newly used send starts at −∞; a double-click resets the knob to this. */
 export const SEND_LEVEL_DEFAULT = 0
 /** Returns start at unity: the return fader is the wet level of the effect. */
 export const RETURN_VOLUME = 1
@@ -28,7 +28,7 @@ export const sendTo = (track: Track, returnId: string): TrackSend | undefined =>
 export const sendLevel = (track: Track, returnId: string): number => sendTo(track, returnId)?.level ?? 0
 export const copySend = (send: TrackSend): TrackSend => ({ returnId: send.returnId, level: send.level, ...(send.pre ? { pre: true } : {}) })
 
-/** "A", "B", … "Z", "AA" — the letter Ableton shows on return tracks and send knobs. */
+/** "A", "B", … "Z", "AA" — the letter shown on return tracks and send knobs. */
 export function returnLetter(index: number): string {
   let n = Math.max(0, Math.trunc(index)), out = ''
   do { out = String.fromCharCode(65 + (n % 26)) + out; n = Math.floor(n / 26) - 1 } while (n >= 0)
@@ -58,7 +58,7 @@ export function nextReturnName(tracks: readonly Track[], label = '리턴'): stri
 }
 
 /**
- * The "리버브 리턴 추가" quick action (Ableton's default A Reverb / B Delay): one return with 대청 Hall and
+ * The "리버브 리턴 추가" quick action (default A Reverb / B Delay): one return with 대청 Hall and
  * one with 메아리 Echo, both 100% wet (effect amount 1, dry 0) so the return fader sets the wet level.
  */
 export function createEffectReturns(tracks: readonly Track[]): Track[] {

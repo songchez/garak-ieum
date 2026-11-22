@@ -70,7 +70,7 @@ comparison before choosing these experimental controls.
 The source-window adapter renders changed notes with surrounding source context,
 preserves sample count and stereo channel layout, and crossfades into unchanged
 source at note boundaries. This is an initial monophonic note editor, not
-polyphonic note separation, advanced time warping, or Melodyne-quality parity.
+polyphonic note separation or advanced time warping.
 
 
 Saved note times remain in source seconds. Decoding the same file at a different

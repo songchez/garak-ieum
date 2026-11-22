@@ -349,8 +349,8 @@ struct EngineSnapshot {
   bool rustEngine = false;
 };
 
-// Multi-core track processing (Logic "Processing Threads") and render-ahead of
-// non-live tracks (Cubase ASIO-Guard). `threads` workers join the callback for
+// Multi-core track processing (parallel per-track worker threads) and render-ahead of
+// non-live tracks (pre-rendered ahead of the callback). `threads` workers join the callback for
 // each block: tracks render in parallel and are summed in track order, so the
 // mix is bit-identical to threads = 0 (the single-threaded path).
 // Render-ahead pre-renders playing tracks that are not live (not monitored,

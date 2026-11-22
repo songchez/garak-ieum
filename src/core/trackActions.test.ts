@@ -231,7 +231,7 @@ describe('monitorTargets', () => {
     expect(monitorTargets(p, true, true)).toEqual(['a', 'b'])
   })
 
-  it('follows In/Auto/Off (Ableton)', () => {
+  it('follows In/Auto/Off', () => {
     const p = project(
       track('in', { kind: 'audio', monitorMode: 'in', monitor: true }),
       track('auto', { kind: 'audio', monitorMode: 'auto', armed: true }),

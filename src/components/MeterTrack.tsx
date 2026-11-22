@@ -34,7 +34,7 @@ type Editor = { kind: 'add'; bar: number; x: number; y: number } | { kind: 'edit
 const label = (meter: TimeSignature) => `${meter.numerator}/${meter.denominator}`
 
 /**
- * 박자 global track (docs/METER_MAP.md, Logic's Signature track): time-signature changes on bar lines.
+ * 박자 global track (docs/METER_MAP.md, signature track): time-signature changes on bar lines.
  * Double-click (or the menu) on the lane opens the editor for a change at that bar; drag a change along
  * bars; double-click it to edit; right-click or ⌫ deletes it. Every gesture commits one undo step.
  */

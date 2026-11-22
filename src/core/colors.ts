@@ -1,4 +1,4 @@
-/** Track color palette (Logic: 4 rows × 24 hues) tuned for the dark warm theme. */
+/** Track color palette (4 rows × 24 hues) tuned for the dark warm theme. */
 
 export const PALETTE_COLUMNS = 24
 export const PALETTE_ROWS = 4
@@ -92,7 +92,7 @@ export const TRACK_PALETTE: readonly string[] = buildPalette()
 
 export const paletteSlot = (row: number, hueIndex: number) => TRACK_PALETTE[row * PALETTE_COLUMNS + hueIndex]
 
-/** Logic defaults: audio tracks blue, software-instrument tracks green (second row). */
+/** Defaults: audio tracks blue, software-instrument tracks green (second row). */
 export function defaultTrackColor(kind: 'instrument' | 'audio', _instrumentCategory?: string): string {
   return kind === 'audio' ? paletteSlot(1, 210 / HUE_STEP) : paletteSlot(1, 120 / HUE_STEP)
 }

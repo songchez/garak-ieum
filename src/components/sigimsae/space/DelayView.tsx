@@ -4,7 +4,7 @@ import { delayParamsForTime, delayReadout, delayTime, delayWindow, echoTaps, for
 import { BandStrip, Chips, CompactCard, Handle, Knobs, clamp, defOf, show, stepValue, useDrag, useKeyAdjust, useOneShot } from './ui'
 
 /**
- * 메아리 Echo: repeats on a time axis (EchoBoy / Timeless / Ableton Echo). Left lane grows up, right
+ * 메아리 Echo: repeats on a time axis. Left lane grows up, right
  * lane grows down; ping-pong alternates lanes. Drag any repeat sideways = time (snaps to note values
  * when synced; dragging repeat n moves the grid so repeat n lands under the pointer), up/down = feedback.
  */

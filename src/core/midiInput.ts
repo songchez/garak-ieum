@@ -39,7 +39,7 @@ export function parseMidi(data: ArrayLike<number>): ParsedMidi {
 export const noteOnMessage = (pitch: number, velocity: number, channel = 1): number[] => [0x90 | ((channel - 1) & 15), pitch & 0x7F, Math.max(1, Math.min(127, Math.round(velocity)))]
 export const noteOffMessage = (pitch: number, channel = 1): number[] => [0x80 | ((channel - 1) & 15), pitch & 0x7F, 0]
 
-/** Absent = every enabled input on every channel (Logic/Ableton default). */
+/** Absent = every enabled input on every channel (the default). */
 export const DEFAULT_MIDI_INPUT: TrackMidiInput = { source: 'all' }
 export const midiInputOf = (track: Track): TrackMidiInput => track.midiInput ?? DEFAULT_MIDI_INPUT
 
@@ -52,7 +52,7 @@ export function acceptsMidi(input: TrackMidiInput, source: string, channel: numb
 }
 
 /**
- * Instrument tracks that hear live MIDI (Logic's record-enable / Ableton's Arm + monitor):
+ * Instrument tracks that hear live MIDI (record-enable / arm + monitor):
  * I (`in`) always; `off` never; `auto` while armed, or while the track is focused and no instrument track is
  * armed (auto arm). A muted track still receives notes (its fader silences them), a disabled track does not.
  */

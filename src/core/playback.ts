@@ -48,8 +48,8 @@ export const isTrackEnabled = (track: Track): boolean => track.enabled !== false
 
 /**
  * enabled && !mute && (!anySolo || solo || soloSafe || implied); anySolo counts enabled tracks only.
- * Send/return solo follows Logic (docs/SENDS_RETURNS.md): a return is implied by a soloed track that sends
- * to it (returns are also solo-safe by default, like Ableton's solo-in-place), and soloing a return implies
+ * Send/return solo (docs/SENDS_RETURNS.md): a return is implied by a soloed track that sends
+ * to it (returns are also solo-safe by default, solo-in-place), and soloing a return implies
  * the tracks that send to it. Only sends with a level above 0 imply anything.
  */
 export function audibleTrackIds(tracks: readonly Track[]): Set<string> {

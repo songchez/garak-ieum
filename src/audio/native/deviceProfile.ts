@@ -78,7 +78,7 @@ export function toggleStereoPair(profile: NativeDeviceProfile, left: number, ena
 }
 
 /**
- * Ableton-style input list: one mono choice per enabled channel, then one stereo choice per pair.
+ * Input list: one mono choice per enabled channel, then one stereo choice per pair.
  * `available` (physical input count, when known) hides channels the current device does not have.
  */
 export function inputChoices(profile: NativeDeviceProfile, driverNames?: readonly (string | undefined)[], available?: number): InputChoice[] {
@@ -143,7 +143,7 @@ export function latencyOffsetFrames(measurement: NativeLatencyMeasurement): numb
   return Math.round(Math.min(MAX_RECORDING_OFFSET_FRAMES, Math.max(-MAX_RECORDING_OFFSET_FRAMES, -extra)))
 }
 
-/** Driver release in the background (Cubase "Release Driver when Application is in Background"). */
+/** Driver release in the background ("release driver when the application is in the background"). */
 export function backgroundAction(state: { enabled: boolean; background: boolean; busy: boolean; suspended: boolean }): 'suspend' | 'resume' | null {
   if (state.suspended) return state.background && state.enabled ? null : 'resume'
   return state.enabled && state.background && !state.busy ? 'suspend' : null

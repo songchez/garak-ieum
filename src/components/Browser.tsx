@@ -49,7 +49,7 @@ const has = (q: string, ...parts: (string | undefined)[]) => !q || parts.join(' 
 const dragProps = (item: LibraryItem) => ({ draggable: true, onDragStart: (e: React.DragEvent) => writeLibraryDrag(e.dataTransfer, item) })
 const sectionOf = (def: InstrumentDef) => Math.max(0, INSTRUMENT_SECTIONS.findIndex(s => s.categories.includes(def.category)))
 
-/** The library (F, left edge): a Logic-style column browser for instruments and effects (built-in and VST3), plus project audio. */
+/** The library (F, left edge): a column browser for instruments and effects (built-in and VST3), plus project audio. */
 export function Browser({ assets, engine, focusedTrack, tab, onTabChange, onUse, onPreview, onImport, onOpenPluginSettings, pluginsLocked, hiddenAssetIds }: BrowserProps) {
   const [search, setSearch] = useState('')
   const q = search.trim().toLowerCase()
@@ -62,7 +62,7 @@ export function Browser({ assets, engine, focusedTrack, tab, onTabChange, onUse,
   const [fxCat, setFxCat] = useState(0)
   const listRef = useRef<HTMLUListElement>(null)
 
-  // The instrument column follows the focused track's patch, as the Logic library does.
+  // The instrument column follows the focused track's patch.
   useEffect(() => { if (currentPatch) setInstCat(sectionOf(currentPatch)); else if (currentPlugin) setInstCat(VST) }, [currentPatch, currentPlugin])
   // Audio tracks have no instrument: focusing one turns the browser to its effects.
   const focusedId = focusedTrack?.id, focusedKind = focusedTrack?.kind

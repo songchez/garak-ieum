@@ -15,7 +15,7 @@ export const SPACE_ICONS: Record<number, ReactNode> = {
 }
 
 /**
- * Decay picture (Pro-R / ChromaVerb / Valhalla): dry spike at 0, pre-delay gap, then the wet tail in
+ * Decay picture: dry spike at 0, pre-delay gap, then the wet tail in
  * dB down to −60 (RT60 marker). Handle A at the start of the tail: sideways = pre-delay, up/down =
  * amount. Handle B at the −60 dB point: sideways = decay time (Size).
  */

@@ -212,7 +212,7 @@ export function moveTempoPoint<T extends TempoSource>(project: T, index: number,
   const points = normalizeTempoPoints(project.bpm, project.tempoMap)
   if (!points[index]) return project
   if (index === 0) return withTempoPoints(project, [{ ...points[0], bpm }, ...points.slice(1)])
-  // A point cannot pass its neighbours: dragging stays between them, like Logic's tempo track.
+  // A point cannot pass its neighbours: dragging stays between them.
   const lower = points[index - 1].beat + 1 / 960
   const upper = points[index + 1] ? points[index + 1].beat - 1 / 960 : Infinity
   const clamped = Math.min(upper, Math.max(lower, beat))
@@ -233,7 +233,7 @@ export function setTempoCurve<T extends TempoSource>(project: T, index: number, 
 
 /**
  * The header tempo field: without a map it sets Project.bpm. With a map it edits the point at or before
- * `beat` (the playhead), like Logic's LCD tempo while a tempo track exists.
+ * `beat` (the playhead), like an LCD tempo display while a tempo track exists.
  */
 export function setTempoAt<T extends TempoSource>(project: T, beat: number, bpm: number): T {
   const points = normalizeTempoPoints(project.bpm, project.tempoMap)
@@ -254,7 +254,7 @@ export function scaleTempoMap<T extends TempoSource>(project: T, bpm: number): T
 /** One SMF tempo event. */
 export interface TempoStep { beat: number; bpm: number }
 
-/** Ramps are written as tempo steps this far apart (a 32nd note), like Logic and Cubase do. */
+/** Ramps are written as tempo steps this far apart (a 32nd note). */
 export const SMF_RAMP_STEP_BEATS = 1 / 8
 
 /**

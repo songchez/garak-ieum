@@ -54,7 +54,7 @@ describe('original demo project', () => {
     }
   })
 
-  it('keeps the demo instrument colors instead of the Logic defaults', () => {
+  it('keeps the demo instrument colors instead of the kind defaults', () => {
     const project = createDemoProject()
     expect(project.tracks[0].color).toBe(instrumentDef('drums').color)
     expect(project.tracks[1].color).toBe('#d9b45a')
@@ -63,7 +63,7 @@ describe('original demo project', () => {
 })
 
 describe('track defaults', () => {
-  it('creates tracks with Logic inspector defaults and kind colors', () => {
+  it('creates tracks with inspector defaults and kind colors', () => {
     const instrument = createTrack('instrument', 'keys')
     expect(instrument).toMatchObject({
       enabled: true, armed: false, monitor: false, hidden: false, soloSafe: false,
@@ -674,7 +674,7 @@ describe('markers', () => {
   })
 })
 
-describe('validation of Logic-style fields', () => {
+describe('validation of DAW-style fields', () => {
   const withTrack = (patch: Record<string, unknown>) => ({ ...createEmptyProject(), tracks: [{ ...createTrack('instrument'), ...patch }] })
   const withClip = (patch: Record<string, unknown>, kind: 'midi' | 'audio' = 'midi') =>
     withTrack({ clips: [{ ...(kind === 'midi' ? midi() : audio()), ...patch }] })

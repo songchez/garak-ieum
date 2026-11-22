@@ -1,4 +1,4 @@
-/* Region display (Logic §5 / LOGIC_GAP §1.11). Selectors are prefixed with .track-lane to outrank the legacy .timeline-clip rules in styles.css. */
+/* Region display. Selectors are prefixed with .track-lane to outrank the legacy .timeline-clip rules in styles.css. */
 .track-lane .timeline-clip{--clip-gray:#6b6b6b;--clip-text:var(--text-primary);--clip-preview-color:color-mix(in srgb,var(--clip-color) 25%,var(--text-primary));background:color-mix(in srgb,var(--clip-color) 26%,var(--surface-canvas));border:1px solid color-mix(in srgb,var(--clip-color) 42%,var(--surface-canvas));color:var(--clip-text);min-width:0;border-radius:1px;box-sizing:border-box}
 .track-lane .timeline-clip .clip-title{position:relative;gap:4px}
 .track-lane .timeline-clip .clip-title>span:first-of-type{overflow:hidden;text-overflow:ellipsis;padding-right:12px}

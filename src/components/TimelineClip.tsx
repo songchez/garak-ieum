@@ -48,7 +48,7 @@ export function InlineName({value,label,onDone}:{value:string;label:string;onDon
   return <input className="inline-name" aria-label={label} value={draft} autoFocus onFocus={e=>e.currentTarget.select()} onPointerDown={e=>e.stopPropagation()} onClick={e=>e.stopPropagation()} onDoubleClick={e=>e.stopPropagation()} onContextMenu={e=>e.stopPropagation()} onChange={e=>setDraft(e.target.value)} onBlur={()=>finish(draft)} onKeyDown={e=>{e.stopPropagation();if(e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();finish(draft)}else if(e.key==='Escape'){e.preventDefault();finish(null)}}}/>
 }
 
-/** Detected tempo on the region; a click switches warp like Ableton's Warp button. */
+/** Detected tempo on the region; a click switches warp on or off. */
 function WarpBadge({on,sourceBpm,bpm,onToggle}:{on:boolean;sourceBpm:number;bpm:number;onToggle:()=>void}){
   const tempo=`${+sourceBpm.toFixed(2)}`
   const title=on?`워프 켬 · 원본 ${tempo} BPM → 프로젝트 ${bpm} BPM. 클릭하면 원래 박자로 돌아갑니다.`:`원본 ${tempo} BPM · 원래 박자로 재생 중. 클릭하면 프로젝트 템포에 맞춥니다.`
@@ -65,7 +65,7 @@ export interface TimelineClipProps {
 }
 
 /**
- * One region plus its loop repeats (Logic §5): muted = gray body with a dot before the name, looped = shaded
+ * One region plus its loop repeats: muted = gray body with a dot before the name, looped = shaded
  * ghost repeats with notches, transposed MIDI = "(+N)" suffix, audio fades as triangles when zoomed in.
  */
 export const TimelineClip=memo(function TimelineClip({clip,track,asset,ppb,tempo,projectEnd,beatsPerBar=4,meters,selected,preview,renaming,actions,occurrenceTrack=track,silent=false}:TimelineClipProps){

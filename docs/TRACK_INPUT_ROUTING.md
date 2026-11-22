@@ -5,7 +5,7 @@
 마스터 전체를 다시 녹음(리샘플링)할 때 씁니다.
 
 - 데이터: `Track.inputRoute` (프로젝트 스키마 11, `src/core/types.ts`)
-- 순수 로직: `src/core/trackRouting.ts` (되먹임 검사, 마스터 피드 제외, 처리 순서, 삭제/복제 처리, 라벨)
+- 순수 함수: `src/core/trackRouting.ts` (되먹임 검사, 마스터 피드 제외, 처리 순서, 삭제/복제 처리, 라벨)
 - 통합 Rust 엔진(데스크톱·웹 공통, 0.3.2 기본): `rust/garak-engine/src/routes.rs`(`prepareRoutes` 포팅: 처리 레벨, 루프 끊기,
   마스터 피드, pre/post-FX·post-fader 탭). 녹음은 데스크톱 `garak_rs_engine_route_input`, 웹 `tap_output`. [RUST_ENGINE](RUST_ENGINE.md)
 - 웹 호스트: `src/audio/WebAudioEngine.ts`(엔진 탭 출력 → 라우트 녹음), `src/audio/RouteRecording.ts`,
@@ -15,17 +15,10 @@
   `native/src/host.cpp` (테이크별 보정값), `src/audio/native/timeline.ts`
 - UI: `src/components/InputSelect.tsx` (입력 목록 + `TapSelect`), `TrackInspector.tsx`, `TrackHeader.tsx`
 
-## 1. 다른 DAW 비교
+## 1. 설계 요약
 
-| DAW | 트랙을 입력으로 | 탭(가져오는 지점) | 마스터 녹음 | 되먹임 처리 |
-| --- | --- | --- | --- | --- |
-| **Ableton Live** | 오디오 트랙 "Audio From"에서 다른 트랙/리턴/그룹 선택 | 두 번째 선택 상자: **Pre FX / Post FX / Post Mixer** (트랙을 고르면 기본은 Post FX) | **Resampling**: 마스터 출력을 녹음. 녹음하는 트랙 자신의 출력은 입력에 섞이지 않음 | 루프가 되는 경로는 목록에서 고를 수 없음 |
-| **Logic Pro** | 원본 트랙 출력(또는 센드)을 **버스**로 보내고, 녹음 트랙의 입력을 그 버스로 지정 | 센드 Pre/Post Fader, 출력은 Post Pan | 스테레오 아웃을 버스로 보내 녹음하거나 바운스 | 버스 배선을 사용자가 관리 |
-| **Bitwig Studio** | 오디오 트랙 입력 목록에 다른 트랙·마스터가 바로 나옴 | 트랙 출력(포스트) 중심, 필요하면 Audio Receiver 장치로 체인 안 지점 선택 | 마스터를 입력으로 선택 | 순환되는 경로 차단 |
-| **REAPER** | 받는 쪽 트랙에 **Receive** 추가, 또는 녹음 모드 "Record: output" | Pre-FX / Post-FX(Pre-Fader) / Post-Fader(Post-Pan) | 마스터 출력을 Receive로 받거나 렌더 | 기본은 되먹임 금지(설정으로만 허용) |
-
-가락이음은 Ableton의 모델을 따릅니다. 오디오 트랙의 입력 선택 상자 하나에서 하드웨어 입력과 함께
-트랙과 마스터를 고르고, 탭은 별도의 작은 선택 상자로 고릅니다. 기본 탭은 Ableton처럼 **시김새 후(Post FX)** 입니다.
+오디오 트랙의 입력 선택 상자 하나에서 하드웨어 입력과 함께 트랙과 마스터를 고르고, 탭은 별도의 작은 선택 상자로 고릅니다.
+기본 탭은 **시김새 후(Post FX)** 입니다. 되먹임 루프가 되는 경로는 목록에서 고를 수 없습니다.
 
 ## 2. 사용법
 
@@ -54,7 +47,7 @@
   목록에서 해당 트랙은 `— 되먹임 루프`로 표시되고 비활성화되며, 마우스를 올리면 이유가 나옵니다.
   자동화 등 다른 경로로 요청되면 같은 이유를 알림으로 보여 주고 바꾸지 않습니다.
 - **마스터(리샘플링)**: 리샘플링 트랙 자신과, 그 트랙의 신호를 (단계적으로) 받는 트랙들은 리샘플링 입력에 쓰이는
-  마스터 피드에서 빠집니다 (Ableton과 같은 방식). 이 트랙들도 평소처럼 마스터 출력으로는 들립니다.
+  마스터 피드에서 빠집니다. 이 트랙들도 평소처럼 마스터 출력으로는 들립니다.
 - 손으로 고친 파일 등으로 저장된 루프는 불러올 때 첫 번째 트랙의 입력을 `없음`으로 바꿔 끊습니다.
   두 엔진도 같은 규칙으로 한 번 더 확인합니다.
 

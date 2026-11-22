@@ -271,7 +271,7 @@ export interface WarpDecision {
 export const AUTO_WARP = { minConfidence: 0.2, longMinConfidence: 0.4, tolerance: 0.04 } as const
 
 /**
- * Import policy (Ableton's Auto-Warp, long samples included). Short loop-like files warp
+ * Import policy (auto-warp, long samples included). Short loop-like files warp
  * when the file name, or the analysis together with a whole bar count, agrees on a tempo.
  * Longer files warp when the name gives a tempo or the analysis hears a clear beat;
  * otherwise the detected tempo is only stored and warp stays off.

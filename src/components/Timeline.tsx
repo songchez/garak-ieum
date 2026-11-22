@@ -106,7 +106,7 @@ export interface TimelineProps {
   onImportFiles?(trackId?:string,beat?:number):void
   /** A library item dropped on a track (beat set when it landed on the lane) or on the empty area (no trackId). */
   onLibraryDrop?(item:LibraryItem,target:{trackId?:string;beat?:number}):void
-  onCommand(command:ProjectShortcut,ctx?:{trackIds?:string[];clipIds?:string[]}):void
+  onCommand(command:ProjectShortcut,ctx?:{trackIds?:string[];clipIds?:string[];times?:number}):void
   onMenuFocus?():void
   menusDisabled?:boolean
   /** Window-level entries (zoom, full screen) appended to the 보기 menu by the host frame. */
@@ -343,7 +343,7 @@ export function Timeline(props:TimelineProps){
   /** Tracks a header action applies to: the whole selection when the clicked track belongs to it. */
   const targetIds=(trackId:string)=>{const sel=latest.current.selectedTrackIds;return sel.has(trackId)?latest.current.project.tracks.filter(t=>sel.has(t.id)).map(t=>t.id):[trackId]}
 
-  /** Ableton-style Warp switch in the region menu; follows the clicked region's state. */
+  /** Warp switch in the region menu; follows the clicked region's state. */
   function warpItems(clip:Clip,ids:string[]):ContextMenuItem[]{
     if(clip.kind!=='audio'||!props.onClipWarp)return[]
     const on=!!clip.warp?.enabled,warpIds=new Set(ids)
@@ -374,7 +374,7 @@ export function Timeline(props:TimelineProps){
     if(!selected)props.onSelectClips([clip.id],clip.id,track.id)
     const ids=selected?[...selectedClipIds]:[clip.id],count=ids.length,ctx={clipIds:ids,trackIds:[track.id]}
     const renderItems:ContextMenuItem[]=props.onRenderAction&&track.kind!=='return'?[SEP,{label:count>1?`선택한 리전 ${count}개 제자리 바운스…`:'리전 제자리 바운스…',icon:'wave',disabled:!!track.freeze,onSelect:()=>latest.current.onRenderAction?.('bounceRegions',[track.id],ids)}]:[]
-    openMenu(e,[cmd('잘라내기','cut',{},ctx),cmd('복사','copy',{},ctx),cmd('붙여넣기','paste',{},ctx),SEP,cmd('반복','repeat',{},ctx),cmd('재생 위치에서 분할','split',{},ctx),cmd('합치기','join',{disabled:count<2},ctx),SEP,cmd('루프','loopClip',{checked:!!clip.loop},ctx),cmd('뮤트','muteClip',{checked:!!clip.mute},ctx),cmd('이름 바꾸기','renameClip',{},ctx),...warpItems(clip,ids),...pitchItems(clip,ids),...envelopeItems(clip,ids),...renderItems,SEP,cmd(count>1?`클립 ${count}개 삭제`:'삭제','deleteClip',{danger:true},ctx)],'클립 메뉴')
+    openMenu(e,[cmd('잘라내기','cut',{},ctx),cmd('복사','copy',{},ctx),cmd('붙여넣기','paste',{},ctx),SEP,cmd('반복','repeat',{},ctx),{label:'여러 번 반복',icon:'copy',items:[2,3,4,8,16].map(times=>({label:`×${times}`,onSelect:()=>latest.current.onCommand('repeat',{...ctx,times})}))},cmd('재생 위치에서 분할','split',{},ctx),cmd('합치기','join',{disabled:count<2},ctx),SEP,cmd('루프','loopClip',{checked:!!clip.loop},ctx),cmd('뮤트','muteClip',{checked:!!clip.mute},ctx),cmd('이름 바꾸기','renameClip',{},ctx),...warpItems(clip,ids),...pitchItems(clip,ids),...envelopeItems(clip,ids),...renderItems,SEP,cmd(count>1?`클립 ${count}개 삭제`:'삭제','deleteClip',{danger:true},ctx)],'클립 메뉴')
   }
   /** 제자리 바운스 · 얼리기 entries for the selected tracks (returns have nothing to render in place). */
   function renderTrackItems(track:Track,ids:string[]):ContextMenuItem[]{
@@ -437,7 +437,7 @@ export function Timeline(props:TimelineProps){
     openMenu(e,[{label:'마커 이름 변경',icon:'rename',onSelect:()=>setMarkerState({selected:marker.id,renaming:marker.id})},{label:'재생 위치로 이동',icon:'locate',onSelect:()=>latest.current.onSeek(marker.startBeat)},SEP,{label:'마커 삭제',icon:'trash',danger:true,onSelect:()=>latest.current.onMarker('delete',{id:marker.id})}],'마커 메뉴')
   }
 
-  // Menu bar popups (Logic: 편집 · 기능 · 보기 · Catch · Snap · Drag)
+  // Menu bar popups (편집 · 기능 · 보기 · Catch · Snap · Drag)
   function barMenu(e:React.MouseEvent<HTMLButtonElement>,items:ContextMenuItem[],label:string){
     if(menu?.trigger===e.currentTarget){setMenu(null);return}
     const r=e.currentTarget.getBoundingClientRect();openMenuAt(r.left,r.bottom+2,items,label,e.currentTarget)
