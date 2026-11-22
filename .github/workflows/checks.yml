@@ -6,11 +6,8 @@ name: Checks
 # native and packaging changes, and always before a public release.
 on:
   workflow_dispatch:
+  # Every PR, docs included: 'Tests and builds' is a required check on main.
   pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - 'releases/**'
-      - '**/*.md'
 
 permissions:
   contents: read

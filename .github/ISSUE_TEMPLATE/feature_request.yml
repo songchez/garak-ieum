@@ -1,0 +1,40 @@
+name: 기능 제안 / Feature request
+description: 있으면 좋겠는 기능이나 더 편해졌으면 하는 점을 알려 주세요. / Suggest an idea or improvement.
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        비슷한 제안이 이미 있는지 [이슈 검색](https://github.com/songchez/garak-ieum/issues?q=is%3Aissue)을 먼저 확인해 주세요. 있다면 👍 반응을 남겨 주시면 우선순위를 정하는 데 도움이 됩니다.
+  - type: textarea
+    id: problem
+    attributes:
+      label: 어떤 점이 불편한가요? / What problem does this solve?
+      description: 하려던 작업과, 지금은 무엇 때문에 어려운지 적어 주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 어떻게 되면 좋을까요? / Proposed behaviour
+      description: 원하는 동작을 구체적으로 적어 주세요. 단축키·마우스 동작·화면 스케치가 있으면 좋습니다.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 관련 영역 / Area
+      multiple: true
+      options:
+        - 타임라인·리전 / Timeline & regions
+        - 피아노롤·MIDI / Piano roll & MIDI
+        - 오디오 녹음·편집 / Audio recording & editing
+        - 믹서·이펙트 / Mixer & effects
+        - 악기 / Instruments
+        - 국악 / Gugak
+        - 설치·설정 / Install & settings
+        - 기타 / Other
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 지금은 어떻게 하고 계신가요? / Current workaround

@@ -98,7 +98,7 @@ Most documentation is written in Korean.
 | Design and status | [Architecture](docs/ARCHITECTURE.md) · [Rust render engine](docs/RUST_ENGINE.md) · [Rust audio core](docs/RUST.md) · [Native audio](docs/NATIVE_AUDIO.md) · [Implementation status](docs/IMPLEMENTATION_STATUS.md) · [Roadmap](docs/ROADMAP.md) |
 | Releases and licensing | [Release process](docs/RELEASING.md) · [GPL distribution](docs/LICENSING.md) |
 
-Everything else is in the [`docs/`](docs/) folder. Bug reports and feedback are welcome in [Issues](https://github.com/songchez/garak-ieum/issues).
+Everything else is in the [`docs/`](docs/) folder. Bug reports and feature requests are welcome in [Issues](https://github.com/songchez/garak-ieum/issues/new/choose). See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute code and [SECURITY.md](SECURITY.md) for security issues.
 
 ## License
 

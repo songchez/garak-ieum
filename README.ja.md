@@ -98,7 +98,7 @@ flowchart TD
 | 設計と実装状況 | [アーキテクチャ](docs/ARCHITECTURE.md) · [Rust レンダーエンジン](docs/RUST_ENGINE.md) · [Rust オーディオコア](docs/RUST.md) · [ネイティブオーディオ](docs/NATIVE_AUDIO.md) · [実装状況](docs/IMPLEMENTATION_STATUS.md) · [ロードマップ](docs/ROADMAP.md) |
 | リリースとライセンス | [リリース手順](docs/RELEASING.md) · [GPL 配布ガイド](docs/LICENSING.md) |
 
-その他のドキュメントは [`docs/`](docs/) フォルダーにあります。不具合の報告やご意見は [Issues](https://github.com/songchez/garak-ieum/issues) へお寄せください。
+その他のドキュメントは [`docs/`](docs/) フォルダーにあります。不具合の報告や機能の提案は [Issues](https://github.com/songchez/garak-ieum/issues/new/choose) へお寄せください。コードの貢献は [CONTRIBUTING.md](CONTRIBUTING.md)、セキュリティの問題は [SECURITY.md](SECURITY.md) をご覧ください。
 
 ## ライセンス
 
