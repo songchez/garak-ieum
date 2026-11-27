@@ -19,6 +19,12 @@
 <!-- TODO: 홈페이지 주소가 확정되면 아래 "홈페이지" 문구를 링크로 바꾸세요. 예: [홈페이지](https://...) -->
 기능 소개와 자세한 설치·사용 안내는 **홈페이지**에서 확인할 수 있습니다.
 
+<p align="center">
+  <img src="docs/assets/readme/studio-overview.png" alt="가락이음 편집기 화면 — 타임라인, 피아노롤, 채널 스트립이 한 화면에 있는 작업실" width="1200">
+</p>
+
+<p align="center"><sub>0.3.5 개발 프리뷰의 편집기 화면 — 타임라인·피아노롤·채널 스트립</sub></p>
+
 ## 다운로드와 설치
 
 **[GitHub Releases에서 최신 버전 받기 →](https://github.com/songchez/garak-ieum/releases)**
