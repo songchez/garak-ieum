@@ -6,8 +6,17 @@
 | --- | --- | --- | --- |
 | [hero.svg](hero.svg) | 가락이음 브랜드 배너, 1200 × 340 | README(ko/en/ja) 상단 | 브랜드 일러스트 |
 | [pitch-workflow.svg](pitch-workflow.svg) | 음표 분석 → 음표 편집 → 적용 흐름, 1200 × 360 | 현재 README에서는 쓰지 않음(보관) | 설명용 개념도 |
+| [studio-overview.png](studio-overview.png) | 편집기 전체 — 타임라인·피아노롤·채널 스트립, 1800 × 1125 | README에 아직 연결하지 않음 | 실제 앱 화면 |
+| [piano-roll.png](piano-roll.png) | 피아노롤 확대 — 「분별의 마당」 8마디, 1600 × 1000 | README에 아직 연결하지 않음 | 실제 앱 화면 |
+| [pitch-editor.png](pitch-editor.png) | 피치 편집 창 — 분석 음표·피치 곡선·보정 도구, 1600 × 1000 | README에 아직 연결하지 않음 | 실제 앱 화면 |
+| [guitar-rig.png](guitar-rig.png) | 기타 앰프·이펙트 랙, 1600 × 1000 | README에 아직 연결하지 않음 | 실제 앱 화면 |
+| [ieum-wave.png](ieum-wave.png) | 이음 웨이브(Wavetable 신스), 1600 × 1000 | README에 아직 연결하지 않음 | 실제 앱 화면 |
+| [hanok-room.jpg](hanok-room.jpg) | 한옥 작업실 장면, 1672 × 941 | README에 아직 연결하지 않음 | 브랜드 이미지(앱 화면 아님) |
+| [hanok-entry.jpg](hanok-entry.jpg) | 한옥 마당 진입 장면, 1672 × 941 | README에 아직 연결하지 않음 | 브랜드 이미지(앱 화면 아님) |
 
-현재 README는 **배너(hero.svg) 하나만** 사용합니다. 예전에 README에 실었던 피치 개념도(pitch-workflow.svg)와 테마 색 배치 자료([korean-theme-presets.png](../korean-theme-presets.png), [테마 안내](../../THEMES.md)에서 사용)는 README에서 빠졌습니다. **위 이미지는 실제 앱 스크린샷이 아닙니다.** 실행 화면 캡처가 준비되면 별도 파일로 추가하고, 설계 자료의 설명을 실행 화면으로 바꾸지 않습니다.
+현재 README는 **배너(hero.svg) 하나만** 사용합니다. 예전에 README에 실었던 피치 개념도(pitch-workflow.svg)와 테마 색 배치 자료([korean-theme-presets.png](../korean-theme-presets.png), [테마 안내](../../THEMES.md)에서 사용)는 README에서 빠졌습니다. **hero.svg와 pitch-workflow.svg는 실제 앱 스크린샷이 아닙니다.** 설계 자료의 설명을 실행 화면으로 바꾸지 않습니다.
+
+아래 `studio-overview.png`부터 `ieum-wave.png`까지는 **0.3.5 개발 프리뷰의 실제 실행 화면**을 [garakieum.com](https://garakieum.com) 홈페이지에서 같은 화면으로 내려받아 PNG로 변환한 것입니다(2026-11-27). `hanok-room.jpg`·`hanok-entry.jpg`는 같은 홈페이지의 브랜드 장면이며 앱 화면이 아닙니다. 홈페이지 이미지와 저장소 파일이 다시 어긋나지 않도록, 앱 화면이 바뀌면 두 곳을 함께 갱신합니다.
 
 ## 브랜드와 글꼴
 
